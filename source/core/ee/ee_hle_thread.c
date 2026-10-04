@@ -436,6 +436,7 @@ static void load_context(ee_state_t *st, int thid)
 {
     ee_tcb_t *t = tcb(thid);
     if (!t) return;
+    st->gpr_generation++;
     memcpy(st->gpr, t->gpr, sizeof(t->gpr));
     st->pc = t->pc;
     st->next_pc = t->next_pc;

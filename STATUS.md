@@ -1,4 +1,4 @@
-# Gekko2 status — R1306
+# Gekko2 status — R1307
 
 Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
 
@@ -10,9 +10,15 @@ Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** Th
 | Native OSDSYS | BIOS menu renders; Browser entry and return were tested in native checkpoint work. | A native framebuffer capture is not evidence of current Wii speed or stability. |
 | Tekken Tag Tournament | Namco logo reproduced in native tests and reported on Wii by the owner. R1297 retail SLUS-20001 resource-transfer fix passes the previous TLBL failure in fresh native boot; fractional sprite gaps are fixed. | Title screen/gameplay and playable performance are not demonstrated. The custom module profile is guarded, not a universal sound-module implementation. |
 | Launcher/input | SD ISO/BIN browser, FPS/HUD options, Remote/Nunchuk/GameCube controls and HBC exit actions are implemented. | Nunchuk directions are digital; CHD launcher support is absent. |
-| PPC JIT | Many scalar EE/IOP families, guarded VU pairs/blocks, conservative 2–8 instruction EE ALU/COP1 blocks and direct relative helper calls. | Full EE/IOP/VU recompilation, wide memory/control blocks, register allocation and safe linking remain incomplete. |
+| PPC JIT | Precise EE/IOP blocks, fused legal delay slots, RAM merge/vector paths, native returned-block continuation, IOP load/exception precision and guarded scalar register residency. | Full EE/VU coverage, wider allocation, patched generation-based links and event batching remain incomplete; Wii stability/FPS require testing. |
 | GX | Optional CT32/24 presentation, guarded sprites/flat triangles, snapshot textures, selected TEV blending/depth paths, deferred VRAM resolve and compatible resident framebuffers. | Varying Gouraud/textured triangle routing, broad GPU residency and complex GS states still require software/hybrid handling. |
 | R1302 branding | Gekko2 launcher header, HBC icon, checked 640×480 native launcher preview and both Wii cross-builds. | No fresh physical-Wii R1302 timing result. Guest emulation remains R1301. |
+
+## R1307 register residency and IOP precision checkpoint
+
+R1307 combines the development work after R1306: bounded IOP native blocks, exact EE8/IOP1 interleave, IOP delayed loads/merge forwarding and EPC/BD/TAR/alignment/overflow precision, extended EE control/merge/vector/COP1 paths, native returned-block continuation and ABI fixes. Reused scalar operands now stay in nonvolatile PPC registers across audited prepare/retire callbacks. Guest memory stays canonical; generation changes reload copies, and opaque bodies fence them. Memory-only and unsuitable blocks keep their earlier path.
+
+Validation includes **211/211 host tests**, 62 independent helper-observation/generation oracles, 48 hostile resident-pool ABI cases, 245 wrapper cases, 477 paired IOP programs, 50 pipeline oracles, 1,152 merge byte oracles/64 IRQ boundaries, native-chain comparisons and paired COP1/link signatures. Detailed scope, slower as well as faster synthetic counts, install instructions and remaining work are in [R1307-HANDOFF.md](docs/R1307-HANDOFF.md). This is an early-alpha development checkpoint with requested test binaries, not a completed dynarec or a demonstrated Wii FPS improvement.
 
 ## R1306 wide memory and terminal-control milestone
 

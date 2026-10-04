@@ -401,6 +401,7 @@ void iop_mem_write32(iop_state_t *st, uint32_t addr, uint32_t val)
 
 int iop_core_init(const bios_image_t *bios)
 {
+    iop_jit_reset_for_test();
     memset(&g_iop, 0, sizeof(g_iop));
 
     iop_intc_init(); /* IOP interrupt controller register block - see core/hw/iop_intc.h */
@@ -827,7 +828,10 @@ static void iop_check_hw_interrupt(iop_state_t *st, uint32_t epc, uint32_t cause
      * see this function's own doc comment above for the full citation
      * trail on why BD/epc are now caller-supplied instead of always
      * being the plain "next not-yet-executed instruction" address. */
+    st->gpr_generation++; /* IRQ dispatch may write argument/link GPRs. */
     st->cop0[13] = (st->cop0[13] & ~(0x7Fu | IOP_CAUSE_BD)) | cause_bd;
+    if(cause_bd)st->cop0[6]=st->next_pc;
+    iop_core_flush_pipeline(st);
     st->cop0[14] = epc; /* EPC */
     st->cop0[12] = (st->cop0[12] & ~0x3Fu) | ((st->cop0[12] & 0x0Fu) << 2); /* Status stack push */
     st->exception_pending = 1; /* task #156 - see iop_core.h's field comment */
@@ -1016,10 +1020,92 @@ static void iop_check_hw_interrupt(iop_state_t *st, uint32_t epc, uint32_t cause
     st->next_pc = vector + 4u;
 }
 
-static int iop_step(void)
+/* A load writes after one intervening instruction. An explicit write or
+ * another load to the same destination cancels the earlier pending write.
+ * Merge loads forward the pending value without forwarding their EA base. */
+void iop_core_flush_pipeline(iop_state_t *st)
+{
+    if(st->load_delay_reg){st->gpr_generation++;st->gpr[st->load_delay_reg]=st->load_delay_value;}
+    st->load_delay_reg=0;
+    st->branch_delay_pending=0;
+    st->pipe_active=0;
+    st->gpr[0]=0;
+}
+static unsigned iop_write_register(uint32_t w)
+{
+    unsigned op=w>>26,rt=(w>>16)&31u,fn=w&63u;
+    if(op==0u) {
+        if(fn==9u || fn==0u||fn==2u||fn==3u||fn==4u||fn==6u||fn==7u||
+           fn==0x10u||fn==0x12u||(fn>=0x20u&&fn<=0x27u)||fn==0x2au||fn==0x2bu)
+            return (w>>11)&31u;
+        return 0;
+    }
+    if(op==3u || (op==1u&&(rt==0x10u||rt==0x11u)))return 31u;
+    if((op>=8u&&op<=15u)||(op>=0x20u&&op<=0x26u)||
+       (op==0x10u&&((w>>21)&31u)==0u))return rt;
+    return 0;
+}
+static int iop_load_instruction(uint32_t w)
+{
+    unsigned op=w>>26;
+    return op==0x20u||op==0x21u||op==0x22u||op==0x23u||op==0x24u||op==0x25u||op==0x26u||
+           (op==0x10u&&((w>>21)&31u)==0u);
+}
+static int iop_branch_instruction(uint32_t w)
+{
+    unsigned op=w>>26,rt=(w>>16)&31u,fn=w&63u;
+    return (op>=2u&&op<=7u)||(op==1u&&(rt<=1u||rt==0x10u||rt==0x11u))||
+           (op==0u&&(fn==8u||fn==9u));
+}
+static void iop_pipeline_begin(iop_state_t *st,uint32_t pc,uint32_t word)
+{
+    st->pipe_pc=pc;st->pipe_word=word;st->pipe_fault=0;st->pipe_active=1;
+    st->pipe_bd=st->branch_delay_pending;
+    st->pipe_branch_pc=st->branch_pc;st->pipe_branch_target=st->next_pc;
+    st->branch_delay_pending=0;
+    st->pipe_write_reg=(uint8_t)iop_write_register(word);
+    st->pipe_load_reg=iop_load_instruction(word)?(uint8_t)((word>>16)&31u):0;
+    st->pipe_load_old=st->gpr[st->pipe_load_reg];
+}
+static void iop_raise_sync(iop_state_t *st,unsigned code,uint32_t badaddr,int address_error)
+{
+    st->cop0[13]=(st->cop0[13]&~(0x7fu|IOP_CAUSE_BD))|(code<<2)|
+                   (st->pipe_bd?IOP_CAUSE_BD:0u);
+    st->cop0[14]=st->pipe_bd?st->pipe_branch_pc:st->pipe_pc;
+    if(st->pipe_bd)st->cop0[6]=st->pipe_branch_target;
+    if(address_error)st->cop0[8]=badaddr;
+    uint32_t vector=(st->cop0[12]&0x400000u)?0xbfc00180u:0x80000080u;
+    st->pc=vector;st->next_pc=vector+4u;
+    st->cop0[12]=(st->cop0[12]&~0x3fu)|((st->cop0[12]&0xfu)<<2);
+    st->exception_pending=1;st->pipe_fault=1;st->branch_delay_pending=0;
+}
+static int iop_operand_fault(iop_state_t *st,uint32_t w)
+{
+    unsigned op=w>>26,rs=(w>>21)&31u,rt=(w>>16)&31u,fn=w&63u;
+    uint32_t a=st->gpr[rs],b=st->gpr[rt],imm=(uint32_t)(int32_t)(int16_t)w;
+    uint32_t ea=a+imm;
+    if(((op==0x21u||op==0x25u||op==0x29u)&&(ea&1u))||
+       ((op==0x23u||op==0x2bu)&&(ea&3u))) {
+        iop_raise_sync(st,op>=0x28u?5u:4u,ea,1);return 1;
+    }
+    if(op==8u || (op==0u&&(fn==0x20u||fn==0x22u))) {
+        if(op==8u)b=imm;
+        uint32_t value=(op==0u&&fn==0x22u)?a-b:a+b;
+        uint32_t overflow=(op==0u&&fn==0x22u)?((a^b)&(a^value)):(~(a^b)&(a^value));
+        if(overflow&0x80000000u){iop_raise_sync(st,12u,0,0);return 1;}
+    }
+    return 0;
+}
+
+/* 0: HLE consumed tick; 1: halted; 2: fetched real instruction. */
+static int iop_prepare(uint32_t *prepared_pc,uint32_t *prepared_word)
 {
     iop_state_t *st = &g_iop;
     uint32_t pc = st->pc;
+    if(pc&3u) {
+        iop_pipeline_begin(st,pc,0);iop_raise_sync(st,4u,pc,1);
+        iop_core_flush_pipeline(st);return 0;
+    }
 
     /* IOP BIOS syscall trap (0xA0/0xB0/0xC0) - see core/hw/iop_hle_bios.h.
      * If this is one of the three trap addresses, the "instruction"
@@ -1165,6 +1251,7 @@ static int iop_step(void)
      * executed correctly by this project; the gap is specific to the
      * RAM-resident BEV=0 vector, which nothing ever populates. */
     if (pc == 0x80000080u && st->exception_pending) {
+        iop_core_flush_pipeline(st);
         /* Round 131 (task #172/#196/#286, real fix): the guard above
          * only ever checked pc/exception_pending, never Cause.ExcCode
          * - so it also caught genuine SYSCALL/BREAK/Trap exceptions
@@ -1206,8 +1293,9 @@ static int iop_step(void)
              * Trap already do - re-running the same instruction would
              * refire the identical exception forever. */
             st->gpr[2] = 0; /* $v0 = 0 */
-            st->pc = epc + 4u;
-            st->next_pc = epc + 8u;
+            /* HLE skips the faulting slot after a completed branch. */
+            st->pc = (st->cop0[13] & IOP_CAUSE_BD) ? st->cop0[6] : epc + 4u;
+            st->next_pc = st->pc + 4u;
         } else {
             /* Interrupt (ExcCode==0) or any other restartable class -
              * unchanged Round 129 behavior: resume the interrupted
@@ -1378,8 +1466,64 @@ static int iop_step(void)
         }
     }
 
-    uint32_t instr = iop_mem_read32(st, pc);
+    *prepared_pc = pc;
+    *prepared_word = iop_mem_read32(st, pc);
+    return 2;
+}
 
+static void iop_retire(iop_state_t *st,uint32_t this_pc,uint32_t fallthrough_pc)
+{
+    if(st->pipe_active) {
+        unsigned load=st->pipe_fault?0u:st->pipe_load_reg;
+        uint32_t value=st->gpr[load];
+        if(load||st->load_delay_reg)st->gpr_generation++;
+        if(load)st->gpr[load]=st->pipe_load_old;
+        if(st->load_delay_reg && (st->pipe_fault||st->load_delay_reg!=st->pipe_write_reg))
+            st->gpr[st->load_delay_reg]=st->load_delay_value;
+        st->load_delay_reg=(uint8_t)load;st->load_delay_value=load?value:0u;
+        if(!st->pipe_fault && iop_branch_instruction(st->pipe_word)) {
+            st->branch_delay_pending=1;st->branch_pc=this_pc;
+        }
+        st->pipe_active=0;
+    }
+    st->gpr[0] = 0;
+
+    /* Round 22: real hardware-interrupt delivery, checked at the end
+     * of every real (non-HLE-trap) instruction step - see
+     * iop_check_hw_interrupt()'s own comment above for the full
+     * citation trail.
+     *
+     * Round 945: detect whether `this_pc` (the instruction just
+     * executed above) was itself a taken branch/jump this exact step.
+     * `fallthrough_pc` was captured at this function's own prologue as
+     * st->next_pc's value BEFORE the switch ran (this_pc+4, i.e. what
+     * st->next_pc would still be if nothing branched); every real
+     * taken branch/jump site goes through the BRANCH_TO() macro, which
+     * overwrites st->next_pc with the real target - so
+     * st->next_pc != fallthrough_pc + 4 (this_pc+8) exactly
+     * characterizes "this_pc was a taken branch/jump, and st->pc
+     * (still just this_pc+4, the not-yet-executed delay slot) is a
+     * pending delay slot with a real branch behind it". In that case,
+     * the correct real-hardware EPC is the branch instruction itself
+     * (this_pc) with Cause.BD set, not the delay-slot address -
+     * otherwise (the overwhelmingly common case), behavior is
+     * unchanged from before this round: EPC=st->pc, BD=0. */
+    {
+        int delay_slot_pending = st->branch_delay_pending || (st->next_pc != fallthrough_pc + 4u);
+        if(st->pipe_fault) { /* synchronous fault already owns this boundary */ }
+        else if (delay_slot_pending)
+            iop_check_hw_interrupt(st, this_pc, IOP_CAUSE_BD);
+        else
+            iop_check_hw_interrupt(st, st->pc, 0u);
+    }
+
+    st->instructions_executed++;
+}
+
+static int iop_execute_prepared(uint32_t pc,uint32_t instr,int use_scalar_jit)
+{
+    iop_state_t *st=&g_iop;
+    if(!st->pipe_active)iop_pipeline_begin(st,pc,instr);
     uint32_t op    = (instr >> 26) & 0x3F;
     uint32_t rs    = (instr >> 21) & 0x1F;
     uint32_t rt    = (instr >> 16) & 0x1F;
@@ -1396,10 +1540,18 @@ static int iop_step(void)
 
     uint32_t rs32 = st->gpr[rs];
     uint32_t rt32 = st->gpr[rt];
+    if((op==0x22u||op==0x26u) && rt && st->load_delay_reg==rt) {
+        rt32=st->load_delay_value;
+        /* One-op native bodies read the visible GPR, not the pending
+         * merge value. Keep both data forwarding and the old EA base. */
+        use_scalar_jit=0;
+    }
 
 #define GPR(x) st->gpr[x]
 #define BRANCH_TO(target) do { st->next_pc = (target); } while (0)
 #define LINK(reg) do { GPR(reg) = this_pc + 8; } while (0)
+
+    if(iop_operand_fault(st,instr))goto iop_jit_done;
 
 #if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
     /* R1281: full-retirement PPC measurements show these simple scalar
@@ -1415,9 +1567,9 @@ static int iop_step(void)
     /* R1283: short branch/COP0 transfer effects stay inline, including
      * the existing IOP HLE JAL/JR checks. Native APIs remain available. */
     int cheap_control=(op>=2u&&op<=7u)||(op==0x10u&&(rs==0u||rs==4u));
-    if(!cheap && !cheap_control && iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
+    if(use_scalar_jit && !cheap && !cheap_control && iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
 #else
-    if(iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
+    if(use_scalar_jit && iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
 #endif
 
     switch (op) {
@@ -1621,6 +1773,7 @@ static int iop_step(void)
              * STATUS.md's repeated "not fabricated without citation"
              * notes). */
             if (syscall_num == 0x08u) {
+                st->pipe_write_reg=2;
                 st->cop0[12] |= (0x1u | 0x400u); /* real net effect of CpuEnableIntr(): IEc (bit0) + IM2 (bit10) */
                 st->gpr[2] = 0;
                 st->pc = this_pc + 4u;
@@ -1628,18 +1781,13 @@ static int iop_step(void)
                 break;
             }
             if (syscall_num == 0x10u || syscall_num == 0x14u) {
+                st->pipe_write_reg=2;
                 st->gpr[2] = 0; /* same generic default-return convention as iop_hle_bios.c / task #149/#156 */
                 st->pc = this_pc + 4u;
                 st->next_pc = this_pc + 8u;
                 break;
             }
-            st->cop0[13] = (st->cop0[13] & ~0x7Fu) | 0x20u; /* Cause.ExcCode = 8 (Syscall) */
-            st->cop0[14] = this_pc; /* EPC */
-            uint32_t vector = (st->cop0[12] & 0x400000u) ? 0xBFC00180u : 0x80000080u; /* Status.BEV */
-            st->pc = vector;
-            st->next_pc = vector + 4;
-            st->cop0[12] = (st->cop0[12] & ~0x3Fu) | ((st->cop0[12] & 0x0Fu) << 2); /* Status stack push */
-            st->exception_pending = 1; /* task #156 - see iop_core.h's field comment */
+            iop_raise_sync(st,8u,0,0);
         }
         break;
         case 0x0D: /* BREAK */
@@ -1698,8 +1846,8 @@ static int iop_step(void)
                  * funct=0x10) implementation above. */
                 st->cop0[12] = (st->cop0[12] & ~0x0Fu) | ((st->cop0[12] & 0x3Cu) >> 2);
                 st->exception_pending = 0; /* task #156 - this exception is now considered handled */
-                st->pc = epc + 4u;
-                st->next_pc = epc + 8u;
+                st->pc = (st->cop0[13] & IOP_CAUSE_BD) ? st->cop0[6] : epc + 4u;
+                st->next_pc = st->pc + 4u;
                 break;
             }
             /* Round 752 (task #735): real R3000A/MIPS I hardware never
@@ -1734,15 +1882,7 @@ static int iop_step(void)
              * on Status.BEV, same Status KU/IE stack left-shift-by-2
              * push) - identical in form to the SYSCALL/TGE/Reserved-
              * Instruction cases above/below, just ExcCode=9 instead. */
-            st->cop0[13] = (st->cop0[13] & ~0x7Fu) | 0x24u; /* Cause.ExcCode = 9 (Breakpoint) */
-            st->cop0[14] = this_pc; /* EPC */
-            {
-                uint32_t vector = (st->cop0[12] & 0x400000u) ? 0xBFC00180u : 0x80000080u; /* Status.BEV */
-                st->pc = vector;
-                st->next_pc = vector + 4;
-            }
-            st->cop0[12] = (st->cop0[12] & ~0x3Fu) | ((st->cop0[12] & 0x0Fu) << 2); /* Status stack push */
-            st->exception_pending = 1; /* task #156 - see iop_core.h's field comment */
+            iop_raise_sync(st,9u,0,0);
             break;
         case 0x10: /* MFHI */ if (rd) GPR(rd) = st->hi; break;
         case 0x11: /* MTHI */ st->hi = GPR(rs); break;
@@ -1796,13 +1936,7 @@ static int iop_step(void)
              * real R3000A exception-delivery mechanism, just a
              * different ExcCode and trigger condition. */
             if ((int32_t)rs32 >= (int32_t)rt32) {
-                st->cop0[13] = (st->cop0[13] & ~0x7Fu) | 0x34u; /* Cause.ExcCode = 13 (Trap) */
-                st->cop0[14] = this_pc; /* EPC */
-                uint32_t vector = (st->cop0[12] & 0x400000u) ? 0xBFC00180u : 0x80000080u; /* Status.BEV */
-                st->pc = vector;
-                st->next_pc = vector + 4;
-                st->cop0[12] = (st->cop0[12] & ~0x3Fu) | ((st->cop0[12] & 0x0Fu) << 2); /* Status stack push */
-                st->exception_pending = 1; /* task #156 - see iop_core.h's field comment */
+                iop_raise_sync(st,13u,0,0);
             }
             break;
         default:
@@ -1834,15 +1968,7 @@ static int iop_step(void)
              * architecturally-correct real behavior, and may reveal
              * further genuine progress or a cleaner subsequent wall
              * instead of guessing opcode-by-opcode. */
-            st->cop0[13] = (st->cop0[13] & ~0x7Fu) | 0x28u; /* Cause.ExcCode = 10 (Reserved Instruction) */
-            st->cop0[14] = this_pc; /* EPC */
-            {
-                uint32_t vector = (st->cop0[12] & 0x400000u) ? 0xBFC00180u : 0x80000080u; /* Status.BEV */
-                st->pc = vector;
-                st->next_pc = vector + 4;
-            }
-            st->cop0[12] = (st->cop0[12] & ~0x3Fu) | ((st->cop0[12] & 0x0Fu) << 2); /* Status stack push */
-            st->exception_pending = 1; /* task #156 - see iop_core.h's field comment */
+            iop_raise_sync(st,10u,0,0);
             break;
         }
         break;
@@ -1858,15 +1984,7 @@ static int iop_step(void)
              * Reserved Instruction exception (ExcCode 0x0A) as the
              * SPECIAL default case above; see that case's own comment
              * for the full citation trail. */
-            st->cop0[13] = (st->cop0[13] & ~0x7Fu) | 0x28u; /* Cause.ExcCode = 10 (Reserved Instruction) */
-            st->cop0[14] = this_pc; /* EPC */
-            {
-                uint32_t vector = (st->cop0[12] & 0x400000u) ? 0xBFC00180u : 0x80000080u; /* Status.BEV */
-                st->pc = vector;
-                st->next_pc = vector + 4;
-            }
-            st->cop0[12] = (st->cop0[12] & ~0x3Fu) | ((st->cop0[12] & 0x0Fu) << 2); /* Status stack push */
-            st->exception_pending = 1; /* task #156 - see iop_core.h's field comment */
+            iop_raise_sync(st,10u,0,0);
             break;
         }
         break;
@@ -1955,15 +2073,7 @@ static int iop_step(void)
                  * any other funct value here is genuinely undefined
                  * encoding space, the same class of gap as an
                  * unimplemented SPECIAL/REGIMM funct. */
-                st->cop0[13] = (st->cop0[13] & ~0x7Fu) | 0x28u; /* Cause.ExcCode = 10 (Reserved Instruction) */
-                st->cop0[14] = this_pc; /* EPC */
-                {
-                    uint32_t vector = (st->cop0[12] & 0x400000u) ? 0xBFC00180u : 0x80000080u; /* Status.BEV */
-                    st->pc = vector;
-                    st->next_pc = vector + 4;
-                }
-                st->cop0[12] = (st->cop0[12] & ~0x3Fu) | ((st->cop0[12] & 0x0Fu) << 2); /* Status stack push */
-                st->exception_pending = 1; /* task #156 - see iop_core.h's field comment */
+                iop_raise_sync(st,10u,0,0);
                 break;
             }
             break;
@@ -1974,15 +2084,7 @@ static int iop_step(void)
              * COP0 only defines rs=0x00 (MFC0), 0x04 (MTC0), and
              * 0x10 (CO-format) on the R3000A - any other rs value is
              * genuinely undefined encoding space. */
-            st->cop0[13] = (st->cop0[13] & ~0x7Fu) | 0x28u; /* Cause.ExcCode = 10 (Reserved Instruction) */
-            st->cop0[14] = this_pc; /* EPC */
-            {
-                uint32_t vector = (st->cop0[12] & 0x400000u) ? 0xBFC00180u : 0x80000080u; /* Status.BEV */
-                st->pc = vector;
-                st->next_pc = vector + 4;
-            }
-            st->cop0[12] = (st->cop0[12] & ~0x3Fu) | ((st->cop0[12] & 0x0Fu) << 2); /* Status stack push */
-            st->exception_pending = 1; /* task #156 - see iop_core.h's field comment */
+            iop_raise_sync(st,10u,0,0);
             break;
         }
         break;
@@ -2043,15 +2145,7 @@ static int iop_step(void)
          * Instruction exception (ExcCode 0x0A) as the SPECIAL/REGIMM
          * default cases above; see the SPECIAL default case's own
          * comment for the full citation trail. */
-        st->cop0[13] = (st->cop0[13] & ~0x7Fu) | 0x28u; /* Cause.ExcCode = 10 (Reserved Instruction) */
-        st->cop0[14] = this_pc; /* EPC */
-        {
-            uint32_t vector = (st->cop0[12] & 0x400000u) ? 0xBFC00180u : 0x80000080u; /* Status.BEV */
-            st->pc = vector;
-            st->next_pc = vector + 4;
-        }
-        st->cop0[12] = (st->cop0[12] & ~0x3Fu) | ((st->cop0[12] & 0x0Fu) << 2); /* Status stack push */
-        st->exception_pending = 1; /* task #156 - see iop_core.h's field comment */
+        iop_raise_sync(st,10u,0,0);
         break;
     }
 
@@ -2060,44 +2154,21 @@ static int iop_step(void)
 #undef LINK
 
 iop_jit_done:
-    st->gpr[0] = 0;
-
-    /* Round 22: real hardware-interrupt delivery, checked at the end
-     * of every real (non-HLE-trap) instruction step - see
-     * iop_check_hw_interrupt()'s own comment above for the full
-     * citation trail.
-     *
-     * Round 945: detect whether `this_pc` (the instruction just
-     * executed above) was itself a taken branch/jump this exact step.
-     * `fallthrough_pc` was captured at this function's own prologue as
-     * st->next_pc's value BEFORE the switch ran (this_pc+4, i.e. what
-     * st->next_pc would still be if nothing branched); every real
-     * taken branch/jump site goes through the BRANCH_TO() macro, which
-     * overwrites st->next_pc with the real target - so
-     * st->next_pc != fallthrough_pc + 4 (this_pc+8) exactly
-     * characterizes "this_pc was a taken branch/jump, and st->pc
-     * (still just this_pc+4, the not-yet-executed delay slot) is a
-     * pending delay slot with a real branch behind it". In that case,
-     * the correct real-hardware EPC is the branch instruction itself
-     * (this_pc) with Cause.BD set, not the delay-slot address -
-     * otherwise (the overwhelmingly common case), behavior is
-     * unchanged from before this round: EPC=st->pc, BD=0. */
-    {
-        int delay_slot_pending = (st->next_pc != fallthrough_pc + 4u);
-        if (delay_slot_pending)
-            iop_check_hw_interrupt(st, this_pc, IOP_CAUSE_BD);
-        else
-            iop_check_hw_interrupt(st, st->pc, 0u);
-    }
-
-    st->instructions_executed++;
+    iop_retire(st,this_pc,fallthrough_pc);
     return 0;
+}
+
+static int iop_step(void)
+{
+    uint32_t pc,word;
+    int result=iop_prepare(&pc,&word);
+    return result==2 ? iop_execute_prepared(pc,word,1) : result;
 }
 
 /* Public single-instruction step - see ee_core_step()'s comment in
  * ee_core.c for why this exists (source/core/system.c's interleaved
  * scheduler). */
-int iop_core_step(void)
+static int iop_tick(void)
 {
     if (g_iop.halted)
         return 1;
@@ -2189,7 +2260,92 @@ int iop_core_step(void)
         return 0;
     }
 
+    return 2;
+}
+
+/* Native block callbacks retain the complete pre-fetch HLE path and tick
+ * service. 0 consumes nothing, 1 admits native execution, 2 consumed a
+ * tick through HLE/idle/scalar recovery. Source changes never execute stale
+ * code and never charge the same timer tick twice. */
+static uint64_t iop_block_stale;
+static void (*iop_before_tick)(void);
+int iop_core_native_call_safe(iop_state_t *st,uint32_t pc,uint32_t word)
+{
+    if(st->cop0[15]!=0x1fu)return 1;
+    if(word>>26==3u && ((pc&0xf0000000u)|((word&0x03ffffffu)<<2))==0xbfc4a600u)return 0;
+    if(word>>26==0u && (word&63u)==9u && st->devtable_pending_image &&
+       (pc==0xbfc4a39cu||pc==0xbfc4a44cu))return 0;
+    return 1;
+}
+int iop_core_block_prepare(iop_state_t *st,uint32_t pc,uint32_t word,uint32_t previous_pc)
+{
+    /* Finish the previous native body BEFORE the next EE grant, just as
+     * single stepping does. Last-slot retirement is emitted at block exit. */
+    if(st==&g_iop && previous_pc!=UINT32_MAX)iop_retire(st,previous_pc,st->pc);
+    if(st!=&g_iop || st->halted || st->pc!=pc)return 0;
+    if(iop_before_tick)iop_before_tick();
+    if(iop_tick()!=2)return 2;
+    uint32_t live_pc,live_word;
+    if(iop_prepare(&live_pc,&live_word)!=2)return 2;
+    if(live_pc!=pc || live_word!=word) {
+        iop_block_stale++;
+        iop_execute_prepared(live_pc,live_word,0);
+        return 2;
+    }
+    if(!iop_core_native_call_safe(st,pc,word)) {
+        iop_execute_prepared(pc,word,0);
+        return 2;
+    }
+    if(((word>>26)==0x22u||(word>>26)==0x26u) && st->load_delay_reg &&
+       st->load_delay_reg==((word>>16)&31u)) {
+        iop_execute_prepared(pc,word,0);return 2;
+    }
+    iop_pipeline_begin(st,pc,word);
+    if(iop_operand_fault(st,word)){iop_retire(st,pc,st->next_pc);return 2;}
+    st->gpr[0]=0;
+    st->pc=st->next_pc;
+    st->next_pc=st->pc+4;
+    return 1;
+}
+void iop_core_block_retire(iop_state_t *st,uint32_t pc)
+{
+    if(st==&g_iop)iop_retire(st,pc,st->pc);
+}
+void iop_core_block_scalar(iop_state_t *st,uint32_t pc,uint32_t word)
+{
+    if(st!=&g_iop)return;
+    /* prepare has already advanced PC. Restore the pre-execute pipeline
+     * before entering the original instruction/HLE-call switch. */
+    st->next_pc=st->pc;
+    st->pc=pc;
+    iop_execute_prepared(pc,word,0);
+}
+uint64_t iop_core_block_stale_count(void){return iop_block_stale;}
+__attribute__((noinline)) int iop_core_step(void)
+{
+    if(iop_tick()!=2)return g_iop.halted ? 1 : 0;
     return iop_step();
+}
+__attribute__((noinline)) unsigned iop_core_step_n(unsigned budget)
+{
+    unsigned ticks=0;
+    while(ticks<budget && !g_iop.halted) {
+        unsigned done=iop_jit_try_execute_block(&g_iop,budget-ticks);
+        if(done){ticks+=done;continue;}
+        if(iop_before_tick)iop_before_tick();
+        iop_core_step();ticks++;
+    }
+    return ticks;
+}
+
+unsigned iop_core_step_interleaved_n(unsigned budget,void (*before_tick)(void))
+{
+    /* No nested scheduler entry: callback lifetime is exactly this grant. */
+    if(iop_before_tick)return 0;
+    iop_before_tick=before_tick;
+    unsigned done=iop_core_step_n(budget);
+    iop_before_tick=NULL;
+    return done;
 }
 
 void iop_core_run(void)
@@ -2206,6 +2362,7 @@ void iop_core_run(void)
 
 void iop_core_shutdown(void)
 {
+    iop_jit_reset_for_test();
     if (g_iop.ram) {
         free(g_iop.ram);
         g_iop.ram = NULL;

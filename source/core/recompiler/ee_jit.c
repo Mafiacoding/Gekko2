@@ -685,8 +685,8 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  if(count<2u)return 0;
  if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
   ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,count*2u))return 0;
-  if(ppc_dynarec_translate_ee_prepared_delay_block(&c,pc,words,count,
-    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,(uint32_t)(uintptr_t)ee_core_block_prepare_delay,(uint32_t)(uintptr_t)ee_core_block_commit)) {
+  if(ppc_dynarec_translate_ee_resident_delay_block(&c,pc,words,count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,(uint32_t)(uintptr_t)ee_core_block_prepare_delay,(uint32_t)(uintptr_t)ee_core_block_commit,(uint32_t)offsetof(ee_state_t,gpr_generation))) {
    ppc_dynarec_free(&c);return 0;
   }
   ee_precise_fn fn=(ee_precise_fn)ppc_dynarec_finalize(&c);

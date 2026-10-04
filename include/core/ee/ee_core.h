@@ -271,6 +271,8 @@ typedef struct {
     /* HLE MCSERV reports metadata from requested real IOP modules,
      * not invented versions. Saved/reset with the EE state. */
     uint16_t mcserv_module_version, mcman_module_version;
+    /* Native resident copies are invalid after an external GPR mutation. */
+    uint32_t gpr_generation;
 } ee_state_t;
 
 int  ee_core_init(const bios_image_t *bios);

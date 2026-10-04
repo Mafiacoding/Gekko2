@@ -394,19 +394,23 @@ static uint32_t kmem_alloc(uint32_t size)
  *   j     0xf30
  *   nop
  */
+/* Explicit load/COP0 delay-slot NOPs; local branch displacements
+ * adjusted to this independently assembled HLE implementation. */
 static const uint32_t g_syscall_handler_code[] = {
-    0x40086800u, 0x3108007Cu, 0x24090020u, 0x15090024u,
-    0x00000000u, 0x00000000u, 0x241A0100u, 0x8F5A0008u,
-    0x8F5A0000u, 0x235A0008u, 0x8F440010u, 0x24090001u,
+    0x40086800u, 0x00000000u, 0x3108007Cu, 0x24090020u,
+    0x15090029u, 0x00000000u, 0x00000000u, 0x241A0100u,
+    0x8F5A0008u, 0x00000000u, 0x8F5A0000u, 0x00000000u,
+    0x235A0008u, 0x8F440010u, 0x00000000u, 0x24090001u,
     0x10890009u, 0x00000000u, 0x00000000u, 0x24090002u,
-    0x10890010u, 0x00000000u, 0x00000000u, 0x10000018u,
-    0x00000000u, 0x00000000u, 0x40086000u, 0x31090404u,
-    0x39290404u, 0x2D220001u, 0x3C0AFFFFu, 0x354AFBFBu,
-    0x010A4024u, 0x40886000u, 0x1000000Du, 0x00000000u,
-    0x00000000u, 0x40086000u, 0x35080404u, 0x40886000u,
-    0x24020001u, 0x10000006u, 0x00000000u, 0x00000000u,
-    0x24020000u, 0x03E00008u, 0x00000000u, 0x00000000u,
-    0x080003CCu, 0x00000000u, 0x00000000u,
+    0x10890011u, 0x00000000u, 0x00000000u, 0x1000001Au,
+    0x00000000u, 0x00000000u, 0x40086000u, 0x00000000u,
+    0x31090404u, 0x39290404u, 0x2D220001u, 0x3C0AFFFFu,
+    0x354AFBFBu, 0x010A4024u, 0x40886000u, 0x1000000Eu,
+    0x00000000u, 0x00000000u, 0x40086000u, 0x00000000u,
+    0x35080404u, 0x40886000u, 0x24020001u, 0x10000006u,
+    0x00000000u, 0x00000000u, 0x24020000u, 0x03E00008u,
+    0x00000000u, 0x00000000u, 0x080003CCu, 0x00000000u,
+    0x00000000u,
 };
 #define SYSCALL_HANDLER_CODE_WORDS \
     (sizeof(g_syscall_handler_code) / sizeof(g_syscall_handler_code[0]))
@@ -443,6 +447,7 @@ int iop_hle_bios_try_handle(iop_state_t *st, uint32_t pc)
     if (pc != IOP_HLE_TABLE_A0 && pc != IOP_HLE_TABLE_B0 && pc != IOP_HLE_TABLE_C0)
         return 0;
 
+    iop_core_flush_pipeline(st);
     uint32_t function = st->gpr[9];  /* $t1 - the real PS1/PS2 BIOS call convention register */
     uint32_t ra        = st->gpr[31]; /* $ra - where to return to */
 

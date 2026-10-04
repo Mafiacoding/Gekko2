@@ -46,6 +46,7 @@ int iop_hle_heap_try_handle(iop_state_t *st, uint32_t pc)
      * the invented-sentinel range below since 0x0000044C is a real
      * Sony address, not one this project chose. */
     if (pc == IOP_HLE_HEAP_SYSMEM_ORDINAL10_QUERYBLOCKSIZE) {
+        iop_core_flush_pipeline(st);
         /* int QueryBlockSize(void *address) - a0=address (real
          * signature, ps2sdk sysmem.h ordinal 10). The computation
          * itself is the real, already-tested Round 401 port
@@ -61,8 +62,13 @@ int iop_hle_heap_try_handle(iop_state_t *st, uint32_t pc)
     }
 
     int in_range =
-        (pc >= IOP_HLE_HEAP_ALLOC_SYS_MEMORY && pc <= IOP_HLE_HEAP_QUERY_TOTAL_FREE_MEM_SIZE);
+        pc == IOP_HLE_HEAP_ALLOC_SYS_MEMORY ||
+        pc == IOP_HLE_HEAP_FREE_SYS_MEMORY ||
+        pc == IOP_HLE_HEAP_QUERY_MAX_FREE_MEM_SIZE ||
+        pc == IOP_HLE_HEAP_QUERY_MEM_SIZE ||
+        pc == IOP_HLE_HEAP_QUERY_TOTAL_FREE_MEM_SIZE;
     if (!in_range) return 0;
+    iop_core_flush_pipeline(st);
 
     uint32_t ra = st->gpr[31];
 

@@ -102,14 +102,34 @@ typedef struct {
      * case comments). 0 = no pending image. Only ever set/used when
      * cop0[15]==0x1f (dead field at the default PRId=0). */
     uint32_t devtable_pending_image;
+    /* Persistent R3000 pipeline state, appended to preserve JIT offsets. */
+    uint32_t load_delay_value;
+    uint32_t branch_pc;
+    uint32_t pipe_pc,pipe_word,pipe_load_old,pipe_branch_pc,pipe_branch_target;
+    uint8_t load_delay_reg; /* 0 means no pending write */
+    uint8_t branch_delay_pending;
+    uint8_t pipe_load_reg,pipe_write_reg,pipe_bd,pipe_fault,pipe_active;
+    /* Native resident copies are invalid after an external GPR mutation. */
+    uint32_t gpr_generation;
 } iop_state_t;
 
+void iop_core_flush_pipeline(iop_state_t *st);
 int  iop_core_init(const bios_image_t *bios);
 void iop_core_run(void);
 
 /* Single-step entry point, for the interleaved EE/IOP scheduler
  * in core/system.h. See its definition in iop_core.c for details. */
 int iop_core_step(void);
+/* Explicit scheduler-tick budget. The EE/IOP scheduler still grants one
+ * IOP tick after eight EE steps; callers must not run ahead of that grant. */
+unsigned iop_core_step_n(unsigned budget);
+unsigned iop_core_step_interleaved_n(unsigned budget,void (*before_tick)(void));
+/* Private precise-block callback contract, shared with the PPC emitter. */
+int iop_core_native_call_safe(iop_state_t *st,uint32_t pc,uint32_t word);
+int iop_core_block_prepare(iop_state_t *st,uint32_t pc,uint32_t word,uint32_t previous_pc);
+void iop_core_block_retire(iop_state_t *st,uint32_t pc);
+void iop_core_block_scalar(iop_state_t *st,uint32_t pc,uint32_t word);
+uint64_t iop_core_block_stale_count(void);
 void iop_core_shutdown(void);
 iop_state_t *iop_core_get_state(void);
 

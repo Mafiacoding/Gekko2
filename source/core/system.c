@@ -140,6 +140,34 @@ void system_profile_reset(void)
 }
 void system_profile_get(system_profile_t *out){if(out)*out=g_profile;}
 
+/* EE still runs eight instructions before EVERY IOP tick, including
+ * native block slots, HLE interception, idle and scalar recovery. Grouping
+ * host calls does not grant either guest CPU extra execution time. */
+static unsigned g_iop_sample_pending;
+static uint32_t g_iop_sample_begin,g_iop_sample_middle;
+static void system_finish_iop_sample(void)
+{
+    if(!g_iop_sample_pending)return;
+    uint32_t end=system_profile_clock();
+    g_profile.ee_ticks+=(uint32_t)(g_iop_sample_middle-g_iop_sample_begin);
+    g_profile.iop_ticks+=(uint32_t)(end-g_iop_sample_middle);
+    g_profile.samples++;
+    g_iop_sample_pending=0;
+}
+static void system_before_iop_tick(void)
+{
+    system_finish_iop_sample();
+    ee_state_t *ee=ee_core_get_state();
+    if(--g_profile_remaining==0) {
+        g_iop_sample_begin=system_profile_clock();
+        if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
+        g_iop_sample_middle=system_profile_clock();
+        g_iop_sample_pending=1;
+        uint32_t rng=g_profile_rng;rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
+        g_profile_rng=rng;g_profile_remaining=128+(rng&255u);
+    } else if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
+}
+
 int system_run_interleaved(uint64_t max_slices)
 {
     ee_state_t  *ee  = ee_core_get_state();
@@ -147,26 +175,14 @@ int system_run_interleaved(uint64_t max_slices)
 
     uint64_t slice = 0;
     for (;;) {
-        /* R1165: same eight genuine EE instruction boundaries as before,
-         * but cross the system.c -> ee_core.c call boundary once per slice
-         * instead of eight times. ee_core_step_n() still calls ee_step()
-         * once per guest instruction, so Count/timers/VBLANK/SIF/interrupt
-         * cadence is deliberately unchanged. */
-        if(--g_profile_remaining==0){
-            uint32_t begin=system_profile_clock();
-            if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
-            uint32_t middle=system_profile_clock();
-            if(!iop->halted)iop_core_step();
-            uint32_t end=system_profile_clock();
-            g_profile.ee_ticks+=(uint32_t)(middle-begin);
-            g_profile.iop_ticks+=(uint32_t)(end-middle);g_profile.samples++;
-            uint32_t rng=g_profile_rng;rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
-            g_profile_rng=rng;g_profile_remaining=128+(rng&255u);
-        }else{
-            if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
-            if(!iop->halted)iop_core_step();
+        unsigned grant=8u,done;
+        if(max_slices && max_slices-slice<grant)grant=(unsigned)(max_slices-slice);
+        if(!iop->halted) {
+            done=iop_core_step_interleaved_n(grant,system_before_iop_tick);
+        } else {
+            system_before_iop_tick();done=1;
         }
-
+        system_finish_iop_sample();
 
         if (ee->halted && iop->halted) {
             system_safe_printf("\n[+] system_run_interleaved: both cores halted after %llu slice(s)\n",
@@ -180,7 +196,7 @@ int system_run_interleaved(uint64_t max_slices)
             return 1;
         }
 
-        slice++;
+        slice+=done;
         if (max_slices != 0 && slice >= max_slices) {
 #ifndef PCSX2WII_FAST
             system_safe_printf("\n[!] system_run_interleaved: hit slice cap (%llu) before both cores halted\n",

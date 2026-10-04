@@ -1361,6 +1361,7 @@ static void mark_iop_boot_complete(void)
 int iop_module_loader_try_handle(iop_state_t *st, uint32_t pc)
 {
     if (g.booted_ok && is_loadcore_panic_loop(st, pc)) {
+        iop_core_flush_pipeline(st);
         g.stats.panic_loops_bypassed++;
         if (advance_to_next_module(st)) return 1;
 
@@ -1406,6 +1407,7 @@ int iop_module_loader_try_handle(iop_state_t *st, uint32_t pc)
     }
 
     if (g.booted_ok && is_unconditional_trap_stub(st, pc)) {
+        iop_core_flush_pipeline(st);
         /* Round 95 (136th finding, task #252): distinguish WHY the
          * empty vector was reached before deciding this means "module
          * complete". See docs/STATUS.md for the full derivation - a
@@ -1565,6 +1567,7 @@ int iop_module_loader_try_handle(iop_state_t *st, uint32_t pc)
     }
 
     if (!g.booted_ok || pc != g.trampoline_addr) return 0;
+    iop_core_flush_pipeline(st);
 
     /* Round 425 (task #164, docs/STATUS.md Round 424/425), corrected
      * by Round 426 (task #165): once every module is exhausted, `pc`

@@ -229,6 +229,7 @@ int iop_excb_try_handle(iop_state_t *st, uint32_t pc)
     if (pc != IOP_EXCB_DISPATCH_RETURN_TRAMPOLINE || !g_excb_dispatch.active)
         return 0;
 
+    iop_core_flush_pipeline(st);
     uint32_t r2 = st->gpr[2];
     if (r2 == 0u) {
         /* Real, cited convention: r2==0 means this function claimed
