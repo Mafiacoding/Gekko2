@@ -5348,7 +5348,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
     /* Use the already-fetched word to reject memory/control instructions;
      * failed block formation must not add a second fetch to every opcode. */
     if(block_retired && budget>=2u && !in_delay_slot) {
-        int candidate=ee_jit_block_candidate(instr);
+        int candidate=ee_jit_block_candidate(instr)||ee_jit_block_terminal(instr);
         uintptr_t ram_offset=(uintptr_t)code_backing-(uintptr_t)st->ram;
         int backed_candidate=code_backing &&
             ((ram_offset>=0x200000u&&ram_offset<st->ram_size)||
@@ -5356,7 +5356,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         /* Backing came from this instruction's real fetch, not a cached
          * translation. Keep guarded low physical kernel code in C. */
         if(candidate && backed_candidate) {
-            unsigned n=ee_jit_try_execute_block_fetched(st,budget,instr);
+            unsigned n=ee_jit_try_execute_chain_fetched(st,budget,instr);
             if(n){*block_retired=n;return 0;}
         }
     }
@@ -10073,6 +10073,14 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
          * the normal fallthrough_pc execute next. */
         case 0x02: /* BLTZL */  if ((int64_t)GPR(rs) < 0)  BRANCH_TO(this_pc + 4 + (imm << 2)); else { st->pc = fallthrough_pc + 4; st->next_pc = fallthrough_pc + 8; } break;
         case 0x03: /* BGEZL */  if ((int64_t)GPR(rs) >= 0) BRANCH_TO(this_pc + 4 + (imm << 2)); else { st->pc = fallthrough_pc + 4; st->next_pc = fallthrough_pc + 8; } break;
+        case 0x10: /* BLTZAL: PCSX2 links before the condition, unconditionally. */
+            LINK(31);st->branch_pending=1u;
+            if((int64_t)GPR(rs)<0)BRANCH_TO(this_pc+4u+(uint32_t)(imm*4));
+            break;
+        case 0x11: /* BGEZAL */
+            LINK(31);st->branch_pending=1u;
+            if((int64_t)GPR(rs)>=0)BRANCH_TO(this_pc+4u+(uint32_t)(imm*4));
+            break;
         case 0x12: /* BLTZALL - links unconditionally (matches PCSX2's
              * _SetLink(31) running before the branch-taken check),
              * even when the branch itself is not taken. */
@@ -12948,6 +12956,7 @@ int ee_core_block_memory_safe(const ee_state_t *st,uint32_t instruction)
  uint32_t addr=base+(uint32_t)(int32_t)(int16_t)instruction;
  /* Exact direct main-RAM proof; no TLB/MMIO/ROM/scratchpad access here.
   * Check subtraction rather than overflowing end-address arithmetic. */
+ if(ee_jit_block_memory_merge(instruction))addr&=~(width-1u);
  if((addr&0xc0000000u)!=0x80000000u||(addr&(width-1u)))return 0;
  return (addr&0x1fffffffu)<=st->ram_size-width;
 }
@@ -12961,14 +12970,19 @@ uint32_t ee_core_block_memory_resolve(const ee_state_t *st,uint32_t instruction)
  if(!width||!st||!st->ram||st->ram_size<width)return 0;
  unsigned rs=(instruction>>21)&31u;
  uint32_t base=rs?(uint32_t)st->gpr[rs].ud0:0;
- uint32_t addr=base+(uint32_t)(int32_t)(int16_t)instruction,phys;
- if(width==16u)addr&=~15u;
+ uint32_t addr=base+(uint32_t)(int32_t)(int16_t)instruction,phys,op=instruction>>26;
+ if(ee_jit_block_memory_merge(instruction))addr&=~(width-1u);
+ else if(op==0x1eu||op==0x1fu)addr&=~15u;
+ else if(op==0x36u||op==0x3eu) {if(addr&3u)return 0;}
  else if(addr&(width-1u))return 0;
  if((addr&0xc0000000u)==0x80000000u)phys=addr&0x1fffffffu;
  else {
   /* Scalar MMIO dispatch precedes TLB lookup. Do not reinterpret virtual
    * device addresses or the fixed scratchpad window as ordinary RAM. */
   uint32_t hw=ee_hw_mmio_addr(addr),lo;
+  /* Vector transfers retain their unmasked EA. Crossing a 4KB mapping
+   * boundary requires independent per-lane translations; keep it scalar. */
+  if(width==16u&&(addr&4095u)>4096u-width)return 0;
   if((addr<0x80000000u&&addr>=0x10000000u)||
      (hw>=0x10000000u&&hw<0x14000000u))return 0;
   if(!ee_tlb_translate_selected(st,addr,&phys,&lo)||!(lo&2u))return 0;
@@ -13007,6 +13021,26 @@ uint32_t ee_core_block_prepare_memory_resolved(ee_state_t *st,uint32_t pc,uint32
  physical=ee_core_block_memory_resolve(st,instruction);
  if(!physical||!ee_core_block_prepare_fetched(st,pc))return 0;
  return physical;
+}
+
+/* Internal next-stage path: preparation of a legal compiled delay slot.
+ * A likely-annulled slot, changed source or unsafe data exits untouched.
+ * Keep the branch target and precise transient BD context from the scalar
+ * frontend. No speculation crosses a failed proof. */
+uint32_t ee_core_block_prepare_delay(ee_state_t *st,uint32_t pc,uint32_t instruction)
+{
+ uint32_t actual,proof=1u;
+ if(st!=&g_state||st->halted||st->idle||!st->branch_pending||st->pc!=pc)return 0;
+ if(!ee_core_block_peek(st,pc,&actual)||actual!=instruction)return 0;
+ if(ee_jit_block_memory_width(instruction)) {
+  proof=ee_core_block_memory_resolve(st,instruction);
+  if(!proof)return 0;
+ }
+ st->exc_this_pc=pc;st->exc_in_delay_slot=1u;st->exc_raised_this_step=0;st->mem_tlb_miss=0;
+ st->gpr[0].ud0=0;st->gpr[0].ud1=0;
+ st->branch_pending=0;
+ st->pc=st->next_pc;st->next_pc=st->pc+4u;
+ return proof;
 }
 
 void ee_core_block_commit(ee_state_t *st){ee_retire_instruction(st,0);}

@@ -16,6 +16,9 @@ def hook(uc,addr,size,data):
  else:
   access.append(('write',ea,width,value))
   for k in range(width):ram[(off+k)&16383]=(value>>(8*k))&255
+ sp=uc.reg_read(UC_PPC_REG_1)
+ uc.mem_write(sp+4,struct.pack('>I',uc.reg_read(UC_PPC_REG_LR)))
+ uc.mem_write(sp+8,bytes.fromhex('cafebabe')*8)
  for k in range(4,13):uc.reg_write(UC_PPC_REG_0+k,0xaabb0000+k)
  uc.reg_write(UC_PPC_REG_3,value if index<3 else 0xdeadbeef);uc.reg_write(UC_PPC_REG_PC,uc.reg_read(UC_PPC_REG_LR))
 u.hook_add(UC_HOOK_CODE,hook);u.ctl_remove_cache(0x10000,0x12000)
