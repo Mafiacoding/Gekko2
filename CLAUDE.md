@@ -1,8 +1,8 @@
-# Gekko2 development handoff — R1304
+# Gekko2 development handoff — R1305
 
-Start with README.md, STATUS.md, docs/ROADMAP.md, docs/R1301-HANDOFF.md and docs/R1304-HANDOFF.md. Historical round documents are evidence for their own checkpoints, not current promises.
+Start with README.md, STATUS.md, docs/ROADMAP.md, docs/R1301-HANDOFF.md and docs/R1304-HANDOFF.md and docs/R1305-HANDOFF.md. Historical round documents are evidence for their own checkpoints, not current promises.
 
-The project is named Gekko2. Preserve legacy sd:/pcsx2/ data paths. Current builds, launcher and logs use Gekko2. R1304 integrates guarded direct-RAM byte/halfword/word operations in precise EE blocks. Keep the memory-specific live preparation callback and guard the fetched first memory instruction before advancing PC. Preserve R1303 constant exits and R1302 artwork. Every guest boundary remains precise.
+The project is named Gekko2. Preserve legacy sd:/pcsx2/ data paths. Current builds, launcher and logs use Gekko2. R1305 integrates direct and live TLB-mapped RAM accesses in precise EE blocks. The memory preparation callback returns physical offset+1 (zero declines); the native memory variant takes a third fetched-first physical-proof argument. Resolve every instruction, exclude virtual MMIO/scratch, and guard the fetched first memory instruction before advancing PC. Preserve R1303 constant exits and R1302 artwork. Every guest boundary remains precise.
 
 Owner direction: pause GX feature expansion and prioritize our own PPC EE/IOP dynarec and stable BIOS/OSDSYS. Register allocation, larger guarded memory/control blocks and IOP blocks are next. Wii64/nullDC4Wii are references, not imported engines.
 

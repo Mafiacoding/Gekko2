@@ -475,7 +475,7 @@ ee_state_t *ee_core_get_state(void) { return &g_state; }
  * (see ee_raise_exception()/ee_raise_tlb_exception() and their call
  * sites in the ee_mem_read* / ee_mem_write* functions below), matching
  * real hardware instead of the old "just read as zero" placeholder. */
-static inline int ee_tlb_translate(ee_state_t *st, uint32_t vaddr, uint32_t *out_phys)
+static inline int ee_tlb_translate_selected(const ee_state_t *st, uint32_t vaddr, uint32_t *out_phys, uint32_t *out_lo)
 {
     uint32_t want_vpn2 = (vaddr >> 13) & 0x7FFFFu;
     uint32_t want_asid = st->cop0[10] & 0xFFu; /* current ASID = current EntryHi's ASID field */
@@ -543,10 +543,15 @@ static inline int ee_tlb_translate(ee_state_t *st, uint32_t vaddr, uint32_t *out
         uint32_t phys_page = (pfn & ~mask) << 12;
         uint32_t offset_mask = (1u << page_select_bit) - 1u;
         *out_phys = phys_page | (vaddr & offset_mask);
+        if (out_lo) *out_lo = lo;
         return 1;
     }
     return 0;
 }
+
+static inline int ee_tlb_translate(ee_state_t *st,uint32_t addr,uint32_t *phys)
+{return ee_tlb_translate_selected(st,addr,phys,NULL);}
+
 
 /* MIPS/R5900 exception codes (Cause register ExcCode field, bits
  * 2-6) - only the ones this project actually raises so far. Ported
@@ -12946,6 +12951,32 @@ int ee_core_block_memory_safe(const ee_state_t *st,uint32_t instruction)
  if((addr&0xc0000000u)!=0x80000000u||(addr&(width-1u)))return 0;
  return (addr&0x1fffffffu)<=st->ram_size-width;
 }
+/* R1305: return physical RAM offset + 1; zero means decline without
+ * changing state. Resolve again at every instruction, never cache a TLB
+ * result across retirement. V/D restrictions are conservative admission
+ * rules; unsupported mappings retain the existing scalar fault semantics. */
+uint32_t ee_core_block_memory_resolve(const ee_state_t *st,uint32_t instruction)
+{
+ unsigned width=ee_jit_block_memory_width(instruction);
+ if(!width||!st||!st->ram||st->ram_size<width)return 0;
+ unsigned rs=(instruction>>21)&31u;
+ uint32_t base=rs?(uint32_t)st->gpr[rs].ud0:0;
+ uint32_t addr=base+(uint32_t)(int32_t)(int16_t)instruction,phys;
+ if(addr&(width-1u))return 0;
+ if((addr&0xc0000000u)==0x80000000u)phys=addr&0x1fffffffu;
+ else {
+  /* Scalar MMIO dispatch precedes TLB lookup. Do not reinterpret virtual
+   * device addresses or the fixed scratchpad window as ordinary RAM. */
+  uint32_t hw=ee_hw_mmio_addr(addr),lo;
+  if((addr<0x80000000u&&addr>=0x10000000u)||
+     (hw>=0x10000000u&&hw<0x14000000u))return 0;
+  if(!ee_tlb_translate_selected(st,addr,&phys,&lo)||!(lo&2u))return 0;
+  if((instruction>>26)>=0x28u&&!(lo&4u))return 0;
+ }
+ if(phys>=0x02000000u||phys>st->ram_size-width)return 0;
+ return phys+1u;
+}
+
 int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc)
 {
     if(st!=&g_state||st->halted||st->idle||st->branch_pending||st->pc!=pc||
@@ -12968,6 +12999,15 @@ int ee_core_block_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t instruction
  if(!ee_core_block_memory_safe(st,instruction))return 0;
  return ee_core_block_prepare_fetched(st,pc);
 }
+uint32_t ee_core_block_prepare_memory_resolved(ee_state_t *st,uint32_t pc,uint32_t instruction)
+{
+ uint32_t actual,physical;
+ if(!ee_core_block_peek(st,pc,&actual)||actual!=instruction)return 0;
+ physical=ee_core_block_memory_resolve(st,instruction);
+ if(!physical||!ee_core_block_prepare_fetched(st,pc))return 0;
+ return physical;
+}
+
 void ee_core_block_commit(ee_state_t *st){ee_retire_instruction(st,0);}
 
 unsigned ee_core_step_n(unsigned n)

@@ -629,7 +629,7 @@ void ee_jit_reset_stats_for_test(void)
 }
 
 /* Bounded PC/tag cache; first conservative precise EE block integration. */
-typedef unsigned (*ee_precise_fn)(ee_state_t *,unsigned);
+typedef unsigned (*ee_precise_fn)(ee_state_t *,unsigned,uint32_t);
 typedef struct {uint32_t pc,words[8],count;ee_precise_fn fn;} ee_precise_slot;
 static ee_precise_slot precise_cache[256];
 static uint64_t precise_runs,precise_retired;
@@ -651,7 +651,7 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
   ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,count*2u))return 0;
   if(ppc_dynarec_translate_ee_prepared_memory_block(&c,pc,words,count,
-    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory,(uint32_t)(uintptr_t)ee_core_block_commit)) {
+    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,(uint32_t)(uintptr_t)ee_core_block_commit)) {
    ppc_dynarec_free(&c);return 0;
   }
   ee_precise_fn fn=(ee_precise_fn)ppc_dynarec_finalize(&c);
@@ -659,15 +659,19 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   if(slot->fn)free((void*)slot->fn);
   slot->fn=fn;slot->pc=pc;slot->count=count;memcpy(slot->words,words,count*4u);
  }
-execute_slot:
+execute_slot:;
+ uint32_t first_physical=0;
  if(fetched) {
   if(slot->words[0]!=first_word)return 0;
   /* The scalar fetch already happened, but preparation must wait until
    * a first memory operation proves its current direct-RAM address. */
-  if((first_word>>26)>=0x20u&&ee_jit_block_memory_width(first_word)&&!ee_core_block_memory_safe(st,first_word))return 0;
+  if(ee_jit_block_memory_width(first_word)) {
+   first_physical=ee_core_block_memory_resolve(st,first_word);
+   if(!first_physical)return 0;
+  }
   if(!ee_core_block_prepare_fetched(st,pc))return 0;
  }
- precise_active=1;unsigned n=slot->fn(st,fetched);precise_active=0;
+ precise_active=1;unsigned n=slot->fn(st,fetched,first_physical);precise_active=0;
  precise_runs++;precise_retired+=n;
  /* Changed first word/mapping: release only after the native function
   * returns. The scalar path handles this instruction; later visits retry. */

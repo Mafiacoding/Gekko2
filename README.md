@@ -8,7 +8,7 @@ Gekko2 explores PS2 emulation on Nintendo Wii hardware. Alex has spent approxima
 
 That work now produces the Sony Computer Entertainment startup screen on a real Wii. The OSDSYS menu renders in the native development build, where entering the Browser and returning to the menu has been tested. Stable, responsive OSDSYS navigation on Wii remains a development goal.
 
-**Current source checkpoint: R1304.** Guarded LB/LBU/LH/LHU/LW/SB/SH/SW operations now join ALU/COP1 instructions in precise EE blocks. Live direct-RAM proof precedes preparation; unsupported data addresses retain scalar fallback. R1303 bookkeeping and R1302 branding are preserved. Read [STATUS.md](STATUS.md) for evidence and limitations, and [the roadmap](docs/ROADMAP.md) for next steps. There is no firm alpha release date, confirmed playable-game list or promised FPS target.
+**Current source checkpoint: R1305.** Guarded LB/LBU/LH/LHU/LW/SB/SH/SW blocks now resolve live direct or TLB-mapped RAM and issue native PPC accesses without a second address decode. Unsupported mappings and device addresses retain scalar fallback. R1303 bookkeeping and R1302 branding are preserved. Read [STATUS.md](STATUS.md) for evidence and limitations, and [the roadmap](docs/ROADMAP.md) for next steps. There is no firm alpha release date, confirmed playable-game list or promised FPS target.
 
 ## Why Gekko2?
 
@@ -63,7 +63,7 @@ Place your own BIOS dump in `sd:/pcsx2/bios/`. The loader checks `SCPH50004.bin`
 
 Optional disc images can go in `sd:/pcsx2/games/`, or be selected elsewhere on SD using the ISO/BIN browser. CHD is not currently supported by the launcher. Disc changes apply on a new boot; resume retains the mounted image.
 
-Configuration may be written to `sd:/pcsx2/bios-config.bin`. Current logs use `Gekko2-R1304-software.log` and `Gekko2-R1304-gx-render.log` in `sd:/pcsx2/`. Launcher settings are session-only. Please identify the build, controller, software/GX setting and BIOS revision when reporting an issue; never attach BIOS, disc images or guest RAM/checkpoints.
+Configuration may be written to `sd:/pcsx2/bios-config.bin`. Current logs use `Gekko2-R1305-software.log` and `Gekko2-R1305-gx-render.log` in `sd:/pcsx2/`. Launcher settings are session-only. Please identify the build, controller, software/GX setting and BIOS revision when reporting an issue; never attach BIOS, disc images or guest RAM/checkpoints.
 
 ## Controls
 
@@ -92,10 +92,10 @@ Install devkitPPC and libogc, then set their paths:
 export DEVKITPRO=/path/to/devkitpro
 export DEVKITPPC="$DEVKITPRO/devkitPPC"
 export PATH="$DEVKITPPC/bin:$PATH"
-sh tools/build_r1304.sh
+sh tools/build_r1305.sh
 ```
 
-This produces `Gekko2-R1304-Menu-JIT.{elf,dol}` and `Gekko2-R1304-Menu-Interpreter.{elf,dol}`. The validated toolchain is devkitPPC r32 / libogc 1.8.18 with libfat, wiiuse and bte. Other toolchain versions have not been verified for identical behavior. The Makefile supplies an ELF-to-DOL fallback; SDK/compiler distributions are not included.
+This produces `Gekko2-R1305-Menu-JIT.{elf,dol}` and `Gekko2-R1305-Menu-Interpreter.{elf,dol}`. The validated toolchain is devkitPPC r32 / libogc 1.8.18 with libfat, wiiuse and bte. Other toolchain versions have not been verified for identical behavior. The Makefile supplies an ELF-to-DOL fallback; SDK/compiler distributions are not included.
 
 ## Verification
 
@@ -106,8 +106,8 @@ python3 tools/verify_regressions.py
 The native suite requires GCC and Python. PPC verification additionally requires Python `unicorn` and, for linked-ELF tools, the built ELF and `powerpc-eabi-nm`:
 
 ```sh
-python3 tools/verify_ee_memory_blocks_r1304.py Gekko2-R1304-Menu-JIT.elf --nm "$DEVKITPPC/bin/powerpc-eabi-nm"
-python3 tools/verify_gs_paths_r1285.py Gekko2-R1304-Menu-JIT.elf --nm "$DEVKITPPC/bin/powerpc-eabi-nm"
+python3 tools/verify_ee_mapped_blocks_r1305.py Gekko2-R1305-Menu-JIT.elf --nm "$DEVKITPPC/bin/powerpc-eabi-nm"
+python3 tools/verify_gs_paths_r1285.py Gekko2-R1305-Menu-JIT.elf --nm "$DEVKITPPC/bin/powerpc-eabi-nm"
 ```
 
 Host tests cannot execute native PPC directly. Synthetic PPC instruction counts are not Wii cycles or BIOS/game FPS. [STATUS.md](STATUS.md) distinguishes current native/PPC tests, historical artwork checks and owner hardware observations.

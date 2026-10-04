@@ -1,0 +1,96 @@
+{
+  "name": "Gekko2",
+  "revision": "R1305",
+  "scope": "Live TLB/direct physical RAM resolution and native byte/halfword/word accesses in precise EE blocks; own PPC emitter",
+  "native_tests": {
+    "total": 202,
+    "passed": 202
+  },
+  "linked_ppc_jobs": [
+    {
+      "script": "verify_ee_mapped_blocks_r1305",
+      "engine": "Interpreter",
+      "exit": 0
+    },
+    {
+      "script": "verify_ee_mapped_blocks_r1305",
+      "engine": "JIT",
+      "exit": 0
+    },
+    {
+      "script": "verify_gs_paths_r1285",
+      "engine": "Interpreter",
+      "exit": 0
+    },
+    {
+      "script": "verify_gs_paths_r1285",
+      "engine": "JIT",
+      "exit": 0
+    }
+  ],
+  "matching_vram_signatures": 66,
+  "direct_memory_programs": 64,
+  "mapped_memory_programs": 96,
+  "live_mapped_revocation_cases": 5,
+  "unsafe_first_address_cases": 58,
+  "source_exit_cases": 35,
+  "memory_families": [
+    "LB",
+    "LBU",
+    "LH",
+    "LHU",
+    "LW",
+    "SB",
+    "SH",
+    "SW"
+  ],
+  "memory_state_matches": [
+    "R1304 JIT",
+    "R1305 Interpreter",
+    "R1305 JIT"
+  ],
+  "memory_irq_boundaries": 8,
+  "self_modifying_SW": "passes; stale next instruction declines",
+  "benchmarks": {
+    "scope": "actual linked PPC and guest retirement under mocked allocation/cache services; not Wii cycles or FPS",
+    "eight_TLB_RAM_LW": {
+      "R1304": 6458,
+      "R1305": 4278,
+      "reduction_percent": 33.75658098482502
+    },
+    "eight_direct_RAM_LW": {
+      "R1304": 3907,
+      "R1305": 3766,
+      "reduction_percent": 3.608907089838751
+    },
+    "eight_ALU": {
+      "R1304": 3180,
+      "R1305": 3185
+    },
+    "eight_COP1_mix": {
+      "R1304": 3166,
+      "R1305": 3171
+    }
+  },
+  "nulldc4wii_reference_commit": "26a623e3feca9927d8ffe43706b06d82d672dd64",
+  "physical_wii_verified": false,
+  "fresh_bios_coldboot": false,
+  "binaries": {
+    "Gekko2-R1305-Menu-Interpreter.elf": {
+      "bytes": 5325688,
+      "sha256": "9f2e5f05a07de24f38c7415b16948c22822376a62d3b1ca05525c18ad947a802"
+    },
+    "Gekko2-R1305-Menu-Interpreter.dol": {
+      "bytes": 955584,
+      "sha256": "7200fe6a697b56d78546d711fb20bdef44e33fbb892c5ad7117c4bc62251e208"
+    },
+    "Gekko2-R1305-Menu-JIT.elf": {
+      "bytes": 5460288,
+      "sha256": "0bbcc1b26ffd6154d030eafa44257546b63710edebcfefb6eae942b342a6745b"
+    },
+    "Gekko2-R1305-Menu-JIT.dol": {
+      "bytes": 1038528,
+      "sha256": "a6765d17b88bae37a15c177eacb4c825ea50ea720458e4287299f49ef03b1adc"
+    }
+  }
+}

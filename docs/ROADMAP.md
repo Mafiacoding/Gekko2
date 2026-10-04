@@ -1,4 +1,4 @@
-# Gekko2 roadmap — R1304
+# Gekko2 roadmap — R1305
 
 The [current status](../STATUS.md) separates implementation, native tests and real-Wii observations.
 

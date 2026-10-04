@@ -6269,6 +6269,34 @@ static void ee_block_call(ppc_codegen_ctx_t *ctx,uint32_t target)
     }
 }
 
+/* R1305 private emitter: r4 holds the live proven physical offset+1,
+ * r3 the EE context. No helper or duplicate virtual-address decoding.
+ * Only used after memory_prepare_resolved (or the fetched-first proof). */
+static void ee_block_resolved_memory(ppc_codegen_ctx_t *ctx,uint32_t iw)
+{
+ unsigned op=iw>>26,rt=(iw>>16)&31u,width=ee_jit_block_memory_width(iw);
+ emit(ctx,enc_addi(SCRATCH_A,4,-1));
+ emit(ctx,enc_lwz(SCRATCH_C,CTX_REG,RAM_PTR_OFFSET));
+ if(op>=0x28u) {
+  emit(ctx,enc_lwz(SCRATCH_D,CTX_REG,REG_LO(rt)));
+  emit(ctx,width==1?enc_stbx(SCRATCH_D,SCRATCH_C,SCRATCH_A):
+           width==2?enc_sthbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A):
+                    enc_stwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+ } else {
+  emit(ctx,width==1?enc_lbzx(SCRATCH_D,SCRATCH_C,SCRATCH_A):
+           width==2?enc_lhbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A):
+                    enc_lwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+  int sign=op==0x20u||op==0x21u||op==0x23u;
+  if(op==0x20u)emit(ctx,enc_extsb(SCRATCH_D,SCRATCH_D));
+  if(op==0x21u)emit(ctx,enc_extsh(SCRATCH_D,SCRATCH_D));
+  if(rt) {
+   emit(ctx,enc_stw(SCRATCH_D,CTX_REG,REG_LO(rt)));
+   emit(ctx,sign?enc_srawi(SCRATCH_C,SCRATCH_D,31):enc_addi(SCRATCH_C,0,0));
+   emit(ctx,enc_stw(SCRATCH_C,CTX_REG,REG_HI(rt)));
+  }
+ }
+}
+
 /* Precise native block: every instruction crosses the existing retirement
  * machinery before continuing. Caller guards source/mapping and control flow. */
 static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
@@ -6281,7 +6309,8 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
  emit(ctx,enc_or(14,3,3));
  for(unsigned n=0;n<count;n++) {
   if(!ee_jit_block_candidate(words[n]))return -1;
-  uint32_t callback=ee_jit_block_memory_width(words[n])?memory_prepare:prepare;
+  unsigned memory=ee_jit_block_memory_width(words[n]);
+  uint32_t callback=memory?memory_prepare:prepare;
   if(!callback)return -1;
   size_t skip=0;
   if(n==0u&&allow_prepared) {
@@ -6291,9 +6320,22 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
   emit(ctx,enc_or(3,14,14));emit_load_const32(ctx,4,pc+4u*n);
   emit_load_const32(ctx,5,words[n]);ee_block_call(ctx,callback);emit(ctx,(11u<<26)|(3u<<16)); /* cmpwi r3,0 */
   exits[n]=ctx->used_words;emit(ctx,enc_bc(12,2,0));
-  if(skip)ctx->code[skip]=enc_bc(4,2,(int32_t)(ctx->used_words-skip)*4);
-  emit(ctx,enc_or(3,14,14));
-  if(ppc_dynarec_translate_one(ctx,words[n]))return -1;
+  if(memory) {
+   /* Callback result is offset+1. Fetched-first path instead receives
+    * the same proof as argument r5; no volatile value survives a call. */
+   if(skip) {
+    size_t resolved=ctx->used_words;emit(ctx,enc_b(0));
+    ctx->code[skip]=enc_bc(4,2,(int32_t)(ctx->used_words-skip)*4);
+    emit(ctx,enc_or(3,5,5));
+    ctx->code[resolved]=enc_b((int32_t)(ctx->used_words-resolved)*4);
+   }
+   emit(ctx,enc_or(4,3,3));emit(ctx,enc_or(3,14,14));
+   ee_block_resolved_memory(ctx,words[n]);
+  } else {
+   if(skip)ctx->code[skip]=enc_bc(4,2,(int32_t)(ctx->used_words-skip)*4);
+   emit(ctx,enc_or(3,14,14));
+   if(ppc_dynarec_translate_one(ctx,words[n]))return -1;
+  }
   emit(ctx,enc_or(3,14,14));ee_block_call(ctx,commit);
  }
  /* R1303: retirement count is known at each live preparation exit. Return

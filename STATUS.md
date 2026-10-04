@@ -1,4 +1,4 @@
-# Gekko2 status — R1304
+# Gekko2 status — R1305
 
 Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
 
@@ -10,9 +10,17 @@ Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** Th
 | Native OSDSYS | BIOS menu renders; Browser entry and return were tested in native checkpoint work. | A native framebuffer capture is not evidence of current Wii speed or stability. |
 | Tekken Tag Tournament | Namco logo reproduced in native tests and reported on Wii by the owner. R1297 retail SLUS-20001 resource-transfer fix passes the previous TLBL failure in fresh native boot; fractional sprite gaps are fixed. | Title screen/gameplay and playable performance are not demonstrated. The custom module profile is guarded, not a universal sound-module implementation. |
 | Launcher/input | SD ISO/BIN browser, FPS/HUD options, Remote/Nunchuk/GameCube controls and HBC exit actions are implemented. | Nunchuk directions are digital; CHD launcher support is absent. |
-| PPC JIT | Many scalar EE/IOP families, guarded VU pairs/blocks, conservative 2–8 instruction EE ALU/COP1 blocks and direct relative helper calls. | Full EE/IOP/VU recompilation, larger memory/control blocks, register allocation and safe linking remain incomplete. |
+| PPC JIT | Many scalar EE/IOP families, guarded VU pairs/blocks, conservative 2–8 instruction EE ALU/COP1 blocks and direct relative helper calls. | Full EE/IOP/VU recompilation, wide memory/control blocks, register allocation and safe linking remain incomplete. |
 | GX | Optional CT32/24 presentation, guarded sprites/flat triangles, snapshot textures, selected TEV blending/depth paths, deferred VRAM resolve and compatible resident framebuffers. | Varying Gouraud/textured triangle routing, broad GPU residency and complex GS states still require software/hybrid handling. |
 | R1302 branding | Gekko2 launcher header, HBC icon, checked 640×480 native launcher preview and both Wii cross-builds. | No fresh physical-Wii R1302 timing result. Guest emulation remains R1301. |
+
+## R1305 live mapped-memory milestone
+
+The eight admitted byte/halfword/word families now access proven physical RAM directly in emitted PPC code, including TLB-mapped KUSEG, KSEG2 and kernel-mirror addresses. Every instruction resolves its current mapping; ASID/global, even/odd page selection, V/D admission, pointer, alignment and bounds are checked before guest preparation. The fetched first instruction uses the same live proof before PC advances. Virtual MMIO/scratch and unsupported mappings remain scalar. This is conservative JIT admission, not a change to the scalar TLB fault model.
+
+Validation: **202/202 native tests**, both cross-builds and four linked-PPC jobs. Ninety-six mapped programs match R1304 JIT and R1305 interpreter/JIT complete register/RAM signatures. Additional tests replace and revoke live mappings, overwrite source through a mapped alias, and interrupt mapped stores at every boundary. Inherited memory/ALU/COP1 checks and 66 VRAM signatures remain matched.
+
+Matched warm eight-load PPC counts: mapped RAM **6458→4278** (33.8% fewer), direct RAM **3907→3766** (3.6% fewer). ALU **3180→3185**, mixed COP1 **3166→3171** (five extra setup instructions per eight-instruction block). These are linked PPC instruction counts under mocked platform services, not Wii cycles, BIOS timing or FPS. No fresh physical-Wii boot is claimed. [Handoff](docs/R1305-HANDOFF.md), [verification](docs/verification/R1305.json).
 
 ## R1304 memory-block milestone
 
