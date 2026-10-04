@@ -418,6 +418,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned)iop_jit_get_cache_size(),
             (unsigned long long)iop_jit_get_executed_count(),
             (unsigned long long)iop_jit_get_rejected_hit_count());
+    fprintf(f,"IOP_BLOCK compiled=%u runs=%llu ticks=%llu stale=%llu\n",
+            (unsigned)iop_jit_get_block_cache_size(),
+            (unsigned long long)iop_jit_get_block_runs(),
+            (unsigned long long)iop_jit_get_block_ticks(),
+            (unsigned long long)iop_core_block_stale_count());
     fprintf(f,"VU_JIT compiled=%u upper=%llu lower=%llu rejected_hits=%llu pairs=%llu blocks=%llu\n",
             (unsigned)vu_jit_get_cache_size(),
             (unsigned long long)vu_jit_get_upper_count(),

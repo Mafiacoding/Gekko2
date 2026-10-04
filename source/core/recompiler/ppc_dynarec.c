@@ -5847,18 +5847,27 @@ int ppc_dynarec_translate_iop_one(ppc_codegen_ctx_t *ctx, uint32_t iw)
         }
         emit_iop_memory_frame(ctx,0);return 0;
     }
-    /* R1269: r4 carries the fetched instruction PC at runtime. JAL,
-     * JALR and link branches retain their interpreter/HLE paths. */
-    if(op==2u || (op==0u&&fn==8u)) {
-        if(op==2u) {
+    /* r4 carries the fetched instruction PC. Ordinary JAL/JALR and
+     * link branches compile; live core guards preserve ROM HLE sites. */
+    if(op==2u || op==3u || (op==0u&&(fn==8u||fn==9u))) {
+        if(op==2u||op==3u) {
             emit(ctx,enc_rlwinm(6,4,0,0,3));
             emit_load_const32(ctx,7,(iw&0x03ffffffu)<<2);emit(ctx,enc_or(6,6,7));
         } else emit(ctx,enc_lwz(6,3,(int16_t)(rs*4u)));
+        /* JALR must capture rs before rd==rs writes the link. The block
+         * prepare guard handles the existing ROM device-table HLE sites. */
+        if(op==3u || (op==0u&&fn==9u&&rd)) {
+            emit(ctx,enc_addi(7,4,8));
+            emit(ctx,enc_stw(7,3,(int16_t)((op==3u?31u:rd)*4u)));
+        }
         emit(ctx,enc_stw(6,3,(int16_t)offsetof(iop_state_t,next_pc)));return 0;
     }
-    if((op>=4u&&op<=7u)||(op==1u&&rt<=1u)) {
+    if((op>=4u&&op<=7u)||(op==1u&&(rt<=1u||rt==0x10u||rt==0x11u))) {
         /* The target and not-taken fallthrough are both dynamic; a cached
          * encoding remains valid at another virtual instruction address. */
+        if(op==1u&&rt>=0x10u) {
+            emit(ctx,enc_addi(7,4,8));emit(ctx,enc_stw(7,3,31*4));
+        }
         emit(ctx,enc_addi(6,4,4));emit_load_const32(ctx,7,(uint32_t)((int32_t)imm*4));
         emit(ctx,enc_add(6,6,7));emit(ctx,enc_lwz(4,3,(int16_t)(rs*4u)));
         unsigned bi=2u,bo=4u;
@@ -5870,10 +5879,18 @@ int ppc_dynarec_translate_iop_one(ppc_codegen_ctx_t *ctx, uint32_t iw)
             emit(ctx,(11u<<26)|(4u<<16));
             if(op==6u){bi=1u;bo=12u;}
             else if(op==7u){bi=1u;bo=4u;}
-            else {bi=0u;bo=rt==0u?4u:12u;}
+            else {bi=0u;bo=(rt&1u)==0u?4u:12u;}
         }
         emit(ctx,enc_bc(bo,bi,8));
         emit(ctx,enc_stw(6,3,(int16_t)offsetof(iop_state_t,next_pc)));return 0;
+    }
+    if(iw==0x42000010u) {
+        emit(ctx,enc_lwz(4,3,(int16_t)(offsetof(iop_state_t,cop0)+12u*4u)));
+        emit(ctx,enc_rlwinm(5,4,30,28,31)); /* previous -> current, old -> previous */
+        emit_load_const32(ctx,6,0xfffffff0u);emit(ctx,enc_and(4,4,6));
+        emit(ctx,enc_or(4,4,5));emit(ctx,enc_stw(4,3,(int16_t)(offsetof(iop_state_t,cop0)+12u*4u)));
+        emit(ctx,enc_addi(4,0,0));emit(ctx,enc_stb(4,3,(int16_t)offsetof(iop_state_t,exception_pending)));
+        return 0;
     }
     if(op==0u&&(fn==0x1au||fn==0x1bu)) {
         /* Reuse the verified zero/overflow-safe scalar divider, retaining
@@ -6318,6 +6335,64 @@ int ppc_dynarec_translate_ee_cached_chain(ppc_codegen_ctx_t *ctx,uint32_t resolv
  emit(ctx,enc_or(3,15,15));emit(ctx,enc_lwz(12,1,60));emit(ctx,enc_mtlr(12));
  for(int r=14;r<=18;r++)emit(ctx,enc_lwz(r,1,(int16_t)(40+4*(r-14))));
  emit(ctx,enc_addi(1,1,96));return 0;
+}
+
+/* Precise IOP block: unsigned fn(state,budget). Every slot has a live
+ * prepare guard, an inlined native body (or explicit scalar boundary),
+ * and the original IRQ retirement. Saved registers live outside EABI's
+ * linkage/argument area, including hostile memory-helper calls. */
+int ppc_dynarec_translate_iop_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
+                                  const uint32_t *words,unsigned count,
+                                  uint32_t prepare,uint32_t retire,uint32_t scalar,
+                                  unsigned *native_count)
+{
+ if(!ctx||!words||!count||count>8||!prepare||!retire||!scalar)return -1;
+ if(ctx->capacity_words-ctx->used_words<(size_t)(count*100u+160u))return -1;
+ size_t exits[25];unsigned ne=0,native=0;
+ emit(ctx,enc_addi(1,1,-96));
+ for(int reg=14;reg<=17;reg++)emit(ctx,enc_stw(reg,1,(int16_t)(40+4*(reg-14))));
+ emit(ctx,enc_mflr(12));emit(ctx,enc_stw(12,1,56));
+ emit(ctx,enc_or(14,3,3));emit(ctx,enc_or(16,4,4));emit(ctx,enc_addi(15,0,0));emit(ctx,enc_addi(17,0,-1));
+ for(unsigned n=0;n<count;n++) {
+  emit(ctx,enc_cmplw(15,16));
+  exits[ne++]=ctx->used_words;emit(ctx,enc_bc(4,0,0)); /* total >= budget */
+  emit(ctx,enc_or(3,14,14));emit_load_const32(ctx,4,pc+n*4u);
+  emit_load_const32(ctx,5,words[n]);emit(ctx,enc_or(6,17,17));
+  emit(ctx,enc_addi(17,0,-1));ee_block_call(ctx,prepare);
+  emit(ctx,(11u<<26)|(3u<<16));
+  exits[ne++]=ctx->used_words;emit(ctx,enc_bc(12,2,0)); /* no tick */
+  emit(ctx,enc_addi(15,15,1));
+  emit(ctx,(11u<<26)|(3u<<16)|1u);
+  exits[ne++]=ctx->used_words;emit(ctx,enc_bc(4,2,0)); /* HLE/idle/recovery */
+  emit(ctx,enc_or(3,14,14));emit_load_const32(ctx,4,pc+n*4u);
+  size_t before=ctx->used_words;
+  int result=ppc_dynarec_translate_iop_one(ctx,words[n]);
+  if(result==-2)return -2;
+  if(result) {
+   ctx->used_words=before;
+   emit_load_const32(ctx,5,words[n]);ee_block_call(ctx,scalar);
+   /* Scalar may raise an exception or perform a HLE link call. Return
+    * immediately; its original switch already performed retirement. */
+   exits[ne++]=ctx->used_words;emit(ctx,enc_b(0));
+   break;
+  }
+  native++;
+  emit_load_const32(ctx,17,pc+n*4u);
+ }
+ size_t done=ctx->used_words;
+ for(unsigned n=0;n<ne;n++) {
+  size_t at=exits[n];uint32_t w=ctx->code[at];
+  ctx->code[at]=w | ((uint32_t)((done-at)*4u)&(w>>26==18u?0x03fffffcu:0xfffcu));
+ }
+ emit(ctx,enc_addi(4,0,-1));emit(ctx,enc_cmplw(17,4));
+ size_t no_retire=ctx->used_words;emit(ctx,enc_bc(12,2,0));
+ emit(ctx,enc_or(3,14,14));emit(ctx,enc_or(4,17,17));ee_block_call(ctx,retire);
+ ctx->code[no_retire]=enc_bc(12,2,(int32_t)(ctx->used_words-no_retire)*4);
+ emit(ctx,enc_or(3,15,15));emit(ctx,enc_lwz(12,1,56));emit(ctx,enc_mtlr(12));
+ for(int reg=14;reg<=17;reg++)emit(ctx,enc_lwz(reg,1,(int16_t)(40+4*(reg-14))));
+ emit(ctx,enc_addi(1,1,96));
+ if(native_count)*native_count=native;
+ return 0;
 }
 
 /* R1305 private emitter: r4 holds the live proven physical offset+1,

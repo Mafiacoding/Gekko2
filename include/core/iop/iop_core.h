@@ -110,6 +110,16 @@ void iop_core_run(void);
 /* Single-step entry point, for the interleaved EE/IOP scheduler
  * in core/system.h. See its definition in iop_core.c for details. */
 int iop_core_step(void);
+/* Explicit scheduler-tick budget. The EE/IOP scheduler still grants one
+ * IOP tick after eight EE steps; callers must not run ahead of that grant. */
+unsigned iop_core_step_n(unsigned budget);
+unsigned iop_core_step_interleaved_n(unsigned budget,void (*before_tick)(void));
+/* Private precise-block callback contract, shared with the PPC emitter. */
+int iop_core_native_call_safe(iop_state_t *st,uint32_t pc,uint32_t word);
+int iop_core_block_prepare(iop_state_t *st,uint32_t pc,uint32_t word,uint32_t previous_pc);
+void iop_core_block_retire(iop_state_t *st,uint32_t pc);
+void iop_core_block_scalar(iop_state_t *st,uint32_t pc,uint32_t word);
+uint64_t iop_core_block_stale_count(void);
 void iop_core_shutdown(void);
 iop_state_t *iop_core_get_state(void);
 

@@ -1137,4 +1137,7 @@ int ppc_dynarec_translate_ee_prepared_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
 int ppc_dynarec_translate_ee_precise_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
  const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit);
 
+int ppc_dynarec_translate_iop_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
+    const uint32_t *words,unsigned count,uint32_t prepare,uint32_t retire,
+    uint32_t scalar,unsigned *native_count);
 #endif

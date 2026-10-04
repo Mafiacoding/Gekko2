@@ -401,6 +401,7 @@ void iop_mem_write32(iop_state_t *st, uint32_t addr, uint32_t val)
 
 int iop_core_init(const bios_image_t *bios)
 {
+    iop_jit_reset_for_test();
     memset(&g_iop, 0, sizeof(g_iop));
 
     iop_intc_init(); /* IOP interrupt controller register block - see core/hw/iop_intc.h */
@@ -1016,7 +1017,8 @@ static void iop_check_hw_interrupt(iop_state_t *st, uint32_t epc, uint32_t cause
     st->next_pc = vector + 4u;
 }
 
-static int iop_step(void)
+/* 0: HLE consumed tick; 1: halted; 2: fetched real instruction. */
+static int iop_prepare(uint32_t *prepared_pc,uint32_t *prepared_word)
 {
     iop_state_t *st = &g_iop;
     uint32_t pc = st->pc;
@@ -1378,8 +1380,49 @@ static int iop_step(void)
         }
     }
 
-    uint32_t instr = iop_mem_read32(st, pc);
+    *prepared_pc = pc;
+    *prepared_word = iop_mem_read32(st, pc);
+    return 2;
+}
 
+static void iop_retire(iop_state_t *st,uint32_t this_pc,uint32_t fallthrough_pc)
+{
+    st->gpr[0] = 0;
+
+    /* Round 22: real hardware-interrupt delivery, checked at the end
+     * of every real (non-HLE-trap) instruction step - see
+     * iop_check_hw_interrupt()'s own comment above for the full
+     * citation trail.
+     *
+     * Round 945: detect whether `this_pc` (the instruction just
+     * executed above) was itself a taken branch/jump this exact step.
+     * `fallthrough_pc` was captured at this function's own prologue as
+     * st->next_pc's value BEFORE the switch ran (this_pc+4, i.e. what
+     * st->next_pc would still be if nothing branched); every real
+     * taken branch/jump site goes through the BRANCH_TO() macro, which
+     * overwrites st->next_pc with the real target - so
+     * st->next_pc != fallthrough_pc + 4 (this_pc+8) exactly
+     * characterizes "this_pc was a taken branch/jump, and st->pc
+     * (still just this_pc+4, the not-yet-executed delay slot) is a
+     * pending delay slot with a real branch behind it". In that case,
+     * the correct real-hardware EPC is the branch instruction itself
+     * (this_pc) with Cause.BD set, not the delay-slot address -
+     * otherwise (the overwhelmingly common case), behavior is
+     * unchanged from before this round: EPC=st->pc, BD=0. */
+    {
+        int delay_slot_pending = (st->next_pc != fallthrough_pc + 4u);
+        if (delay_slot_pending)
+            iop_check_hw_interrupt(st, this_pc, IOP_CAUSE_BD);
+        else
+            iop_check_hw_interrupt(st, st->pc, 0u);
+    }
+
+    st->instructions_executed++;
+}
+
+static int iop_execute_prepared(uint32_t pc,uint32_t instr,int use_scalar_jit)
+{
+    iop_state_t *st=&g_iop;
     uint32_t op    = (instr >> 26) & 0x3F;
     uint32_t rs    = (instr >> 21) & 0x1F;
     uint32_t rt    = (instr >> 16) & 0x1F;
@@ -1415,9 +1458,9 @@ static int iop_step(void)
     /* R1283: short branch/COP0 transfer effects stay inline, including
      * the existing IOP HLE JAL/JR checks. Native APIs remain available. */
     int cheap_control=(op>=2u&&op<=7u)||(op==0x10u&&(rs==0u||rs==4u));
-    if(!cheap && !cheap_control && iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
+    if(use_scalar_jit && !cheap && !cheap_control && iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
 #else
-    if(iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
+    if(use_scalar_jit && iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
 #endif
 
     switch (op) {
@@ -2060,44 +2103,21 @@ static int iop_step(void)
 #undef LINK
 
 iop_jit_done:
-    st->gpr[0] = 0;
-
-    /* Round 22: real hardware-interrupt delivery, checked at the end
-     * of every real (non-HLE-trap) instruction step - see
-     * iop_check_hw_interrupt()'s own comment above for the full
-     * citation trail.
-     *
-     * Round 945: detect whether `this_pc` (the instruction just
-     * executed above) was itself a taken branch/jump this exact step.
-     * `fallthrough_pc` was captured at this function's own prologue as
-     * st->next_pc's value BEFORE the switch ran (this_pc+4, i.e. what
-     * st->next_pc would still be if nothing branched); every real
-     * taken branch/jump site goes through the BRANCH_TO() macro, which
-     * overwrites st->next_pc with the real target - so
-     * st->next_pc != fallthrough_pc + 4 (this_pc+8) exactly
-     * characterizes "this_pc was a taken branch/jump, and st->pc
-     * (still just this_pc+4, the not-yet-executed delay slot) is a
-     * pending delay slot with a real branch behind it". In that case,
-     * the correct real-hardware EPC is the branch instruction itself
-     * (this_pc) with Cause.BD set, not the delay-slot address -
-     * otherwise (the overwhelmingly common case), behavior is
-     * unchanged from before this round: EPC=st->pc, BD=0. */
-    {
-        int delay_slot_pending = (st->next_pc != fallthrough_pc + 4u);
-        if (delay_slot_pending)
-            iop_check_hw_interrupt(st, this_pc, IOP_CAUSE_BD);
-        else
-            iop_check_hw_interrupt(st, st->pc, 0u);
-    }
-
-    st->instructions_executed++;
+    iop_retire(st,this_pc,fallthrough_pc);
     return 0;
+}
+
+static int iop_step(void)
+{
+    uint32_t pc,word;
+    int result=iop_prepare(&pc,&word);
+    return result==2 ? iop_execute_prepared(pc,word,1) : result;
 }
 
 /* Public single-instruction step - see ee_core_step()'s comment in
  * ee_core.c for why this exists (source/core/system.c's interleaved
  * scheduler). */
-int iop_core_step(void)
+static int iop_tick(void)
 {
     if (g_iop.halted)
         return 1;
@@ -2189,7 +2209,86 @@ int iop_core_step(void)
         return 0;
     }
 
+    return 2;
+}
+
+/* Native block callbacks retain the complete pre-fetch HLE path and tick
+ * service. 0 consumes nothing, 1 admits native execution, 2 consumed a
+ * tick through HLE/idle/scalar recovery. Source changes never execute stale
+ * code and never charge the same timer tick twice. */
+static uint64_t iop_block_stale;
+static void (*iop_before_tick)(void);
+int iop_core_native_call_safe(iop_state_t *st,uint32_t pc,uint32_t word)
+{
+    if(st->cop0[15]!=0x1fu)return 1;
+    if(word>>26==3u && ((pc&0xf0000000u)|((word&0x03ffffffu)<<2))==0xbfc4a600u)return 0;
+    if(word>>26==0u && (word&63u)==9u && st->devtable_pending_image &&
+       (pc==0xbfc4a39cu||pc==0xbfc4a44cu))return 0;
+    return 1;
+}
+int iop_core_block_prepare(iop_state_t *st,uint32_t pc,uint32_t word,uint32_t previous_pc)
+{
+    /* Finish the previous native body BEFORE the next EE grant, just as
+     * single stepping does. Last-slot retirement is emitted at block exit. */
+    if(st==&g_iop && previous_pc!=UINT32_MAX)iop_retire(st,previous_pc,st->pc);
+    if(st!=&g_iop || st->halted || st->pc!=pc)return 0;
+    if(iop_before_tick)iop_before_tick();
+    if(iop_tick()!=2)return 2;
+    uint32_t live_pc,live_word;
+    if(iop_prepare(&live_pc,&live_word)!=2)return 2;
+    if(live_pc!=pc || live_word!=word) {
+        iop_block_stale++;
+        iop_execute_prepared(live_pc,live_word,0);
+        return 2;
+    }
+    if(!iop_core_native_call_safe(st,pc,word)) {
+        iop_execute_prepared(pc,word,0);
+        return 2;
+    }
+    st->gpr[0]=0;
+    st->pc=st->next_pc;
+    st->next_pc=st->pc+4;
+    return 1;
+}
+void iop_core_block_retire(iop_state_t *st,uint32_t pc)
+{
+    if(st==&g_iop)iop_retire(st,pc,st->pc);
+}
+void iop_core_block_scalar(iop_state_t *st,uint32_t pc,uint32_t word)
+{
+    if(st!=&g_iop)return;
+    /* prepare has already advanced PC. Restore the pre-execute pipeline
+     * before entering the original instruction/HLE-call switch. */
+    st->next_pc=st->pc;
+    st->pc=pc;
+    iop_execute_prepared(pc,word,0);
+}
+uint64_t iop_core_block_stale_count(void){return iop_block_stale;}
+__attribute__((noinline)) int iop_core_step(void)
+{
+    if(iop_tick()!=2)return g_iop.halted ? 1 : 0;
     return iop_step();
+}
+__attribute__((noinline)) unsigned iop_core_step_n(unsigned budget)
+{
+    unsigned ticks=0;
+    while(ticks<budget && !g_iop.halted) {
+        unsigned done=iop_jit_try_execute_block(&g_iop,budget-ticks);
+        if(done){ticks+=done;continue;}
+        if(iop_before_tick)iop_before_tick();
+        iop_core_step();ticks++;
+    }
+    return ticks;
+}
+
+unsigned iop_core_step_interleaved_n(unsigned budget,void (*before_tick)(void))
+{
+    /* No nested scheduler entry: callback lifetime is exactly this grant. */
+    if(iop_before_tick)return 0;
+    iop_before_tick=before_tick;
+    unsigned done=iop_core_step_n(budget);
+    iop_before_tick=NULL;
+    return done;
 }
 
 void iop_core_run(void)
@@ -2206,6 +2305,7 @@ void iop_core_run(void)
 
 void iop_core_shutdown(void)
 {
+    iop_jit_reset_for_test();
     if (g_iop.ram) {
         free(g_iop.ram);
         g_iop.ram = NULL;

@@ -1,6 +1,6 @@
-# Gekko2 full dynarec completion plan — R1306
+# Gekko2 full dynarec completion plan — development after R1306
 
-A complete dynarec is a set of independently verified execution paths, not a single switch. This is the implementation order and definition of readiness. A path is not marked complete merely because an opcode emitter exists. Current status is authoritative in ../STATUS.md.
+A complete dynarec is a set of independently verified execution paths, not a single switch. This is the implementation order and definition of readiness. A path is not marked complete merely because an opcode emitter exists. Released-build status is in ../STATUS.md; unreleased source progress and verification are in DYNAREC-WORKING-NOTES.md.
 
 | Step | Current state | Required implementation | Readiness gate |
 | --- | --- | --- | --- |
@@ -8,7 +8,7 @@ A complete dynarec is a set of independently verified execution paths, not a sin
 | EE control blocks | Selected branches/jumps may terminate a block; delay slot executes through scalar frontend | Fuse legal delay slots, remaining link/REGIMM/COP branches, annulment and nested/exception boundaries | Taken/not-taken/likely, budgets, link overlap, EPC/BD, every IRQ position and mutated delay-slot source |
 | Register residency/allocation | Older standalone ALU transform exists; general precise executor allocator absent | Audit every preparation/retirement/helper write contract; liveness/dirty masks, paired 64-bit and 128-bit state, spill/flush/reload rules | Every exit exposes correct architectural state; helpers/IRQs/context switches cannot observe stale values; preserve PPC EABI |
 | Safe block links/cache | Bounded caches and live per-instruction source/mapping checks | Translation/source generations, DMA/SW code invalidation, memory pressure/eviction and legal link patching | Changed TLB/ASID/code never executes a stale path; executing memory never freed; cold/warm/collision/alloc-failure parity |
-| IOP blocks | Native scalar opcode paths plus fallback | Multi-instruction executor with memory, load-delay/branch hazards and exact interleave | EE/IOP/SIF/DMAC/timers stay synchronized; delay and load hazards/IRQs/faults match baseline |
+| IOP blocks | Bounded cached native blocks integrated with the exact existing EE8/IOP1 scheduler; baseline parity tests pass | Audit inherited load-delay and synchronous exception BD limitations; register residency/fast boundaries and hardware profiling | Baseline block/scalar state and exact interleave are tested; hardware pipeline accuracy and repeated Wii boots remain open |
 | EE instruction coverage | Many scalar families; conservative block policy | Audit and finish MMI/COP0/COP1/COP2, traps, saturations/flags, special register/exception cases | Actual emitted PPC differential tests per instruction family; unsupported cases decline correctly |
 | VU0/VU1 coverage | Guarded native pairs and short blocks | Remaining flags, Q/P/EFU, upper/lower hazards, pipeline delays, branches/E-bit, XGKICK and VIF/GIF interactions | Bit/state parity over microprograms plus complete DMA/GIF results and boundary events |
 | Event scheduling/performance | Per-instruction retirement checks retained | Profile real hardware, batch only proven event-free intervals; precise Count/Compare and wake-up/idle exits | Scheduler/interrupt traces unchanged at boundaries; repeated Wii coldboot and OSDSYS navigation |

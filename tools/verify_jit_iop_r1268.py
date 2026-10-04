@@ -42,8 +42,8 @@ for group,fn in ops:
   for k in range(32):u.reg_write(UC_PPC_REG_0+k,0)
   u.reg_write(UC_PPC_REG_1,0x32000);u.reg_write(UC_PPC_REG_3,0x20000);u.reg_write(UC_PPC_REG_LR,0x11000)
   u.emu_start(0x10000,0x11000,count=100);got=struct.unpack('>256I',u.mem_read(0x20000,1024));assert tuple(expected)==got,(group,fn,n,hex(a),hex(b));cases+=1
-# HLE-sensitive calls, RFE, exceptions and reserved COP3 decline.
-for iw in [0x0c000000,0x0020f809,0x0000000c,0x42000010,0x4c000000]:
+# Exceptions, trap handling and unsupported coprocessors decline.
+for iw in [0x0000000c,0x0000000d,0x00000030,0x44000000,0x4c000000]:
  c=Context();assert lib.ppc_dynarec_init(C.byref(c),1)==0;assert lib.ppc_dynarec_translate_iop_one(C.byref(c),iw)==-1;lib.ppc_dynarec_free(C.byref(c))
 print('PASS',cases,'generated PPC IOP cases across',len(ops),'operations, plus 5 deliberate fallbacks')
-(out/'jit_iop_r1268.json').write_text(json.dumps({'cases':cases,'errors':0,'operations':ops,'fallbacks':5,'scope':'Initial IOP scalar backend; memory/control/exception instructions remain interpreter; no FPS measurement.'},indent=2))
+(out/'jit_iop_r1268.json').write_text(json.dumps({'cases':cases,'errors':0,'operations':ops,'fallbacks':5,'scope':'IOP arithmetic oracle. Memory/control/RFE are tested separately; exceptions and unsupported coprocessors retain scalar recovery. No FPS measurement.'},indent=2))
