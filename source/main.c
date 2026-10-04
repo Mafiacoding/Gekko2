@@ -413,7 +413,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long long)gif_get_render_work(6),(unsigned long long)gif_get_render_work(7),
         (unsigned long long)gif_get_render_work(8),(unsigned long long)gif_get_render_work(9),
         (unsigned long long)gif_get_render_work(10),(unsigned long long)gif_get_render_work(11));
-    fprintf(f,"EE_BLOCK runs=%llu retired=%llu\n",(unsigned long long)ee_jit_get_block_count(),(unsigned long long)ee_jit_get_block_retired());
+    fprintf(f,"EE_BLOCK runs=%llu retired=%llu native_successors=%llu\n",(unsigned long long)ee_jit_get_block_count(),(unsigned long long)ee_jit_get_block_retired(),(unsigned long long)ee_jit_get_native_successors());
     fprintf(f,"IOP_JIT compiled=%u executed=%llu rejected_hits=%llu\n",
             (unsigned)iop_jit_get_cache_size(),
             (unsigned long long)iop_jit_get_executed_count(),

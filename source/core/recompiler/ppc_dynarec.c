@@ -2147,9 +2147,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         ctx->code[br_oob]      = enc_bc(12, 1, (int32_t)(fallback - br_oob) * 4);
 
         /* Exact pre-R1173 fallback for MMIO/ROM/TLB/unusual addresses. */
-        emit(ctx, enc_addi(1, 1, -32));
-        emit(ctx, enc_stw(14, 1, 8));
-        emit(ctx, enc_stw(15, 1, 12));
+        emit(ctx, enc_addi(1,1,-96));
+        emit(ctx, enc_stw(14, 1, 48));
+        emit(ctx, enc_stw(15, 1, 52));
         emit(ctx, enc_or(15, 3, 3));
         emit(ctx, enc_mflr(14));
         /* addr is already in r4/SCRATCH_A from the common prefix. */
@@ -2162,9 +2162,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
             emit(ctx, enc_srawi(SCRATCH_A, 3, 31));
             emit(ctx, enc_stw(SCRATCH_A, 15, REG_HI(rt)));
         }
-        emit(ctx, enc_lwz(14, 1, 8));
-        emit(ctx, enc_lwz(15, 1, 12));
-        emit(ctx, enc_addi(1, 1, 32));
+        emit(ctx, enc_lwz(14, 1, 48));
+        emit(ctx, enc_lwz(15, 1, 52));
+        emit(ctx, enc_addi(1,1,96));
         size_t done = ctx->used_words;
         ctx->code[br_done] = enc_b((int32_t)(done - br_done) * 4);
         return 0;
@@ -2184,7 +2184,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         emit(ctx,enc_lwz(SCRATCH_C,CTX_REG,RAM_PTR_OFFSET)); emit(ctx,enc_lwz(SCRATCH_D,CTX_REG,REG_LO(rt))); emit(ctx,enc_stwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_B));
         size_t br_done=ctx->used_words; emit(ctx,enc_b(0)); size_t fallback=ctx->used_words;
         ctx->code[br_not_kseg]=enc_bc(4,2,(int32_t)(fallback-br_not_kseg)*4); ctx->code[br_unaligned]=enc_bc(4,2,(int32_t)(fallback-br_unaligned)*4); ctx->code[br_oob]=enc_bc(12,1,(int32_t)(fallback-br_oob)*4);
-        emit(ctx,enc_addi(1,1,-32)); emit(ctx,enc_stw(14,1,8)); emit(ctx,enc_mflr(14)); emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,REG_LO(rs))); emit(ctx,enc_lwz(SCRATCH_B,CTX_REG,REG_LO(rt))); emit(ctx,enc_addi(SCRATCH_A,SCRATCH_A,(int16_t)imm)); emit_load_const32(ctx,12,ADDR_EE_MEM_WRITE32); emit(ctx,enc_mtctr(12)); emit(ctx,enc_bctrl()); emit(ctx,enc_mtlr(14)); emit(ctx,enc_lwz(14,1,8)); emit(ctx,enc_addi(1,1,32));
+        emit(ctx,enc_addi(1,1,-96)); emit(ctx,enc_stw(14, 1, 48)); emit(ctx,enc_mflr(14)); emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,REG_LO(rs))); emit(ctx,enc_lwz(SCRATCH_B,CTX_REG,REG_LO(rt))); emit(ctx,enc_addi(SCRATCH_A,SCRATCH_A,(int16_t)imm)); emit_load_const32(ctx,12,ADDR_EE_MEM_WRITE32); emit(ctx,enc_mtctr(12)); emit(ctx,enc_bctrl()); emit(ctx,enc_mtlr(14)); emit(ctx,enc_lwz(14, 1, 48)); emit(ctx,enc_addi(1,1,96));
         size_t done=ctx->used_words; ctx->code[br_done]=enc_b((int32_t)(done-br_done)*4); return 0;
     }
 
@@ -2218,8 +2218,8 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         ctx->code[br_not_kseg] = enc_bc(4, 2, (int32_t)(fallback - br_not_kseg) * 4);
         ctx->code[br_oob] = enc_bc(4, 0, (int32_t)(fallback - br_oob) * 4);
 
-        emit(ctx, enc_addi(1, 1, -32));
-        emit(ctx, enc_stw(14, 1, 8)); emit(ctx, enc_stw(15, 1, 12));
+        emit(ctx, enc_addi(1,1,-96));
+        emit(ctx, enc_stw(14, 1, 48)); emit(ctx, enc_stw(15, 1, 52));
         emit(ctx, enc_or(15, 3, 3)); emit(ctx, enc_mflr(14));
         emit_load_const32(ctx, 12, ADDR_EE_MEM_READ8); emit(ctx, enc_mtctr(12)); emit(ctx, enc_bctrl());
         emit(ctx, enc_mtlr(14));
@@ -2229,7 +2229,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
             if (is_signed) emit(ctx, enc_srawi(SCRATCH_A, 3, 31)); else emit(ctx, enc_addi(SCRATCH_A, 0, 0));
             emit(ctx, enc_stw(SCRATCH_A, 15, REG_HI(rt)));
         }
-        emit(ctx, enc_lwz(14, 1, 8)); emit(ctx, enc_lwz(15, 1, 12)); emit(ctx, enc_addi(1, 1, 32));
+        emit(ctx, enc_lwz(14, 1, 48)); emit(ctx, enc_lwz(15, 1, 52)); emit(ctx, enc_addi(1,1,96));
         size_t done = ctx->used_words; ctx->code[br_done] = enc_b((int32_t)(done - br_done) * 4);
         return 0;
     }
@@ -2260,11 +2260,11 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         ctx->code[br_not_kseg] = enc_bc(4,2,(int32_t)(fallback-br_not_kseg)*4);
         ctx->code[br_unaligned]= enc_bc(4,2,(int32_t)(fallback-br_unaligned)*4);
         ctx->code[br_oob] = enc_bc(12,1,(int32_t)(fallback-br_oob)*4);
-        emit(ctx, enc_addi(1,1,-32)); emit(ctx, enc_stw(14,1,8)); emit(ctx, enc_stw(15,1,12)); emit(ctx, enc_or(15,3,3)); emit(ctx, enc_mflr(14));
+        emit(ctx, enc_addi(1,1,-96)); emit(ctx, enc_stw(14, 1, 48)); emit(ctx, enc_stw(15, 1, 52)); emit(ctx, enc_or(15,3,3)); emit(ctx, enc_mflr(14));
         emit_load_const32(ctx,12,ADDR_EE_MEM_READ16); emit(ctx,enc_mtctr(12)); emit(ctx,enc_bctrl()); emit(ctx,enc_mtlr(14));
         if (is_signed) emit(ctx,enc_extsh(3,3)); else emit(ctx,enc_andi_dot(3,3,0xFFFF));
         if (rt != 0) { emit(ctx,enc_stw(3,15,REG_LO(rt))); if (is_signed) emit(ctx,enc_srawi(SCRATCH_A,3,31)); else emit(ctx,enc_addi(SCRATCH_A,0,0)); emit(ctx,enc_stw(SCRATCH_A,15,REG_HI(rt))); }
-        emit(ctx,enc_lwz(14,1,8)); emit(ctx,enc_lwz(15,1,12)); emit(ctx,enc_addi(1,1,32));
+        emit(ctx,enc_lwz(14, 1, 48)); emit(ctx,enc_lwz(15, 1, 52)); emit(ctx,enc_addi(1,1,96));
         size_t done=ctx->used_words; ctx->code[br_done]=enc_b((int32_t)(done-br_done)*4); return 0;
     }
 
@@ -2279,9 +2279,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         if(rt!=0){ emit(ctx,enc_stw(SCRATCH_D,CTX_REG,REG_LO(rt))); emit(ctx,enc_stw(SCRATCH_C,CTX_REG,REG_HI(rt))); }
         size_t br_done=ctx->used_words; emit(ctx,enc_b(0)); size_t fallback=ctx->used_words;
         ctx->code[br_not_kseg]=enc_bc(4,2,(int32_t)(fallback-br_not_kseg)*4); ctx->code[br_unaligned]=enc_bc(4,2,(int32_t)(fallback-br_unaligned)*4); ctx->code[br_oob]=enc_bc(12,1,(int32_t)(fallback-br_oob)*4);
-        emit(ctx,enc_addi(1,1,-32)); emit(ctx,enc_stw(14,1,8)); emit(ctx,enc_stw(15,1,12)); emit(ctx,enc_or(15,3,3)); emit(ctx,enc_mflr(14)); emit_load_const32(ctx,12,ADDR_EE_MEM_READ32); emit(ctx,enc_mtctr(12)); emit(ctx,enc_bctrl()); emit(ctx,enc_mtlr(14));
+        emit(ctx,enc_addi(1,1,-96)); emit(ctx,enc_stw(14, 1, 48)); emit(ctx,enc_stw(15, 1, 52)); emit(ctx,enc_or(15,3,3)); emit(ctx,enc_mflr(14)); emit_load_const32(ctx,12,ADDR_EE_MEM_READ32); emit(ctx,enc_mtctr(12)); emit(ctx,enc_bctrl()); emit(ctx,enc_mtlr(14));
         if(rt!=0){ emit(ctx,enc_stw(3,15,REG_LO(rt))); emit(ctx,enc_addi(SCRATCH_A,0,0)); emit(ctx,enc_stw(SCRATCH_A,15,REG_HI(rt))); }
-        emit(ctx,enc_lwz(14,1,8)); emit(ctx,enc_lwz(15,1,12)); emit(ctx,enc_addi(1,1,32)); size_t done=ctx->used_words; ctx->code[br_done]=enc_b((int32_t)(done-br_done)*4); return 0;
+        emit(ctx,enc_lwz(14, 1, 48)); emit(ctx,enc_lwz(15, 1, 52)); emit(ctx,enc_addi(1,1,96)); size_t done=ctx->used_words; ctx->code[br_done]=enc_b((int32_t)(done-br_done)*4); return 0;
     }
 
     if (op == 0x37) {
@@ -2292,7 +2292,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         emit(ctx,enc_lwz(SCRATCH_C,CTX_REG,RAM_PTR_OFFSET)); emit(ctx,enc_lwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_B)); emit(ctx,enc_addi(SCRATCH_E,SCRATCH_B,4)); emit(ctx,enc_lwbrx(SCRATCH_E,SCRATCH_C,SCRATCH_E)); emit(ctx,enc_addi(SCRATCH_C,0,0)); emit(ctx,enc_stb(SCRATCH_C,CTX_REG,MEM_TLB_MISS_OFFSET));
         if(rt!=0){ emit(ctx,enc_stw(SCRATCH_D,CTX_REG,REG_LO(rt))); emit(ctx,enc_stw(SCRATCH_E,CTX_REG,REG_HI(rt))); }
         size_t br_done=ctx->used_words; emit(ctx,enc_b(0)); size_t fallback=ctx->used_words; ctx->code[br_not_kseg]=enc_bc(4,2,(int32_t)(fallback-br_not_kseg)*4); ctx->code[br_unaligned]=enc_bc(4,2,(int32_t)(fallback-br_unaligned)*4); ctx->code[br_oob]=enc_bc(12,1,(int32_t)(fallback-br_oob)*4);
-        emit(ctx,enc_addi(1,1,-32)); emit(ctx,enc_stw(14,1,8)); emit(ctx,enc_stw(15,1,12)); emit(ctx,enc_or(15,3,3)); emit(ctx,enc_mflr(14)); emit_load_const32(ctx,12,ADDR_EE_MEM_READ64); emit(ctx,enc_mtctr(12)); emit(ctx,enc_bctrl()); emit(ctx,enc_mtlr(14)); if(rt!=0){ emit(ctx,enc_stw(3,15,REG_HI(rt))); emit(ctx,enc_stw(4,15,REG_LO(rt))); } emit(ctx,enc_lwz(14,1,8)); emit(ctx,enc_lwz(15,1,12)); emit(ctx,enc_addi(1,1,32)); size_t done=ctx->used_words; ctx->code[br_done]=enc_b((int32_t)(done-br_done)*4); return 0;
+        emit(ctx,enc_addi(1,1,-96)); emit(ctx,enc_stw(14, 1, 48)); emit(ctx,enc_stw(15, 1, 52)); emit(ctx,enc_or(15,3,3)); emit(ctx,enc_mflr(14)); emit_load_const32(ctx,12,ADDR_EE_MEM_READ64); emit(ctx,enc_mtctr(12)); emit(ctx,enc_bctrl()); emit(ctx,enc_mtlr(14)); if(rt!=0){ emit(ctx,enc_stw(3,15,REG_HI(rt))); emit(ctx,enc_stw(4,15,REG_LO(rt))); } emit(ctx,enc_lwz(14, 1, 48)); emit(ctx,enc_lwz(15, 1, 52)); emit(ctx,enc_addi(1,1,96)); size_t done=ctx->used_words; ctx->code[br_done]=enc_b((int32_t)(done-br_done)*4); return 0;
     }
 
     if (op == 0x28 || op == 0x29) {
@@ -2304,7 +2304,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         emit(ctx,enc_rlwinm(SCRATCH_B,SCRATCH_A,0,3,31)); emit(ctx,enc_lwz(SCRATCH_C,CTX_REG,RAM_SIZE_OFFSET)); if(is_half) emit(ctx,enc_addi(SCRATCH_C,SCRATCH_C,-2)); emit(ctx,enc_cmplw(SCRATCH_B,SCRATCH_C)); size_t br_oob=ctx->used_words; emit(ctx,enc_bc(is_half?12:4,is_half?1:0,0));
         emit(ctx,enc_lwz(SCRATCH_C,CTX_REG,RAM_PTR_OFFSET)); emit(ctx,enc_lwz(SCRATCH_D,CTX_REG,REG_LO(rt))); if(is_half) emit(ctx,enc_sthbrx(SCRATCH_D,SCRATCH_C,SCRATCH_B)); else emit(ctx,enc_stbx(SCRATCH_D,SCRATCH_C,SCRATCH_B));
         size_t br_done=ctx->used_words; emit(ctx,enc_b(0)); size_t fallback=ctx->used_words; ctx->code[br_not_kseg]=enc_bc(4,2,(int32_t)(fallback-br_not_kseg)*4); if(is_half) ctx->code[br_unaligned]=enc_bc(4,2,(int32_t)(fallback-br_unaligned)*4); ctx->code[br_oob]=enc_bc(is_half?12:4,is_half?1:0,(int32_t)(fallback-br_oob)*4);
-        emit(ctx,enc_addi(1,1,-32)); emit(ctx,enc_stw(14,1,8)); emit(ctx,enc_mflr(14)); emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,REG_LO(rs))); emit(ctx,enc_lwz(SCRATCH_B,CTX_REG,REG_LO(rt))); emit(ctx,enc_addi(SCRATCH_A,SCRATCH_A,(int16_t)imm)); emit_load_const32(ctx,12,is_half?ADDR_EE_MEM_WRITE16:ADDR_EE_MEM_WRITE8); emit(ctx,enc_mtctr(12)); emit(ctx,enc_bctrl()); emit(ctx,enc_mtlr(14)); emit(ctx,enc_lwz(14,1,8)); emit(ctx,enc_addi(1,1,32)); size_t done=ctx->used_words; ctx->code[br_done]=enc_b((int32_t)(done-br_done)*4); return 0;
+        emit(ctx,enc_addi(1,1,-96)); emit(ctx,enc_stw(14, 1, 48)); emit(ctx,enc_mflr(14)); emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,REG_LO(rs))); emit(ctx,enc_lwz(SCRATCH_B,CTX_REG,REG_LO(rt))); emit(ctx,enc_addi(SCRATCH_A,SCRATCH_A,(int16_t)imm)); emit_load_const32(ctx,12,is_half?ADDR_EE_MEM_WRITE16:ADDR_EE_MEM_WRITE8); emit(ctx,enc_mtctr(12)); emit(ctx,enc_bctrl()); emit(ctx,enc_mtlr(14)); emit(ctx,enc_lwz(14, 1, 48)); emit(ctx,enc_addi(1,1,96)); size_t done=ctx->used_words; ctx->code[br_done]=enc_b((int32_t)(done-br_done)*4); return 0;
     }
 
     if (op == 0x37) {
@@ -2318,9 +2318,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * return-value convention this block relies on - it's what
          * lets the post-call code be just two stores with no srawi/
          * extsb/extsh/andi. widening step at all. */
-        emit(ctx, enc_addi(1, 1, -32));
-        emit(ctx, enc_stw(14, 1, 8));
-        emit(ctx, enc_stw(15, 1, 12));
+        emit(ctx, enc_addi(1,1,-96));
+        emit(ctx, enc_stw(14, 1, 48));
+        emit(ctx, enc_stw(15, 1, 52));
         emit(ctx, enc_or(15, 3, 3));
         emit(ctx, enc_mflr(14));
         emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, REG_LO(rs)));
@@ -2333,9 +2333,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
             emit(ctx, enc_stw(3, 15, REG_HI(rt)));
             emit(ctx, enc_stw(4, 15, REG_LO(rt)));
         }
-        emit(ctx, enc_lwz(14, 1, 8));
-        emit(ctx, enc_lwz(15, 1, 12));
-        emit(ctx, enc_addi(1, 1, 32));
+        emit(ctx, enc_lwz(14, 1, 48));
+        emit(ctx, enc_lwz(15, 1, 52));
+        emit(ctx, enc_addi(1,1,96));
         return 0;
     }
 
@@ -2348,8 +2348,8 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * computed address - same "load the value first, finalize the
          * address into SCRATCH_A/r4 last" ordering SW already uses,
          * just with an extra register for the value's high word. */
-        emit(ctx, enc_addi(1, 1, -32));
-        emit(ctx, enc_stw(14, 1, 8));
+        emit(ctx, enc_addi(1,1,-96));
+        emit(ctx, enc_stw(14, 1, 48));
         emit(ctx, enc_mflr(14));
         emit(ctx, enc_lwz(SCRATCH_B, CTX_REG, REG_HI(rt))); /* r5 = val hi (arg3 hi) */
         emit(ctx, enc_lwz(SCRATCH_C, CTX_REG, REG_LO(rt))); /* r6 = val lo (arg3 lo) */
@@ -2359,8 +2359,8 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         emit(ctx, enc_mtctr(12));
         emit(ctx, enc_bctrl());                       /* ee_mem_write64(ctx, addr, val) */
         emit(ctx, enc_mtlr(14));
-        emit(ctx, enc_lwz(14, 1, 8));
-        emit(ctx, enc_addi(1, 1, 32));
+        emit(ctx, enc_lwz(14, 1, 48));
+        emit(ctx, enc_addi(1,1,96));
         return 0;
     }
 
@@ -2396,9 +2396,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * pointer) after bctrl returns, same conservative discipline
          * LW/LB/LH already established. */
         int is_lwl = (op == 0x22);
-        emit(ctx, enc_addi(1, 1, -32));
-        emit(ctx, enc_stw(14, 1, 8));
-        emit(ctx, enc_stw(15, 1, 12));
+        emit(ctx, enc_addi(1,1,-96));
+        emit(ctx, enc_stw(14, 1, 48));
+        emit(ctx, enc_stw(15, 1, 52));
         emit(ctx, enc_or(15, 3, 3));
         emit(ctx, enc_mflr(14));
         emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, REG_LO(rs)));
@@ -2456,9 +2456,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                 emit(ctx, enc_stw(SCRATCH_G, 15, REG_HI(rt)));
             }
         }
-        emit(ctx, enc_lwz(14, 1, 8));
-        emit(ctx, enc_lwz(15, 1, 12));
-        emit(ctx, enc_addi(1, 1, 32));
+        emit(ctx, enc_lwz(14, 1, 48));
+        emit(ctx, enc_lwz(15, 1, 52));
+        emit(ctx, enc_addi(1,1,96));
         return 0;
     }
 
@@ -2478,9 +2478,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * verified against ee_core.c's literal tables before writing
          * any codegen. */
         int is_swl = (op == 0x2A);
-        emit(ctx, enc_addi(1, 1, -32));
-        emit(ctx, enc_stw(14, 1, 8));
-        emit(ctx, enc_stw(15, 1, 12));
+        emit(ctx, enc_addi(1,1,-96));
+        emit(ctx, enc_stw(14, 1, 48));
+        emit(ctx, enc_stw(15, 1, 52));
         emit(ctx, enc_or(15, 3, 3));
         emit(ctx, enc_mflr(14));
 
@@ -2541,9 +2541,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         emit(ctx, enc_bctrl());                       /* ee_mem_write32(ctx, aligned, merged) */
         emit(ctx, enc_mtlr(14));
 
-        emit(ctx, enc_lwz(14, 1, 8));
-        emit(ctx, enc_lwz(15, 1, 12));
-        emit(ctx, enc_addi(1, 1, 32));
+        emit(ctx, enc_lwz(14, 1, 48));
+        emit(ctx, enc_lwz(15, 1, 52));
+        emit(ctx, enc_addi(1,1,96));
         return 0;
     }
 
@@ -2564,9 +2564,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * the first call's bctrl clobbers r3 with its own return value. */
         if (rt == 0)
             return 0;
-        emit(ctx, enc_addi(1, 1, -32));
-        emit(ctx, enc_stw(14, 1, 8));
-        emit(ctx, enc_stw(15, 1, 12));
+        emit(ctx, enc_addi(1,1,-96));
+        emit(ctx, enc_stw(14, 1, 48));
+        emit(ctx, enc_stw(15, 1, 52));
         emit(ctx, enc_or(15, 3, 3));
         emit(ctx, enc_mflr(14));
 
@@ -2577,7 +2577,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * writing ud0 changes the base register; recomputing it would read
          * the high half from an unrelated address. The C helper may also
          * clobber every volatile PPC register, so use a local stack slot. */
-        emit(ctx, enc_stw(SCRATCH_A, 1, 16));
+        emit(ctx, enc_stw(SCRATCH_A, 1, 56));
         emit_load_const32(ctx, 12, ADDR_EE_MEM_READ64);
         emit(ctx, enc_mtctr(12));
         emit(ctx, enc_bctrl());                       /* r3:r4 = GPR(rt).hi:lo (ud0) */
@@ -2586,7 +2586,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         emit(ctx, enc_stw(4, 15, REG_LO(rt)));
 
         emit(ctx, enc_or(3, 15, 15));                  /* r3 = ctx again for call #2 */
-        emit(ctx, enc_lwz(SCRATCH_A, 1, 16));            /* original aligned EA */
+        emit(ctx, enc_lwz(SCRATCH_A, 1, 56));            /* original aligned EA */
         emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, 8));   /* aligned+8 (r4) */
         emit_load_const32(ctx, 12, ADDR_EE_MEM_READ64);
         emit(ctx, enc_mtctr(12));
@@ -2595,9 +2595,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         emit(ctx, enc_stw(3, 15, REG_HI1(rt)));
         emit(ctx, enc_stw(4, 15, REG_LO1(rt)));
 
-        emit(ctx, enc_lwz(14, 1, 8));
-        emit(ctx, enc_lwz(15, 1, 12));
-        emit(ctx, enc_addi(1, 1, 32));
+        emit(ctx, enc_lwz(14, 1, 48));
+        emit(ctx, enc_lwz(15, 1, 52));
+        emit(ctx, enc_addi(1,1,96));
         return 0;
     }
 
@@ -2608,9 +2608,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * always zero) - matches ee_core.c exactly, no rt==0 guard
          * needed (unlike LQ). Two ee_mem_write64() calls, same
          * r15-restore-into-r3 discipline as LQ's two reads. */
-        emit(ctx, enc_addi(1, 1, -32));
-        emit(ctx, enc_stw(14, 1, 8));
-        emit(ctx, enc_stw(15, 1, 12));
+        emit(ctx, enc_addi(1,1,-96));
+        emit(ctx, enc_stw(14, 1, 48));
+        emit(ctx, enc_stw(15, 1, 52));
         emit(ctx, enc_or(15, 3, 3));
         emit(ctx, enc_mflr(14));
 
@@ -2636,9 +2636,9 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         emit(ctx, enc_bctrl());                       /* ee_mem_write64(ctx, aligned+8, GPR1(rt)) */
         emit(ctx, enc_mtlr(14));
 
-        emit(ctx, enc_lwz(14, 1, 8));
-        emit(ctx, enc_lwz(15, 1, 12));
-        emit(ctx, enc_addi(1, 1, 32));
+        emit(ctx, enc_lwz(14, 1, 48));
+        emit(ctx, enc_lwz(15, 1, 52));
+        emit(ctx, enc_addi(1,1,96));
         return 0;
     }
 
@@ -2935,35 +2935,35 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                  * trampoline, just applied here because a plain float
                  * call still can't be trusted not to clobber r3, not
                  * because this call takes ctx as an argument. */
-                emit(ctx, enc_addi(1, 1, -32)); /* push 32-byte scratch frame */
+                emit(ctx, enc_addi(1, 1, -96)); /* push frame with private spills above the callee argument area */
 
                 emit(ctx, enc_lwz(SCRATCH_C, CTX_REG, REG_FPR(rt))); /* raw ft (source, NOT fs) */
-                emit(ctx, enc_stw(SCRATCH_C, 1, 0));
+                emit(ctx, enc_stw(SCRATCH_C, 1, 40));
 
                 emit_load_const32(ctx, SCRATCH_A, 0x007FFFFFu); /* K1M1 */
                 emit_load_const32(ctx, SCRATCH_B, 0x7F7FFFFFu); /* K2M1 */
 
                 /* iszero_mask = allOnes iff (ft & 0x7F800000) == 0 */
-                emit(ctx, enc_rlwinm(SCRATCH_E, SCRATCH_C, 0, 1, 8));
+                emit(ctx, enc_rlwinm(SCRATCH_E, SCRATCH_C, 0, 1, 48));
                 emit(ctx, enc_addi(SCRATCH_F, 0, 0));
                 emit(ctx, enc_subfc(SCRATCH_G, SCRATCH_E, SCRATCH_F));
                 emit(ctx, enc_subfe(SCRATCH_G, SCRATCH_G, SCRATCH_G));
                 emit(ctx, enc_nor(SCRATCH_G, SCRATCH_G, SCRATCH_G));   /* G = iszero_mask */
-                emit(ctx, enc_stw(SCRATCH_G, 1, 4));
+                emit(ctx, enc_stw(SCRATCH_G, 1, 44));
 
                 /* special_result = ft_raw & 0x80000000 (signed zero) */
                 emit(ctx, enc_rlwinm(SCRATCH_H, SCRATCH_C, 0, 0, 0));
-                emit(ctx, enc_stw(SCRATCH_H, 1, 8));
+                emit(ctx, enc_stw(SCRATCH_H, 1, 48));
 
                 /* Normal path operand: fabsf(fpu_double(ft)) - clamp then clear sign */
-                emit(ctx, enc_lwz(SCRATCH_C, 1, 0)); /* reload raw ft */
+                emit(ctx, enc_lwz(SCRATCH_C, 1, 40)); /* reload raw ft */
                 emit_fpu_clamp32(ctx);
                 emit(ctx, enc_rlwinm(SCRATCH_C, SCRATCH_C, 0, 1, 31)); /* fabsf: clear sign bit */
-                emit(ctx, enc_stw(SCRATCH_C, 1, 12));
-                emit(ctx, enc_lfs(1, 1, 12)); /* f1 = fabsf(fpu_double(ft)) - EABI float arg reg */
+                emit(ctx, enc_stw(SCRATCH_C, 1, 52));
+                emit(ctx, enc_lfs(1, 1, 52)); /* f1 = fabsf(fpu_double(ft)) - EABI float arg reg */
 
-                emit(ctx, enc_stw(14, 1, 16)); /* save caller's r14 */
-                emit(ctx, enc_stw(15, 1, 20)); /* save caller's r15 */
+                emit(ctx, enc_stw(14, 1, 56)); /* save caller's r14 */
+                emit(ctx, enc_stw(15, 1, 60)); /* save caller's r15 */
                 emit(ctx, enc_or(15, CTX_REG, CTX_REG)); /* r15 = ctx (mr r15,r3) */
                 emit(ctx, enc_mflr(14));                 /* r14 = this block's real return address */
                 emit_load_const32(ctx, 12, ADDR_EE_SQRTF);
@@ -2972,22 +2972,22 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                 emit(ctx, enc_mtlr(14));                 /* restore this block's real return address */
                 emit(ctx, enc_or(CTX_REG, 15, 15));      /* restore ctx into r3 (mr r3,r15) - r3 is
                                                            * volatile, sqrtf() may have clobbered it */
-                emit(ctx, enc_lwz(14, 1, 16));           /* restore caller's r14 */
-                emit(ctx, enc_lwz(15, 1, 20));           /* restore caller's r15 */
+                emit(ctx, enc_lwz(14, 1, 56));           /* restore caller's r14 */
+                emit(ctx, enc_lwz(15, 1, 60));           /* restore caller's r15 */
 
-                emit(ctx, enc_stfs(1, 1, 12));           /* spill sqrtf's f1 result */
-                emit(ctx, enc_lwz(SCRATCH_C, 1, 12));    /* SCRATCH_C = normal-path result bits */
+                emit(ctx, enc_stfs(1, 1, 52));           /* spill sqrtf's f1 result */
+                emit(ctx, enc_lwz(SCRATCH_C, 1, 52));    /* SCRATCH_C = normal-path result bits */
 
                 /* Blend: final = iszero_mask ? special_result : normal_result */
-                emit(ctx, enc_lwz(SCRATCH_D, 1, 4));  /* iszero_mask */
-                emit(ctx, enc_lwz(SCRATCH_E, 1, 8));  /* special_result */
+                emit(ctx, enc_lwz(SCRATCH_D, 1, 44));  /* iszero_mask */
+                emit(ctx, enc_lwz(SCRATCH_E, 1, 48));  /* special_result */
                 emit(ctx, enc_nor(SCRATCH_F, SCRATCH_D, SCRATCH_D));
                 emit(ctx, enc_and(SCRATCH_E, SCRATCH_E, SCRATCH_D));
                 emit(ctx, enc_and(SCRATCH_C, SCRATCH_C, SCRATCH_F));
                 emit(ctx, enc_or(SCRATCH_C, SCRATCH_C, SCRATCH_E));
                 emit(ctx, enc_stw(SCRATCH_C, CTX_REG, REG_FPR(fd)));
 
-                emit(ctx, enc_addi(1, 1, 32)); /* pop scratch frame */
+                emit(ctx, enc_addi(1, 1, 96)); /* pop scratch frame */
                 return 0;
             }
             if (funct == 0x16) {
@@ -3024,36 +3024,36 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                  * like SQRT.S, with one extra slot to stash the sqrtf()
                  * result (denom) across the post-call fs-clamp/lfs
                  * sequence before the final fdivs. */
-                emit(ctx, enc_addi(1, 1, -32)); /* push 32-byte scratch frame */
+                emit(ctx, enc_addi(1, 1, -96)); /* push frame with private spills above the callee argument area */
 
                 emit(ctx, enc_lwz(SCRATCH_C, CTX_REG, REG_FPR(rt))); /* raw ft */
-                emit(ctx, enc_stw(SCRATCH_C, 1, 0));
+                emit(ctx, enc_stw(SCRATCH_C, 1, 40));
 
                 emit_load_const32(ctx, SCRATCH_A, 0x007FFFFFu); /* K1M1 */
                 emit_load_const32(ctx, SCRATCH_B, 0x7F7FFFFFu); /* K2M1 == FPU_POS_FMAX */
 
                 /* iszero_mask = allOnes iff (ft & 0x7F800000) == 0 */
-                emit(ctx, enc_rlwinm(SCRATCH_E, SCRATCH_C, 0, 1, 8));
+                emit(ctx, enc_rlwinm(SCRATCH_E, SCRATCH_C, 0, 1, 48));
                 emit(ctx, enc_addi(SCRATCH_F, 0, 0));
                 emit(ctx, enc_subfc(SCRATCH_G, SCRATCH_E, SCRATCH_F));
                 emit(ctx, enc_subfe(SCRATCH_G, SCRATCH_G, SCRATCH_G));
                 emit(ctx, enc_nor(SCRATCH_G, SCRATCH_G, SCRATCH_G));   /* G = iszero_mask */
-                emit(ctx, enc_stw(SCRATCH_G, 1, 4));
+                emit(ctx, enc_stw(SCRATCH_G, 1, 44));
 
                 /* special_result = (ft_sign) | FMAX - NO xor with fs, unlike DIV.S */
                 emit(ctx, enc_rlwinm(SCRATCH_H, SCRATCH_C, 0, 0, 0)); /* ft sign bit only */
                 emit(ctx, enc_or(SCRATCH_H, SCRATCH_H, SCRATCH_B));   /* | K2M1(=FMAX) */
-                emit(ctx, enc_stw(SCRATCH_H, 1, 8));
+                emit(ctx, enc_stw(SCRATCH_H, 1, 48));
 
                 /* denom operand: fabsf(fpu_double(ft)) - identical to SQRT.S's normal path */
-                emit(ctx, enc_lwz(SCRATCH_C, 1, 0)); /* reload raw ft */
+                emit(ctx, enc_lwz(SCRATCH_C, 1, 40)); /* reload raw ft */
                 emit_fpu_clamp32(ctx);
                 emit(ctx, enc_rlwinm(SCRATCH_C, SCRATCH_C, 0, 1, 31)); /* fabsf */
-                emit(ctx, enc_stw(SCRATCH_C, 1, 12));
-                emit(ctx, enc_lfs(1, 1, 12)); /* f1 = fabsf(fpu_double(ft)) */
+                emit(ctx, enc_stw(SCRATCH_C, 1, 52));
+                emit(ctx, enc_lfs(1, 1, 52)); /* f1 = fabsf(fpu_double(ft)) */
 
-                emit(ctx, enc_stw(14, 1, 16)); /* save caller's r14 */
-                emit(ctx, enc_stw(15, 1, 20)); /* save caller's r15 */
+                emit(ctx, enc_stw(14, 1, 56)); /* save caller's r14 */
+                emit(ctx, enc_stw(15, 1, 60)); /* save caller's r15 */
                 emit(ctx, enc_or(15, CTX_REG, CTX_REG));
                 emit(ctx, enc_mflr(14));
                 emit_load_const32(ctx, 12, ADDR_EE_SQRTF);
@@ -3061,10 +3061,10 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                 emit(ctx, enc_bctrl());                  /* f1 = sqrtf(f1) = denom */
                 emit(ctx, enc_mtlr(14));
                 emit(ctx, enc_or(CTX_REG, 15, 15));      /* restore ctx into r3 */
-                emit(ctx, enc_lwz(14, 1, 16));
-                emit(ctx, enc_lwz(15, 1, 20));
+                emit(ctx, enc_lwz(14, 1, 56));
+                emit(ctx, enc_lwz(15, 1, 60));
 
-                emit(ctx, enc_stfs(1, 1, 24));           /* spill denom to its own slot */
+                emit(ctx, enc_stfs(1, 1, 64));           /* spill denom to its own slot */
 
                 /* Reload K1M1/K2M1 - clobbered by the call, needed again below */
                 emit_load_const32(ctx, SCRATCH_A, 0x007FFFFFu);
@@ -3072,25 +3072,25 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
 
                 emit(ctx, enc_lwz(SCRATCH_C, CTX_REG, REG_FPR(fs))); /* raw fs (dividend) */
                 emit_fpu_clamp32(ctx);
-                emit(ctx, enc_stw(SCRATCH_C, 1, 12));
-                emit(ctx, enc_lfs(0, 1, 12)); /* f0 = clamped fs */
-                emit(ctx, enc_lfs(1, 1, 24)); /* f1 = denom */
+                emit(ctx, enc_stw(SCRATCH_C, 1, 52));
+                emit(ctx, enc_lfs(0, 1, 52)); /* f0 = clamped fs */
+                emit(ctx, enc_lfs(1, 1, 64)); /* f1 = denom */
 
                 emit(ctx, enc_fdivs(2, 0, 1));           /* f2 = fs / denom */
-                emit(ctx, enc_stfs(2, 1, 12));
-                emit(ctx, enc_lwz(SCRATCH_C, 1, 12));
+                emit(ctx, enc_stfs(2, 1, 52));
+                emit(ctx, enc_lwz(SCRATCH_C, 1, 52));
                 emit_fpu_clamp32(ctx); /* overflow-then-underflow output clamp */
 
                 /* Blend: final = iszero_mask ? special_result : normal_result */
-                emit(ctx, enc_lwz(SCRATCH_D, 1, 4));  /* iszero_mask */
-                emit(ctx, enc_lwz(SCRATCH_E, 1, 8));  /* special_result */
+                emit(ctx, enc_lwz(SCRATCH_D, 1, 44));  /* iszero_mask */
+                emit(ctx, enc_lwz(SCRATCH_E, 1, 48));  /* special_result */
                 emit(ctx, enc_nor(SCRATCH_F, SCRATCH_D, SCRATCH_D));
                 emit(ctx, enc_and(SCRATCH_E, SCRATCH_E, SCRATCH_D));
                 emit(ctx, enc_and(SCRATCH_C, SCRATCH_C, SCRATCH_F));
                 emit(ctx, enc_or(SCRATCH_C, SCRATCH_C, SCRATCH_E));
                 emit(ctx, enc_stw(SCRATCH_C, CTX_REG, REG_FPR(fd)));
 
-                emit(ctx, enc_addi(1, 1, 32)); /* pop scratch frame */
+                emit(ctx, enc_addi(1, 1, 96)); /* pop scratch frame */
                 return 0;
             }
             if (funct == 0x28 || funct == 0x29) {
@@ -3474,12 +3474,14 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
              * EABI assigns argument registers independently per type, so
              * this "mixed" signature needs no new convention, just the
              * same ctx-via-r15/LR-via-r14 save/restore across the call. */
-            emit(ctx, enc_addi(1, 1, -16));
+            /* Keep nonvolatile saves outside the callee linkage/argument
+             * area: a non-leaf helper may write LR at caller SP+4. */
+            emit(ctx, enc_addi(1, 1, -64));
             emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, REG_FPR(fs))); /* raw int32 bits = arg */
             emit(ctx, enc_stw(SCRATCH_A, 1, 8));
 
-            emit(ctx, enc_stw(14, 1, 0)); /* save caller's r14 */
-            emit(ctx, enc_stw(15, 1, 4)); /* save caller's r15 */
+            emit(ctx, enc_stw(14, 1, 40)); /* save caller's r14 */
+            emit(ctx, enc_stw(15, 1, 44)); /* save caller's r15 */
             emit(ctx, enc_or(15, CTX_REG, CTX_REG)); /* r15 = ctx (mr r15,r3) */
             emit(ctx, enc_mflr(14));                 /* r14 = this block's real return address */
             emit(ctx, enc_lwz(3, 1, 8));              /* r3 = int32 argument (overwrites ctx - saved in r15) */
@@ -3488,14 +3490,14 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
             emit(ctx, enc_bctrl());                  /* f1 = ee_jit_cvt_s_w_helper(r3) */
             emit(ctx, enc_mtlr(14));                 /* restore this block's real return address */
             emit(ctx, enc_or(CTX_REG, 15, 15));      /* restore ctx into r3 (mr r3,r15) */
-            emit(ctx, enc_lwz(14, 1, 0));             /* restore caller's r14 */
-            emit(ctx, enc_lwz(15, 1, 4));             /* restore caller's r15 */
+            emit(ctx, enc_lwz(14, 1, 40));             /* restore caller's r14 */
+            emit(ctx, enc_lwz(15, 1, 44));             /* restore caller's r15 */
 
             emit(ctx, enc_stfs(1, 1, 8));             /* spill helper's f1 result */
             emit(ctx, enc_lwz(SCRATCH_A, 1, 8));      /* SCRATCH_A = result bits */
             emit(ctx, enc_stw(SCRATCH_A, CTX_REG, REG_FPR(fd)));
 
-            emit(ctx, enc_addi(1, 1, 16));
+            emit(ctx, enc_addi(1, 1, 64));
             return 0;
         }
         if (rs == 0x08) {
@@ -4076,11 +4078,11 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
 
                         emit(ctx, enc_addi(1, 1, 16)); /* pop scratch frame */
                     } else {
-                        emit(ctx, enc_addi(1, 1, -32)); /* push 32-byte scratch frame */
+                        emit(ctx, enc_addi(1, 1, -96)); /* push 32-byte scratch frame */
 
                         emit(ctx, enc_lwz(SCRATCH_C, CTX_REG, VU0_VF_OFF(ft, ftf_lane))); /* raw uft */
                         emit(ctx, enc_lwz(SCRATCH_D, CTX_REG, VU0_VF_OFF(fs, fsf_lane))); /* raw ufs */
-                        emit(ctx, enc_stw(SCRATCH_D, 1, 24)); /* stash ufs across the sqrtf call */
+                        emit(ctx, enc_stw(SCRATCH_D, 1, 64)); /* stash ufs across the sqrtf call */
 
                         /* zero_mask = allOnes iff (uft & 0x7FFFFFFF) == 0 */
                         emit(ctx, enc_rlwinm(SCRATCH_E, SCRATCH_C, 0, 1, 31));
@@ -4088,7 +4090,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                         emit(ctx, enc_subfc(SCRATCH_G, SCRATCH_E, SCRATCH_F));
                         emit(ctx, enc_subfe(SCRATCH_G, SCRATCH_G, SCRATCH_G));
                         emit(ctx, enc_nor(SCRATCH_G, SCRATCH_G, SCRATCH_G)); /* zero_mask */
-                        emit(ctx, enc_stw(SCRATCH_G, 1, 4));
+                        emit(ctx, enc_stw(SCRATCH_G, 1, 44));
 
                         /* sign_diff = (uft ^ ufs) & 0x80000000 */
                         emit(ctx, enc_xor(SCRATCH_H, SCRATCH_C, SCRATCH_D));
@@ -4109,15 +4111,15 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                         emit(ctx, enc_and(SCRATCH_F, SCRATCH_H, SCRATCH_E)); /* special_b(=sign_diff) & fsv_zero_mask */
                         emit(ctx, enc_and(SCRATCH_A, SCRATCH_A, SCRATCH_B)); /* special_a & notmask */
                         emit(ctx, enc_or(SCRATCH_A, SCRATCH_A, SCRATCH_F));  /* special_within_zero */
-                        emit(ctx, enc_stw(SCRATCH_A, 1, 8));
+                        emit(ctx, enc_stw(SCRATCH_A, 1, 48));
 
                         /* temp = sqrtf(fabsf(ftv)) via trampoline */
                         emit(ctx, enc_rlwinm(SCRATCH_C, SCRATCH_C, 0, 1, 31)); /* fabsf(uft) */
-                        emit(ctx, enc_stw(SCRATCH_C, 1, 12));
-                        emit(ctx, enc_lfs(1, 1, 12)); /* f1 = |ftv| - EABI float arg reg */
+                        emit(ctx, enc_stw(SCRATCH_C, 1, 52));
+                        emit(ctx, enc_lfs(1, 1, 52)); /* f1 = |ftv| - EABI float arg reg */
 
-                        emit(ctx, enc_stw(14, 1, 16)); /* save caller's r14 */
-                        emit(ctx, enc_stw(15, 1, 20)); /* save caller's r15 */
+                        emit(ctx, enc_stw(14, 1, 56)); /* save caller's r14 */
+                        emit(ctx, enc_stw(15, 1, 60)); /* save caller's r15 */
                         emit(ctx, enc_or(15, CTX_REG, CTX_REG)); /* r15 = ctx */
                         emit(ctx, enc_mflr(14));
                         emit_load_const32(ctx, 12, ADDR_EE_SQRTF);
@@ -4125,27 +4127,27 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                         emit(ctx, enc_bctrl());                  /* f1 = sqrtf(f1) = temp */
                         emit(ctx, enc_mtlr(14));
                         emit(ctx, enc_or(CTX_REG, 15, 15));      /* restore ctx into r3 */
-                        emit(ctx, enc_lwz(14, 1, 16));
-                        emit(ctx, enc_lwz(15, 1, 20));
+                        emit(ctx, enc_lwz(14, 1, 56));
+                        emit(ctx, enc_lwz(15, 1, 60));
 
                         /* normal_result = fsv / temp (f1 still holds sqrtf's result) */
-                        emit(ctx, enc_lwz(SCRATCH_C, 1, 24)); /* reload raw ufs */
-                        emit(ctx, enc_stw(SCRATCH_C, 1, 12));
-                        emit(ctx, enc_lfs(0, 1, 12)); /* f0 = fsv */
+                        emit(ctx, enc_lwz(SCRATCH_C, 1, 64)); /* reload raw ufs */
+                        emit(ctx, enc_stw(SCRATCH_C, 1, 52));
+                        emit(ctx, enc_lfs(0, 1, 52)); /* f0 = fsv */
                         emit(ctx, enc_fdivs(2, 0, 1));
-                        emit(ctx, enc_stfs(2, 1, 12));
-                        emit(ctx, enc_lwz(SCRATCH_B, 1, 12)); /* normal_result bits */
+                        emit(ctx, enc_stfs(2, 1, 52));
+                        emit(ctx, enc_lwz(SCRATCH_B, 1, 52)); /* normal_result bits */
 
                         /* Blend: final = zero_mask ? special_within_zero : normal_result */
-                        emit(ctx, enc_lwz(SCRATCH_D, 1, 4));  /* zero_mask */
-                        emit(ctx, enc_lwz(SCRATCH_E, 1, 8));  /* special_within_zero */
+                        emit(ctx, enc_lwz(SCRATCH_D, 1, 44));  /* zero_mask */
+                        emit(ctx, enc_lwz(SCRATCH_E, 1, 48));  /* special_within_zero */
                         emit(ctx, enc_nor(SCRATCH_F, SCRATCH_D, SCRATCH_D));
                         emit(ctx, enc_and(SCRATCH_E, SCRATCH_E, SCRATCH_D));
                         emit(ctx, enc_and(SCRATCH_B, SCRATCH_B, SCRATCH_F));
                         emit(ctx, enc_or(SCRATCH_B, SCRATCH_B, SCRATCH_E));
                         emit(ctx, enc_stw(SCRATCH_B, CTX_REG, COP2_CTRL_OFF(22))); /* Q = result */
 
-                        emit(ctx, enc_addi(1, 1, 32)); /* pop scratch frame */
+                        emit(ctx, enc_addi(1, 1, 96)); /* pop scratch frame */
                     }
                     return 0;
                 }
@@ -4168,15 +4170,15 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                      * RSQRT.S (real PPC750/Gekko can't safely run
                      * fsqrts - see ADDR_EE_SQRTF's own comment). */
                     uint32_t ftf_lane = (destmask >> 2) & 0x3u;
-                    emit(ctx, enc_addi(1, 1, -16)); /* push 16-byte scratch frame */
+                    emit(ctx, enc_addi(1, 1, -96)); /* private spills above callee argument area */
 
                     emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, VU0_VF_OFF(ft, ftf_lane))); /* raw FT[ftf_lane] */
                     emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 0, 1, 31)); /* fabsf: clear sign bit */
-                    emit(ctx, enc_stw(SCRATCH_A, 1, 0));
-                    emit(ctx, enc_lfs(1, 1, 0)); /* f1 = |FT[ftf_lane]| - EABI float arg reg */
+                    emit(ctx, enc_stw(SCRATCH_A, 1, 40));
+                    emit(ctx, enc_lfs(1, 1, 40)); /* f1 = |FT[ftf_lane]| - EABI float arg reg */
 
-                    emit(ctx, enc_stw(14, 1, 8));  /* save caller's r14 */
-                    emit(ctx, enc_stw(15, 1, 12)); /* save caller's r15 */
+                    emit(ctx, enc_stw(14, 1, 48));  /* save caller's r14 */
+                    emit(ctx, enc_stw(15, 1, 52)); /* save caller's r15 */
                     emit(ctx, enc_or(15, CTX_REG, CTX_REG)); /* r15 = ctx */
                     emit(ctx, enc_mflr(14));
                     emit_load_const32(ctx, 12, ADDR_EE_SQRTF);
@@ -4184,14 +4186,14 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                     emit(ctx, enc_bctrl());                  /* f1 = sqrtf(f1) */
                     emit(ctx, enc_mtlr(14));
                     emit(ctx, enc_or(CTX_REG, 15, 15));      /* restore ctx into r3 */
-                    emit(ctx, enc_lwz(14, 1, 8));
-                    emit(ctx, enc_lwz(15, 1, 12));
+                    emit(ctx, enc_lwz(14, 1, 48));
+                    emit(ctx, enc_lwz(15, 1, 52));
 
-                    emit(ctx, enc_stfs(1, 1, 0));
-                    emit(ctx, enc_lwz(SCRATCH_A, 1, 0));
+                    emit(ctx, enc_stfs(1, 1, 40));
+                    emit(ctx, enc_lwz(SCRATCH_A, 1, 40));
                     emit(ctx, enc_stw(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(22))); /* Q = result */
 
-                    emit(ctx, enc_addi(1, 1, 16)); /* pop scratch frame */
+                    emit(ctx, enc_addi(1, 1, 96)); /* pop scratch frame */
                     return 0;
                 }
                 if (idx == 48) {
@@ -4790,6 +4792,22 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * this round; other REGIMM sub-opcodes (BLTZAL/BGEZAL/-ALL,
          * TGEI/TLTI/etc. traps) fall through to the Unsupported return
          * below untouched. */
+        /* Complete branch-and-link REGIMM forms. Match PCSX2's
+         * unconditional link-before-condition order, including rs==31. */
+        if(rt>=0x10u&&rt<=0x13u) {
+            emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,EXC_THIS_PC_OFFSET));
+            emit(ctx,enc_addi(SCRATCH_A,SCRATCH_A,8));
+            emit(ctx,enc_stw(SCRATCH_A,CTX_REG,REG_LO(31)));
+            emit(ctx,enc_addi(SCRATCH_B,0,0));
+            emit(ctx,enc_stw(SCRATCH_B,CTX_REG,REG_HI(31)));
+            if(rs)emit(ctx,enc_lwz(SCRATCH_C,CTX_REG,REG_HI(rs)));
+            else emit(ctx,enc_addi(SCRATCH_C,0,0));
+            emit(ctx,enc_srawi(SCRATCH_E,SCRATCH_C,31));
+            if(rt&1u)emit(ctx,enc_nor(SCRATCH_E,SCRATCH_E,SCRATCH_E));
+            if(rt>=0x12u)emit_branch_blend_likely(ctx,4+imm*4);
+            else emit_branch_blend(ctx,4+imm*4);
+            return 0;
+        }
         if (rt == 0x00 || rt == 0x01) {
             /* MIPS: bltz/bgez rs, offset -> if ((int64_t)GPR(rs) </>= 0)
              * BRANCH_TO(...). Trivial extension of BLEZ/BGTZ's srawi
@@ -5335,8 +5353,8 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         else if (sa == 0x1Du) helper_addr = ADDR_EE_JIT_PDIVBW;
         else return -1; /* other MMI2 sub-opcodes (PMADDW/... etc): not yet JIT-compiled */
 
-        emit(ctx, enc_addi(1, 1, -32));
-        emit(ctx, enc_stw(14, 1, 8));
+        emit(ctx, enc_addi(1,1,-96));
+        emit(ctx, enc_stw(14, 1, 48));
         emit(ctx, enc_mflr(14));
         emit(ctx, enc_addi(SCRATCH_A, 0, (int16_t)rs)); /* r4 = rs (arg2); r3=ctx already arg1 */
         emit(ctx, enc_addi(SCRATCH_B, 0, (int16_t)rt)); /* r5 = rt (arg3) */
@@ -5345,8 +5363,8 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         emit(ctx, enc_mtctr(12));
         emit(ctx, enc_bctrl());                       /* ee_jit_helper_pXXXX(ctx, rs, rt, rd) */
         emit(ctx, enc_mtlr(14));
-        emit(ctx, enc_lwz(14, 1, 8));
-        emit(ctx, enc_addi(1, 1, 32));
+        emit(ctx, enc_lwz(14, 1, 48));
+        emit(ctx, enc_addi(1,1,96));
         return 0;
     }
 
@@ -5608,16 +5626,16 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
              * PMFHL has no rs/rt input at all, unlike the 3-arg muldiv
              * trampolines. */
             uint32_t helper_addr = (sa == 0x02u) ? ADDR_EE_JIT_PMFHL_SLW : ADDR_EE_JIT_PMFHL_SH;
-            emit(ctx, enc_addi(1, 1, -32));
-            emit(ctx, enc_stw(14, 1, 8));
+            emit(ctx, enc_addi(1,1,-96));
+            emit(ctx, enc_stw(14, 1, 48));
             emit(ctx, enc_mflr(14));
             emit(ctx, enc_addi(SCRATCH_A, 0, (int16_t)rd)); /* r4 = rd (arg2); r3=ctx already arg1 */
             emit_load_const32(ctx, 12, helper_addr);
             emit(ctx, enc_mtctr(12));
             emit(ctx, enc_bctrl());                       /* ee_jit_helper_pmfhl_XXX(ctx, rd) */
             emit(ctx, enc_mtlr(14));
-            emit(ctx, enc_lwz(14, 1, 8));
-            emit(ctx, enc_addi(1, 1, 32));
+            emit(ctx, enc_lwz(14, 1, 48));
+            emit(ctx, enc_addi(1,1,96));
             return 0;
         }
         return -1; /* other sa values: reserved/no-op on real hardware, not yet special-cased in the JIT */
@@ -5760,14 +5778,15 @@ static void emit_iop_call(ppc_codegen_ctx_t *ctx,uint32_t addr) {
     emit_load_const32(ctx,12,addr);emit(ctx,enc_mtctr(12));emit(ctx,enc_bctrl());
 }
 static void emit_iop_memory_frame(ppc_codegen_ctx_t *ctx,int enter) {
+    /* Callees may spill argument registers in SP+8..39. */
     if(enter) {
-        emit(ctx,enc_addi(1,1,-48));
-        for(int n=14;n<=17;n++)emit(ctx,enc_stw(n,1,(int16_t)(16+(n-14)*4)));
+        emit(ctx,enc_addi(1,1,-80));
+        for(int n=14;n<=17;n++)emit(ctx,enc_stw(n,1,(int16_t)(40+(n-14)*4)));
         emit(ctx,enc_or(14,3,3));emit(ctx,enc_mflr(15));
     } else {
         emit(ctx,enc_mtlr(15));
-        for(int n=14;n<=17;n++)emit(ctx,enc_lwz(n,1,(int16_t)(16+(n-14)*4)));
-        emit(ctx,enc_addi(1,1,48));
+        for(int n=14;n<=17;n++)emit(ctx,enc_lwz(n,1,(int16_t)(40+(n-14)*4)));
+        emit(ctx,enc_addi(1,1,80));
     }
 }
 /* R1268: direct 32-bit R3000A register backend. This does not reuse EE's
@@ -6268,6 +6287,39 @@ static void ee_block_call(ppc_codegen_ctx_t *ctx,uint32_t target)
     }
 }
 
+/* Warm successor dispatch stays in PPC, but every native block retains its
+ * own live preparation and retirement guards. This calls returned functions,
+ * rather than patching tails: a partial exit cannot enter a successor. */
+int ppc_dynarec_translate_ee_cached_chain(ppc_codegen_ctx_t *ctx,uint32_t resolver)
+{
+ if(!ctx||!resolver||ctx->used_words+96u>ctx->capacity_words)return -1;
+ emit(ctx,enc_addi(1,1,-96));
+ for(int r=14;r<=18;r++)emit(ctx,enc_stw(r,1,(int16_t)(40+4*(r-14))));
+ emit(ctx,enc_mflr(12));emit(ctx,enc_stw(12,1,60));
+ emit(ctx,enc_or(14,3,3));emit(ctx,enc_addi(15,0,0));
+ emit(ctx,enc_or(16,6,6));emit(ctx,enc_or(17,7,7));emit(ctx,enc_or(18,8,8));
+ size_t loop=ctx->used_words;
+ emit(ctx,enc_mtctr(17));emit(ctx,enc_bctrl());
+ emit(ctx,enc_cmplw(3,18));
+ emit(ctx,enc_add(15,15,3));emit(ctx,enc_subf(16,3,16));
+ size_t partial=ctx->used_words;emit(ctx,enc_bc(4,2,0));
+ emit(ctx,(11u<<26)|(16u<<16)|2u);
+ size_t budget=ctx->used_words;emit(ctx,enc_bc(12,0,0));
+ emit(ctx,enc_or(3,14,14));emit(ctx,enc_or(4,16,16));ee_block_call(ctx,resolver);
+ emit(ctx,(11u<<26)|(3u<<16));
+ size_t missing=ctx->used_words;emit(ctx,enc_bc(12,2,0));
+ emit(ctx,enc_or(17,3,3));emit(ctx,enc_or(18,4,4));
+ emit(ctx,enc_or(3,14,14));emit(ctx,enc_addi(4,0,0));emit(ctx,enc_addi(5,0,0));
+ emit(ctx,enc_b(((int32_t)loop-(int32_t)ctx->used_words)*4));
+ size_t done=ctx->used_words;
+ ctx->code[partial]=enc_bc(4,2,(int32_t)(done-partial)*4);
+ ctx->code[budget]=enc_bc(12,0,(int32_t)(done-budget)*4);
+ ctx->code[missing]=enc_bc(12,2,(int32_t)(done-missing)*4);
+ emit(ctx,enc_or(3,15,15));emit(ctx,enc_lwz(12,1,60));emit(ctx,enc_mtlr(12));
+ for(int r=14;r<=18;r++)emit(ctx,enc_lwz(r,1,(int16_t)(40+4*(r-14))));
+ emit(ctx,enc_addi(1,1,96));return 0;
+}
+
 /* R1305 private emitter: r4 holds the live proven physical offset+1,
  * r3 the EE context. No helper or duplicate virtual-address decoding.
  * Only used after memory_prepare_resolved (or the fetched-first proof). */
@@ -6276,6 +6328,62 @@ static void ee_block_resolved_memory(ppc_codegen_ctx_t *ctx,uint32_t iw)
  unsigned op=iw>>26,rt=(iw>>16)&31u,width=ee_jit_block_memory_width(iw);
  emit(ctx,enc_addi(SCRATCH_A,4,-1));
  emit(ctx,enc_lwz(SCRATCH_C,CTX_REG,RAM_PTR_OFFSET));
+ if(ee_jit_block_memory_merge(iw)) {
+  /* Merge byte lanes directly in proven RAM. The unmasked EA selects k;
+   * the proof describes the entire aligned word/doubleword. Byte indices
+   * reverse between little-endian RAM and big-endian GPR storage. Capture
+   * k before any destination write, including rt==rs. No C helper/64-bit
+   * variable shift is required, and upper 128-bit lanes stay untouched. */
+  unsigned rs=(iw>>21)&31u;
+  int left=op==0x22u||op==0x2au||op==0x1au||op==0x2cu;
+  int store=ee_jit_block_memory_store(iw);
+  if(rs)emit(ctx,enc_lwz(SCRATCH_B,CTX_REG,REG_LO(rs)));
+  else emit(ctx,enc_addi(SCRATCH_B,0,0));
+  emit(ctx,enc_addi(SCRATCH_B,SCRATCH_B,(int16_t)iw));
+  emit(ctx,enc_andi_dot(SCRATCH_B,SCRATCH_B,(uint16_t)(width-1u)));
+  emit(ctx,enc_add(SCRATCH_G,SCRATCH_C,SCRATCH_A));
+  emit(ctx,enc_addi(SCRATCH_F,CTX_REG,(int16_t)(rt*16u+(width==4u?4u:0u))));
+  for(unsigned n=0;n<width;n++) {
+   emit(ctx,(11u<<26)|((uint32_t)SCRATCH_B<<16)|n); /* cmpwi k,n */
+   size_t skip=ctx->used_words;emit(ctx,enc_bc(12,left?0:1,0));
+   emit(ctx,enc_addi(SCRATCH_E,SCRATCH_B,(int16_t)(left?-(int)n:(int)width-1-(int)n)));
+   if(store) {
+    emit(ctx,enc_lbzx(SCRATCH_D,SCRATCH_F,SCRATCH_E));
+    emit(ctx,enc_stb(SCRATCH_D,SCRATCH_G,(int16_t)n));
+   } else {
+    emit(ctx,enc_lbz(SCRATCH_D,SCRATCH_G,(int16_t)n));
+    if(rt)emit(ctx,enc_stbx(SCRATCH_D,SCRATCH_F,SCRATCH_E));
+   }
+   ctx->code[skip]=enc_bc(12,left?0:1,(int32_t)(ctx->used_words-skip)*4);
+  }
+  if(!store&&rt&&width==4u) {
+   size_t skip=0;
+   /* LWL always sign-extends. Partial LWR preserves bits 63..32. */
+   if(!left) {
+    emit(ctx,(11u<<26)|((uint32_t)SCRATCH_B<<16));
+    skip=ctx->used_words;emit(ctx,enc_bc(4,2,0));
+   }
+   emit(ctx,enc_lwz(SCRATCH_D,CTX_REG,REG_LO(rt)));
+   emit(ctx,enc_srawi(SCRATCH_E,SCRATCH_D,31));
+   emit(ctx,enc_stw(SCRATCH_E,CTX_REG,REG_HI(rt)));
+   if(skip)ctx->code[skip]=enc_bc(4,2,(int32_t)(ctx->used_words-skip)*4);
+  }
+  return;
+ }
+ if(op==0x36u||op==0x3eu) {
+  for(unsigned lane=0;lane<4u;lane++) {
+   if(op==0x3eu) {
+    if(rt)emit(ctx,enc_lwz(SCRATCH_D,CTX_REG,VU0_VF_OFF(rt,lane)));
+    else emit_load_const32(ctx,SCRATCH_D,lane==3u?0x3f800000u:0u);
+    emit(ctx,enc_stwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+   } else {
+    emit(ctx,enc_lwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+    emit(ctx,enc_stw(SCRATCH_D,CTX_REG,VU0_VF_OFF(rt,lane)));
+   }
+   if(lane<3u)emit(ctx,enc_addi(SCRATCH_A,SCRATCH_A,4));
+  }
+  return;
+ }
  if(width>=8u) {
   const int16_t offsets[]={REG_LO(rt),REG_HI(rt),REG_LO1(rt),REG_HI1(rt)};
   int store=ee_jit_block_memory_store(iw);
@@ -6324,7 +6432,7 @@ static void ee_block_resolved_memory(ppc_codegen_ctx_t *ctx,uint32_t iw)
 /* Precise native block: every instruction crosses the existing retirement
  * machinery before continuing. Caller guards source/mapping and control flow. */
 static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
- const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared,uint32_t memory_prepare)
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared,uint32_t memory_prepare,uint32_t delay_prepare)
 {
  if(!ctx||!words||count<2u||count>8u||!prepare||!commit)return -1;
  size_t exits[8],returns[8];
@@ -6332,9 +6440,13 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
  emit(ctx,enc_mflr(12));emit(ctx,enc_stw(12,1,48));
  emit(ctx,enc_or(14,3,3));
  for(unsigned n=0;n<count;n++) {
-  if(!ee_jit_block_candidate(words[n])&&!(n+1u==count&&ee_jit_block_terminal(words[n])))return -1;
+  int delay=n>0u&&ee_jit_block_terminal(words[n-1u]);
+  int terminal=ee_jit_block_terminal(words[n]);
+  if(terminal&&!(n+1u==count||(delay_prepare&&n+2u==count&&ee_jit_block_candidate(words[n+1u]))))return -1;
+  if(!terminal&&!ee_jit_block_candidate(words[n]))return -1;
+  if(delay&&!delay_prepare)return -1;
   unsigned memory=ee_jit_block_memory_width(words[n]);
-  uint32_t callback=memory?memory_prepare:prepare;
+  uint32_t callback=delay?delay_prepare:(memory?memory_prepare:prepare);
   if(!callback)return -1;
   size_t skip=0;
   if(n==0u&&allow_prepared) {
@@ -6358,7 +6470,8 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
   } else {
    if(skip)ctx->code[skip]=enc_bc(4,2,(int32_t)(ctx->used_words-skip)*4);
    emit(ctx,enc_or(3,14,14));
-   if(ppc_dynarec_translate_one(ctx,words[n]))return -1;
+   if(!((words[n]>>26)==0x36u&&((words[n]>>16)&31u)==0u))
+    if(ppc_dynarec_translate_one(ctx,words[n]))return -1;
   }
   emit(ctx,enc_or(3,14,14));ee_block_call(ctx,commit);
  }
@@ -6383,11 +6496,15 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
 
 int ppc_dynarec_translate_ee_precise_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,0,0u);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,0,0u,0u);}
 int ppc_dynarec_translate_ee_prepared_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,1,0u);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,1,0u,0u);}
 
 int ppc_dynarec_translate_ee_prepared_memory_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t prepare,uint32_t memory_prepare,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare);}
+{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,0u);}
+
+int ppc_dynarec_translate_ee_prepared_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,
+ const uint32_t *w,unsigned n,uint32_t prepare,uint32_t memory_prepare,uint32_t delay_prepare,uint32_t commit)
+{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,delay_prepare);}

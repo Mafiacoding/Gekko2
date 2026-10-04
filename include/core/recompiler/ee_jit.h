@@ -133,10 +133,12 @@ extern volatile uint64_t g_r1175_jit_pmfhl_calls;
 void     ee_jit_reset_stats_for_test(void); /* test-only: zero counters + cache, so successive host-native tests don't see stale state from an earlier test in the same process */
 
 unsigned ee_jit_try_execute_block(ee_state_t *st,unsigned budget);
+uint64_t ee_jit_get_native_successors(void);
 uint64_t ee_jit_get_block_count(void);
 uint64_t ee_jit_get_block_retired(void);
 
 /* First encoding came from the real scalar fetch; later words stay live. */
+unsigned ee_jit_try_execute_chain_fetched(ee_state_t *st,unsigned budget,uint32_t first_word);
 unsigned ee_jit_try_execute_block_fetched(ee_state_t *st,unsigned budget,uint32_t first_word);
 
 #endif

@@ -636,7 +636,35 @@ static uint64_t precise_runs,precise_retired;
 static int precise_active;
 uint64_t ee_jit_get_block_count(void){return precise_runs;}
 uint64_t ee_jit_get_block_retired(void){return precise_retired;}
-static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetched,uint32_t first_word)
+typedef unsigned (*ee_cached_chain_fn)(ee_state_t *,unsigned,uint32_t,unsigned,ee_precise_fn,unsigned);
+static ee_cached_chain_fn precise_chain_fn;
+static uint64_t precise_native_successors;
+uint64_t ee_jit_get_native_successors(void){return precise_native_successors;}
+#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)
+/* No allocation, eviction or compilation here. precise_active pins all
+ * precise-cache allocations until the complete native chain returns. */
+static uint64_t ee_precise_cached_next(ee_state_t *st,unsigned remaining)
+{
+ if(!precise_active||!st||remaining<2u||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u)return 0;
+ ee_precise_slot *slot=&precise_cache[((st->pc>>2)^(st->pc>>12))&255u];
+ if(!slot->fn||slot->pc!=st->pc||slot->count<2u||slot->count>remaining)return 0;
+ uint32_t word;
+ if(!ee_core_block_peek(st,st->pc,&word)||word!=slot->words[0])return 0;
+ precise_native_successors++;
+ return ((uint64_t)(uint32_t)(uintptr_t)slot->fn<<32)|slot->count;
+}
+static void ee_precise_make_chain(void)
+{
+ if(precise_chain_fn)return;
+ ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,1u))return;
+ if(ppc_dynarec_translate_ee_cached_chain(&c,(uint32_t)(uintptr_t)ee_precise_cached_next)) {
+  ppc_dynarec_free(&c);return;
+ }
+ precise_chain_fn=(ee_cached_chain_fn)ppc_dynarec_finalize(&c);
+ if(!precise_chain_fn)ppc_dynarec_free(&c);
+}
+#endif
+static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetched,uint32_t first_word,int native_chain)
 {
 #if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)
  if(!st||budget<2u||st->halted||st->idle||st->branch_pending||precise_active)return 0;
@@ -647,14 +675,18 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  if(slot->fn&&slot->pc==pc&&slot->count<=budget&&(!fetched||slot->words[0]==first_word))goto execute_slot;
  limit=ee_core_block_words(st,pc,words,limit);
  for(;count<limit;count++) {
-  if(ee_jit_block_terminal(words[count])) {count++;break;}
+  if(ee_jit_block_terminal(words[count])) {
+   count++;
+   if(count<limit&&ee_jit_block_candidate(words[count]))count++;
+   break;
+  }
   if(!ee_jit_block_candidate(words[count]))break;
  }
  if(count<2u)return 0;
  if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
   ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,count*2u))return 0;
-  if(ppc_dynarec_translate_ee_prepared_memory_block(&c,pc,words,count,
-    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,(uint32_t)(uintptr_t)ee_core_block_commit)) {
+  if(ppc_dynarec_translate_ee_prepared_delay_block(&c,pc,words,count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,(uint32_t)(uintptr_t)ee_core_block_prepare_delay,(uint32_t)(uintptr_t)ee_core_block_commit)) {
    ppc_dynarec_free(&c);return 0;
   }
   ee_precise_fn fn=(ee_precise_fn)ppc_dynarec_finalize(&c);
@@ -674,25 +706,58 @@ execute_slot:;
   }
   if(!ee_core_block_prepare_fetched(st,pc))return 0;
  }
- precise_active=1;unsigned n=slot->fn(st,fetched,first_physical);precise_active=0;
+ if(native_chain&&slot->count+2u<=budget)ee_precise_make_chain();
+ precise_active=1;
+ unsigned n=(native_chain&&precise_chain_fn&&slot->count+2u<=budget)?
+  precise_chain_fn(st,fetched,first_physical,budget,slot->fn,slot->count):
+  slot->fn(st,fetched,first_physical);
+ precise_active=0;
  precise_runs++;precise_retired+=n;
  /* Changed first word/mapping: release only after the native function
   * returns. The scalar path handles this instruction; later visits retry. */
  if(!n){free((void*)slot->fn);memset(slot,0,sizeof(*slot));}
  return n;
 #else
- (void)st;(void)budget;(void)fetched;(void)first_word;return 0;
+ (void)st;(void)budget;(void)fetched;(void)first_word;(void)native_chain;return 0;
 #endif
 }
 
 unsigned ee_jit_try_execute_block(ee_state_t *st,unsigned budget)
-{return ee_precise_execute(st,budget,0u,0u);}
+{return ee_precise_execute(st,budget,0u,0u,0);}
 unsigned ee_jit_try_execute_block_fetched(ee_state_t *st,unsigned budget,uint32_t first_word)
-{return ee_precise_execute(st,budget,1u,first_word);}
+{return ee_precise_execute(st,budget,1u,first_word,0);}
+
+/* Guarded continuation between returned native blocks within the SAME EE
+ * budget. No native return address points into an evicted code buffer, and
+ * no EE/IOP scheduling boundary is crossed. Each successor keeps live source
+ * and data checks; partial exits return to the full scalar frontend. */
+unsigned ee_jit_try_execute_chain_fetched(ee_state_t *st,unsigned budget,uint32_t first_word)
+{
+#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)
+ if(!st)return 0;
+ uint32_t start=st->pc;
+ unsigned n=ee_precise_execute(st,budget,1u,first_word,1),total=n;
+ while(n&&budget-total>=2u) {
+  ee_precise_slot *previous=&precise_cache[((start>>2)^(start>>12))&255u];
+  if(previous->pc!=start||n!=previous->count||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u)break;
+  uint32_t instruction;
+  if(!ee_core_block_peek(st,st->pc,&instruction)||
+     (!ee_jit_block_candidate(instruction)&&!ee_jit_block_terminal(instruction)))break;
+  start=st->pc;
+  n=ee_precise_execute(st,budget-total,0u,0u,1);
+  total+=n;
+ }
+ return total;
+#else
+ (void)st;(void)budget;(void)first_word;return 0;
+#endif
+}
 
 static void ee_precise_reset_cache(void)
 {
  if(precise_active)return; /* Never release the currently executing buffer. */
+ if(precise_chain_fn)free((void*)precise_chain_fn);
+ precise_chain_fn=0;precise_native_successors=0;
  for(unsigned n=0;n<256;n++)if(precise_cache[n].fn)free((void*)precise_cache[n].fn);
  memset(precise_cache,0,sizeof(precise_cache));precise_runs=precise_retired=0;
 }

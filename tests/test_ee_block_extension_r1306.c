@@ -27,7 +27,7 @@ int main(void)
  for(unsigned op=0;op<64;op++) {
   for(unsigned rt=0;rt<32;rt++) {
    uint32_t w=(op<<26)|(rt<<16)|8;
-   int want=op==2||op==3||(op>=4&&op<=7)||(op>=20&&op<=23)||(op==0)||(op==1&&rt<=3);
+   int want=op==2||op==3||(op>=4&&op<=7)||(op>=20&&op<=23)||(op==0)||(op==1&&(rt<=3||(rt>=0x10&&rt<=0x13)));
    assert(ee_jit_block_terminal(w)==want);
   }
  }

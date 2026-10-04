@@ -1115,6 +1115,11 @@ int ppc_dynarec_translate_vu_block(ppc_codegen_ctx_t *ctx,const uint32_t *upper,
  * Returns a callable function pointer, or NULL on failure. */
 ppc_block_fn ppc_dynarec_finalize(ppc_codegen_ctx_t *ctx);
 
+/* Native warm-cache chain: unsigned(st,fetched,proof,budget,first_fn,count).
+ * resolver(st,remaining) returns uint64_t: function pointer high, count low.
+ * Resolver must never allocate, free or replace generated code while active. */
+int ppc_dynarec_translate_ee_cached_chain(ppc_codegen_ctx_t *ctx,uint32_t resolver);
+
 /* Pure ALU state transform only: no CPU/device retirement. Atomic decline,
  * 2..8 instructions, bounded resident GPR words; not enabled in CPU loop. */
 int ppc_dynarec_translate_ee_alu_block(ppc_codegen_ctx_t *ctx,
@@ -1123,6 +1128,8 @@ int ppc_dynarec_translate_ee_alu_block(ppc_codegen_ctx_t *ctx,
 /* Memory variant returns unsigned(st,first_prepared,first_physical_plus_one).
  * memory_prepare returns live physical offset+1, zero on decline.
  * Non-memory prepared variant returns unsigned(st,first_prepared). */
+int ppc_dynarec_translate_ee_prepared_delay_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t memory_prepare,uint32_t delay_prepare,uint32_t commit);
 int ppc_dynarec_translate_ee_prepared_memory_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
  const uint32_t *words,unsigned count,uint32_t prepare_addr,uint32_t memory_prepare_addr,uint32_t commit_addr);
 int ppc_dynarec_translate_ee_prepared_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
