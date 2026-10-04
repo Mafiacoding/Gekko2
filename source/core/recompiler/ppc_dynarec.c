@@ -1080,11 +1080,10 @@ static void emit_branch_blend(ppc_codegen_ctx_t *ctx, int32_t disp)
     emit(ctx, enc_or(SCRATCH_G, SCRATCH_G, SCRATCH_H));
     emit(ctx, enc_stw(SCRATCH_G, CTX_REG, NEXT_PC_OFFSET));
 
-    emit(ctx, enc_lbz(SCRATCH_H, CTX_REG, BRANCH_PENDING_OFFSET)); /* old bp byte */
-    emit(ctx, enc_addi(SCRATCH_A, 0, 1));                 /* li SCRATCH_A, 1 */
-    emit(ctx, enc_and(SCRATCH_A, SCRATCH_A, SCRATCH_E));  /* 1 & mask */
-    emit(ctx, enc_and(SCRATCH_H, SCRATCH_H, SCRATCH_F));  /* old_bp & notmask */
-    emit(ctx, enc_or(SCRATCH_A, SCRATCH_A, SCRATCH_H));
+    /* R1306: a regular branch ALWAYS has a delay slot, including a
+     * not-taken branch. Only the target is conditional. This also fixes
+     * scalar REGIMM/COP branches using this shared emitter. */
+    emit(ctx, enc_addi(SCRATCH_A, 0, 1));
     emit(ctx, enc_stb(SCRATCH_A, CTX_REG, BRANCH_PENDING_OFFSET));
 }
 
@@ -6277,7 +6276,32 @@ static void ee_block_resolved_memory(ppc_codegen_ctx_t *ctx,uint32_t iw)
  unsigned op=iw>>26,rt=(iw>>16)&31u,width=ee_jit_block_memory_width(iw);
  emit(ctx,enc_addi(SCRATCH_A,4,-1));
  emit(ctx,enc_lwz(SCRATCH_C,CTX_REG,RAM_PTR_OFFSET));
- if(op>=0x28u) {
+ if(width>=8u) {
+  const int16_t offsets[]={REG_LO(rt),REG_HI(rt),REG_LO1(rt),REG_HI1(rt)};
+  int store=ee_jit_block_memory_store(iw);
+  for(unsigned n=0;n<width/4u;n++) {
+   if(store) {
+    emit(ctx,enc_lwz(SCRATCH_D,CTX_REG,offsets[n]));
+    emit(ctx,enc_stwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+   } else {
+    emit(ctx,enc_lwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+    if(rt)emit(ctx,enc_stw(SCRATCH_D,CTX_REG,offsets[n]));
+   }
+   if(n+1u<width/4u)emit(ctx,enc_addi(SCRATCH_A,SCRATCH_A,4));
+  }
+  return;
+ }
+ if(op==0x31u||op==0x39u) {
+  if(op==0x39u) {
+   emit(ctx,enc_lwz(SCRATCH_D,CTX_REG,REG_FPR(rt)));
+   emit(ctx,enc_stwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+  } else {
+   emit(ctx,enc_lwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+   emit(ctx,enc_stw(SCRATCH_D,CTX_REG,REG_FPR(rt)));
+  }
+  return;
+ }
+ if(ee_jit_block_memory_store(iw)) {
   emit(ctx,enc_lwz(SCRATCH_D,CTX_REG,REG_LO(rt)));
   emit(ctx,width==1?enc_stbx(SCRATCH_D,SCRATCH_C,SCRATCH_A):
            width==2?enc_sthbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A):
@@ -6308,7 +6332,7 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
  emit(ctx,enc_mflr(12));emit(ctx,enc_stw(12,1,48));
  emit(ctx,enc_or(14,3,3));
  for(unsigned n=0;n<count;n++) {
-  if(!ee_jit_block_candidate(words[n]))return -1;
+  if(!ee_jit_block_candidate(words[n])&&!(n+1u==count&&ee_jit_block_terminal(words[n])))return -1;
   unsigned memory=ee_jit_block_memory_width(words[n]);
   uint32_t callback=memory?memory_prepare:prepare;
   if(!callback)return -1;

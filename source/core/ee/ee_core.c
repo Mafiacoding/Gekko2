@@ -12962,7 +12962,8 @@ uint32_t ee_core_block_memory_resolve(const ee_state_t *st,uint32_t instruction)
  unsigned rs=(instruction>>21)&31u;
  uint32_t base=rs?(uint32_t)st->gpr[rs].ud0:0;
  uint32_t addr=base+(uint32_t)(int32_t)(int16_t)instruction,phys;
- if(addr&(width-1u))return 0;
+ if(width==16u)addr&=~15u;
+ else if(addr&(width-1u))return 0;
  if((addr&0xc0000000u)==0x80000000u)phys=addr&0x1fffffffu;
  else {
   /* Scalar MMIO dispatch precedes TLB lookup. Do not reinterpret virtual
@@ -12971,7 +12972,7 @@ uint32_t ee_core_block_memory_resolve(const ee_state_t *st,uint32_t instruction)
   if((addr<0x80000000u&&addr>=0x10000000u)||
      (hw>=0x10000000u&&hw<0x14000000u))return 0;
   if(!ee_tlb_translate_selected(st,addr,&phys,&lo)||!(lo&2u))return 0;
-  if((instruction>>26)>=0x28u&&!(lo&4u))return 0;
+  if(ee_jit_block_memory_store(instruction)&&!(lo&4u))return 0;
  }
  if(phys>=0x02000000u||phys>st->ram_size-width)return 0;
  return phys+1u;

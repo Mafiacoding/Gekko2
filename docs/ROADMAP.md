@@ -1,4 +1,4 @@
-# Gekko2 roadmap — R1305
+# Gekko2 roadmap — R1306
 
 The [current status](../STATUS.md) separates implementation, native tests and real-Wii observations.
 
@@ -7,6 +7,8 @@ The [current status](../STATUS.md) separates implementation, native tests and re
 Confirm repeated cold boots, first-image timing and OSDSYS Browser/System Configuration navigation. Compare paired JIT/interpreter builds with identical BIOS and settings. Keep the single experimental GX option and legacy SD paths.
 
 ## 2. Custom PPC dynarec — current priority
+
+[Completion steps and readiness gates](DYNAREC-COMPLETION-PLAN.md) define the remaining work.
 
 - Profile current EE/IOP/VU and GS costs on Wii before selecting hot paths.
 - Extend register residency and build a liveness/dirty-register allocator.

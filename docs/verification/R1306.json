@@ -1,0 +1,167 @@
+{
+  "name": "Gekko2",
+  "revision": "R1306",
+  "scope": "Wide/FPR proven RAM accesses, selected terminal EE controls and shared regular-branch delay-slot fix; full dynarec incomplete",
+  "native_tests": {
+    "total": 203,
+    "passed": 203
+  },
+  "linked_ppc_jobs": [
+    {
+      "script": "verify_ee_extensions_r1306",
+      "engine": "Interpreter",
+      "exit": 0
+    },
+    {
+      "script": "verify_ee_extensions_r1306",
+      "engine": "JIT",
+      "exit": 0
+    },
+    {
+      "script": "verify_gs_paths_r1285",
+      "engine": "Interpreter",
+      "exit": 0
+    },
+    {
+      "script": "verify_gs_paths_r1285",
+      "engine": "JIT",
+      "exit": 0
+    }
+  ],
+  "matching_vram_signatures": 66,
+  "new_memory_families": [
+    "LD",
+    "SD",
+    "LQ",
+    "SQ",
+    "LWC1",
+    "SWC1"
+  ],
+  "wide_memory_programs": 72,
+  "control_programs": 128,
+  "wide_irq_boundaries": 48,
+  "branch_irq_fault_cases": 4,
+  "scalar_REGIMM_delay_check": true,
+  "corrected_R1305_control_cases": [
+    {
+      "name": "REGIMM0",
+      "value": 0,
+      "equal": false
+    },
+    {
+      "name": "REGIMM0",
+      "value": 0,
+      "equal": true
+    },
+    {
+      "name": "REGIMM0",
+      "value": 1,
+      "equal": false
+    },
+    {
+      "name": "REGIMM0",
+      "value": 1,
+      "equal": true
+    },
+    {
+      "name": "REGIMM0",
+      "value": 4294967296,
+      "equal": false
+    },
+    {
+      "name": "REGIMM0",
+      "value": 4294967296,
+      "equal": true
+    },
+    {
+      "name": "REGIMM1",
+      "value": 18446744073709551615,
+      "equal": false
+    },
+    {
+      "name": "REGIMM1",
+      "value": 18446744073709551615,
+      "equal": true
+    }
+  ],
+  "wide_state_matches": [
+    "R1305 JIT",
+    "R1306 Interpreter",
+    "R1306 JIT"
+  ],
+  "control_state_matches": [
+    "R1306 Interpreter",
+    "R1306 JIT"
+  ],
+  "benchmarks": {
+    "scope": "actual linked PPC instruction counts, real guest retirement under mocked allocation/cache/platform services; not Wii cycles or FPS",
+    "eight_retired_instructions": {
+      "LD": {
+        "R1305": 5590,
+        "R1306": 4353,
+        "reduction_percent": 22.128801431127012
+      },
+      "SD": {
+        "R1305": 6286,
+        "R1306": 4345,
+        "reduction_percent": 30.878141902640788
+      },
+      "LQ": {
+        "R1305": 7054,
+        "R1306": 4358,
+        "reduction_percent": 38.219449957470935
+      },
+      "SQ": {
+        "R1305": 7366,
+        "R1306": 4369,
+        "reduction_percent": 40.68693999456964
+      },
+      "LWC1": {
+        "R1305": 5974,
+        "R1306": 4329,
+        "reduction_percent": 27.535989286909942
+      },
+      "SWC1": {
+        "R1305": 7302,
+        "R1306": 4337,
+        "reduction_percent": 40.60531361270885
+      },
+      "direct_LW": {
+        "R1305": 3766,
+        "R1306": 3769
+      },
+      "TLB_LW": {
+        "R1305": 4278,
+        "R1306": 4321
+      },
+      "ALU": {
+        "R1305": 3185,
+        "R1306": 3184
+      },
+      "COP1_mix": {
+        "R1305": 3171,
+        "R1306": 3168
+      }
+    }
+  },
+  "physical_wii_verified": false,
+  "fresh_bios_coldboot": false,
+  "binaries": {
+    "Gekko2-R1306-Menu-Interpreter.elf": {
+      "bytes": 5332332,
+      "sha256": "0a660bd462d1fd4dffd9cc767e13d7ddeb816808092d08add265cf5de16ade93"
+    },
+    "Gekko2-R1306-Menu-Interpreter.dol": {
+      "bytes": 955584,
+      "sha256": "ef38cfd76bcea4c6a5016c71b0b3ba831ac1d1f603c513cf8c4b26b14a6506c3"
+    },
+    "Gekko2-R1306-Menu-JIT.elf": {
+      "bytes": 5463632,
+      "sha256": "6f440f0eee0daa34ba61fb7816c0d8889934661fb775b9240a93bfdd1ecd15d3"
+    },
+    "Gekko2-R1306-Menu-JIT.dol": {
+      "bytes": 1039616,
+      "sha256": "e24371b4315f7dd44b65621f8af5d8ea715006662d9765c2f9b5c344feeeae4e"
+    }
+  }
+}

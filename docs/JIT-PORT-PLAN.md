@@ -1,4 +1,4 @@
-# Gekko2 PPC dynarec plan — R1305
+# Gekko2 PPC dynarec plan — R1306
 
 The custom EE/IOP/VU PowerPC backend is implemented in part; it is not a complete recompiler. Read [STATUS](../STATUS.md) and [R1301 handoff](R1301-HANDOFF.md) for verified scope.
 
@@ -8,7 +8,7 @@ EE and IOP have native scalar paths with interpreter fallback. VU has guarded ar
 
 The older R1282 resident ALU transformation primitive remains separate from the CPU retirement engine. A general register allocator, broad memory/control blocks, linked EE/IOP execution and complete VU pipeline coverage are unfinished. EE/IOP guest execution and device scheduling remain CPU responsibilities; GX is for compatible graphics operations.
 
-R1304 adds guarded direct-RAM byte/halfword/word memory blocks. Memory preparation is separate from the ALU callback; invalid data addresses decline before PC/retirement changes. R1305 additionally resolves live TLB data for direct native byte/halfword/word access. Wide memory operations, branch/control linking and IOP blocks remain open. Read [nullDC4Wii review](NULLDC4WII-REVIEW-R1304.md) before proposing pinned-register/host-MMU imports.
+R1304 adds guarded direct-RAM byte/halfword/word memory blocks. Memory preparation is separate from the ALU callback; invalid data addresses decline before PC/retirement changes. R1305 additionally resolves live TLB data for direct native byte/halfword/word access. R1306 adds LD/SD/LQ/SQ/LWC1/SWC1 and terminal branches with scalar delay slots. Remaining memory/control cases, fused delay slots, linking and IOP blocks remain open. See [full completion plan](DYNAREC-COMPLETION-PLAN.md). Read [nullDC4Wii review](NULLDC4WII-REVIEW-R1304.md) before proposing pinned-register/host-MMU imports.
 
 ## Next implementation steps
 

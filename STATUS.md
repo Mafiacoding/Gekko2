@@ -1,4 +1,4 @@
-# Gekko2 status — R1305
+# Gekko2 status — R1306
 
 Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
 
@@ -13,6 +13,14 @@ Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** Th
 | PPC JIT | Many scalar EE/IOP families, guarded VU pairs/blocks, conservative 2–8 instruction EE ALU/COP1 blocks and direct relative helper calls. | Full EE/IOP/VU recompilation, wide memory/control blocks, register allocation and safe linking remain incomplete. |
 | GX | Optional CT32/24 presentation, guarded sprites/flat triangles, snapshot textures, selected TEV blending/depth paths, deferred VRAM resolve and compatible resident framebuffers. | Varying Gouraud/textured triangle routing, broad GPU residency and complex GS states still require software/hybrid handling. |
 | R1302 branding | Gekko2 launcher header, HBC icon, checked 640×480 native launcher preview and both Wii cross-builds. | No fresh physical-Wii R1302 timing result. Guest emulation remains R1301. |
+
+## R1306 wide memory and terminal-control milestone
+
+LD/SD, LQ/SQ and LWC1/SWC1 join live-proven direct/TLB RAM blocks. Quadword effective addresses round down to 16 bytes; LQ $zero performs no access. Explicit load/store classification preserves permissions. Raw FPR bits, fpr[0], 64-bit loads and all 128-bit lanes are preserved.
+
+Sixteen selected branch/jump families may terminate a precise block. Delay slots remain in the scalar frontend. Differential tests exposed and corrected the shared native regular-branch delay flag: not-taken ordinary branches still have a delay slot. This also fixes the existing scalar REGIMM not-taken gap. Likely-annul behavior is unchanged.
+
+Validation: **203/203 native tests**, four linked-PPC jobs, 72 wide-memory programs, 128 controls, 48 wide-memory IRQ boundaries and 66 matching VRAM signatures. New wide-memory workloads count 22–41% fewer PPC instructions; existing TLB-LW costs about 1% more. These are synthetic platform instruction counts, not Wii timing. Details are in [the R1306 handoff](docs/R1306-HANDOFF.md) and [verification](docs/verification/R1306.json). A complete dynarec is **not finished**: general allocation, linked blocks, broad IOP blocks and remaining VU/EE cases are open. [The completion plan](docs/DYNAREC-COMPLETION-PLAN.md) lists implementation and readiness gates. No fresh physical-Wii boot or FPS measurement is claimed.
 
 ## R1305 live mapped-memory milestone
 

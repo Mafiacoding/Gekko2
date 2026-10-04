@@ -646,7 +646,10 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   * EACH instruction. A warm entry needs no duplicate full-block scan. */
  if(slot->fn&&slot->pc==pc&&slot->count<=budget&&(!fetched||slot->words[0]==first_word))goto execute_slot;
  limit=ee_core_block_words(st,pc,words,limit);
- for(;count<limit&&ee_jit_block_candidate(words[count]);count++){}
+ for(;count<limit;count++) {
+  if(ee_jit_block_terminal(words[count])) {count++;break;}
+  if(!ee_jit_block_candidate(words[count]))break;
+ }
  if(count<2u)return 0;
  if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
   ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,count*2u))return 0;
