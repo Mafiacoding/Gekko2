@@ -102,6 +102,14 @@
 #define VU1_MEM_SIZE   0x4000u /* 16KB - PCSX2's VU1_MEMSIZE */
 #define VU1_MICRO_SIZE 0x4000u /* 16KB - PCSX2's VU1_PROGSIZE */
 
+/* FDIV issue clock, separate from retired instruction count. Each VU
+ * owns this state; no global pointer-keyed cache survives reset/resume. */
+typedef struct {
+    uint64_t cycle,q_ready,p_ready;
+    uint32_t q_value,q_status,p_value;
+    uint8_t q_pending,p_pending;
+} vu_pipeline_t;
+
 typedef struct {
     uint32_t vf[32][4]; /* VF0-31, 4 lanes (raw float bit patterns) each */
     uint32_t vi[32];    /* only 0-15 are real VU1 integer regs; the rest
@@ -129,6 +137,7 @@ typedef struct {
 
     uint64_t instructions_executed;
     uint64_t unimplemented_opcodes_seen;
+    vu_pipeline_t pipeline;
 } vu1_state_t;
 
 void vu1_init(void);
@@ -171,5 +180,11 @@ int vu_micro_step(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
                    uint32_t *tpc, uint32_t *branch_delay, uint32_t *branch_target,
                    uint32_t *ebit_delay,
                    uint64_t *instructions_executed, uint64_t *unimplemented_opcodes_seen);
+
+int vu_micro_step_pipeline(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
+    uint8_t *mem,uint32_t mem_mask,uint8_t *micro,uint32_t micro_mask,
+    uint32_t *tpc,uint32_t *branch_delay,uint32_t *branch_target,
+    uint32_t *ebit_delay,uint64_t *retired,uint64_t *unknown,
+    vu_pipeline_t *pipeline);
 
 #endif

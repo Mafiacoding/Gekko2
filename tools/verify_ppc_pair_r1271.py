@@ -28,12 +28,13 @@ before=allocs
 for n in range(1000):assert pair(upper,bad)==0
 assert allocs==before
 assert struct.unpack('>4I',bytes(u.mem_read(vf+48,16)))==(0x12345678,)*4
-# I-immediate becomes visible to the upper operation within the same pair.
+# Upper sees old I; the immediate becomes visible after the pair.
+word(vi+84,0x40400000)
 up=(15<<21)|(1<<11)|(4<<6)|0x1d|0x80000000
 assert pair(up,0x40800000)==int(enabled)
 if enabled:
  assert int.from_bytes(bytes(u.mem_read(vi+84,4)),'big')==0x40800000
- assert struct.unpack('>4I',bytes(u.mem_read(vf+64,16)))==(0x40800000,)*4
+ assert struct.unpack('>4I',bytes(u.mem_read(vf+64,16)))==(0x40400000,)*4
 # A transient allocation failure must not create a negative entry.
 if enabled:
  fresh=upper+(1<<6);fail_alloc=True

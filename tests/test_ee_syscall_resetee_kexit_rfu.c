@@ -115,9 +115,15 @@ static void run_resetee_test(void) {
     ee_core_step(); /* LUI */
     ee_core_step(); /* ORI */
     ee_core_step(); /* ADDIU $v1, 1 */
+    st->vu0_pipeline.q_pending=1;st->vu0_pipeline.q_value=0x12345678;
+    st->vu0_pipeline.cycle=100;st->vu0_acc[0]=123;
+    st->vu0_branch_delay=1;st->vu0_ebit_delay=1;st->vu0_running=1;
     uint32_t syscall_pc = st->pc; /* real virtual address of SYSCALL */
     ee_core_step(); /* SYSCALL */
 
+    CHECK(!st->vu0_pipeline.q_pending&&!st->vu0_pipeline.cycle&&!st->vu0_acc[0]&&
+          !st->vu0_branch_delay&&!st->vu0_ebit_delay&&!st->vu0_running,
+          "ResetEE clears VU0 pending pipeline, accumulator and execution control");
     CHECK(st->halted == 0, "ResetEE(0x7F): halted stays 0");
     CHECK(st->gpr[2].ud0 == 0, "ResetEE(0x7F): GPR(2) == 0");
     CHECK(st->pc == syscall_pc + 4u, "ResetEE(0x7F): pc advanced past SYSCALL");

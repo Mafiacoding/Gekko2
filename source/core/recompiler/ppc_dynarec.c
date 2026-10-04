@@ -1,3 +1,4 @@
+#include "core/hw/vu_pair.h"
 #include "core/recompiler/ee_block_policy.h"
 /*
  * ppc_dynarec.c - see include/core/recompiler/ppc_dynarec.h for the
@@ -6130,7 +6131,7 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx,uint32_t w)
         for(unsigned l=0;l<4;l++)emit(ctx,enc_lwz(6+(int)l,3,(int16_t)(rs*16u+((l+bc)&3u)*4u)));
         for(unsigned l=0;l<4;l++)if(mask&(8u>>l))emit(ctx,enc_stw(6+(int)l,3,(int16_t)(rt*16u+l*4u)));
         return 0;
-    } else if(op==0x40u && fn==0x3fu && (rd==14u||rd==30u))return 0;
+    } else if(op==0x40u && fn==0x3fu && rd==30u)return 0;
     else return -1;
     emit(ctx,enc_andi_dot(6,6,0xffff));emit(ctx,enc_stw(6,4,(int16_t)(dst*4u)));return 0;
 }
@@ -6140,6 +6141,7 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx,uint32_t w)
  * registers. Translation is transactional: decline leaves caller unchanged. */
 int ppc_dynarec_translate_vu_pair(ppc_codegen_ctx_t *ctx,uint32_t upper,uint32_t lower)
 {
+    if(vu_pair_vf_conflict(upper,lower))return -1;
     ppc_codegen_ctx_t a,b;
     if(ppc_dynarec_init(&a,2))return -2;
     if(ppc_dynarec_init(&b,2)){ppc_dynarec_free(&a);return -2;}
@@ -6155,8 +6157,11 @@ int ppc_dynarec_translate_vu_pair(ppc_codegen_ctx_t *ctx,uint32_t upper,uint32_t
          (rd==15u&&(fn==0x3cu||fn==0x3du)) ||
          (fn==0x3fu&&(rd==14u||rd==30u))));
     if(upper&0x80000000u) {
-        emit_load_const32(ctx,11,lower);emit(ctx,enc_stw(11,4,84));
+        /* I literal becomes visible after the paired upper has read old I. */
+        emit(ctx,enc_addi(1,1,-16));emit(ctx,enc_stw(14,1,8));emit(ctx,enc_or(14,4,4));
         for(size_t n=0;n<a.used_words;n++)emit(ctx,a.code[n]);
+        emit_load_const32(ctx,11,lower);emit(ctx,enc_stw(11,14,84));
+        emit(ctx,enc_lwz(14,1,8));emit(ctx,enc_addi(1,1,16));
     } else if(short_lower) {
         /* These lower forms only need VF/VI. Upper retains r3, but can
          * use r4 as scratch. Save only VI, not all eight arguments. */
@@ -6189,18 +6194,18 @@ int ppc_dynarec_translate_vu_block(ppc_codegen_ctx_t *ctx,const uint32_t *upper,
     for(int n=0;n<8;n++){emit(&body,enc_stw(14+n,1,(int16_t)(8+n*4)));emit(&body,enc_or(14+n,3+n,3+n));}
     for(unsigned i=0;i<count;i++) {
         unsigned op=lower[i]>>25;
-        if((upper[i]&0x7e000000u) || (!(upper[i]&0x80000000u)&&op>=0x20u&&op<=0x2fu)){
+        if(vu_pair_vf_conflict(upper[i],lower[i]) || (upper[i]&0x7e000000u) || (!(upper[i]&0x80000000u)&&op>=0x20u&&op<=0x2fu)){
             ppc_dynarec_free(&body);return -1;
         }
         /* R1282: keep the eight invocation arguments resident for the
          * whole block. Upper VI/ACC accesses address r15/r16 directly,
          * without nested pair/upper save frames on every micro pair. */
         emit(&body,enc_or(3,14,14));
-        if(upper[i]&0x80000000u) {
+        int result=translate_vu_upper_body(&body,upper[i],15,16,0);
+        if(!result && (upper[i]&0x80000000u)) {
             emit_load_const32(&body,11,lower[i]);
             emit(&body,enc_stw(11,15,84));
         }
-        int result=translate_vu_upper_body(&body,upper[i],15,16,0);
         if(!result && !(upper[i]&0x80000000u)) {
             unsigned fn=lower[i]&63u,rd=(lower[i]>>6)&31u;
             int short_lower=op==8u||op==9u ||

@@ -1,0 +1,115 @@
+{
+  "revision": "R1308",
+  "parent": "0f403196322f309b6d8ccb04972378d5c4da0a63",
+  "scope": "Selected VU issue/dual-pair correctness and event-free peripheral timer batching; full VU and general event phases remain open",
+  "host_tests": {
+    "passed": 213,
+    "total": 213,
+    "final_dependency_guard_targeted": [
+      "VU pipeline",
+      "I order",
+      "ResetEE"
+    ]
+  },
+  "linked_PPC": {
+    "VU_JIT_oracles": 32,
+    "VU_Interpreter_oracles": 32,
+    "VU_JIT_cache_and_admission_groups": 7,
+    "native_pair_cases": 11232,
+    "native_block_cases": 9600,
+    "IOP_paired_programs": 477,
+    "residency_independent_oracles": 62,
+    "EE_merge_byte_cases": 1152,
+    "EE_merge_IRQ_exits": 64
+  },
+  "timer_randomized_transactions": 30000,
+  "timer_instruction_measurement": {
+    "results": [
+      {
+        "elf": "Gekko2-R1307-JIT.elf",
+        "timer_clock_sources": {
+          "0": {
+            "PPC_instructions": 196608,
+            "ticks": 4096,
+            "count": 4096
+          },
+          "1": {
+            "PPC_instructions": 165888,
+            "ticks": 4096,
+            "count": 256
+          },
+          "2": {
+            "PPC_instructions": 184448,
+            "ticks": 4096,
+            "count": 16
+          },
+          "3": {
+            "PPC_instructions": 217088,
+            "ticks": 4096,
+            "count": 0
+          }
+        }
+      },
+      {
+        "elf": "Gekko2-R1308-JIT.elf",
+        "timer_clock_sources": {
+          "0": {
+            "PPC_instructions": 45423,
+            "ticks": 4096,
+            "count": 4096
+          },
+          "1": {
+            "PPC_instructions": 45423,
+            "ticks": 4096,
+            "count": 256
+          },
+          "2": {
+            "PPC_instructions": 45428,
+            "ticks": 4096,
+            "count": 16
+          },
+          "3": {
+            "PPC_instructions": 45428,
+            "ticks": 4096,
+            "count": 0
+          }
+        }
+      }
+    ],
+    "scope": "Actual PPC instructions including timer-call return; one timer, mock host; not Wii cycles or BIOS FPS."
+  },
+  "CPU_instruction_measurement": {
+    "elf": "Gekko2-R1308-JIT.elf",
+    "retirements": 8,
+    "warm_PPC_instructions": {
+      "EE_ADDIU_self": 3052,
+      "EE_OR_sources": 3100,
+      "EE_XOR_accumulator": 3110,
+      "EE_LW_base": 3701,
+      "IOP_ADDIU_self": 6590,
+      "IOP_OR_sources": 6637,
+      "IOP_XOR_accumulator": 6642,
+      "IOP_LW_base": 8335
+    },
+    "scope": "Mocked platform, synthetic programs; includes full CPU retirement. Not Wii cycles, BIOS timing or FPS."
+  },
+  "hardware_FPS_verified": false,
+  "binaries": {
+    "Gekko2-R1308-JIT.elf": {
+      "bytes": 5859368,
+      "sha256": "ed662074b2e73a873d3ec7f53d1550e36319d6757fa3eef6ae150bef0804c14b"
+    },
+    "Gekko2-R1308-JIT.dol": {
+      "bytes": 1100032,
+      "sha256": "83972c061de110894d9efdfd44ed404b46294394c887707b8bbcd6a241d080ee"
+    },
+    "Gekko2-R1308-Interpreter.elf": {
+      "bytes": 5672816,
+      "sha256": "b9d68d021c328afff20b2f9f6a753d8468f3fca78e0e7e1ecc5c062a4b1addfe"
+    },
+    "Gekko2-R1308-Interpreter.dol": {
+      "bytes": 978688,
+      "sha256": "3f5241cd552177508b7e8442b45a522c35ed6373a438d9e83b510e212d0083c1"
+    }
+  }
+}

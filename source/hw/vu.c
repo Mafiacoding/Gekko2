@@ -6,6 +6,7 @@
 
 #include "core/hw/vu.h"
 #include "core/hw/vu_math.h"
+#include "core/hw/vu_pair.h"
 #include "core/hw/gif.h"
 #include "core/hw/vif.h"
 #include "vu_opcodes.h"
@@ -59,6 +60,95 @@ void vu1_mem_write32(uint32_t addr, uint32_t value)
 static inline float vu_f(uint32_t bits) { union { uint32_t u; float f; } c; c.u = bits; return c.f; }
 static inline uint32_t vu_u(float f)    { union { uint32_t u; float f; } c; c.f = f; return c.u; }
 
+static uint32_t vu_scalar_bits(uint32_t bits) {
+    unsigned exp=bits&0x7f800000u;
+    if(!exp)return bits&0x80000000u;
+    if(exp==0x7f800000u)return (bits&0x80000000u)|0x7f7fffffu;
+    return bits;
+}
+static void vu_q_compute(uint32_t vf[32][4],uint32_t *vi,uint32_t w) {
+    unsigned op=w&3u,fs=(w>>11)&31u,ft=(w>>16)&31u;
+    uint32_t a=vu_scalar_bits(vf[fs][(w>>21)&3u]);
+    uint32_t b=vu_scalar_bits(vf[ft][(w>>23)&3u]);
+    float x=vu_f(a),y=vu_f(b);uint32_t flags=0,result;
+    if(op==1u) {
+        if(y<0)flags=0x10u;
+        result=vu_scalar_bits(vu_u(sqrtf(fabsf(y))));
+    } else if(y==0) {
+        if(op==0u) {
+            flags=x==0?0x10u:0x20u;
+            result=((a^b)&0x80000000u)|0x7f7fffffu;
+        } else {
+            flags=0x20u|(x==0?0x10u:0);
+            result=((a^b)&0x80000000u)|(x==0?0:0x7f7fffffu);
+        }
+    } else {
+        if(op==2u&&y<0)flags=0x10u;
+        result=vu_scalar_bits(vu_u(x/(op==2u?sqrtf(fabsf(y)):y)));
+    }
+    vi[22]=result;vi[16]=(vi[16]&~0x30u)|flags;
+}
+/* EFU polynomial constants and instruction semantics follow PCSX2
+ * VUops.cpp (GPL-3.0+, PCSX2 Dev Team). This is a scalar reference path;
+ * exact hardware polynomial rounding remains a separate validation task. */
+static float vu_eatan(float x) {
+    static const float c[9]={0.999999344348907f,-0.333298563957214f,
+        0.199465364217758f,-0.139085337519646f,0.096420042216778f,
+        -0.055909886956215f,0.021861229091883f,-0.004054057877511f,
+        0.785398185253143f};
+    double sum=c[0]*x;
+    for(unsigned i=1;i<8;i++)sum+=c[i]*pow((double)x,2*i+1);
+    float result=(float)sum;result+=c[8];
+    return vu_f(vu_scalar_bits(vu_u(result)));
+}
+static unsigned vu_efu_latency(uint32_t w) {
+    static const unsigned cycles[4][4]={
+        {11,18,18,24},{54,54,12,0},{12,18,12,0},{29,54,44,0}};
+    unsigned sub=(w>>6)&31u;
+    return sub>=28u?cycles[sub-28u][w&3u]:0;
+}
+static int vu_efu_compute(uint32_t vf[32][4],uint32_t *vi,uint32_t w) {
+    unsigned sub=(w>>6)&31u,bc=w&3u,fs=(w>>11)&31u;
+    if(!vu_efu_latency(w))return 0;
+    float x=vu_f(vu_scalar_bits(vf[fs][0])),y=vu_f(vu_scalar_bits(vf[fs][1]));
+    float z=vu_f(vu_scalar_bits(vf[fs][2])),v=vu_f(vu_scalar_bits(vf[fs][(w>>21)&3u]));
+    float p=0;
+    if(sub==28u) {
+        p=x*x+y*y+z*z;
+        if(bc==1u){if(p!=0)p=1.0f/p;}
+        if(bc>=2u&&p>=0){p=sqrtf(p);if(bc==3u&&p!=0)p=1.0f/p;}
+    } else if(sub==29u) {
+        if(bc==2u)p=x+y+z+vu_f(vu_scalar_bits(vf[fs][3]));
+        else if(x!=0)p=vu_eatan((bc==0u?y:z)/x);
+    } else if(sub==30u) {
+        p=v;if(bc==2u){if(p!=0)p=(float)(1.0/(double)p);}
+        else if(p>=0){p=sqrtf(p);if(bc==1u&&p!=0)p=1.0f/p;}
+    } else {
+        if(bc==0u) {
+            static const float c[5]={1,-0.166666567325592f,0.008333025500178f,
+                -0.000198074136279f,0.000002601886990f};
+            double sum=c[0]*v;
+            for(unsigned i=1;i<5;i++)sum+=c[i]*pow((double)v,2*i+1);
+            p=vu_f(vu_scalar_bits(vu_u((float)sum)));
+        } else if(bc==1u)p=vu_eatan(v);
+        else {
+            static const float c[6]={0.249998688697815f,0.031257584691048f,
+                0.002591371303424f,0.000171562001924f,0.000005430199963f,0.000000690600018f};
+            double sum=1.0f+c[0]*v;
+            for(unsigned i=1;i<6;i++)sum+=c[i]*pow((double)v,i+1);
+            p=(float)sum;p=(float)pow((double)p,4);
+            p=vu_f(vu_scalar_bits(vu_u(p)));p=(float)(1.0/(double)p);
+        }
+    }
+    vi[23]=vu_u(p);return 1;
+}
+static void vu_q_publish(vu_pipeline_t *p,uint32_t *vi) {
+    if(p&&p->q_pending&&p->cycle>=p->q_ready) {
+        vi[22]=p->q_value;
+        vi[16]=(vi[16]&~0x30u)|p->q_status;
+        p->q_pending=0;
+    }
+}
 /* Writes result[lane] into vf[fd_idx][lane] for every lane selected
  * by dest_mask (bit3=x..bit0=w, see vu_opcodes.h). Register 0 (VF00)
  * is hardwired on real hardware - writes to it are always discarded,
@@ -444,6 +534,21 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
             *branch_delay = 2u; *branch_target = target;
             return 1;
         }
+        case VUL_FCEQ:vu_write_vi(vi,1,(vi[18]&0xffffffu)==(w&0xffffffu));return 1;
+        case VUL_FCSET:vi[18]=w&0xffffffu;return 1;
+        case VUL_FCAND:vu_write_vi(vi,1,!!((vi[18]&0xffffffu)&(w&0xffffffu)));return 1;
+        case VUL_FCOR:vu_write_vi(vi,1,((vi[18]|w)&0xffffffu)==0xffffffu);return 1;
+        case VUL_FCGET:vu_write_vi(vi,rt,vi[18]&0xfffu);return 1;
+        case VUL_FSEQ:case VUL_FSSET:case VUL_FSAND:case VUL_FSOR: {
+            uint32_t imm=((w>>10)&0x800u)|(w&0x7ffu),status=vi[16]&0xfffu;
+            if(opcode==VUL_FSSET)vi[16]=(vi[16]&0x3fu)|(imm&0xfc0u);
+            else vu_write_vi(vi,rt,opcode==VUL_FSEQ?status==imm:opcode==VUL_FSAND?status&imm:status|imm);
+            return 1;
+        }
+        case VUL_FMEQ:case VUL_FMAND:case VUL_FMOR: {
+            uint32_t mac=vi[17]&0xffffu,source=vu_read_vi16(vi,rs);
+            vu_write_vi(vi,rt,opcode==VUL_FMEQ?mac==source:opcode==VUL_FMAND?mac&source:mac|source);return 1;
+        }
         case VUL_IBEQ:
             if (vu_read_vi16(vi, rs) == vu_read_vi16(vi, rt)) { *branch_delay = 2u; *branch_target = (uint32_t)((int32_t)pc + 8 + off11 * 8); }
             return 1;
@@ -510,6 +615,13 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
             {
                 uint32_t fdslot = VU_L_RD(w);
                 uint32_t bc2 = w & 0x3u;
+                if(mem_mask==VU1_MEM_SIZE-1u&&funct6>=60u) {
+                    if(fdslot==25u&&bc2==0u) {
+                        if(rt)for(unsigned l=0;l<4;l++)if(dest&(8u>>l))vf[rt][l]=vi[23];
+                        return 1;
+                    }
+                    if(vu_efu_compute(vf,vi,w))return 1;
+                }
                 if (fdslot == VULS_FD_MOVE_GROUP) {
                     float rr[4];
                     for (int l = 0; l < 4; l++) rr[l] = vu_f(vf[rs][l]);
@@ -576,15 +688,8 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
                     }
                 }
                 if (fdslot == VULS_FD_DIVQ_GROUP) {
-                    /* DIV/SQRT/RSQRT: exact fsf/ftf element-selector bit positions
-                     * were not confidently recovered from the source document
-                     * (see vu_opcodes.h) - this project uses element x (lane 0)
-                     * of Fs/Ft as a documented, honest simplification rather
-                     * than fabricate the real selector bits. Q is vi[22]. */
-                    if (bc2 == 0) { vi[22] = vu_u(vu_f(vf[rs][0]) / vu_f(vf[rt][0])); return 1; } /* DIV */
-                    if (bc2 == 1) { vi[22] = vu_u(sqrtf(vu_f(vf[rt][0]))); return 1; } /* SQRT (Ft only) */
-                    if (bc2 == 2) { vi[22] = vu_u(vu_f(vf[rs][0]) / sqrtf(vu_f(vf[rt][0]))); return 1; } /* RSQRT */
-                    if (bc2 == 3) { return 1; } /* WAITQ - non-pipelined interpreter, Q is always ready: true no-op */
+                    if(bc2<3u)vu_q_compute(vf,vi,w);
+                    return 1;
                 }
                 if (fdslot == VULS_FD_WAITP && bc2 == 3) return 1; /* WAITP - same as WAITQ, no-op here */
                 if (fdslot == VULS_FD_XTOP_GROUP && bc2 <= 1) {
@@ -630,7 +735,13 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
                     uint32_t addr = (vu_read_vi16(vi, rs) & 0x3FFu) * 16u;
                     if (mem_mask == (VU1_MEM_SIZE - 1u) && addr < VU1_MEM_SIZE) {
                         uint32_t qwc = (VU1_MEM_SIZE - addr) / 16u;
-                        gif_process_quadwords(GIF_PATH_1, mem + addr, qwc);
+                        /* A PATH1 packet can cross the 16 KiB ring boundary. */
+                        if(addr) {
+                            static uint8_t wrapped[VU1_MEM_SIZE];
+                            memcpy(wrapped,mem+addr,VU1_MEM_SIZE-addr);
+                            memcpy(wrapped+VU1_MEM_SIZE-addr,mem,addr);
+                            gif_process_quadwords(GIF_PATH_1,wrapped,VU1_MEM_SIZE/16u);
+                        } else gif_process_quadwords(GIF_PATH_1,mem,qwc);
                     }
                     return 1;
                 }
@@ -665,17 +776,45 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
 }
 
 /* See vu.h's header comment for the full citation and scope. */
-int vu_micro_step(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
+int vu_micro_step_pipeline(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
                    uint8_t *mem, uint32_t mem_mask,
                    uint8_t *micro, uint32_t micro_mask,
                    uint32_t *tpc, uint32_t *branch_delay, uint32_t *branch_target,
                    uint32_t *ebit_delay,
-                   uint64_t *instructions_executed, uint64_t *unimplemented_opcodes_seen)
+                   uint64_t *instructions_executed, uint64_t *unimplemented_opcodes_seen,
+                   vu_pipeline_t *pipeline)
 {
     uint32_t off = *tpc & micro_mask;
     uint32_t lower = vu_rd_le32(micro + off);       /* ptr[0] */
     uint32_t upper = vu_rd_le32(micro + off + 4u);  /* ptr[1] */
     uint32_t this_pc = off;
+
+    int qop=!(upper&0x80000000u)&&VU_L_OPCODE(lower)==64u&&
+        VU_L_FUNCT6(lower)>=60u&&VU_L_RD(lower)==14u;
+    int pop=!(upper&0x80000000u)&&VU_L_OPCODE(lower)==64u&&
+        VU_L_FUNCT6(lower)>=60u&&mem_mask==VU1_MEM_SIZE-1u&&
+        (vu_efu_latency(lower)|| (VU_L_RD(lower)==30u&&(lower&3u)==3u));
+    if(pipeline) {
+        if(pop&&pipeline->p_pending&&pipeline->cycle+1<pipeline->p_ready)
+            pipeline->cycle=pipeline->p_ready-1;
+        if(pipeline->p_pending&&(pipeline->cycle>=pipeline->p_ready||pop)) {
+            vi[23]=pipeline->p_value;pipeline->p_pending=0;
+        }
+        /* FDIV/WAITQ stalls happen BEFORE either half executes. */
+        if(qop&&pipeline->q_pending&&pipeline->cycle<pipeline->q_ready)
+            pipeline->cycle=pipeline->q_ready;
+        vu_q_publish(pipeline,vi);
+        if(pipeline->p_pending&&pipeline->cycle>=pipeline->p_ready) {
+            vi[23]=pipeline->p_value;pipeline->p_pending=0;
+        }
+    }
+    unsigned upper_dst=vu_pair_upper_dest(upper);
+    int conflict=vu_pair_vf_conflict(upper,lower);
+    uint32_t old_vf[4],new_vf[4];
+    if(conflict)memcpy(old_vf,vf[upper_dst],sizeof(old_vf));
+    uint32_t old_q=vi[22],old_status=vi[16],old_p=vi[23],old_clip=vi[18];
+    int clip_upper=VU_U_IS_SPECIAL(upper)&&VU_SPEC_SUBOP(upper)==7u&&(upper&3u)==3u;
+    int clip_lower=(VU_L_OPCODE(lower)>=16u&&VU_L_OPCODE(lower)<=19u)||VU_L_OPCODE(lower)==28u;
 
     *tpc = (off + 8u) & micro_mask;
 
@@ -691,18 +830,41 @@ int vu_micro_step(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
     /* I flag (bit 31 of the upper word): only the upper instruction
      * executes this pair; the lower word's raw bits become the real
      * $I$ register (VI[21], REG_I per PCSX2's VU.h VURegFlags enum). */
-    if (vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
+    if (!qop&&!pop&&!conflict&&!(clip_upper&&clip_lower)&&vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
         upper_ok=lower_ok=1;
     } else if (upper & 0x80000000u) {
-        vi[21] = lower;
         upper_ok = vu_jit_try_upper(vf, vi, acc, upper) || vu_exec_upper(vf, vi, acc, upper);
+        vi[21] = lower;
         lower_ok = 1; /* the lower word was consumed as data (the I-immediate), not an instruction - correctly decoded, not "unimplemented" */
     } else {
         upper_ok = vu_jit_try_upper(vf, vi, acc, upper) || vu_exec_upper(vf, vi, acc, upper);
-        lower_ok = vu_jit_try_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target) ||
+        if(conflict) {
+            memcpy(new_vf,vf[upper_dst],sizeof(new_vf));
+            memcpy(vf[upper_dst],old_vf,sizeof(old_vf));
+        }
+        /* Upper wins a same-VF write collision: discard the lower half,
+         * including an LQI/LQD base update, as in the reference pipeline. */
+        uint32_t new_clip=vi[18];
+        if(clip_upper&&clip_lower)vi[18]=old_clip;
+        if((conflict&&vu_pair_lower_dest(lower)==upper_dst) || (clip_upper&&VU_L_OPCODE(lower)==17u))lower_ok=1;
+        else lower_ok = (!qop&&!pop&&vu_jit_try_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target)) ||
                    vu_exec_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target);
+        if(conflict)memcpy(vf[upper_dst],new_vf,sizeof(new_vf));
+        if(clip_upper&&clip_lower)vi[18]=new_clip;
     }
 
+    if(pipeline) {
+        if(qop&&(lower&3u)<3u) {
+            pipeline->q_value=vi[22];pipeline->q_status=vi[16]&0xc30u;
+            pipeline->q_ready=pipeline->cycle+((lower&3u)==2u?13u:7u);
+            pipeline->q_pending=1;vi[22]=old_q;vi[16]=old_status;
+        }
+        if(pop&&vu_efu_latency(lower)) {
+            pipeline->p_value=vi[23];pipeline->p_ready=pipeline->cycle+vu_efu_latency(lower);
+            pipeline->p_pending=1;vi[23]=old_p;
+        }
+        pipeline->cycle++;
+    }
     if (!upper_ok || !lower_ok)
         (*unimplemented_opcodes_seen)++;
     (*instructions_executed)++;
@@ -719,10 +881,27 @@ int vu_micro_step(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
     }
 
     if (*ebit_delay > 0) {
-        if (--(*ebit_delay) == 0)
+        if (--(*ebit_delay) == 0) {
+            if(pipeline&&pipeline->q_pending) {
+                pipeline->cycle=pipeline->q_ready;vu_q_publish(pipeline,vi);
+            }
+            if(pipeline&&pipeline->p_pending) {
+                if(pipeline->cycle<pipeline->p_ready)pipeline->cycle=pipeline->p_ready;
+                vi[23]=pipeline->p_value;pipeline->p_pending=0;
+            }
             return 1; /* stopped */
+        }
     }
     return 0;
+}
+
+/* Compatibility one-pair API: no asynchronous state supplied. Production
+ * VU0/VU1 runners use the explicit per-unit pipeline entry below. */
+int vu_micro_step(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
+    uint8_t *mem,uint32_t mm,uint8_t *micro,uint32_t um,
+    uint32_t *pc,uint32_t *bd,uint32_t *bt,uint32_t *ed,
+    uint64_t *retired,uint64_t *unknown) {
+    return vu_micro_step_pipeline(vf,vi,acc,mem,mm,micro,um,pc,bd,bt,ed,retired,unknown,NULL);
 }
 
 /* Safety cap on a single MSCAL/MSCNT run - this project's own guard
@@ -734,7 +913,7 @@ int vu_micro_step(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
  * delay-slot path. Classification does not execute or alter micro state. */
 static inline int vu1_block_candidate(void)
 {
-    if(g_vu1.branch_delay||g_vu1.ebit_delay)return 0;
+    if(g_vu1.branch_delay||g_vu1.ebit_delay||(g_vu1.pipeline.q_pending||g_vu1.pipeline.p_pending))return 0;
     for(unsigned n=0;n<2;n++) {
         uint32_t off=(g_vu1.tpc+n*8u)&(VU1_MICRO_SIZE-1u);
         uint32_t up=vu_rd_le32(g_vu1.micro+off+4u);
@@ -750,12 +929,12 @@ static inline int vu1_block_candidate(void)
 static void vu1_run_pairs(void)
 {
     for (uint32_t i = 0; i < VU_EXEC_STEP_CAP; i++) {
-        int stopped = vu_micro_step(g_vu1.vf, g_vu1.vi, g_vu1.acc,
+        int stopped = vu_micro_step_pipeline(g_vu1.vf, g_vu1.vi, g_vu1.acc,
                                      g_vu1.mem, VU1_MEM_SIZE - 1u,
                                      g_vu1.micro, VU1_MICRO_SIZE - 1u,
                                      &g_vu1.tpc, &g_vu1.branch_delay, &g_vu1.branch_target,
                                      &g_vu1.ebit_delay,
-                                     &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen);
+                                     &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline);
         if (stopped)
             break;
     }
@@ -769,13 +948,13 @@ static void vu1_run_blocks(void)
         if(vu1_block_candidate())ran=vu_jit_try_block(g_vu1.vf,g_vu1.vi,g_vu1.acc,g_vu1.mem,VU1_MEM_SIZE-1u,
             g_vu1.micro,VU1_MICRO_SIZE-1u,&g_vu1.tpc,&g_vu1.branch_delay,&g_vu1.branch_target,
             &g_vu1.ebit_delay,&g_vu1.instructions_executed,VU_EXEC_STEP_CAP-i);
-        if(ran){i+=ran-1u;continue;}
-        int stopped = vu_micro_step(g_vu1.vf, g_vu1.vi, g_vu1.acc,
+        if(ran){g_vu1.pipeline.cycle+=ran;i+=ran-1u;continue;}
+        int stopped = vu_micro_step_pipeline(g_vu1.vf, g_vu1.vi, g_vu1.acc,
                                      g_vu1.mem, VU1_MEM_SIZE - 1u,
                                      g_vu1.micro, VU1_MICRO_SIZE - 1u,
                                      &g_vu1.tpc, &g_vu1.branch_delay, &g_vu1.branch_target,
                                      &g_vu1.ebit_delay,
-                                     &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen);
+                                     &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline);
         if (stopped)
             break;
     }

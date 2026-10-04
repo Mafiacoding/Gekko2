@@ -8,7 +8,8 @@ from unicorn import Uc,UC_ARCH_PPC,UC_MODE_PPC32,UC_MODE_BIG_ENDIAN
 from unicorn.ppc_const import *
 r=Path(__file__).resolve().parents[1];out=r/'outputs/verification';out.mkdir(exist_ok=True)
 s=(r/'source/hw/vu.c').read_text().replace('    if (vu_jit_try_upper(vf, vi, acc, w)) return 1;','').replace('    if (vu_jit_try_lower(vf, vi, mem, mem_mask, w, pc, branch_delay, branch_target)) return 1;','')
-s+='''\nint reference_upper(uint32_t vf[32][4],uint32_t *vi,uint32_t *acc,uint32_t w){return vu_exec_upper(vf,vi,acc,w);}
+s+='''\nint reference_conflict(uint32_t u,uint32_t l){return vu_pair_vf_conflict(u,l)||(!(u&0x80000000u)&&(l>>25)==64u&&((l>>6)&31u)==14u&&(l&63u)==63u);}
+int reference_upper(uint32_t vf[32][4],uint32_t *vi,uint32_t *acc,uint32_t w){return vu_exec_upper(vf,vi,acc,w);}
 int reference_lower(uint32_t vf[32][4],uint32_t *vi,uint8_t *m,uint32_t mask,uint32_t w,uint32_t pc,uint32_t *d,uint32_t *t){return vu_exec_lower(vf,vi,m,mask,w,pc,d,t);}
 static vif_state_t stub_vif;
 vif_state_t *vif0_get_state(void){return &stub_vif;}
@@ -58,13 +59,15 @@ def execute(w,lower,n):
   uword=upper&~0xc0000000;lword=low
   if (n+k)%5==0:uword|=0x80000000;lword=struct.unpack('>I',struct.pack('>f',rng.choice(values)))[0]
   ups.append(uword);los.append(lword)
-  if uword&0x80000000:vi[21]=lword
   valid &= ref.reference_upper(vf,vi,acc,uword)
+  if uword&0x80000000:vi[21]=lword
   if not uword&0x80000000:valid &= ref.reference_lower(vf,vi,mem,mem_mask,lword,pc+8*k,C.byref(delay),C.byref(target))
  assert valid==1,('reference',lower,hex(w))
  expected=list(x for row in vf for x in row)+list(vi)+list(acc)
  c=Context();assert lib.ppc_dynarec_init(C.byref(c),4*count+2)==0
  result=lib.ppc_dynarec_translate_vu_block(C.byref(c),(C.c_uint32*count)(*ups),(C.c_uint32*count)(*los),count)
+ if any(ref.reference_conflict(uword,lword) for uword,lword in zip(ups,los)):
+  assert result==-1 and c.used==0;lib.ppc_dynarec_free(C.byref(c));return
  assert result==0,('translate',lower,hex(w),result)
  lib.ppc_dynarec_finalize(C.byref(c));code=struct.pack('>'+str(c.used)+'I',*c.code[:c.used]);lib.ppc_dynarec_free(C.byref(c))
  u.mem_write(0x10000,code);u.ctl_remove_cache(0x10000,0x18000);u.mem_write(0x20000,struct.pack('>164I',*raw));u.mem_write(0x40000,mem_bytes);u.mem_write(0x21000,struct.pack('>2I',*initial_control))

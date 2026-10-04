@@ -4421,7 +4421,7 @@ static uint32_t vu0_mem_read32(const ee_state_t *st, uint32_t addr)
  * shared one-pair scheduler. Entry selection avoids branch-loop scans. */
 static inline int vu0_block_candidate(const ee_state_t *st)
 {
-    if(st->vu0_branch_delay||st->vu0_ebit_delay)return 0;
+    if(st->vu0_branch_delay||st->vu0_ebit_delay||st->vu0_pipeline.q_pending)return 0;
     for(unsigned n=0;n<2;n++) {
         uint32_t off=(st->cop2_ctrl[26]+n*8u)&(sizeof(st->vu0_micro)-1u);
         uint32_t up=elfld_rd_le32(st->vu0_micro+off+4u);
@@ -4436,12 +4436,12 @@ static inline int vu0_block_candidate(const ee_state_t *st)
 static void vu0_run_pairs(ee_state_t *st)
 {
     for (uint32_t i = 0; i < VU0_EXEC_STEP_CAP; i++) {
-        int stopped = vu_micro_step(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
+        int stopped = vu_micro_step_pipeline(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
                                      st->vu0_mem, (uint32_t)(sizeof(st->vu0_mem) - 1u),
                                      st->vu0_micro, (uint32_t)(sizeof(st->vu0_micro) - 1u),
                                      &st->cop2_ctrl[26], &st->vu0_branch_delay, &st->vu0_branch_target,
                                      &st->vu0_ebit_delay,
-                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen);
+                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline);
         if (stopped)
             break;
     }
@@ -4456,13 +4456,13 @@ static void vu0_run_blocks(ee_state_t *st)
             st->vu0_micro,(uint32_t)(sizeof(st->vu0_micro)-1u),&st->cop2_ctrl[26],
             &st->vu0_branch_delay,&st->vu0_branch_target,&st->vu0_ebit_delay,
             &st->vu0_instructions_executed,VU0_EXEC_STEP_CAP-i);
-        if(ran){i+=ran-1u;continue;}
-        int stopped = vu_micro_step(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
+        if(ran){st->vu0_pipeline.cycle+=ran;i+=ran-1u;continue;}
+        int stopped = vu_micro_step_pipeline(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
                                      st->vu0_mem, (uint32_t)(sizeof(st->vu0_mem) - 1u),
                                      st->vu0_micro, (uint32_t)(sizeof(st->vu0_micro) - 1u),
                                      &st->cop2_ctrl[26], &st->vu0_branch_delay, &st->vu0_branch_target,
                                      &st->vu0_ebit_delay,
-                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen);
+                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline);
         if (stopped)
             break;
     }
@@ -6165,6 +6165,10 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                     memset(st->vu0_vf, 0, sizeof(st->vu0_vf));
                     memset(st->vu0_mem, 0, sizeof(st->vu0_mem));
                     memset(st->vu0_micro, 0, sizeof(st->vu0_micro));
+                    memset(&st->vu0_pipeline,0,sizeof(st->vu0_pipeline));
+                    memset(st->vu0_acc,0,sizeof(st->vu0_acc));
+                    st->vu0_branch_delay=st->vu0_branch_target=st->vu0_ebit_delay=0;
+                    st->vu0_running=0;
                     st->vu0_vf[0][3] = 0x3F800000u; /* VF00 hardwired to
                         (0,0,0,1.0f) - same real-hardware fact cited by
                         this project's own vu1_init() for VF00. */

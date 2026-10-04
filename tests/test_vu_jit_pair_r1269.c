@@ -11,15 +11,16 @@ int main(void){
  uint32_t vf[32][4]={{0}},vi[32]={0},acc[4]={0};uint8_t mem[4096]={0},micro[4096]={0};
  uint32_t pc=0,delay=0,target=0,ebit=0;uint64_t count=0,unknown=0;
  vf[0][3]=bits(1);for(int l=0;l<4;l++){vf[1][l]=bits(2);vf[2][l]=bits(3);acc[l]=bits(10);}
- /* I-data is loaded before ADDi; E stops only after the next pair. */
- word(micro,bits(3));word(micro+4,0x80000000u|(15u<<21)|(1u<<11)|(2u<<6)|0x22u);
+ /* Upper ADDi reads old I; the literal is installed after this pair. */
+ vi[21]=bits(3);
+ word(micro,bits(4));word(micro+4,0x80000000u|(15u<<21)|(1u<<11)|(2u<<6)|0x22u);
  word(micro+8,(0x40u<<25)|(1u<<16)|(1u<<11)|(2u<<6)|0x30u);
  word(micro+12,0x40000000u|0x2ffu); /* NOP + E */
  word(micro+16,(0x40u<<25)|(2u<<16)|(1u<<11)|(3u<<6)|0x30u);
  word(micro+20,(15u<<21)|(2u<<16)|(1u<<11)|(4u<<6)|0x2au);
  vi[1]=7;
  CHECK(vu_micro_step(vf,vi,acc,mem,4095,micro,4095,&pc,&delay,&target,&ebit,&count,&unknown)==0);
- CHECK(vi[21]==bits(3)&&vf[2][0]==bits(5)&&vi[1]==7);
+ CHECK(vi[21]==bits(4)&&vf[2][0]==bits(5)&&vi[1]==7);
  CHECK(vu_micro_step(vf,vi,acc,mem,4095,micro,4095,&pc,&delay,&target,&ebit,&count,&unknown)==0);
  CHECK(vi[2]==14&&ebit==1);
  CHECK(vu_micro_step(vf,vi,acc,mem,4095,micro,4095,&pc,&delay,&target,&ebit,&count,&unknown)==1);

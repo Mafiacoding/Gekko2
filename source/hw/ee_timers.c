@@ -53,15 +53,35 @@ uint32_t ee_timers_get_irq_count(int idx)
  * was found and why it mattered for task #247). */
 static const uint64_t EE_HBLNK_PERIOD_CYCLES = 18743ull;
 static uint64_t g_bus_tick_counter = 0;
+/* Deferred ticks never cross a compare/overflow boundary. MMIO and
+ * snapshots materialize counts; legacy mutable state disables deferral. */
+static uint32_t g_deferred_ticks, g_event_distance;
+static int g_state_exposed;
+static uint64_t g_batched_ticks, g_boundary_ticks;
+static void ee_timers_materialize(void);
+
 
 void ee_timers_init(void)
 {
     memset(&g_timers, 0, sizeof(g_timers));
     memset(&g_irq_count, 0, sizeof(g_irq_count));
     g_bus_tick_counter = 0;
+    g_deferred_ticks=g_event_distance=0;g_state_exposed=0;
+    g_batched_ticks=g_boundary_ticks=0;
 }
 
-ee_timers_state_t *ee_timers_get_state(void) { return &g_timers; }
+ee_timers_state_t *ee_timers_get_state(void) {
+    ee_timers_materialize();g_state_exposed=1;g_event_distance=0;return &g_timers;
+}
+void ee_timers_snapshot(ee_timers_state_t *out) {
+    ee_timers_materialize();*out=g_timers;
+}
+void ee_timers_restore(const ee_timers_state_t *in) {
+    ee_timers_materialize();g_timers=*in;g_event_distance=0;
+}
+uint64_t ee_timers_get_batched_ticks(void){return g_batched_ticks+g_deferred_ticks;}
+uint64_t ee_timers_get_boundary_ticks(void){return g_boundary_ticks;}
+
 
 /* sub_off: 0x00=COUNT, 0x10=MODE, 0x20=COMP, 0x30=HOLD (real hardware
  * layout - each register is a full 0x10-aligned slot, unlike the IOP's
@@ -85,6 +105,7 @@ static ee_timer_t *find_timer(uint32_t addr, uint32_t *sub_off_out, int *has_hol
 
 int ee_timers_mmio_read32(uint32_t addr, uint32_t *out)
 {
+    ee_timers_materialize();
     uint32_t sub_off;
     int has_hold;
     ee_timer_t *t = find_timer(addr, &sub_off, &has_hold);
@@ -102,6 +123,8 @@ int ee_timers_mmio_read32(uint32_t addr, uint32_t *out)
 
 int ee_timers_mmio_write32(uint32_t addr, uint32_t value)
 {
+    g_event_distance=0;
+    ee_timers_materialize();
     uint32_t sub_off;
     int has_hold;
     ee_timer_t *t = find_timer(addr, &sub_off, &has_hold);
@@ -144,7 +167,7 @@ int ee_timers_mmio_write32(uint32_t addr, uint32_t value)
  * regardless of what the CPU itself is doing - same rationale as
  * iop_timers_tick()/ee_check_vblank(): real counters run off the
  * system clock, not off conditional CPU state. */
-void ee_timers_tick(void)
+static __attribute__((noinline)) void ee_timers_tick_scalar(void)
 {
     /* Round 87 (127th finding continuation, live host-native
      * evidence): a diagnostic run showed real BIOS code configuring
@@ -235,4 +258,53 @@ void ee_timers_tick(void)
             t->count -= (EE_TIMER_MAX_COUNT + 1u);
         }
     }
+}
+
+/* Materialization is arithmetic only: the admitted interval contains no
+ * compare/overflow, so no IRQ or zero-return can be lost here. */
+static uint32_t ee_timer_period(uint32_t mode) {
+    static const uint32_t periods[4]={1,16,256,18743};
+    return periods[mode&EE_CNT_MODE_CLKS];
+}
+static void ee_timers_materialize(void) {
+    uint32_t n=g_deferred_ticks;if(!n)return;
+    uint64_t end=g_bus_tick_counter+n;
+    for(unsigned i=0;i<EE_TIMERS_COUNT;i++) {
+        ee_timer_t *t=&g_timers.t[i];
+        if(t->mode&EE_CNT_MODE_CUE) {
+            uint32_t p=ee_timer_period(t->mode);
+            t->count+=(uint32_t)(end/p-g_bus_tick_counter/p);
+        }
+    }
+    g_bus_tick_counter=end;g_batched_ticks+=n;g_deferred_ticks=0;
+}
+static uint32_t ee_timers_distance(void) {
+    uint32_t distance=4096;
+    /* Avoid unsigned wrap inside the arithmetic interval; wrap itself
+     * goes through the original scalar clock/divider semantics. */
+    if(UINT64_MAX-g_bus_tick_counter<distance)
+        distance=(uint32_t)(UINT64_MAX-g_bus_tick_counter)+1u;
+    for(unsigned i=0;i<EE_TIMERS_COUNT;i++) {
+        ee_timer_t *t=&g_timers.t[i];if(!(t->mode&EE_CNT_MODE_CUE))continue;
+        if(t->count>0xffffu)return 1;
+        uint32_t steps=0x10000u-t->count;
+        if(t->comp>t->count && t->comp<=0x10000u && t->comp-t->count<steps)
+            steps=t->comp-t->count;
+        uint32_t period=ee_timer_period(t->mode);
+        uint64_t ticks=(uint64_t)steps*period-g_bus_tick_counter%period;
+        if(ticks<distance)distance=(uint32_t)ticks;
+    }
+    return distance;
+}
+static __attribute__((noinline)) void ee_timers_boundary(void) {
+    if(g_state_exposed){ee_timers_tick_scalar();g_boundary_ticks++;return;}
+    if(!g_event_distance)g_event_distance=ee_timers_distance();
+    if(--g_event_distance) {g_deferred_ticks++;return;}
+    ee_timers_materialize();ee_timers_tick_scalar();g_boundary_ticks++;
+}
+void ee_timers_tick(void) {
+    /* Keep the common path a leaf; no 64-bit profiler update, spills or
+     * peripheral helper call is needed before the next boundary. */
+    if(g_event_distance>1u){--g_event_distance;g_deferred_ticks++;return;}
+    ee_timers_boundary();
 }

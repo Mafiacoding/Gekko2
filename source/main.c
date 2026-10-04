@@ -4,7 +4,7 @@
 #include "core/hw/frontend_runtime.h"
 #include "core/recompiler/iop_jit.h"
 #include "core/recompiler/vu_jit.h"
-/* R1307: native Wii launcher followed by real EE/IOP boot. */
+/* R1308: native Wii launcher followed by real EE/IOP boot. */
 #include <gccore.h>
 #include <wiiuse/wpad.h>
 #include "frontend.h"
@@ -89,7 +89,7 @@ static uint16_t wii_pad_to_ps2_pad(uint16_t wii_held)
     return ps2;
 }
 
-/* R1307: one build supports GameCube pads and upright Wii Remotes,
+/* R1308: one build supports GameCube pads and upright Wii Remotes,
  * with optional Nunchuk. Expansion bits are accepted only for Nunchuk,
  * so another expansion cannot accidentally become a shoulder button. */
 __attribute__((noinline)) uint16_t wii_remote_to_pad(uint32_t buttons,
@@ -291,7 +291,7 @@ static int g_first_picture;
 static uint64_t g_boot_started,g_boot_log_next;
 static const char *boot_log_path(void)
 {
-    return g_gx_present?"sd:/pcsx2/Gekko2-R1307-gx-render.log":"sd:/pcsx2/Gekko2-R1307-software.log";
+    return g_gx_present?"sd:/pcsx2/Gekko2-R1308-gx-render.log":"sd:/pcsx2/Gekko2-R1308-software.log";
 }
 static void save_boot_progress(const char *event,int truncate)
 {
@@ -361,7 +361,9 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned long long)(total_sample?ee_sample*100/total_sample:0),
             (unsigned long long)(total_sample?iop_sample*100/total_sample:0));
     g_profile_previous=profile;
-    ee_timers_state_t *timers=ee_timers_get_state();
+    ee_timers_state_t timer_snapshot;ee_timers_snapshot(&timer_snapshot);
+    ee_timers_state_t *timers=&timer_snapshot;
+    fprintf(f,"EVENT_TIMER deferred=%llu boundaries=%llu\n",(unsigned long long)ee_timers_get_batched_ticks(),(unsigned long long)ee_timers_get_boundary_ticks());
     fprintf(f,"EE_TIMERS mode0=%lx mode1=%lx mode2=%lx mode3=%lx\n",
             (unsigned long)timers->t[0].mode,(unsigned long)timers->t[1].mode,
             (unsigned long)timers->t[2].mode,(unsigned long)timers->t[3].mode);
@@ -475,9 +477,9 @@ static void r1252_save_fault_evidence(void)
 {
     uint32_t f[112]={0}; ee_core_get_r1252_fault(f);
     if (!f[0] || r1252_evidence_written) return;
-    FILE *fp=fopen("sd:/pcsx2/Gekko2-R1307-first-fault.txt", "w");
+    FILE *fp=fopen("sd:/pcsx2/Gekko2-R1308-first-fault.txt", "w");
     if (!fp) return;
-    fprintf(fp,"Gekko2 R1307 JIT=%s disc=%d BIOS=%s version=%s size=%u\n",
+    fprintf(fp,"Gekko2 R1308 JIT=%s disc=%d BIOS=%s version=%s size=%u\n",
 #ifdef PCSX2WII_JIT_DISABLE
         "OFF",
 #else
@@ -566,7 +568,7 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
 #else
             const char *jm="ON";
 #endif
-            printf("R1307 MENU / RPC-GS JIT=%s REND=%llu hh=%llu S5=%ld/%ld w=%ld | slot2=%lu writer=%lu\033[K\n",jm,(unsigned long long)re,(unsigned long long)hh,(long)sc,(long)sm,(long)sw,(unsigned long)hit,(unsigned long)wh);
+            printf("R1308 MENU / RPC-GS JIT=%s REND=%llu hh=%llu S5=%ld/%ld w=%ld | slot2=%lu writer=%lu\033[K\n",jm,(unsigned long long)re,(unsigned long long)hh,(long)sc,(long)sm,(long)sw,(unsigned long)hit,(unsigned long)wh);
             uint64_t rc[4]={0}; uint32_t rl[6]={0};
             ee_core_get_r1249_repair(rc,rl);
             printf("REPAIR=%llu T%lu CONT=%llu LD=%llu JR=%llu\033[K\n",
@@ -684,7 +686,7 @@ static void run_real_boot_flow(void)
         g_disc_checked = 1;
         if (!g_boot_disc) {
         g_disc_ok = 0;
-        printf("[R1307] BIOS mode: no disc mounted.\n");
+        printf("[R1308] BIOS mode: no disc mounted.\n");
         } else {
         int cdvd_rc = iop_cdvd_mount_iso(g_disc_path);
         int legacy_rc = iop_cdrom_legacy_mount_iso(g_disc_path);
