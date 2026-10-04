@@ -45,6 +45,8 @@ typedef struct {
     uint32_t gpr[32];
     uint32_t pc, next_pc;
     uint32_t hi, lo;
+    uint32_t load_value,branch_pc;
+    uint8_t load_reg,branch_pending;
 } iop_tcb_t;
 
 typedef struct {
@@ -88,7 +90,8 @@ static struct {
      * real reschedule-or-free-on-return semantics can be applied). */
     int alarm_in_dispatch;
     int alarm_dispatch_slot;
-    uint32_t alarm_resume_pc, alarm_resume_next_pc;
+    uint32_t alarm_resume_pc, alarm_resume_next_pc,alarm_resume_branch_pc;
+    uint8_t alarm_resume_branch_pending;
 
     iop_hle_thread_stats_t stats;
 } g;
@@ -192,6 +195,8 @@ static void ensure_root_thread(iop_state_t *st)
     t->next_pc = st->next_pc;
     t->hi = st->hi;
     t->lo = st->lo;
+    t->load_reg=st->load_delay_reg;t->load_value=st->load_delay_value;
+    t->branch_pending=st->branch_delay_pending;t->branch_pc=st->branch_pc;
     g.thread_count = 1;
     g.current_thread_id = 1;
 }
@@ -205,6 +210,8 @@ static void save_context(iop_state_t *st, int thid)
     t->next_pc = st->next_pc;
     t->hi = st->hi;
     t->lo = st->lo;
+    t->load_reg=st->load_delay_reg;t->load_value=st->load_delay_value;
+    t->branch_pending=st->branch_delay_pending;t->branch_pc=st->branch_pc;
 }
 
 static void load_context(iop_state_t *st, int thid)
@@ -216,6 +223,9 @@ static void load_context(iop_state_t *st, int thid)
     st->next_pc = t->next_pc;
     st->hi = t->hi;
     st->lo = t->lo;
+    st->load_delay_reg=t->load_reg;st->load_delay_value=t->load_value;
+    st->branch_delay_pending=t->branch_pending;st->branch_pc=t->branch_pc;
+    st->pipe_active=st->pipe_fault=0;
 }
 
 /* Real priority-based pick: lowest priority NUMBER wins (thbase.h:
@@ -489,12 +499,67 @@ int iop_hle_thread_try_handle(iop_state_t *st, uint32_t pc)
      * a single min/max bound would either miss them or falsely accept
      * the gaps. */
     int in_range =
-        (pc >= IOP_HLE_THREAD_GETTHREADMANDATA && pc <= IOP_HLE_THREAD_IREFERSEMASTATUS) ||
+        pc == IOP_HLE_THREAD_ALARM_RETURN_TRAMPOLINE ||
+        pc == IOP_HLE_THREAD_CANCELALARM ||
+        pc == IOP_HLE_THREAD_CANCELWAKEUPTHREAD ||
+        pc == IOP_HLE_THREAD_CHANGETHREADPRIORITY ||
+        pc == IOP_HLE_THREAD_CHECKTHREADSTACK ||
+        pc == IOP_HLE_THREAD_CLEAREVENTFLAG ||
+        pc == IOP_HLE_THREAD_CREATEEVENTFLAG ||
+        pc == IOP_HLE_THREAD_CREATESEMA ||
+        pc == IOP_HLE_THREAD_CREATETHREAD ||
+        pc == IOP_HLE_THREAD_DELAYTHREAD ||
+        pc == IOP_HLE_THREAD_DELETEEVENTFLAG ||
+        pc == IOP_HLE_THREAD_DELETESEMA ||
+        pc == IOP_HLE_THREAD_DELETETHREAD ||
+        pc == IOP_HLE_THREAD_DISABLEDISPATCHTHREAD ||
+        pc == IOP_HLE_THREAD_ENABLEDISPATCHTHREAD ||
         pc == IOP_HLE_THREAD_ENTRY_RETURN_TRAMPOLINE ||
-        (pc >= IOP_HLE_THREAD_CREATEEVENTFLAG && pc <= IOP_HLE_THREAD_IREFEREVENTFLAGSTATUS) ||
-        (pc >= IOP_HLE_THREAD_SETALARM && pc <= IOP_HLE_THREAD_SYSCLOCK2USEC) ||
-        pc == IOP_HLE_THREAD_ALARM_RETURN_TRAMPOLINE;
+        pc == IOP_HLE_THREAD_EXITDELETETHREAD ||
+        pc == IOP_HLE_THREAD_EXITTHREAD ||
+        pc == IOP_HLE_THREAD_GETSYSTEMSTATUSFLAG ||
+        pc == IOP_HLE_THREAD_GETSYSTEMTIME ||
+        pc == IOP_HLE_THREAD_GETTHREADID ||
+        pc == IOP_HLE_THREAD_GETTHREADMANDATA ||
+        pc == IOP_HLE_THREAD_ICANCELALARM ||
+        pc == IOP_HLE_THREAD_ICANCELWAKEUPTHREAD ||
+        pc == IOP_HLE_THREAD_ICHANGETHREADPRIORITY ||
+        pc == IOP_HLE_THREAD_ICLEAREVENTFLAG ||
+        pc == IOP_HLE_THREAD_IREFEREVENTFLAGSTATUS ||
+        pc == IOP_HLE_THREAD_IREFERSEMASTATUS ||
+        pc == IOP_HLE_THREAD_IREFERTHREADSTATUS ||
+        pc == IOP_HLE_THREAD_IRELEASEWAITTHREAD ||
+        pc == IOP_HLE_THREAD_IRESUMETHREAD ||
+        pc == IOP_HLE_THREAD_IROTATETHREADREADYQUEUE ||
+        pc == IOP_HLE_THREAD_ISETALARM ||
+        pc == IOP_HLE_THREAD_ISETEVENTFLAG ||
+        pc == IOP_HLE_THREAD_ISIGNALSEMA ||
+        pc == IOP_HLE_THREAD_ISUSPENDTHREAD ||
+        pc == IOP_HLE_THREAD_ITERMINATETHREAD ||
+        pc == IOP_HLE_THREAD_IWAKEUPTHREAD ||
+        pc == IOP_HLE_THREAD_POLLEVENTFLAG ||
+        pc == IOP_HLE_THREAD_POLLSEMA ||
+        pc == IOP_HLE_THREAD_REFEREVENTFLAGSTATUS ||
+        pc == IOP_HLE_THREAD_REFERSEMASTATUS ||
+        pc == IOP_HLE_THREAD_REFERTHREADSTATUS ||
+        pc == IOP_HLE_THREAD_RELEASEWAITTHREAD ||
+        pc == IOP_HLE_THREAD_RESUMETHREAD ||
+        pc == IOP_HLE_THREAD_ROTATETHREADREADYQUEUE ||
+        pc == IOP_HLE_THREAD_SETALARM ||
+        pc == IOP_HLE_THREAD_SETEVENTFLAG ||
+        pc == IOP_HLE_THREAD_SIGNALSEMA ||
+        pc == IOP_HLE_THREAD_SLEEPTHREAD ||
+        pc == IOP_HLE_THREAD_STARTTHREAD ||
+        pc == IOP_HLE_THREAD_STARTTHREADARGS ||
+        pc == IOP_HLE_THREAD_SUSPENDTHREAD ||
+        pc == IOP_HLE_THREAD_SYSCLOCK2USEC ||
+        pc == IOP_HLE_THREAD_TERMINATETHREAD ||
+        pc == IOP_HLE_THREAD_USEC2SYSCLOCK ||
+        pc == IOP_HLE_THREAD_WAITEVENTFLAG ||
+        pc == IOP_HLE_THREAD_WAITSEMA ||
+        pc == IOP_HLE_THREAD_WAKEUPTHREAD;
     if (!in_range) return 0;
+    iop_core_flush_pipeline(st);
 
     ensure_root_thread(st);
     uint32_t ra = st->gpr[31];
@@ -523,6 +588,8 @@ int iop_hle_thread_try_handle(iop_state_t *st, uint32_t pc)
             g.stats.alarms_fired++;
             st->pc = g.alarm_resume_pc;
             st->next_pc = g.alarm_resume_next_pc;
+            st->branch_pc=g.alarm_resume_branch_pc;
+            st->branch_delay_pending=g.alarm_resume_branch_pending;
             g.alarm_in_dispatch = 0;
             g.alarm_dispatch_slot = 0;
         }
@@ -1363,6 +1430,9 @@ void iop_hle_thread_tick(iop_state_t *st)
             if (a->in_use && st->instructions_executed >= a->deadline) {
                 g.alarm_in_dispatch = 1;
                 g.alarm_dispatch_slot = i + 1;
+                g.alarm_resume_branch_pc=st->branch_pc;
+                g.alarm_resume_branch_pending=st->branch_delay_pending;
+                iop_core_flush_pipeline(st);
                 g.alarm_resume_pc = st->pc;
                 g.alarm_resume_next_pc = st->next_pc;
                 st->gpr[4] = a->common; /* $a0 = common, real alarm_callback_t(void *common) ABI */

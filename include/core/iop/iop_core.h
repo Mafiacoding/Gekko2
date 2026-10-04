@@ -102,8 +102,16 @@ typedef struct {
      * case comments). 0 = no pending image. Only ever set/used when
      * cop0[15]==0x1f (dead field at the default PRId=0). */
     uint32_t devtable_pending_image;
+    /* Persistent R3000 pipeline state, appended to preserve JIT offsets. */
+    uint32_t load_delay_value;
+    uint32_t branch_pc;
+    uint32_t pipe_pc,pipe_word,pipe_load_old,pipe_branch_pc,pipe_branch_target;
+    uint8_t load_delay_reg; /* 0 means no pending write */
+    uint8_t branch_delay_pending;
+    uint8_t pipe_load_reg,pipe_write_reg,pipe_bd,pipe_fault,pipe_active;
 } iop_state_t;
 
+void iop_core_flush_pipeline(iop_state_t *st);
 int  iop_core_init(const bios_image_t *bios);
 void iop_core_run(void);
 

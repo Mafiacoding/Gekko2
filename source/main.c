@@ -1,3 +1,4 @@
+#include "core/recompiler/ppc_dynarec.h"
 #include "core/hw/frontend_text.h"
 #include "core/hw/frontend_logo.h"
 #include "core/hw/frontend_runtime.h"
@@ -418,6 +419,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned)iop_jit_get_cache_size(),
             (unsigned long long)iop_jit_get_executed_count(),
             (unsigned long long)iop_jit_get_rejected_hit_count());
+    fprintf(f,"WORD_ALLOC bodies=%llu eliminated=%llu spills=%llu reused_loads=%llu\n",
+            (unsigned long long)ppc_dynarec_get_allocated_bodies(),
+            (unsigned long long)ppc_dynarec_get_eliminated_word_ops(),
+            (unsigned long long)ppc_dynarec_get_word_spills(),
+            (unsigned long long)ppc_dynarec_get_reused_word_loads());
     fprintf(f,"IOP_BLOCK compiled=%u runs=%llu ticks=%llu stale=%llu\n",
             (unsigned)iop_jit_get_block_cache_size(),
             (unsigned long long)iop_jit_get_block_runs(),

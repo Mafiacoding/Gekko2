@@ -49,12 +49,13 @@ not Wii timing, stable BIOS frames, PS2-wide floating-point correctness or FPS.
 
 1. Remaining EE instruction/trap/control cases and instruction-family audit.
    The eight standard word/doubleword merge RAM operations are implemented.
-2. General register allocator and residency with audited helper read/write
-   contracts, dirty state flushing and reload on every observable boundary.
+2. Extend the general native word-binding/spill allocator to residency across
+   instructions using audited helper read/write contracts. The initial pass
+   flushes at every observable preparation/retirement/helper boundary.
 3. Native block links, source/TLB generations and invalidation/eviction tests.
-4. IOP hardware-accuracy audit beyond the existing scalar baseline: load-delay
-   state and synchronous exception EPC/BD. The bounded block executor and
-   exact existing EE/IOP interleave are now implemented and tested.
+4. Further IOP hardware-accuracy and HLE/context audit. Delayed loads, merge
+   forwarding, synchronous EPC/BD/TAR, alignment and arithmetic overflow are
+   now implemented and checked by independent host and linked-PPC oracles.
 5. Remaining MMI/COP/VU flags, Q/P/EFU, pipelines, branches and GIF interactions.
 6. Proven event batching and physical Wii coldboot/OSDSYS stability/profiling.
 
@@ -158,12 +159,12 @@ Verification:
 The linked tests execute the real cross-built PPC code with mocked platform
 allocation/cache/console services. Synthetic instructions/ROM words are used;
 no BIOS/disc is included. They do not prove physical Wii coldboot stability,
-10 FPS, hardware load-delay behavior or complete synchronous-exception BD
-semantics. The baseline has no load-delay state and documents incomplete
-synchronous-exception delay-slot handling; block parity preserves those
-limitations rather than claiming they have been repaired.
+10 FPS or physical-Wii pipeline behavior. At the time of this initial block
+verification, the scalar baseline lacked load-delay state and complete
+synchronous-exception BD handling. The subsequent precision work below
+repairs these specific gaps and adds independent architectural oracles.
 
-### Warm IOP instruction counts
+### Earlier warm IOP instruction counts (before load-delay precision)
 
 Eight guest retirements in the current cross-build, comparing its public
 single-step scalar/JIT dispatch with its warm precise block path. These
@@ -186,3 +187,57 @@ General register residency, audited fast boundaries, code generations and
 whole-system hardware profiling remain follow-up work. This completes the
 bounded IOP block execution path against the existing baseline, not the
 entire dynarec completion plan. R1306 remains the delivered release.
+
+
+## IOP pipeline precision and general word allocation (unreleased)
+
+The IOP now queues load/MFC0 writes for one instruction. The next instruction
+reads the old visible GPR value; explicit writes and a replacement load to
+the same register cancel the older pending write. LWL/LWR forward pending
+merge data while computing addresses from the visible base, including
+base/destination aliasing. Single-op and block JIT dispatch decline to the
+precise scalar merge path when this forwarding is required. Pipeline fields
+are appended after the original JIT state prefix.
+
+An explicit branch-delay flag includes untaken conditional branches.
+Synchronous exception entry captures EPC, Cause.BD, TAR and BadVAddr before
+redirecting execution, applies the Status exception stack and chooses the
+BEV vector. Half/word alignment and signed ADD/ADDI/SUB overflow are checked
+before side effects, including a zero destination. Fetch alignment faults
+commit an older pending load without executing a guest instruction. IRQ
+entry exposes the pending load. Thread contexts save/restore pending state;
+recognized HLE gates flush it before reading arguments and decline without
+flushing unrelated addresses.
+
+Our generated HLE syscall trampoline now includes explicit delay NOPs after
+loads/MFC0, with recomputed local branches. The existing default HLE policy
+for skipping unhandled synchronous traps resumes at TAR when the trap was
+in a delay slot. This is an explicit HLE policy, not a replacement for a
+complete real IOP kernel/exception dispatcher.
+
+The new EE/IOP allocator binds individual architectural words to existing
+PPC temporary registers r4-r11, reuses resident loads and defers dirty stores.
+It spills before temporary reuse, helpers, control-flow entries/edges and
+observable exits. Relative local branches are relocated after transformation.
+Unknown register effects conservatively end tracking, including update-form
+loads; any write to r3 invalidates the context-pointer assumption. Unsupported
+branch shapes or allocation failure leave the original body intact. The
+prepared-first EE body is conservatively left unchanged.
+
+This is a general machine-word binding/spill pass over existing emitted
+bodies, not yet an IR liveness allocator with cross-instruction/helper
+residency. Full 64/128-bit state uses the original word offsets. All current
+preparation/retirement callbacks remain observable, so the pass flushes
+there. No event checks were removed. SD logs distinguish compilation counters
+for accepted bodies, deleted instructions, reused memory loads and spills;
+these counters do not measure executed guest work or FPS. A load replaced
+by a register move saves a memory read even when instruction count is equal.
+
+Verification includes the complete 209-test host suite; independent
+linked-PPC pipeline and allocated integer/alias oracles; 477 paired IOP
+programs with exact EE8/IOP1 ordering; 245 hostile-EABI IOP wrapper oracles;
+1,152 merge byte-lane cases with 64 exact IRQ exits; 126 native successor
+comparisons; 552 COP1 and 56 link/BC1 outcomes; and 30/68 helper plus 45
+continuation EABI oracles. Platform services are mocked. No physical Wii
+coldboot/OSDSYS stability or speed improvement is established by this work.
+R1306 remains the delivered release; the completion gate is still open.

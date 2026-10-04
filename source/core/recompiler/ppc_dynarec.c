@@ -6337,6 +6337,149 @@ int ppc_dynarec_translate_ee_cached_chain(ppc_codegen_ctx_t *ctx,uint32_t resolv
  emit(ctx,enc_addi(1,1,96));return 0;
 }
 
+/* General word allocator for emitted EE/IOP integer bodies. Architectural
+ * words are bound to the backend's volatile temporary pool (r4-r11). Dirty
+ * bindings spill before a physical register is overwritten, before helpers,
+ * and at every control-flow/observable boundary. Clean bindings can satisfy
+ * another load without RAM. All 32/64/128-bit GPR words retain their original
+ * byte offsets; no helper is assumed to preserve guest state.
+ *
+ * This allocation pass consumes machine-register temporaries rather than
+ * an ISA-specific guest-register subset. Unknown instructions are barriers.
+ * Relative edges are relocated after instruction deletion/writeback moves.
+ */
+typedef struct {
+    ppc_codegen_ctx_t *out;
+    int8_t reg[128];
+    uint8_t dirty[128];
+    unsigned bank_words;
+    int context_valid;
+    unsigned spills,reused;
+} ppc_word_allocator;
+static uint64_t word_alloc_bodies,word_alloc_eliminated,word_alloc_spills,word_alloc_reused;
+uint64_t ppc_dynarec_get_allocated_bodies(void){return word_alloc_bodies;}
+uint64_t ppc_dynarec_get_eliminated_word_ops(void){return word_alloc_eliminated;}
+uint64_t ppc_dynarec_get_word_spills(void){return word_alloc_spills;}
+uint64_t ppc_dynarec_get_reused_word_loads(void){return word_alloc_reused;}
+static void word_alloc_spill(ppc_word_allocator *a,unsigned word)
+{
+    if(a->dirty[word]) {
+        emit(a->out,enc_stw(a->reg[word],3,(int16_t)(word*4u)));
+        a->dirty[word]=0;a->spills++;
+    }
+}
+static void word_alloc_barrier(ppc_word_allocator *a)
+{
+    for(unsigned n=0;n<a->bank_words;n++){word_alloc_spill(a,n);a->reg[n]=-1;}
+}
+static void word_alloc_clobber(ppc_word_allocator *a,unsigned reg)
+{
+    for(unsigned n=0;n<a->bank_words;n++)if(a->reg[n]==(int)reg) {
+        word_alloc_spill(a,n);a->reg[n]=-1;
+    }
+}
+/* Returns the written integer register, -1 for no integer write, -2 for
+ * an instruction whose effects require a conservative complete barrier. */
+static int word_alloc_destination(uint32_t w)
+{
+    unsigned op=w>>26,rt=(w>>21)&31u,ra=(w>>16)&31u,xo=(w>>1)&1023u;
+    if(op==7u||op==8u||op==12u||op==13u||op==14u||op==15u||
+       op==32u||op==34u||op==40u||op==42u)return (int)rt;
+    if(op==20u||op==21u||op==23u||(op>=24u&&op<=29u))return (int)ra;
+    if(op==10u||op==11u||op==48u||op==50u||op==59u||op==63u)return -1;
+    if(op!=31u)return -2;
+    switch(xo) {
+    case 8:case 10:case 11:case 19:case 23:case 40:case 75:case 136:
+    case 138:case 235:case 266:case 279:case 339:case 459:case 491:case 534:
+        return (int)rt;
+    case 24:case 28:case 60:case 124:case 284:case 316:case 412:case 444:
+    case 536:case 792:case 824:case 922:case 954:return (int)ra;
+    case 0:case 32:case 144:case 467:case 512:return -1;
+    default:return -2;
+    }
+}
+static int allocated_edge(uint32_t w,size_t at,size_t count,size_t *target)
+{
+    unsigned op=w>>26;
+    if(op!=16u&&op!=18u)return 0;
+    if(w&3u)return -1; /* absolute edges / local calls are not rewritten */
+    int32_t delta=op==16u?(int16_t)(w&0xfffcu):(int32_t)((w&0x03fffffcu)<<6)>>6;
+    int64_t index=(int64_t)at+delta/4;
+    if(index<0||index>(int64_t)count)return -1;
+    *target=(size_t)index;return 1;
+}
+/* Transactional: allocation failure/unsupported edges keep the original
+ * native body. The resulting instruction count cannot exceed the original:
+ * every spill replaces a deferred original store, and loads emit <=1 op. */
+static int ppc_allocate_emitted_body(ppc_codegen_ctx_t *ctx,size_t begin,unsigned bank_words)
+{
+    size_t count=ctx->used_words-begin;
+    if(!count||count>512u||bank_words>128u)return 0;
+    uint8_t targets[513]={0};size_t map[513],edges[512],destinations[512];unsigned ne=0;
+    for(size_t n=0;n<count;n++) {
+        size_t target=0;int edge=allocated_edge(ctx->code[begin+n],n,count,&target);
+        if(edge<0)return 0;
+        if(edge)targets[target]=1;
+    }
+    ppc_codegen_ctx_t output;
+    if(ppc_dynarec_init(&output,(count+127u)/128u+1u))return 0;
+    ppc_word_allocator a={0};a.out=&output;a.bank_words=bank_words;a.context_valid=1;
+    memset(a.reg,-1,sizeof a.reg);
+    for(size_t n=0;n<count;n++) {
+        uint32_t w=ctx->code[begin+n];unsigned op=w>>26,rt=(w>>21)&31u,base=(w>>16)&31u;
+        if(targets[n])word_alloc_barrier(&a);
+        map[n]=output.used_words;
+        size_t target=0;int edge=allocated_edge(w,n,count,&target);
+        if(edge>0) {
+            word_alloc_barrier(&a);edges[ne]=output.used_words;destinations[ne++]=target;
+            emit(&output,w);continue;
+        }
+        int off=(int16_t)w;
+        int bank=a.context_valid&&base==3u&&off>=0&&(off&3)==0&&(unsigned)off/4u<bank_words;
+        unsigned word=(unsigned)off/4u;
+        if(op==32u&&bank&&rt>=4u&&rt<=11u) {
+            int resident=a.reg[word];
+            if(resident>=0)a.reused++;
+            if(resident==(int)rt)continue;
+            word_alloc_clobber(&a,rt);
+            emit(&output,resident>=0?enc_or((int)rt,resident,resident):w);
+            a.reg[word]=(int8_t)rt;continue;
+        }
+        if(op==36u&&bank) {
+            /* The new store supersedes an older dirty value of this word. */
+            a.dirty[word]=0;a.reg[word]=-1;
+            if(rt>=4u&&rt<=11u){a.reg[word]=(int8_t)rt;a.dirty[word]=1;}
+            else emit(&output,w);
+            continue;
+        }
+        int dest=word_alloc_destination(w);
+        if(dest==-2){word_alloc_barrier(&a);a.context_valid=0;}
+        else if(dest>=0) {
+            if(dest==3){word_alloc_barrier(&a);a.context_valid=0;}
+            else word_alloc_clobber(&a,(unsigned)dest);
+        }
+        /* bctrl/blr/isync and unknown stores are barriers. After any
+         * indirect call, r3 is not assumed to remain the context pointer. */
+        if(op==19u&&(w&1u))a.context_valid=0;
+        emit(&output,w);
+    }
+    word_alloc_barrier(&a);map[count]=output.used_words;
+    int ok=output.used_words<=count;
+    for(unsigned n=0;n<ne&&ok;n++) {
+        uint32_t w=output.code[edges[n]];int64_t delta=((int64_t)map[destinations[n]]-(int64_t)edges[n])*4;
+        uint32_t mask=w>>26==16u?0xfffcu:0x03fffffcu;
+        if((w>>26==16u&&(delta<-32768||delta>32764))||delta<-33554432||delta>33554428)ok=0;
+        else output.code[edges[n]]=(w&~mask)|((uint32_t)delta&mask);
+    }
+    if(ok) {
+        memcpy(ctx->code+begin,output.code,output.used_words*sizeof(uint32_t));
+        ctx->used_words=begin+output.used_words;
+        word_alloc_bodies++;word_alloc_eliminated+=count-output.used_words;
+        word_alloc_spills+=a.spills;word_alloc_reused+=a.reused;
+    }
+    ppc_dynarec_free(&output);return ok;
+}
+
 /* Precise IOP block: unsigned fn(state,budget). Every slot has a live
  * prepare guard, an inlined native body (or explicit scalar boundary),
  * and the original IRQ retirement. Saved registers live outside EABI's
@@ -6376,6 +6519,7 @@ int ppc_dynarec_translate_iop_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
    exits[ne++]=ctx->used_words;emit(ctx,enc_b(0));
    break;
   }
+  ppc_allocate_emitted_body(ctx,before,32u);
   native++;
   emit_load_const32(ctx,17,pc+n*4u);
  }
@@ -6531,6 +6675,7 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
   emit(ctx,enc_or(3,14,14));emit_load_const32(ctx,4,pc+4u*n);
   emit_load_const32(ctx,5,words[n]);ee_block_call(ctx,callback);emit(ctx,(11u<<26)|(3u<<16)); /* cmpwi r3,0 */
   exits[n]=ctx->used_words;emit(ctx,enc_bc(12,2,0));
+  size_t allocated_begin=ctx->used_words;
   if(memory) {
    /* Callback result is offset+1. Fetched-first path instead receives
     * the same proof as argument r5; no volatile value survives a call. */
@@ -6541,13 +6686,16 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
     ctx->code[resolved]=enc_b((int32_t)(ctx->used_words-resolved)*4);
    }
    emit(ctx,enc_or(4,3,3));emit(ctx,enc_or(3,14,14));
+   allocated_begin=ctx->used_words;
    ee_block_resolved_memory(ctx,words[n]);
   } else {
    if(skip)ctx->code[skip]=enc_bc(4,2,(int32_t)(ctx->used_words-skip)*4);
    emit(ctx,enc_or(3,14,14));
+   allocated_begin=ctx->used_words;
    if(!((words[n]>>26)==0x36u&&((words[n]>>16)&31u)==0u))
     if(ppc_dynarec_translate_one(ctx,words[n]))return -1;
   }
+  if(!skip)ppc_allocate_emitted_body(ctx,allocated_begin,128u);
   emit(ctx,enc_or(3,14,14));ee_block_call(ctx,commit);
  }
  /* R1303: retirement count is known at each live preparation exit. Return

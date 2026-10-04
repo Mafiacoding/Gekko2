@@ -164,6 +164,8 @@ uint32_t iop_hle_intr_sentinel_for_import(const char *module_name, uint32_t ordi
 
 int iop_hle_intr_try_handle(iop_state_t *st, uint32_t pc)
 {
+    if(pc>=IOP_HLE_INTR_REGISTER_INTR_HANDLER && pc<=IOP_HLE_INTR_DISABLE_INTR && !(pc&3u))
+        iop_core_flush_pipeline(st);
     uint32_t ra = st->gpr[31]; /* $ra - real MIPS o32 return-address register */
 
     if (pc == IOP_HLE_INTR_REGISTER_INTR_HANDLER) {
