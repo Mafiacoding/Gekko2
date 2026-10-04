@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+: "${DEVKITPRO:?Set DEVKITPRO}"
+: "${DEVKITPPC:?Set DEVKITPPC}"
+make BUILD=build-r1268-ui TARGET=PCSX2-Wii-R1268-Menu-Interpreter EXTRA_CFLAGS="-DPCSX2WII_JIT_DISABLE -DPCSX2WII_FAST" -j1
+make BUILD=build-r1268-ui-jit TARGET=PCSX2-Wii-R1268-Menu-JIT EXTRA_CFLAGS="-DPCSX2WII_FAST" -j1

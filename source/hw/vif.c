@@ -365,6 +365,18 @@ static int vif_unpack(vif_state_t *vif, uint32_t code, uint32_t cmd, const uint8
     return 1;
 }
 
+/* Latch the VU-visible registers and rotate the next UNPACK buffer,
+ * matching Vif_Codes.cpp::vuExecMicro for MSCAL/MSCALF/MSCNT. */
+static void vif_latch_micro(vif_state_t *vif)
+{
+    vif->itop = vif->itops;
+    if (vif->is_vif1) {
+        vif->top = vif->tops & 0x3ffu;
+        vif->tops = vif->dbf ? vif->base : vif->base + vif->ofst;
+        vif->dbf ^= 1u;
+    }
+}
+
 /* Walks a stream of VIFcode words (interspersed with per-command data
  * words), starting at 'data' (qwc*16 bytes = qwc*4 32-bit words).
  * Returns when the stream is exhausted OR an unsupported command
@@ -373,10 +385,34 @@ static int vif_unpack(vif_state_t *vif, uint32_t code, uint32_t cmd, const uint8
  * rather than guessing a skip length and misparsing what follows as
  * garbage VIFcodes (same philosophy as gif.c's REGLIST/IMAGE
  * fallback). */
-static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t qwc)
+static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words)
 {
-    uint32_t total_words = qwc * 4u;
     uint32_t pos = 0; /* in 32-bit words */
+
+    if (vif->direct_needed_words) {
+        uint32_t need = vif->direct_needed_words - vif->direct_have_words;
+        uint32_t take = need < total_words ? need : total_words;
+        memcpy(vif->direct_buffer + vif->direct_have_words * 4u, data, take * 4u);
+        vif->direct_have_words += take;
+        pos += take;
+        if (vif->direct_have_words < vif->direct_needed_words) return;
+        gif_process_quadwords(GIF_PATH_2, vif->direct_buffer,
+                              vif->direct_needed_words / 4u);
+        vif->direct_qwords_forwarded += vif->direct_needed_words / 4u;
+        vif->direct_needed_words = vif->direct_have_words = 0;
+    }
+
+
+    if (vif->register_pending_cmd) {
+        uint32_t cmd = vif->register_pending_cmd;
+        uint32_t count = cmd == VIF_CMD_STMASK ? 1u : 4u;
+        uint32_t *dst = cmd == VIF_CMD_STMASK ? &vif->mask :
+                        cmd == VIF_CMD_STROW ? vif->row : vif->col;
+        while (vif->register_pending_have < count && pos < total_words)
+            dst[vif->register_pending_have++] = vif_rd_le32(data + pos++ * 4u);
+        if (vif->register_pending_have < count) return;
+        vif->register_pending_cmd = vif->register_pending_have = 0;
+    }
 
     /* Round 579 (task #536/#556): resume a real MPG upload left
      * outstanding by a PRIOR vif_process() call (a real VIF1 DMA
@@ -488,6 +524,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t qwc)
             if (vif->is_vif1) {
                 vif->ofst = imm & 0x3FFu;
                 vif->tops = vif->base;
+                vif->dbf = 0;
             } else {
                 vif->unsupported_cmds_seen++;
             }
@@ -541,6 +578,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t qwc)
              * no-op). */
             /* Round 578b: real diagnostic capture - see vif.h's
              * mscal_calls/mscal_last_start_byte field comment. */
+            vif_latch_micro(vif);
             vif->mscal_calls++;
             vif->mscal_last_start_byte = imm * 8u;
             if (vif->is_vif1)
@@ -570,6 +608,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t qwc)
              * BEFORE the call so this records where execution actually
              * resumed FROM, not the (mid-run or post-cap) tpc it ends
              * up at afterward. */
+            vif_latch_micro(vif);
             vif->mscnt_calls++;
             if (vif->is_vif1)
                 vif->mscnt_last_resume_byte = vu1_get_state()->tpc;
@@ -589,25 +628,19 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t qwc)
             break;
 
         case VIF_CMD_STMASK:
-            if (pos < total_words) {
-                vif->mask = vif_rd_le32(data + pos * 4u);
-                pos++;
-            }
-            break;
-
         case VIF_CMD_STROW:
-            for (int i = 0; i < 4 && pos < total_words; i++) {
-                vif->row[i] = vif_rd_le32(data + pos * 4u);
-                pos++;
+        case VIF_CMD_STCOL: {
+            uint32_t count = cmd == VIF_CMD_STMASK ? 1u : 4u;
+            uint32_t *dst = cmd == VIF_CMD_STMASK ? &vif->mask :
+                            cmd == VIF_CMD_STROW ? vif->row : vif->col;
+            uint32_t have = 0;
+            while (have < count && pos < total_words)
+                dst[have++] = vif_rd_le32(data + pos++ * 4u);
+            if (have < count) {
+                vif->register_pending_cmd = cmd;
+                vif->register_pending_have = have;
             }
-            break;
-
-        case VIF_CMD_STCOL:
-            for (int i = 0; i < 4 && pos < total_words; i++) {
-                vif->col[i] = vif_rd_le32(data + pos * 4u);
-                pos++;
-            }
-            break;
+        } break;
 
         case VIF_CMD_MPG: {
             /* NUM field (bits 16-23): number of VU micro-instructions,
@@ -664,26 +697,18 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t qwc)
              * (real hardware wraparound - see Vif_Codes.cpp's
              * _vifCode_Direct: "vifImm ? (vifImm*4) : (65536*4)",
              * counted there in 32-bit words). */
-            uint32_t qw = imm ? imm : 65536u;
-            uint32_t words = qw * 4u;
+            uint32_t words = (imm ? imm : 65536u) * 4u;
             uint32_t avail = total_words - pos;
-            if (words > avail)
-                words = avail; /* real hardware would stall waiting for
-                                 * more DMA data; we just forward what
-                                 * we actually have this call. */
-            if (words > 0) {
-                /* Round 542: this is real hardware PATH2 (VIF1 DIRECT/
-                 * DIRECTHL forwarding straight to GIF, bypassing the
-                 * GIF DMA channel entirely) - was previously mislabeled
-                 * as DMA_CHANNEL_GIF (a DMA-channel constant, not a
-                 * transfer-path one) purely because gif_process_quadwords()
-                 * ignored its channel argument. Now that the argument
-                 * drives real GIF_TAG/CNT/P3CNT/P3TAG register state
-                 * (see gif.c), it must be the correct real path. */
+            if (words > avail) {
+                vif->direct_needed_words = words;
+                vif->direct_have_words = avail;
+                memcpy(vif->direct_buffer, data + pos * 4u, avail * 4u);
+                pos += avail;
+            } else {
                 gif_process_quadwords(GIF_PATH_2, data + pos * 4u, words / 4u);
                 vif->direct_qwords_forwarded += words / 4u;
+                pos += words;
             }
-            pos += words;
         } break;
 
         default:
@@ -713,11 +738,22 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t qwc)
 void vif0_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
 {
     (void)channel;
-    vif_process(&g_vif0, data, qwc);
+    vif_process(&g_vif0, data, qwc * 4u);
 }
 
 void vif1_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
 {
     (void)channel;
-    vif_process(&g_vif1, data, qwc);
+    vif_process(&g_vif1, data, qwc * 4u);
+}
+
+void vif0_process_tag_words(int channel, const uint8_t *data, uint32_t words)
+{
+    (void)channel;
+    vif_process(&g_vif0, data, words);
+}
+void vif1_process_tag_words(int channel, const uint8_t *data, uint32_t words)
+{
+    (void)channel;
+    vif_process(&g_vif1, data, words);
 }

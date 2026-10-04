@@ -1,47 +1,12 @@
-/*
- * PCSX2-Wii - experimental PS2 emulator port skeleton
- *
- * Boot entry point. Initializes Wii video/console via libogc, mounts
- * SD/USB via libfat, loads a PS2 BIOS image, and hands off to the EE
- * interpreter core. This is NOT a functional PS2 emulator - see
- * docs/STATUS.md for an honest description of what actually works.
- *
- * REAL BOOT FLOW IS NOW THE DEFAULT (task #126, "main.c von Demo auf
- * echten Boot-Flow umstellen"): as of this round, `main()` no longer
- * starts by showing a menu and waiting for the user to opt into a
- * "BIOS Boot Test" - it immediately calls `run_real_boot_flow()`,
- * which mounts storage, loads the real BIOS, and runs the actual
- * EE/IOP interleaved scheduler continuously (in bounded, screen-
- * refreshing chunks so the UI stays responsive and provably alive -
- * see draw_boot_progress_hud()/draw_heartbeat()). Every chunk checks
- * the REAL GS privileged registers (via gs_get_state()); the moment
- * PMODE indicates an active display circuit, it checks WHICH circuit
- * (EN1 vs EN2 - fixed Round 212/task #366, see the fix's own comment
- * further down in this file for why this matters: a real PCSX2
- * session at the real BIOS splash used Circuit 2, not Circuit 1) and
- * decodes that circuit's REAL DISPFB hardware fields (FBP in
- * 2048-word units, FBW in 64-pixel units - converted to this
- * project's own gs_mem.h word/pixel convention, per that header's own
- * note that this conversion is the caller's job) and blits the REAL
- * GS local memory content the BIOS/game itself configured - not a
- * canned test pattern. As of this round (see docs/STATUS.md's "Round
- * 29 continued" sections), GS registers stay at their power-on-zero
- * state through the traced boot window, so this path is not yet
- * exercised in practice - but it is real, correct scaffolding for
- * whenever GS setup does occur, rather than a synthetic substitute.
- *
- * NATIVE WII TEST MENU: everything below the "wii_console_setup"
- * helper and above "int main" is a small, self-contained, native Wii
- * UI drawn directly into the XFB (reusing gs_wii_output.c's already-
- * tested RGB->YCbCr conversion) - it is NOT part of PS2 emulation and
- * does not pretend to be. It remains available AFTER the automatic
- * real boot flow finishes/is stopped (press B to interrupt it early),
- * as a secondary diagnostic surface (re-run the boot flow, the fixed-
- * pattern GS/GIF pipeline demo, or an About screen) - it is no longer
- * the primary/gating path to actually running the emulator core.
- */
-
+#include "core/hw/frontend_text.h"
+#include "core/hw/frontend_logo.h"
+#include "core/hw/frontend_runtime.h"
+#include "core/recompiler/iop_jit.h"
+#include "core/recompiler/vu_jit.h"
+/* R1302: native Wii launcher followed by real EE/IOP boot. */
 #include <gccore.h>
+#include <wiiuse/wpad.h>
+#include "frontend.h"
 #include <fat.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,15 +14,21 @@
 #include <ogc/lwp_watchdog.h>
 
 #include "core/ee/ee_core.h"
+#include "core/ee/ee_hle_thread.h"
+#include "core/recompiler/ee_jit.h"
 #include "core/iop/iop_core.h"
 #include "core/system.h"
 #include "core/bios_loader.h"
+#include "core/hw/cdvd_config.h"
 #include "core/hw/iop_cdvd.h"
 #include "core/hw/iop_cdrom_legacy.h"
 #include "core/hw/gs.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_wii_output.h"
+#include "core/hw/gs_gx.h"
 #include "core/hw/dma.h"
+#include "core/hw/ee_intc.h"
+#include "core/hw/ee_timers.h"
 #include "core/hw/gif.h"
 #include "core/hw/iop_sio2.h"
 
@@ -117,10 +88,80 @@ static uint16_t wii_pad_to_ps2_pad(uint16_t wii_held)
     return ps2;
 }
 
+/* R1302: one build supports GameCube pads and upright Wii Remotes,
+ * with optional Nunchuk. Expansion bits are accepted only for Nunchuk,
+ * so another expansion cannot accidentally become a shoulder button. */
+__attribute__((noinline)) uint16_t wii_remote_to_pad(uint32_t buttons,
+                                                   int nunchuk, int sx, int sy)
+{
+    uint16_t pad=0;
+    if(buttons&WPAD_BUTTON_A)pad|=PAD_BUTTON_A;
+    if(buttons&WPAD_BUTTON_B)pad|=PAD_BUTTON_B;
+    if(buttons&WPAD_BUTTON_1)pad|=PAD_BUTTON_X;
+    if(buttons&WPAD_BUTTON_2)pad|=PAD_BUTTON_Y;
+    if(buttons&WPAD_BUTTON_PLUS)pad|=PAD_BUTTON_START;
+    if(buttons&WPAD_BUTTON_MINUS)pad|=PAD_TRIGGER_Z;
+    if(buttons&WPAD_BUTTON_UP)pad|=PAD_BUTTON_UP;
+    if(buttons&WPAD_BUTTON_DOWN)pad|=PAD_BUTTON_DOWN;
+    if(buttons&WPAD_BUTTON_LEFT)pad|=PAD_BUTTON_LEFT;
+    if(buttons&WPAD_BUTTON_RIGHT)pad|=PAD_BUTTON_RIGHT;
+    if(nunchuk){
+        if(buttons&WPAD_NUNCHUK_BUTTON_C)pad|=PAD_TRIGGER_L;
+        if(buttons&WPAD_NUNCHUK_BUTTON_Z)pad|=PAD_TRIGGER_R;
+        if(sx<0)pad|=PAD_BUTTON_LEFT;
+        if(sx>0)pad|=PAD_BUTTON_RIGHT;
+        if(sy<0)pad|=PAD_BUTTON_DOWN;
+        if(sy>0)pad|=PAD_BUTTON_UP;
+    }
+    return pad;
+}
+/* Calibrated dead zone: 35% of each half-axis; invalid calibration is
+ * neutral, rather than treating missing extension data as full deflection. */
+__attribute__((noinline)) int wii_stick_direction(int pos,int lo,int center,int hi)
+{
+    if(lo>=center || center>=hi)return 0;
+    int delta=pos-center;
+    if(delta>0 && delta*100>(hi-center)*35)return 1;
+    if(delta<0 && -delta*100>(center-lo)*35)return -1;
+    return 0;
+}
+static uint16_t g_input_held,g_input_down,g_remote_previous;
+static int g_input_home,g_input_exit;
+static int g_remote_error=WPAD_ERR_NOT_READY;
+static void wii_input_scan(void)
+{
+    PAD_ScanPads();WPAD_ScanPads();
+    WPADData *data=WPAD_Data(WPAD_CHAN_0);
+    uint16_t remote=0;
+    g_input_home=0;g_input_exit=0;
+    g_remote_error=data?data->err:WPAD_ERR_NO_CONTROLLER;
+    if(data && data->err==WPAD_ERR_NONE){
+        int nunchuk=data->exp.type==WPAD_EXP_NUNCHUK,sx=0,sy=0;
+        if(nunchuk){
+            const struct joystick_t *js=&data->exp.nunchuk.js;
+            sx=wii_stick_direction(js->pos.x,js->min.x,js->center.x,js->max.x);
+            sy=wii_stick_direction(js->pos.y,js->min.y,js->center.y,js->max.y);
+        }
+        remote=wii_remote_to_pad(data->btns_h,nunchuk,sx,sy);
+        g_input_home=(data->btns_d&WPAD_BUTTON_HOME)!=0;
+        g_input_exit=(data->btns_h&(WPAD_BUTTON_HOME|WPAD_BUTTON_MINUS))==(WPAD_BUTTON_HOME|WPAD_BUTTON_MINUS);
+    }
+    g_input_held=PAD_ButtonsHeld(0)|remote;
+    g_input_down=PAD_ButtonsDown(0)|(remote&~g_remote_previous);
+    g_remote_previous=remote;
+    if((g_input_held&(PAD_BUTTON_B|PAD_TRIGGER_Z|PAD_BUTTON_START))==(PAD_BUTTON_B|PAD_TRIGGER_Z|PAD_BUTTON_START))g_input_exit=1;
+}
+
 static void wii_console_setup(void)
 {
     VIDEO_Init();
     PAD_Init();
+    WPAD_Init();
+    WPAD_SetDataFormat(WPAD_CHAN_ALL,WPAD_FMT_BTNS_ACC);
+    /* libogc 1.8.18 compares idle >= timeout without a zero-disable
+     * guard. Zero disconnected at the next tick. UINT32_MAX is about
+     * 136 years, effectively no idle disconnect for an emulator session. */
+    WPAD_SetIdleTimeout(UINT32_MAX);
 
     rmode = VIDEO_GetPreferredMode(NULL);
     xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
@@ -163,15 +204,6 @@ static void fill_rect(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h, uint8_t 
             put_pixel_pair(x, y, r, g, b);
 }
 
-static void draw_border(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h,
-                         uint32_t t, uint8_t r, uint8_t g, uint8_t b)
-{
-    fill_rect(x0, y0, w, t, r, g, b);
-    fill_rect(x0, y0 + h - t, w, t, r, g, b);
-    fill_rect(x0, y0, t, h, r, g, b);
-    fill_rect(x0 + w - t, y0, t, h, r, g, b);
-}
-
 static void draw_gradient_background(uint8_t top_r, uint8_t top_g, uint8_t top_b,
                                       uint8_t bot_r, uint8_t bot_g, uint8_t bot_b)
 {
@@ -197,106 +229,39 @@ static void flush_screen(void)
 #define CHAR_H 16
 static void goto_rc(uint32_t px, uint32_t py) { printf("\x1b[%u;%uH", (unsigned)(py / CHAR_H) + 1, (unsigned)(px / CHAR_W) + 1); }
 
-#define MENU_ITEM_COUNT 3
-static const char *menu_labels[MENU_ITEM_COUNT] = {
-    "Re-run Boot Flow",
-    "GS / GIF Demo",
-    "About",
-};
-static const uint8_t box_colors[MENU_ITEM_COUNT][3] = {
-    { 30, 70, 160 },
-    { 30, 140, 80 },
-    { 120, 55, 150 },
-};
-
-#define BOX_W 160u
-#define BOX_H 110u
-#define BOX_GAP 30u
-#define BOX_Y 190u
-
-static void box_geometry(int index, uint32_t *out_x)
+/* The native launcher is independent of the emulated GS framebuffer. */
+static int g_boot_disc = 0;
+static int g_hud_default = 0;
+static int g_hud_active;
+static int g_fps_default = 1;
+static uint64_t g_gx_attempts,g_gx_fallbacks;
+static int g_gx_present = 0; /* One experimental option enables output and supported primitive drawing. */
+static uint32_t g_fps_milli,g_present_milli;
+static frontend_fps_window g_fps_window;
+static system_profile_t g_profile_previous;
+static uint32_t g_slice_budget=512;
+static void wii_exit_to_loader(void);
+static int g_throughput = 1;
+static void launcher_rect(int x,int y,int w,int h,uint8_t r,uint8_t g,uint8_t b)
 {
-    uint32_t total_w = MENU_ITEM_COUNT * BOX_W + (MENU_ITEM_COUNT - 1) * BOX_GAP;
-    uint32_t start_x = (rmode->fbWidth > total_w) ? (rmode->fbWidth - total_w) / 2 : 0;
-    *out_x = start_x + (uint32_t)index * (BOX_W + BOX_GAP);
+    uint32_t sw=rmode->fbWidth,sh=rmode->xfbHeight;
+    int left=x*sw/640,top=y*sh/480;
+    int right=(x+w)*sw/640,bottom=(y+h)*sh/480;
+    /* XFB stores chroma in pairs; ensure thin strokes remain visible. */
+    if(right<=left)right=left+2;
+    if(bottom<=top)bottom=top+1;
+    fill_rect(left,top,right-left,bottom-top,r,g,b);
 }
-
-/* Draws the full PS2/PCSX2-Browser-styled menu screen: dark navy
- * gradient background, a title bar, one box per menu item (bright
- * border on the currently selected one), labels beneath each box, and
- * a status footer. Text is drawn via printf/ANSI cursor positioning
- * on top of the pixel-drawn regions (both write into the same XFB). */
-static void draw_menu_screen(int selected, int bios_found, const char *status_line)
+static void launcher_logo(int x,int y)
+{frontend_logo_draw(xfb,rmode->fbWidth,rmode->xfbHeight,x,y);}
+static void launcher_text(int x,int y,int scale,const char *text,int r,int g,int b)
 {
-    draw_gradient_background(12, 18, 55, 0, 0, 8);
-
-    fill_rect(0, 0, rmode->fbWidth, 46, 22, 30, 85);
-    flush_screen();
-
-    goto_rc(16, 8);
-    printf("PCSX2-Wii  -  System Test Menu");
-    goto_rc(16, 26);
-    printf("(experimental EE/IOP interpreter bring-up - see docs/STATUS.md)");
-
-    for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-        uint32_t bx;
-        box_geometry(i, &bx);
-        fill_rect(bx, BOX_Y, BOX_W, BOX_H, box_colors[i][0], box_colors[i][1], box_colors[i][2]);
-        if (i == selected)
-            draw_border(bx, BOX_Y, BOX_W, BOX_H, 4, 250, 220, 40);
-        else
-            draw_border(bx, BOX_Y, BOX_W, BOX_H, 2, 10, 10, 30);
-        flush_screen();
-
-        goto_rc(bx + 10, BOX_Y + BOX_H + 14);
-        printf("%s", menu_labels[i]);
-    }
-
-    uint32_t foot_y = rmode->xfbHeight > 110 ? rmode->xfbHeight - 100 : 400;
-    goto_rc(20, foot_y);
-    printf("BIOS: %s                              ",
-           bios_found ? "found on SD/USB" : "not found (Boot Test will report this)");
-    goto_rc(20, foot_y + CHAR_H);
-    printf("D-Pad Left/Right: choose    A: run    B: back to menu           ");
-    goto_rc(20, foot_y + 2 * CHAR_H);
-    printf("%-64s", status_line ? status_line : "");
+    frontend_text_draw(xfb,rmode->fbWidth,rmode->xfbHeight,x,y,scale,text,r,g,b);
 }
-
-/* Small liveness indicator: a pulsing colored square + frame counter
- * in the top-right corner, redrawn every loop iteration regardless of
- * menu state - the whole point of this screen is proving the app is
- * genuinely still running (not frozen) on real hardware. */
-static void draw_heartbeat(uint32_t frame)
-{
-    static const uint8_t colors[4][3] = {
-        { 210, 60, 60 }, { 60, 210, 60 }, { 60, 60, 210 }, { 220, 200, 50 },
-    };
-    int idx = (int)((frame / 20u) % 4u);
-    uint32_t hb_x = rmode->fbWidth > 40 ? rmode->fbWidth - 34 : 0;
-    fill_rect(hb_x, 12, 22, 22, colors[idx][0], colors[idx][1], colors[idx][2]);
-    DCFlushRange((uint8_t *)xfb + (size_t)12 * rmode->fbWidth * VI_DISPLAY_PIX_SZ,
-                 rmode->fbWidth * 22 * VI_DISPLAY_PIX_SZ);
-
-    static const char spinner[4] = { '|', '/', '-', '\\' };
-    goto_rc(hb_x > 80 ? hb_x - 80 : 0, 12);
-    printf("alive %c  frame %-8u", spinner[frame % 4u], (unsigned)frame);
-}
-
-/* Blocks (still servicing the heartbeat animation) until one of the
- * given buttons is pressed. Used by every menu action screen so the
- * user can read the result text before returning to the menu. */
 static void wait_for_button(uint16_t mask)
 {
-    uint32_t frame = 0;
-    for (;;) {
-        VIDEO_WaitVSync();
-        PAD_ScanPads();
-        uint16_t down = PAD_ButtonsDown(0);
-        draw_heartbeat(frame++);
-        if (down & mask) return;
-    }
+    for (;;) { VIDEO_WaitVSync(); wii_input_scan(); if(g_input_exit)wii_exit_to_loader(); if((g_input_down&mask)||g_input_home)return; }
 }
-
 static int   g_fat_mounted = 0;
 static int   g_bios_ok = 0;
 static int   g_system_started = 0;
@@ -314,8 +279,153 @@ static bios_image_t g_bios;
  * hardware also boots fine with no disc inserted (it shows the
  * browser/opening screen instead of a disc-boot fast path); only a
  * real BIOS is mandatory to proceed at all. */
+static char g_disc_path[FRONTEND_BROWSER_PATH];
+static char g_disc_notice[72];
+static frontend_browser g_browser;
 static int   g_disc_checked = 0;
 static int   g_disc_ok = 0;
+
+/* Keep progress visible until the emulated display contains real RGB pixels. */
+static int g_first_picture;
+static uint64_t g_boot_started,g_boot_log_next;
+static const char *boot_log_path(void)
+{
+    return g_gx_present?"sd:/pcsx2/Gekko2-R1302-gx-render.log":"sd:/pcsx2/Gekko2-R1302-software.log";
+}
+static void save_boot_progress(const char *event,int truncate)
+{
+    if(!g_fat_mounted)return;
+    ee_state_t *e=ee_core_get_state();iop_state_t *i=iop_core_get_state();gs_state_t *g=gs_get_state();
+    FILE *f=fopen(boot_log_path(),truncate?"w":"a");if(!f)return;
+    fprintf(f,"%s ms=%llu BIOS=%s ROMVER=%s size=%u disc=%d EE=%llu PC=%08x IOP=%llu PC=%08x halted=%d/%d STATUS=%08x CAUSE=%08x EPC=%08x PMODE=%llx DISPFB1=%llx DISPFB2=%llx FIRST_IMAGE=%d\n",
+        event,(unsigned long long)ticks_to_millisecs(gettime()-g_boot_started),g_bios.name,g_bios.version_string,(unsigned)g_bios.size,g_disc_ok,
+        (unsigned long long)e->instructions_executed,e->pc,(unsigned long long)i->instructions_executed,i->pc,e->halted,i->halted,e->cop0[12],e->cop0[13],e->cop0[14],
+        (unsigned long long)g->pmode,(unsigned long long)g->dispfb1,(unsigned long long)g->dispfb2,g_first_picture);
+    uint32_t sx,sy,sw,sh;int circuit=(g->pmode&1u)?1:2;
+    gs_decode_display_region(circuit==1?g->dispfb1:g->dispfb2,
+                             circuit==1?g->display1:g->display2,g->smode2,&sx,&sy,&sw,&sh);
+    fprintf(f,"VIDEO circuit=%d source=%ux%u origin=%u,%u output=%ux%u SMODE2=%llx DISPLAY=%llx launcher_font=coverage\n",
+        circuit,sw,sh,sx,sy,(unsigned)rmode->fbWidth,(unsigned)rmode->xfbHeight,
+        (unsigned long long)g->smode2,(unsigned long long)(circuit==1?g->display1:g->display2));
+    fclose(f);
+}
+
+/* HBC supplies the loader return stub used by standard exit(0).
+ * SYS_RETURNTOMENU would go to the Wii System Menu instead. */
+static void wii_exit_to_loader(void)
+{
+    if(g_system_started)save_boot_progress("EXIT_HBC",0);
+    gs_gx_shutdown();
+    frontend_browser_release(&g_browser);
+    iop_cdvd_unmount_iso();iop_cdrom_legacy_unmount_iso();
+    if(g_system_started){ee_core_shutdown();iop_core_shutdown();}
+    if(g_bios_ok)bios_free(&g_bios);
+    fflush(NULL);
+    exit(0);
+}
+static void draw_fps_overlay(void)
+{
+    char text[64];
+    snprintf(text,sizeof(text),"FPS %u.%02u  OUTPUT %u.%02u",
+             (unsigned)(g_fps_milli/1000),(unsigned)((g_fps_milli%1000)/10),
+             (unsigned)(g_present_milli/1000),(unsigned)((g_present_milli%1000)/10));
+    launcher_rect(12,12,304,24,4,9,22);
+    launcher_text(20,17,1,text,220,240,255);
+}
+
+/* Measure host throughput separately from emulated vertical-sync events.
+ * Presenting the same framebuffer again is not a new guest frame. */
+static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
+                             uint64_t ee_ins, uint64_t core_ticks, uint64_t blit_ticks)
+{
+    if (!g_fat_mounted || !ms) return;
+    FILE *f=fopen(boot_log_path(),"a");if(!f)return;
+    fprintf(f,"PERF interval_ms=%llu presents_mHz=%llu guest_vblank_mHz=%llu EE_per_s=%llu core_ms=%llu blit_ms=%llu JIT=%s\n",
+        (unsigned long long)ms,(unsigned long long)(presents*1000000ull/ms),
+        (unsigned long long)(events*1000000ull/ms),(unsigned long long)(ee_ins*1000ull/ms),
+        (unsigned long long)ticks_to_millisecs(core_ticks),(unsigned long long)ticks_to_millisecs(blit_ticks),
+#ifdef PCSX2WII_JIT_DISABLE
+        "off"
+#else
+        "on"
+#endif
+    );
+    system_profile_t profile;system_profile_get(&profile);
+    uint64_t ee_sample=profile.ee_ticks-g_profile_previous.ee_ticks;
+    uint64_t iop_sample=profile.iop_ticks-g_profile_previous.iop_ticks;
+    uint64_t total_sample=ee_sample+iop_sample;
+    fprintf(f,"CPU_SAMPLE pairs=%llu EE_tb=%llu IOP_tb=%llu EE_percent=%llu IOP_percent=%llu\n",
+            (unsigned long long)(profile.samples-g_profile_previous.samples),
+            (unsigned long long)ee_sample,(unsigned long long)iop_sample,
+            (unsigned long long)(total_sample?ee_sample*100/total_sample:0),
+            (unsigned long long)(total_sample?iop_sample*100/total_sample:0));
+    g_profile_previous=profile;
+    ee_timers_state_t *timers=ee_timers_get_state();
+    fprintf(f,"EE_TIMERS mode0=%lx mode1=%lx mode2=%lx mode3=%lx\n",
+            (unsigned long)timers->t[0].mode,(unsigned long)timers->t[1].mode,
+            (unsigned long)timers->t[2].mode,(unsigned long)timers->t[3].mode);
+    fprintf(f,"HOST budget=%lu remote_err=%d fps_overlay=%d gx_output=%d EE_PC=%08lx IOP_PC=%08lx\n",(unsigned long)g_slice_budget,g_remote_error,g_fps_default,g_gx_present,(unsigned long)ee_core_get_state()->pc,(unsigned long)iop_core_get_state()->pc);
+    fprintf(f,"GX requested=%d ready=%d primitives_requested=%d primitives_active=%d first=%d hud=%d attempts=%llu fallbacks=%llu pending=%lu sync_errors=%lu log=%s\n",
+       g_gx_present,gs_gx_ready(),g_gx_present,
+       frontend_allow_gx_primitives(g_gx_present,g_first_picture)&&gs_gx_ready(),
+       g_first_picture,g_hud_active,(unsigned long long)g_gx_attempts,(unsigned long long)g_gx_fallbacks,
+       (unsigned long)gs_mem_gpu_pending(),(unsigned long)gs_mem_sync_failures(),boot_log_path());
+    fprintf(f,"GX_WORK draws=%llu quads=%llu readback_bytes=%llu resolve_waits=%llu attempts=%llu\n",
+            (unsigned long long)gs_gx_work_count(0),(unsigned long long)gs_gx_work_count(1),
+            (unsigned long long)gs_gx_work_count(2),(unsigned long long)gs_gx_work_count(3),
+            (unsigned long long)gs_gx_work_count(4));
+        fprintf(f,"GX_PIPELINE depth_hw=%llu depth_hybrid=%llu blend_hw=%llu blend_hybrid=%llu z32_split=%llu pabe_split=%llu\n",
+        (unsigned long long)gs_gx_pipeline_count(0),(unsigned long long)gs_gx_pipeline_count(1),
+        (unsigned long long)gs_gx_pipeline_count(2),(unsigned long long)gs_gx_pipeline_count(3),
+        (unsigned long long)gs_gx_pipeline_count(4),(unsigned long long)gs_gx_pipeline_count(5));
+    fprintf(f,"GX_SURFACE opens=%llu draws=%llu resolves=%llu snapshots=%llu presents=%llu seed_bytes=%llu\n",
+        (unsigned long long)gs_gx_surface_count(0),(unsigned long long)gs_gx_surface_count(1),
+        (unsigned long long)gs_gx_surface_count(2),(unsigned long long)gs_gx_surface_count(3),
+        (unsigned long long)gs_gx_surface_count(4),(unsigned long long)gs_gx_surface_count(5));
+    fprintf(f,"GX_SOURCE_CACHE hits=%llu misses=%llu decoded_bytes=%llu\n",
+        (unsigned long long)gs_gx_source_cache_count(0),(unsigned long long)gs_gx_source_cache_count(1),
+        (unsigned long long)gs_gx_source_cache_count(2));
+    fprintf(f,"GS_BLEND a=%u b=%u c=%u d=%u fix=%u colclamp=%u pabe=%u\n",
+        gif_get_state()->alpha_a,gif_get_state()->alpha_b,gif_get_state()->alpha_c,gif_get_state()->alpha_d,gif_get_state()->alpha_fix,gif_get_state()->colclamp,gif_get_state()->pabe);
+    fprintf(f,"GX_TEXTURE candidates=%llu draws=%llu upload_bytes=%llu layout_rejects=%llu\n",
+        (unsigned long long)gs_gx_texture_count(0),(unsigned long long)gs_gx_texture_count(1),
+        (unsigned long long)gs_gx_texture_count(2),(unsigned long long)gs_gx_texture_count(3));
+    fprintf(f,"JIT_CACHE compiled=%u attempts=%llu rejected_hits=%llu executed=%llu L0hit=%llu L0miss=%llu\n",
+            (unsigned)ee_jit_get_cache_size(),
+            (unsigned long long)ee_jit_get_compile_attempt_count(),
+            (unsigned long long)ee_jit_get_rejected_hit_count(),
+            (unsigned long long)ee_jit_get_executed_count(),
+            (unsigned long long)ee_jit_get_pc_l0_hit_count(),
+            (unsigned long long)ee_jit_get_pc_l0_miss_count());
+    const gif_state_t *gif=gif_get_state();
+    fprintf(f,"GS_STATE frame_psm=%lu prim=%lx prmode=%lx ac=%lu zcfg=%lu ate=%lu fbmask=%lx triangles=%llu sprites=%llu\n",
+        (unsigned long)gif->frame_psm,(unsigned long)gif->prim,(unsigned long)gif->prmode,
+        (unsigned long)gif->prmodecont_ac,(unsigned long)gif->zbuf_configured,(unsigned long)gif->ate,
+        (unsigned long)gif->fbmask,(unsigned long long)gif->triangles_drawn,(unsigned long long)gif->sprites_drawn);
+    fprintf(f,"GS_DETAIL zmsk=%lu zte=%lu ztst=%lu tex_psm=%lu tw=%lu th=%lu tcc=%lu tfx=%lu mmag=%lu mmin=%lu dthe=%lu fba=%lu\n",
+        (unsigned long)gif->zmsk,(unsigned long)gif->zte,(unsigned long)gif->ztst,(unsigned long)gif->tex_psm,
+        (unsigned long)gif->tex_tw,(unsigned long)gif->tex_th,(unsigned long)gif->tex_tcc,(unsigned long)gif->tex_tfx,
+        (unsigned long)gif->tex1_mmag,(unsigned long)gif->tex1_mmin,(unsigned long)gif->dthe,(unsigned long)gif->fba);
+    fprintf(f,"GS_ROUTE draws=%llu texture=%llu blend=%llu zwrite=%llu ztest=%llu alpha=%llu mask=%llu dither_fba=%llu fog=%llu gouraud_tri=%llu cached_sprite=%llu fast_rows=%llu\n",
+        (unsigned long long)gif_get_render_work(0),(unsigned long long)gif_get_render_work(1),
+        (unsigned long long)gif_get_render_work(2),(unsigned long long)gif_get_render_work(3),
+        (unsigned long long)gif_get_render_work(4),(unsigned long long)gif_get_render_work(5),
+        (unsigned long long)gif_get_render_work(6),(unsigned long long)gif_get_render_work(7),
+        (unsigned long long)gif_get_render_work(8),(unsigned long long)gif_get_render_work(9),
+        (unsigned long long)gif_get_render_work(10),(unsigned long long)gif_get_render_work(11));
+    fprintf(f,"EE_BLOCK runs=%llu retired=%llu\n",(unsigned long long)ee_jit_get_block_count(),(unsigned long long)ee_jit_get_block_retired());
+    fprintf(f,"IOP_JIT compiled=%u executed=%llu rejected_hits=%llu\n",
+            (unsigned)iop_jit_get_cache_size(),
+            (unsigned long long)iop_jit_get_executed_count(),
+            (unsigned long long)iop_jit_get_rejected_hit_count());
+    fprintf(f,"VU_JIT compiled=%u upper=%llu lower=%llu rejected_hits=%llu pairs=%llu blocks=%llu\n",
+            (unsigned)vu_jit_get_cache_size(),
+            (unsigned long long)vu_jit_get_upper_count(),
+            (unsigned long long)vu_jit_get_lower_count(),
+            (unsigned long long)vu_jit_get_rejected_hit_count(),
+            (unsigned long long)vu_jit_get_pair_count(),
+            (unsigned long long)vu_jit_get_block_count());fclose(f);
+}
 
 /* Round 29 continued (task #126): real BIOS boot as the PRIMARY,
  * automatic action - see the top-of-file header comment for the full
@@ -330,7 +440,7 @@ static int   g_disc_ok = 0;
  * loop with no way out other than power-cycling); the user can also
  * hold B at any time to stop early and drop into the secondary test
  * menu below. */
-#define BOOT_CHUNK_SLICES 200000ull  /* IOP-instruction budget per redraw, keeps the UI responsive */
+#define BOOT_CHUNK_SLICES 50000ull  /* IOP-instruction budget per redraw, keeps the UI responsive */
 #define BOOT_TOTAL_CAP    2000000000ull /* generous overall safety cap, not a real limit - see comment above */
 
 /* Round 119 (task #172/#274): this used to be a static function
@@ -344,6 +454,37 @@ static int   g_disc_ok = 0;
  * PS2 GS DISPFB1/DISPFB2 register field layout this implements. */
 #define decode_dispfb gs_decode_dispfb
 
+/* Persist first fault evidence as text, once; no guest-memory writes. */
+static int r1252_evidence_written;
+static void r1252_save_fault_evidence(void)
+{
+    uint32_t f[112]={0}; ee_core_get_r1252_fault(f);
+    if (!f[0] || r1252_evidence_written) return;
+    FILE *fp=fopen("sd:/pcsx2/Gekko2-R1302-first-fault.txt", "w");
+    if (!fp) return;
+    fprintf(fp,"Gekko2 R1302 JIT=%s disc=%d BIOS=%s version=%s size=%u\n",
+#ifdef PCSX2WII_JIT_DISABLE
+        "OFF",
+#else
+        "ON",
+#endif
+        g_disc_ok,g_bios.name,g_bios.version_string,(unsigned)g_bios.size);
+    for(unsigned n=0;n<112;n++)fprintf(fp,"F[%03u]=%08lx\n",n,(unsigned long)f[n]);
+    uint32_t hit=0,w[16]={0};ee_core_get_r1246_writer(&hit,w);
+    fprintf(fp,"WRITER hit=%lu\n",(unsigned long)hit);
+    for(unsigned n=0;n<16;n++)fprintf(fp,"W[%02u]=%08lx\n",n,(unsigned long)w[n]);
+    ee_state_t *ee=ee_core_get_state();
+    const uint32_t starts[]={0x00014280u,0x0100ec00u,0x010459c0u};
+    for(unsigned i=0;i<3;i++)for(unsigned n=0;n<64;n++){
+        uint32_t a=starts[i]+n*4;
+        if(a+4<=ee->ram_size){uint8_t *b=ee->ram+a;
+            uint32_t v=(uint32_t)b[0]|((uint32_t)b[1]<<8)|((uint32_t)b[2]<<16)|((uint32_t)b[3]<<24);
+            fprintf(fp,"RAM[%08lx]=%08lx\n",(unsigned long)a,(unsigned long)v);}
+    }
+    int failed=ferror(fp); int closed=fclose(fp);
+    if(!failed && closed==0)r1252_evidence_written=1;
+}
+
 /* Live progress HUD for the automatic real boot flow - redrawn every
  * chunk so the user can see real instruction counts advancing (proof
  * the emulator core is genuinely executing, not frozen), whether each
@@ -355,11 +496,85 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
                                     int display_active)
 {
     goto_rc(16, 40);
-    printf("PCSX2-Wii - Real BIOS Boot                                        \n");
+    printf("Gekko2 - Real BIOS Boot                                        \n");
     printf("===================================                              \n\n");
     printf("EE  instructions executed: %-16llu halted=%d              \n",
            (unsigned long long)ee_instr, ee_halted);
     printf("    %-64s\n", ee_halted ? ee_reason : "(still executing real instructions)");
+    printf("JIT: %-12llu / %-12llu EE (%3llu%%) cache=%u L0=%llu/%llu\n",
+           (unsigned long long)(ee_jit_get_executed_count()+ee_jit_get_block_retired()),
+           (unsigned long long)ee_instr,
+           (unsigned long long)(ee_instr ? ((ee_jit_get_executed_count()+ee_jit_get_block_retired()) * 100u / ee_instr) : 0u),
+           (unsigned)ee_jit_get_cache_size(),
+           (unsigned long long)ee_jit_get_pc_l0_hit_count(),
+           (unsigned long long)ee_jit_get_pc_l0_miss_count());
+    printf("HELP: sqrt=%llu cvt=%llu mmiMD=%llu pmfhl=%llu                    \n",
+           (unsigned long long)g_r1175_jit_sqrt_calls,
+           (unsigned long long)g_r1175_jit_cvt_calls,
+           (unsigned long long)g_r1175_jit_mmi_muldiv_calls,
+           (unsigned long long)g_r1175_jit_pmfhl_calls);
+    {
+        unsigned long long n = (unsigned long long)g_r1176_prof_samples;
+        printf("TB: n=%llu fetch=%llu jit=%llu B=%llu C=%llu H=%llu I=%llu ticks       \n",
+               n,
+               n ? (unsigned long long)g_r1176_prof_fetch_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1176_prof_jit_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1177_prof_base_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1177_prof_clock_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1177_prof_house_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1177_prof_irq_tb / n : 0ULL);
+        printf("Csplit: TL=%llu VB=%llu BC=%llu GS=%llu TM=%llu ticks              \n",
+               n ? (unsigned long long)g_r1178_prof_latch_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1178_prof_vblank_tb / n : 0ULL,
+               n ? (unsigned long long)(g_r1179_prof_selfloop_tb + g_r1179_prof_eeload_tb + g_r1179_prof_escalate_tb + g_r1179_prof_carousel_tb + g_r1179_prof_sbus_tb) / n : 0ULL,
+               n ? (unsigned long long)g_r1178_prof_gsvsync_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1178_prof_timers_tb / n : 0ULL);
+        printf("BCsplit: SL=%llu EL=%llu ES=%llu CA=%llu SB=%llu ticks             \n",
+               n ? (unsigned long long)g_r1179_prof_selfloop_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1179_prof_eeload_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1179_prof_escalate_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1179_prof_carousel_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1179_prof_sbus_tb / n : 0ULL);
+        printf("SBdetail: G=%llu H=%llu match=%llu call=%llu unblock=%llu             \n",
+               n ? (unsigned long long)g_r1181_prof_sbus_guard_tb / n : 0ULL,
+               n ? (unsigned long long)g_r1181_prof_sbus_helper_tb / n : 0ULL,
+               (unsigned long long)g_r1181_sbus_guard_match,
+               (unsigned long long)g_r1181_sbus_helper_calls,
+               (unsigned long long)g_r1181_sbus_unblocks);
+        /* R1245: compact passive slot watcher; no guest-memory reads. */
+        {
+            int su=0; int32_t sm=0,sc=0,sw=0; uint64_t it=0,stc=0,hh=0,re=0; uint32_t cd=0,se=0,hit=0,sn[12];
+            ee_hle_thread_get_sema_state(5,&su,&sm,&sc,&sw); ee_core_get_r1190_sif_diag(&it,&stc,&hh,&re,&cd,&se); ee_core_get_r1245_slottruth(&hit,sn);
+            uint32_t wh=0,wsn[16]={0}; ee_core_get_r1246_writer(&wh,wsn);
+#ifdef PCSX2WII_JIT_DISABLE
+            const char *jm="OFF";
+#else
+            const char *jm="ON";
+#endif
+            printf("R1302 MENU / RPC-GS JIT=%s REND=%llu hh=%llu S5=%ld/%ld w=%ld | slot2=%lu writer=%lu\033[K\n",jm,(unsigned long long)re,(unsigned long long)hh,(long)sc,(long)sm,(long)sw,(unsigned long)hit,(unsigned long)wh);
+            uint64_t rc[4]={0}; uint32_t rl[6]={0};
+            ee_core_get_r1249_repair(rc,rl);
+            printf("REPAIR=%llu T%lu CONT=%llu LD=%llu JR=%llu\033[K\n",
+                (unsigned long long)rc[0],(unsigned long)rl[0],
+                (unsigned long long)rc[1],(unsigned long long)rc[2],(unsigned long long)rc[3]);
+            uint32_t ff[112]={0}; ee_core_get_r1252_fault(ff);
+            printf("FAULT=%lu PC=%08lx VA=%08lx T%lu dump=%d DISC=%d\033[K\n",
+                (unsigned long)ff[0],(unsigned long)ff[1],(unsigned long)ff[2],
+                (unsigned long)ff[7],r1252_evidence_written,g_disc_ok);
+            ee_state_t *live = ee_core_get_state();
+            int tid = ee_hle_thread_get_current_thread_id();
+            printf("CP SR=%08lx CA=%08lx EPC=%08lx BV=%08lx\033[K\n",
+                (unsigned long)live->cop0[12], (unsigned long)live->cop0[13],
+                (unsigned long)live->cop0[14], (unsigned long)live->cop0[8]);
+            printf("T%d st=%lu pr=%lu wait=%lu/%lu SP=%08lx RA=%08lx\033[K\n",
+                tid, (unsigned long)ee_hle_thread_get_status(tid),
+                (unsigned long)ee_hle_thread_get_priority(tid),
+                (unsigned long)ee_hle_thread_get_wait_type(tid),
+                (unsigned long)ee_hle_thread_get_wait_id(tid),
+                (unsigned long)live->gpr[29].ud0, (unsigned long)live->gpr[31].ud0);
+
+        }
+        }
     printf("IOP instructions executed: %-16llu halted=%d              \n",
            (unsigned long long)iop_instr, iop_halted);
     printf("    %-64s\n", iop_halted ? iop_reason : "(still executing real instructions)");
@@ -367,13 +582,13 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
     printf("GS display: %-58s\n",
            display_active ? "configured by BIOS/game - showing real GS memory below"
                            : "not configured yet (see docs/STATUS.md's Round 29 notes)");
-    printf("\nHold B to stop and open the test menu (re-run, GS/GIF demo, about).\n");
+    printf("\nZ+START: GS/HUD | Hold B+Z: launcher.\n");
 }
 
 /* The real boot flow itself - see the top-of-file header comment and
  * the doc comment above draw_boot_progress_hud() for the full design.
  * Runs automatically once at startup (called from main()) and is also
- * reachable again from the test menu ("Re-run Boot Flow"). */
+ * reachable again from the launcher ("Re-run Boot Flow"). */
 static void run_real_boot_flow(void)
 {
     draw_gradient_background(6, 6, 22, 0, 0, 6);
@@ -386,7 +601,7 @@ static void run_real_boot_flow(void)
     if (!g_fat_mounted) {
         printf("\n[!] fatInitDefault() failed - no SD/USB storage found.\n");
         printf("    Insert an SD card with /pcsx2/bios/*.bin and restart to\n");
-        printf("    boot a real BIOS. Press A or B to open the test menu.\n");
+        printf("    boot a real BIOS. Press A or B to open the launcher.\n");
         wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
         return;
     }
@@ -408,7 +623,7 @@ static void run_real_boot_flow(void)
     if (!g_bios_ok) {
         printf("\n[!] Could not load a PS2 BIOS image from sd:/pcsx2/bios/\n");
         printf("    Place a legally-dumped PS2 BIOS there (e.g. bios.bin) and\n");
-        printf("    restart. Press A or B to open the test menu.\n");
+        printf("    restart. Press A or B to open the launcher.\n");
         wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
         return;
     }
@@ -417,8 +632,13 @@ static void run_real_boot_flow(void)
            g_bios.name, (unsigned)g_bios.size, g_bios.version_string);
 
     if (!g_system_started) {
-        system_init(&g_bios, &g_bios);
+        if (system_init(&g_bios, &g_bios) != 0) {
+            printf("Core initialization failed. A/B: launcher.\n");
+            wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);return;
+        }
+        if(cdvd_config_bind_file("sd:/pcsx2/bios-config.bin")<0)printf("BIOS configuration file could not be loaded; saving disabled.\n");
         g_system_started = 1;
+        g_first_picture=0;g_boot_started=gettime();g_boot_log_next=0;
         gs_init();
         gs_mem_init();
     }
@@ -447,22 +667,21 @@ static void run_real_boot_flow(void)
      * new Round 610 gate. */
     if (!g_disc_checked) {
         g_disc_checked = 1;
-        int cdvd_rc   = iop_cdvd_mount_iso("sd:/pcsx2/games/game.bin");
-        if (cdvd_rc != 0)
-            cdvd_rc = iop_cdvd_mount_iso("sd:/pcsx2/games/game.iso");
-        int legacy_rc = iop_cdrom_legacy_mount_iso("sd:/pcsx2/games/game.bin");
-        if (legacy_rc != 0)
-            legacy_rc = iop_cdrom_legacy_mount_iso("sd:/pcsx2/games/game.iso");
+        if (!g_boot_disc) {
+        g_disc_ok = 0;
+        printf("[R1302] BIOS mode: no disc mounted.\n");
+        } else {
+        int cdvd_rc = iop_cdvd_mount_iso(g_disc_path);
+        int legacy_rc = iop_cdrom_legacy_mount_iso(g_disc_path);
         g_disc_ok = (cdvd_rc == 0) || (legacy_rc == 0);
         if (g_disc_ok) {
-            if (cdvd_rc == 0)
-                iop_cdvd_set_disc_present(0x12 /* CDVD_TYPE_PS2CD, Round 170's cited constant */);
-            printf("[+] Disc image mounted: sd:/pcsx2/games/game.bin (or .iso)\n");
+            if (cdvd_rc == 0) iop_cdvd_set_disc_present(0x12);
+            printf("[+] Disc image mounted: %s\n",g_disc_path);
         } else {
-            printf("[i] No disc image found at sd:/pcsx2/games/ - booting BIOS only\n");
-            printf("    (place a real PS2 disc dump there as game.bin/game.iso\n");
-            printf("    for a real disc-boot attempt; real hardware also boots\n");
-            printf("    fine with no disc, just without a game to run).\n");
+            g_disc_checked=0;
+            printf("[!] Selected image could not be mounted: %s\nA/B: launcher.\n",g_disc_path);
+            wait_for_button(PAD_BUTTON_A|PAD_BUTTON_B);return;
+        }
         }
     }
 
@@ -471,21 +690,45 @@ static void run_real_boot_flow(void)
     gs_state_t  *gs  = gs_get_state();
 
     uint32_t frame = 0;
+    uint64_t last_present_ms=0,last_present_events=ee_core_get_vblank_events();
+    uint64_t last_present_quadwords=UINT64_MAX;
+    uint64_t last_dispfb=UINT64_MAX,last_display=UINT64_MAX,last_pmode=UINT64_MAX,last_smode=UINT64_MAX;
+    gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
+    g_slice_budget=512;g_fps_milli=g_present_milli=0;
+    memset(&g_fps_window,0,sizeof(g_fps_window));
+    system_profile_reset();g_profile_previous=(system_profile_t){0};
     uint64_t total_slices = 0;
     int stopped_by_user = 0;
+    int show_hud = g_hud_default;g_hud_active=show_hud; /* Z+START toggles diagnosis; START alone belongs to the PS2. */
 
     iop_sio2_pad_connect();
+    uint64_t perf_start=gettime(),perf_presents=0,perf_events=ee_core_get_vblank_events();
+    uint64_t perf_ee=ee->instructions_executed,perf_core=0,perf_blit=0;
 
     for (;;) {
-        VIDEO_WaitVSync();
-        PAD_ScanPads();
-        uint16_t held = PAD_ButtonsHeld(0);
-        iop_sio2_pad_set_buttons(wii_pad_to_ps2_pad(held));
+        wii_input_scan();
+        if(g_input_exit)wii_exit_to_loader();
+        if(g_input_home){stopped_by_user=1;break;}
+        uint16_t held = g_input_held;
+        uint16_t down = g_input_down;
+        int hud_combo = (held & (PAD_BUTTON_START|PAD_TRIGGER_Z)) == (PAD_BUTTON_START|PAD_TRIGGER_Z);
+        if (hud_combo && (down & (PAD_BUTTON_START|PAD_TRIGGER_Z))) {show_hud = !show_hud;g_hud_active=show_hud;last_present_ms=0;}
+        uint16_t guest_held = hud_combo ? held & ~(PAD_BUTTON_START|PAD_TRIGGER_Z) : held;
+        iop_sio2_pad_set_buttons(wii_pad_to_ps2_pad(guest_held));
 
+        uint64_t stage_started=gettime();
         if (!(ee->halted && iop->halted)) {
-            system_run_interleaved(BOOT_CHUNK_SLICES);
-            total_slices += BOOT_CHUNK_SLICES;
+            system_run_interleaved(g_slice_budget);
+            total_slices += g_slice_budget;
         }
+
+        uint64_t chunk_ticks=gettime()-stage_started;
+        perf_core+=chunk_ticks;
+        g_slice_budget=frontend_next_budget(g_slice_budget,(uint32_t)ticks_to_millisecs(chunk_ticks),g_throughput?50:20);
+        stage_started=gettime();
+        uint64_t now_display_ms=ticks_to_millisecs(stage_started);
+        uint64_t current_events=ee_core_get_vblank_events();
+        int present_due=frontend_present_due(now_display_ms,last_present_ms,current_events,last_present_events);
 
         /* PMODE bits 0/1 = EN1/EN2 (circuit 1/2 enabled) - real,
          * documented GS register semantics, not a guess.
@@ -517,30 +760,92 @@ static void run_real_boot_flow(void)
         int en1 = (gs->pmode & 0x1u) != 0;
         int en2 = (gs->pmode & 0x2u) != 0;
         int display_active = en1 || en2;
-        if (display_active) {
+        uint64_t current_quadwords=gif_get_state()->quadwords_seen;
+        uint64_t current_dispfb=en1?gs->dispfb1:gs->dispfb2;
+        uint64_t current_display=en1?gs->display1:gs->display2;
+        /* Frequent input polling must not multiply expensive full-screen
+         * blits for an unchanged BIOS framebuffer. GIF activity and display
+         * changes refresh within 500 ms; real guest VBlank refreshes at once.
+         * A five-second fallback covers writes outside normal GIF paths. */
+        if(g_first_picture && !show_hud && current_events==last_present_events &&
+           current_quadwords==last_present_quadwords && current_dispfb==last_dispfb &&
+           current_display==last_display && gs->pmode==last_pmode && gs->smode2==last_smode &&
+           now_display_ms>=last_present_ms && now_display_ms-last_present_ms<5000)present_due=0;
+        if(frontend_probe_first_image(present_due,display_active,g_first_picture)) {
+            uint32_t probe_bp,probe_bw,sx,sy,sw,sh;
+            decode_dispfb(current_dispfb,&probe_bp,&probe_bw);
+            gs_decode_display_region(current_dispfb,current_display,gs->smode2,&sx,&sy,&sw,&sh);
+            if(probe_bw && gs_display_has_rgb(probe_bp,probe_bw,sx,sy,sw,sh)) {
+                g_first_picture=1;save_boot_progress("FIRST_IMAGE",0);
+            }
+        }
+        gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
+        if(present_due)VIDEO_WaitVSync();
+        if (present_due && display_active && !show_hud) {
             uint64_t active_dispfb = en1 ? gs->dispfb1 : gs->dispfb2;
             uint32_t bp_words, bw_pixels;
             decode_dispfb(active_dispfb, &bp_words, &bw_pixels);
             if (bw_pixels > 0) {
-                uint32_t blit_h = rmode->xfbHeight > 140 ? rmode->xfbHeight - 140 : 0;
-                gs_blit_psmct32_to_xfb(xfb, rmode->fbWidth, 0, 140,
-                                       bp_words, bw_pixels, 0, 0,
-                                       rmode->fbWidth, blit_h);
-                DCFlushRange((uint8_t *)xfb + (size_t)140 * rmode->fbWidth * VI_DISPLAY_PIX_SZ,
-                             rmode->fbWidth * blit_h * VI_DISPLAY_PIX_SZ);
+                uint32_t blit_h = rmode->xfbHeight;
+                uint32_t sx, sy, sw, sh;
+                gs_decode_display_region(active_dispfb, en1 ? gs->display1 : gs->display2,
+                                          gs->smode2, &sx, &sy, &sw, &sh);
+                int gx_ok=0;
+                if(frontend_allow_gx_output(g_gx_present,g_first_picture,(unsigned)((active_dispfb>>15)&31u))) {
+                    g_gx_attempts++;
+                    gx_ok=gs_gx_present(xfb,rmode,bp_words,bw_pixels,sx,sy,sw,sh);
+                    if(!gx_ok)g_gx_fallbacks++;
+                }
+                if(g_first_picture && !gx_ok)
+                    gs_blit_scaled_psmct32_to_xfb(xfb, rmode->fbWidth, blit_h,
+                                             bp_words, bw_pixels, sx, sy, sw, sh);
+
             }
         }
 
+        if(present_due){
+        if (show_hud || !display_active || !g_first_picture) {
         draw_boot_progress_hud(ee->instructions_executed, iop->instructions_executed,
                                 ee->halted, iop->halted, ee->halt_reason, iop->halt_reason,
                                 display_active);
-        draw_heartbeat(frame++);
+        if(!g_first_picture)printf("Waiting for BIOS pixels in VRAM.\033[K\n");
+        else printf("BIOS pixels ready. Hide HUD with MINUS+PLUS / Z+START.\033[K\n");
+        printf("GX output=%d ready=%d flat=%d first=%d pending=%lu errors=%lu\033[K\n",
+          g_gx_present,gs_gx_ready(),g_gx_present,g_first_picture,
+          (unsigned long)gs_mem_gpu_pending(),(unsigned long)gs_mem_sync_failures());
+        frame++;
+        } else {
+            VIDEO_SetNextFramebuffer(xfb); VIDEO_Flush();
+            frame++;
+        }
 
-        if (held & PAD_BUTTON_B) { stopped_by_user = 1; break; }
+        if(g_fps_default && g_first_picture && !show_hud)draw_fps_overlay();
+        flush_screen();
+        perf_presents++;last_present_ms=now_display_ms;last_present_events=current_events;
+        last_present_quadwords=current_quadwords;last_dispfb=current_dispfb;last_display=current_display;
+        last_pmode=gs->pmode;last_smode=gs->smode2;
+        }
+        perf_blit+=gettime()-stage_started;
+        r1252_save_fault_evidence();
+        if(ee->instructions_executed>=g_boot_log_next){save_boot_progress("PROGRESS",g_boot_log_next==0);g_boot_log_next=ee->instructions_executed+50000000ull;}
+        uint64_t perf_now=gettime(),perf_ms=ticks_to_millisecs(perf_now-perf_start);
+        if(perf_ms>=5000ull){
+            uint64_t now_events=ee_core_get_vblank_events();
+            frontend_fps_push(&g_fps_window,perf_ms,now_events-perf_events,perf_presents);
+            g_fps_milli=frontend_fps_guest(&g_fps_window);
+            g_present_milli=frontend_fps_output(&g_fps_window);
+            save_performance(perf_ms,perf_presents,now_events-perf_events,
+                             ee->instructions_executed-perf_ee,perf_core,perf_blit);
+            perf_start=perf_now;perf_presents=0;perf_events=now_events;
+            perf_ee=ee->instructions_executed;perf_core=0;perf_blit=0;
+        }
+        if ((held & (PAD_BUTTON_B | PAD_TRIGGER_Z)) == (PAD_BUTTON_B | PAD_TRIGGER_Z)) { stopped_by_user = 1; break; }
         if (ee->halted && iop->halted) break;
         if (total_slices >= BOOT_TOTAL_CAP) break;
     }
 
+    save_boot_progress(stopped_by_user?"PAUSED":"STOPPED",0);
+    if (stopped_by_user) return;
     goto_rc(16, 400);
     if (stopped_by_user)
         printf("Stopped by user (B held).                                          \n");
@@ -548,7 +853,7 @@ static void run_real_boot_flow(void)
         printf("Both cores halted on their own - see reasons above.                \n");
     else
         printf("Reached the safety instruction cap - still executing real code.    \n");
-    printf("\nPress A or B to open the test menu.\n");
+    printf("\nPress A or B to open the launcher.\n");
     wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
 }
 
@@ -557,173 +862,78 @@ static void run_real_boot_flow(void)
  * gs_init are only called once via the g_system_started guard, so
  * this resumes/re-displays the SAME already-running cores rather than
  * restarting them). */
-static void action_bios_boot_test(void)
-{
-    run_real_boot_flow();
-}
-
-/* Menu action 2: the existing pixel-pipeline demos (fixed test bars
- * via direct GS-memory writes, then a Gouraud triangle driven through
- * a real hand-built GIF packet + dma_channel_kick()) - unchanged
- * logic from before this menu existed, just moved into its own
- * action function. */
-static void action_gs_gif_demo(void)
-{
-    draw_gradient_background(6, 6, 22, 0, 0, 6);
-    goto_rc(16, 40);
-    printf("GS / GIF Pixel Pipeline Demo\n");
-    printf("============================\n\n");
-    printf("Drawing a fixed 4-color test pattern via direct GS-memory\n");
-    printf("writes, then a Gouraud triangle via a real hand-built GIF\n");
-    printf("packet through dma_channel_kick() - see docs/ROADMAP.md.\n\n");
-
-    gs_mem_init();
-    const uint32_t bar_w = rmode->fbWidth / 4;
-    const uint32_t colors[4] = { 0x000000FFu, 0x0000FF00u, 0x00FF0000u, 0x00FFFFFFu };
-    for (int bar = 0; bar < 4; bar++) {
-        for (uint32_t y = 0; y < 40; y++) {
-            for (uint32_t x = 0; x < bar_w; x++) {
-                gs_mem_write_psmct32(0, rmode->fbWidth, bar * bar_w + x, y, colors[bar]);
-            }
-        }
-    }
-    gs_blit_psmct32_to_xfb(xfb, rmode->fbWidth, 0, 130, 0, rmode->fbWidth, 0, 0, rmode->fbWidth, 40);
-    DCFlushRange((uint8_t *)xfb + (size_t)130 * rmode->fbWidth * VI_DISPLAY_PIX_SZ,
-                 rmode->fbWidth * 40 * VI_DISPLAY_PIX_SZ);
-
-    static uint8_t pkt[16 * (1 + 3 + 3 * 2)];
-    memset(pkt, 0, sizeof(pkt));
-    int off = 0;
-#define WLE32(p, v) do { \
-    uint32_t _v = (uint32_t)(v); \
-    (p)[0] = (uint8_t)(_v);       (p)[1] = (uint8_t)(_v >> 8); \
-    (p)[2] = (uint8_t)(_v >> 16); (p)[3] = (uint8_t)(_v >> 24); \
-} while (0)
-#define APPEND_AD(data_lo, data_hi, addr) do { \
-    WLE32(pkt + off,      (data_lo)); \
-    WLE32(pkt + off + 4,  (data_hi)); \
-    WLE32(pkt + off + 8,  (addr));    \
-    WLE32(pkt + off + 12, 0);         \
-    off += 16; \
-} while (0)
-    const int n_verts = 3;
-    const int nloop = 3 + 2 * n_verts;
-    WLE32(pkt + off,     (uint32_t)nloop | (1u << 15));
-    WLE32(pkt + off + 4, (0u << 26) | (1u << 28));
-    WLE32(pkt + off + 8, GIF_REG_AD);
-    WLE32(pkt + off + 12, 0);
-    off += 16;
-
-    uint32_t fbw_field = rmode->fbWidth / 64u;
-    APPEND_AD((fbw_field << 9), 0, GS_REG_FRAME_1);
-    APPEND_AD(0, 0, GS_REG_XYOFFSET_1);
-    APPEND_AD((uint32_t)PRIM_TYPE_TRIANGLE | PRIM_IIP_MASK, 0, GS_REG_PRIM);
-
-    static const uint32_t vcolor[3] = { 0xFF0000FFu, 0xFF00FF00u, 0xFFFF0000u };
-    static const int32_t vpos[3][2] = { { 40, 30 }, { 220, 30 }, { 40, 170 } };
-    for (int i = 0; i < n_verts; i++) {
-        uint32_t rgba = vcolor[i];
-        uint32_t rgbaq_lo = (rgba & 0xFFu) | (((rgba >> 8) & 0xFFu) << 8) |
-                            (((rgba >> 16) & 0xFFu) << 16) | (((rgba >> 24) & 0xFFu) << 24);
-        APPEND_AD(rgbaq_lo, 0, GS_REG_RGBAQ);
-        APPEND_AD((uint32_t)(vpos[i][0] << 4), (uint32_t)(vpos[i][1] << 4), GS_REG_XYZ2);
-    }
-#undef APPEND_AD
-#undef WLE32
-
-    /* This demo needs the EE core (for its RAM + DMA sink wiring) but
-     * NOT a real BIOS - initialize a throwaway core if the boot test
-     * above hasn't already done so. */
-    if (!g_system_started) {
-        bios_image_t empty;
-        memset(&empty, 0, sizeof(empty));
-        system_init(&empty, &empty);
-    }
-    ee_state_t *ee = ee_core_get_state();
-    const uint32_t pkt_ram_addr = 0x00100000u;
-    memcpy(ee->ram + pkt_ram_addr, pkt, (size_t)off);
-
-    dma_state_t *dma = dma_get_state();
-    dma->chan[DMA_CHANNEL_GIF].chcr = 0;
-    dma->chan[DMA_CHANNEL_GIF].madr = pkt_ram_addr;
-    dma->chan[DMA_CHANNEL_GIF].qwc  = (uint32_t)(off / 16);
-    dma_channel_kick(DMA_CHANNEL_GIF);
-
-    gs_blit_psmct32_to_xfb(xfb, rmode->fbWidth, 0, 170, 0, rmode->fbWidth, 0, 40, rmode->fbWidth, 180);
-    DCFlushRange((uint8_t *)xfb + (size_t)170 * rmode->fbWidth * VI_DISPLAY_PIX_SZ,
-                 rmode->fbWidth * 180 * VI_DISPLAY_PIX_SZ);
-
-    goto_rc(16, 360);
-    printf("Real GIF-packet demo drawn via dma_channel_kick() (DMA channel error: %u).\n",
-           (unsigned)dma->chan[DMA_CHANNEL_GIF].last_error);
-    printf("\nPress A or B to return to the menu.\n");
-    wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
-}
-
-static void action_about(void)
-{
-    draw_gradient_background(6, 6, 22, 0, 0, 6);
-    goto_rc(16, 40);
-    printf("About PCSX2-Wii\n");
-    printf("===============\n\n");
-    printf("Experimental PS2 EE/IOP interpreter port skeleton for Wii,\n");
-    printf("built on devkitPPC + libogc.\n\n");
-    printf("github.com/Mafiacoding/PCSX2-Wii\n\n");
-    printf("This is NOT a functional PS2 emulator yet - a real BIOS does\n");
-    printf("boot for real (the automatic boot flow you just saw runs the\n");
-    printf("actual EE/IOP interpreters against it), but it does not yet\n");
-    printf("reach the OSD splash screen. See docs/STATUS.md's \"Round 29\"\n");
-    printf("sections for the current, honest state of that investigation.\n");
-    printf("docs/ROADMAP.md has the full account of what actually works\n");
-    printf("today (EE/IOP interpreters, DMA/GIF/GS register plumbing, a\n");
-    printf("real IOP module/IRX loader, a real VU opcode table, an SPU2\n");
-    printf("register scaffold) and what is still missing.\n\n");
-    printf("Press A or B to return to the menu.\n");
-    wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
-}
-
 int main(int argc, char **argv)
 {
+    (void)argc;(void)argv;
     wii_console_setup();
-
-    /* Task #126: the real BIOS boot flow is now the automatic,
-     * primary action - runs immediately, before any menu is shown.
-     * See the top-of-file header comment for the full rationale. The
-     * test menu below remains available afterward (or immediately, if
-     * the user holds B to stop the boot flow early) as a secondary
-     * diagnostic surface. */
-    run_real_boot_flow();
-
-    int selected = 0;
-    uint32_t frame = 0;
-    draw_menu_screen(selected, g_bios_ok, "Use D-Pad Left/Right to choose, A to run.");
-
+    int selected=0,page=0,redraw=1;
+    const char *notice="SD: pcsx2/bios/ and pcsx2/games/";
+#ifdef PCSX2WII_JIT_DISABLE
+    const char *engine="INTERPRETER";
+#else
+    const char *engine="PPC JIT";
+#endif
     for (;;) {
-        VIDEO_WaitVSync();
-        PAD_ScanPads();
-        uint16_t down = PAD_ButtonsDown(0);
-        int redraw = 0;
-
-        if (down & PAD_BUTTON_LEFT) {
-            selected = (selected + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT;
-            redraw = 1;
-        } else if (down & PAD_BUTTON_RIGHT) {
-            selected = (selected + 1) % MENU_ITEM_COUNT;
-            redraw = 1;
-        } else if (down & PAD_BUTTON_A) {
-            switch (selected) {
-                case 0: action_bios_boot_test(); break;
-                case 1: action_gs_gif_demo(); break;
-                case 2: action_about(); break;
+        if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
+            if(page==3)ui_browser_draw(launcher_rect,&g_browser,notice);
+            else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_present,engine,notice);
+            flush_screen();redraw=0;}
+        VIDEO_WaitVSync();wii_input_scan();uint16_t down=g_input_down;
+        if(g_input_exit || (g_input_home && page==0))wii_exit_to_loader();
+        if(g_input_home){page=0;redraw=1;continue;}
+        if(!down)continue;
+        redraw=1;
+        if(page==3){
+            if(down&PAD_BUTTON_START){page=0;notice=g_disc_path[0]?g_disc_notice:"No disc selected.";}
+            else if(down&PAD_BUTTON_B){
+                if(!strcmp(g_browser.path,g_browser.root)){page=0;notice=g_disc_path[0]?g_disc_notice:"No disc selected.";}
+                else if(frontend_browser_up(&g_browser))notice="Could not open parent folder.";
+            }else if((down&PAD_TRIGGER_L)&&g_browser.count)g_browser.selected=g_browser.selected>=8?g_browser.selected-8:0;
+            else if((down&PAD_TRIGGER_R)&&g_browser.count)g_browser.selected=g_browser.selected+8<g_browser.count?g_browser.selected+8:g_browser.count-1;
+            else if((down&PAD_BUTTON_UP)&&g_browser.count)g_browser.selected=(g_browser.selected+g_browser.count-1)%g_browser.count;
+            else if((down&PAD_BUTTON_DOWN)&&g_browser.count)g_browser.selected=(g_browser.selected+1)%g_browser.count;
+            else if(down&PAD_BUTTON_A){
+                int rc=frontend_browser_activate(&g_browser,g_disc_path,sizeof(g_disc_path));
+                if(rc==1){const char *name=strrchr(g_disc_path,'/');
+                    snprintf(g_disc_notice,sizeof(g_disc_notice),"DISC: %.62s",name?name+1:g_disc_path);
+                    notice=g_disc_notice;page=0;selected=1;
+                }else notice=rc<0?"Could not open selection.":"Choose an ISO / BIN file.";
             }
-            redraw = 1;
+            continue;
         }
+        if(page){
+            if(down&PAD_BUTTON_B)page=0;
+            else if(page==1){if(down&PAD_BUTTON_A)g_hud_default=!g_hud_default;if(down&PAD_BUTTON_X)g_throughput=!g_throughput;if(down&PAD_BUTTON_Y)g_fps_default=!g_fps_default;
+                if(down&(PAD_BUTTON_RIGHT|PAD_BUTTON_LEFT)){g_gx_present=!g_gx_present;
+                    notice=g_gx_present?"GX (experimental) ON: output + supported drawing.":"GX OFF; software rendering.";}}
 
-        if (redraw)
-            draw_menu_screen(selected, g_bios_ok, "Use D-Pad Left/Right to choose, A to run.");
-
-        draw_heartbeat(frame++);
+            continue;
+        }
+        if(down&(PAD_BUTTON_UP|PAD_BUTTON_LEFT))selected=(selected+5)%6;
+        else if(down&(PAD_BUTTON_DOWN|PAD_BUTTON_RIGHT))selected=(selected+1)%6;
+        else if((down&PAD_BUTTON_START)&&g_system_started){run_real_boot_flow();notice="Session paused. START resumes.";}
+        else if(down&PAD_BUTTON_A){
+            if(selected==5)wii_exit_to_loader();
+            if(selected>=3){page=selected-2;continue;}
+            if(selected==2||(selected==1&&!g_disc_path[0])) {
+                if(!g_fat_mounted)g_fat_mounted=fatInitDefault()?1:0;
+                if(!g_fat_mounted){notice="SD card unavailable.";continue;}
+                frontend_browser_release(&g_browser);
+                if(frontend_browser_init(&g_browser,"sd:/","sd:/pcsx2/games/")<0){notice="Could not open SD card.";continue;}
+                page=3;notice="Choose an ISO / BIN file.";continue;
+            }
+            int disc=selected==1;
+            if(g_system_started){
+                /* A starts a new boot; START alone resumes the current session. */
+                iop_cdvd_unmount_iso();iop_cdrom_legacy_unmount_iso();
+                ee_core_shutdown();iop_core_shutdown();
+                g_system_started=0;g_disc_checked=0;g_disc_ok=0;
+                r1252_evidence_written=0;
+            }
+            g_boot_disc=disc;
+            run_real_boot_flow();
+            notice=(disc&&g_system_started&&!g_disc_ok)?"Selected disc failed to mount. SELECT DISC to retry.":g_system_started?"Session paused. START resumes.":"Boot failed. Check BIOS paths on SD.";
+        }
     }
-
     return 0;
 }

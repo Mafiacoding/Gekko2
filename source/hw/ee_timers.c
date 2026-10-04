@@ -176,7 +176,17 @@ void ee_timers_tick(void)
             case 0: break; /* BUSCLK: every tick, unchanged prior behavior */
             case 1: if (g_bus_tick_counter % 16ull) continue; break;   /* BUSCLK/16 */
             case 2: if (g_bus_tick_counter % 256ull) continue; break;  /* BUSCLK/256 */
-            default: if (g_bus_tick_counter % EE_HBLNK_PERIOD_CYCLES) continue; break; /* HBLNK (CLKS=3) */
+            default: {
+                /* R1281: normal cold-boot ticks fit in 32 bits. Avoid the
+                 * expensive PPC 64-bit remainder helper in that case, but
+                 * retain exact 64-bit semantics after the high word changes.
+                 * No counter, divider phase or checkpoint layout changes. */
+                uint32_t remainder=(g_bus_tick_counter>>32)?
+                    (uint32_t)(g_bus_tick_counter%EE_HBLNK_PERIOD_CYCLES):
+                    (uint32_t)g_bus_tick_counter%(uint32_t)EE_HBLNK_PERIOD_CYCLES;
+                if(remainder)continue;
+                break;
+            } /* HBLNK (CLKS=3) */
         }
 
         t->count++;

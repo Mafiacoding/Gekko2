@@ -25,6 +25,7 @@
  * compile error here instead of silently corrupting HI/LO (or some
  * unrelated field) the next time a MULT/DIV/MFHI/MTHI/MFLO/MTLO
  * instruction gets JIT-compiled. */
+_Static_assert(offsetof(ee_state_t,cop0)==556,"R1281 native COP0 prefix offset changed");
 _Static_assert(offsetof(ee_state_t, gpr) == 0,
                "ppc_dynarec.c's context pointer is &st->gpr[0] - gpr must be ee_state_t's first field");
 _Static_assert(offsetof(ee_state_t, hi) == sizeof(ee_reg128_t) * 32,
@@ -62,6 +63,14 @@ _Static_assert(offsetof(ee_state_t, exc_this_pc) == 1456,
  * not-taken/annulled case needs this. */
 _Static_assert(offsetof(ee_state_t, pc) == 544,
                "ppc_dynarec.c's PC_OFFSET assumes pc sits at this exact byte offset");
+/* R1249: pointer-dependent offsets describe the 32-bit PPC ABI only.
+ * Host interpreter builds use 64-bit pointers and never execute PPC code. */
+#ifdef GEKKO
+/* R1173: direct generated-PPC KSEG0/KSEG1 RAM load fast path. */
+_Static_assert(offsetof(ee_state_t, ram) == 10480, "R1173 RAM_PTR_OFFSET layout mismatch");
+_Static_assert(offsetof(ee_state_t, ram_size) == 10484, "R1173 RAM_SIZE_OFFSET layout mismatch");
+#endif
+_Static_assert(offsetof(ee_state_t, mem_tlb_miss) == 1462, "R1173 MEM_TLB_MISS_OFFSET layout mismatch");
 
 /* Round 902 (task #884): MFC1/CFC1/MTC1/CTC1/MOV.S/ABS.S/NEG.S are this
  * dynarec's first opcodes to touch ee_state_t's COP1 (FPU) fields. */
@@ -89,6 +98,52 @@ typedef struct {
 static ee_jit_cache_slot_t g_cache[EE_JIT_CACHE_SLOTS];
 static uint32_t g_cache_count = 0;
 static uint64_t g_jit_executed = 0;
+
+/* R1161: tiny direct-mapped L1 in front of the open-addressed cache.
+ * R1160 measured ~28.26M cache hits for only ~2K misses, so the hot cost is
+ * no longer compilation but doing the full hash/probe lookup on virtually
+ * every EE instruction.  This L1 is only a lookup accelerator: it never owns
+ * code buffers and a miss falls through to the exact old cache path. */
+#define EE_JIT_L1_SLOTS 2048u
+typedef struct { uint32_t instr; ppc_block_fn fn; } ee_jit_l1_slot_t;
+static ee_jit_l1_slot_t g_l1[EE_JIT_L1_SLOTS];
+
+/* R1168: enlarged hot caches after on-target profiling showed millions of
+ * avoidable L0 conflict misses.  Keep exact R1162 semantics/SMC tagging; only
+ * capacity changes (L0 1K -> 16K, L1 256 -> 2K).
+ *
+ * R1162: PC-tagged L0 trace cache.  R1160/R1161 showed >93% of EE
+ * instructions already execute through the JIT and that the code cache is
+ * overwhelmingly hot.  The remaining front-end work on every instruction
+ * was still: decode the opcode enough for ee_jit_opcode_supported(), hash
+ * the 32-bit instruction word, then probe the instruction-keyed L1.
+ *
+ * A real multi-instruction block JIT cannot simply skip ee_step()'s
+ * per-instruction epilogue: this tree has prior regressions proving timer,
+ * VBLANK, RPC and interrupt cadence matters at each genuine EE boundary.
+ * This L0 is the safe first half of block formation: key by execution PC and
+ * cache the already-resolved native function, while STILL executing exactly
+ * one EE instruction and the exact old epilogue per call.  `instr` is part
+ * of the tag and is re-fetched by ee_step() before this lookup, so SMC/overlay
+ * replacement is detected immediately and falls back to the normal resolver. */
+#define EE_JIT_PC_L0_SLOTS 16384u
+typedef struct { uint32_t pc, instr; ppc_block_fn fn; uint8_t rejected; } ee_jit_pc_l0_slot_t;
+static ee_jit_pc_l0_slot_t g_pc_l0[EE_JIT_PC_L0_SLOTS];
+static uint64_t g_pc_l0_hits = 0, g_pc_l0_misses = 0;
+static uint64_t g_pc_l0_rejected_hits = 0, g_compile_attempts = 0;
+/* Deterministically unsupported encodings recur at many different PCs. */
+typedef struct { uint32_t instr; uint8_t valid; } ee_rejected_slot;
+static ee_rejected_slot g_ee_rejected[64];
+
+static inline uint32_t ee_jit_pc_l0_index(uint32_t pc)
+{
+    return ((pc >> 2) ^ (pc >> 12)) & (EE_JIT_PC_L0_SLOTS - 1u);
+}
+
+static inline uint32_t ee_jit_l1_index(uint32_t instr)
+{
+    return ((instr >> 2) ^ (instr >> 11) ^ instr) & (EE_JIT_L1_SLOTS - 1u);
+}
 
 /* These three helpers are only reachable from the GEKKO branch of
  * ee_jit_try_execute_one() below (see that function's host-safety-gate
@@ -192,9 +247,12 @@ static uint64_t g_jit_executed = 0;
  * path is never attempted for the vast majority of real instructions
  * ppc_dynarec.c can't handle yet (branches, MMI, COP0/2, FPU arithmetic,
  * ...). */
+_Static_assert(offsetof(ee_state_t,sa_reg)==552,"EE SA prefix layout");
 static int ee_jit_opcode_supported(uint32_t instr)
 {
     uint32_t op = (instr >> 26) & 0x3Fu;
+    if(op==0x10u){unsigned rs=(instr>>21)&31u;return rs==0u||rs==4u;}
+    if (op == 0x18u || op == 0x19u) return 1; /* R1268 DADDI/DADDIU */
     if (op == 0x08u || op == 0x09u) return 1; /* ADDI (Round 897) / ADDIU */
     if (op == 0x0Au || op == 0x0Bu) return 1; /* SLTI / SLTIU */
     if (op == 0x0Cu || op == 0x0Du || op == 0x0Eu) return 1; /* ANDI / ORI / XORI (Round 897) */
@@ -224,6 +282,7 @@ static int ee_jit_opcode_supported(uint32_t instr)
          * falls through to the interpreter, same as before this round. */
         uint32_t rt = (instr >> 16) & 0x1Fu;
         switch (rt) {
+        case 0x18: case 0x19: /* R1270 MTSAB/MTSAH */
         case 0x00: case 0x01: /* BLTZ / BGEZ */
         case 0x02: case 0x03: /* BLTZL / BGEZL */
             return 1;
@@ -318,7 +377,7 @@ static int ee_jit_opcode_supported(uint32_t instr)
          * falling back to the interpreter for every single MMI
          * instruction a real game/BIOS executes. A handful of rare MMI
          * opcodes remain genuinely unimplemented by design (MADD/MADDU/
-         * MADD1/MADDU1, MULT1/MULTU1/DIV1/DIVU1, PLZCW, QFSRV) - those
+         * MADD1/MADDU1, MULT1/MULTU1/DIV1/DIVU1, QFSRV) - those
          * safely fall through translate_one()'s own `return -1` and the
          * same fallback path as every other not-yet-supported opcode
          * project-wide, same safety argument as op==0x12 above. */
@@ -335,10 +394,13 @@ static int ee_jit_opcode_supported(uint32_t instr)
         case 0x10: case 0x11: case 0x12: case 0x13: /* MFHI / MTHI / MFLO / MTLO */
         case 0x18: case 0x19: /* MULT / MULTU */
         case 0x1A: case 0x1B: /* DIV / DIVU */
-        case 0x21: case 0x23: /* ADDU / SUBU */
+        case 0x20: case 0x21: case 0x22: case 0x23: /* ADD/ADDU/SUB/SUBU */
         case 0x24: case 0x25: case 0x26: case 0x27: /* AND / OR / XOR / NOR */
+        case 0x28: case 0x29: /* R1270 MFSA/MTSA */
         case 0x2A: case 0x2B: /* SLT / SLTU */
         case 0x2C: case 0x2D: case 0x2E: case 0x2F: /* DADD / DADDU / DSUB / DSUBU (Round 898) */
+        case 0x14: case 0x16: case 0x17: /* R1268 DSLLV/DSRLV/DSRAV */
+        case 0x3C: case 0x3E: case 0x3F: /* R1268 DSLL32/DSRL32/DSRA32 */
         case 0x38: case 0x3A: case 0x3B: /* DSLL / DSRL / DSRA (Round 898) */
             return 1;
         default:
@@ -348,14 +410,10 @@ static int ee_jit_opcode_supported(uint32_t instr)
     return 0;
 }
 
-/* Open-addressing (linear probe) lookup/insert, keyed by the raw
- * instruction word. 8192 slots comfortably covers the realistic
- * working set of distinct pure-ALU encodings a real boot/game
- * exercises; if it ever does fill up, insert() below just declines to
- * cache further entries rather than growing or evicting - the caller
- * (ee_jit_try_execute_one) still runs the freshly-compiled block for
- * that one call, it just won't be cached for reuse. Not a correctness
- * issue, only a (currently unobserved) performance ceiling. */
+/* Instruction-keyed owning cache. Once full, existing entries remain usable;
+ * uncached encodings fall back to the interpreter without allocating code.
+ * L0 remembers deterministic rejection with both PC and instruction tags.
+ * Allocation/finalization failures are transient and are never remembered. */
 static ppc_block_fn ee_jit_cache_lookup(uint32_t instr)
 {
     uint32_t h = (instr * 2654435761u) & (EE_JIT_CACHE_SLOTS - 1u);
@@ -369,10 +427,10 @@ static ppc_block_fn ee_jit_cache_lookup(uint32_t instr)
     return NULL; /* cache full and not found */
 }
 
-static void ee_jit_cache_insert(uint32_t instr, ppc_block_fn fn)
+static int ee_jit_cache_insert(uint32_t instr, ppc_block_fn fn)
 {
     if (g_cache_count >= EE_JIT_CACHE_SLOTS)
-        return; /* full - see lookup()'s comment; not cached, not leaked here (freed by reset, or lives for process lifetime, same as every other cache entry) */
+        return 0; /* No ownership transfer when full. */
     uint32_t h = (instr * 2654435761u) & (EE_JIT_CACHE_SLOTS - 1u);
     for (uint32_t probe = 0; probe < EE_JIT_CACHE_SLOTS; probe++) {
         uint32_t slot = (h + probe) & (EE_JIT_CACHE_SLOTS - 1u);
@@ -380,15 +438,17 @@ static void ee_jit_cache_insert(uint32_t instr, ppc_block_fn fn)
             g_cache[slot].instr = instr;
             g_cache[slot].fn = fn;
             g_cache_count++;
-            return;
+            return 1;
         }
     }
+    return 0;
 }
 
 #endif /* GEKKO */
 
-int ee_jit_try_execute_one(ee_state_t *st, uint32_t instr)
+static int ee_jit_resolve_and_execute(ee_state_t *st, uint32_t instr, ppc_block_fn *out_fn, int *out_rejected)
 {
+    if (out_rejected) *out_rejected = 0;
 #if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
     /* Round 887 host-safety gate: ppc_dynarec.c generates raw PPC750
      * machine code, and the block below CALLS it as a function
@@ -423,21 +483,46 @@ int ee_jit_try_execute_one(ee_state_t *st, uint32_t instr)
     (void)instr;
     return 0;
 #else
-    if (!ee_jit_opcode_supported(instr))
+    if (!ee_jit_opcode_supported(instr)) {
+        if (out_rejected) *out_rejected = 1;
         return 0;
+    }
 
-    ppc_block_fn fn = ee_jit_cache_lookup(instr);
+    ee_rejected_slot *negative=&g_ee_rejected[(instr^(instr>>16))&63u];
+    if(negative->valid && negative->instr==instr) {
+        if(out_rejected)*out_rejected=1;
+        return 0;
+    }
+    uint32_t l1i = ee_jit_l1_index(instr);
+    ppc_block_fn fn = (g_l1[l1i].fn && g_l1[l1i].instr == instr)
+                    ? g_l1[l1i].fn : NULL;
     if (!fn) {
+        fn = ee_jit_cache_lookup(instr);
+        if (fn) {
+            g_l1[l1i].instr = instr;
+            g_l1[l1i].fn = fn;
+        }
+    }
+    if (!fn) {
+        /* R1267: cached functions keep running when full; new encodings
+         * interpret instead of allocating unowned executable buffers. */
+        if (g_cache_count >= EE_JIT_CACHE_SLOTS) {
+            if (out_rejected) *out_rejected = 1;
+            return 0;
+        }
+        g_compile_attempts++;
         ppc_codegen_ctx_t ctx;
         if (ppc_dynarec_init(&ctx, 1) != 0)
             return 0; /* out of memory - fall back to the interpreter, not fatal */
-        if (ppc_dynarec_translate_one(&ctx, instr) != 0) {
-            /* Should be unreachable given ee_jit_opcode_supported()'s
-             * pre-filter is hand-kept in sync with translate_one()'s
-             * own dispatch - but if they ever drift, fail safe
-             * (interpret this instruction) rather than call a
-             * half-built or missing block. */
+        int translation=ppc_dynarec_translate_one(&ctx, instr);
+        if (translation != 0) {
+            /* Blanket COP2/MMI gates intentionally include unimplemented
+             * encodings. Remember deterministic rejection at L0; never
+             * execute a partially generated block. */
             ppc_dynarec_free(&ctx);
+            if(translation==-2)return 0; /* Transient allocation failure retries. */
+            negative->instr=instr;negative->valid=1;
+            if (out_rejected) *out_rejected = 1;
             return 0;
         }
         fn = ppc_dynarec_finalize(&ctx);
@@ -453,29 +538,150 @@ int ee_jit_try_execute_one(ee_state_t *st, uint32_t instr)
          * ownership of the code buffer has effectively transferred to
          * the cache (ee_jit_reset_stats_for_test() is the only thing
          * that ever frees these, for host-native test hygiene). */
-        ee_jit_cache_insert(instr, fn);
+        if (!ee_jit_cache_insert(instr, fn)) {
+            ppc_dynarec_free(&ctx);
+            return 0;
+        }
+        g_l1[l1i].instr = instr;
+        g_l1[l1i].fn = fn;
     }
 
     /* ppc_dynarec_gpr128_t and ee_reg128_t are separately-declared but
      * byte-layout-identical structs ({uint64_t ud0, ud1;} in both) -
      * see ppc_dynarec.h's own header comment, which explicitly names
      * this exact cast as the intended zero-copy integration path. */
+    if (out_fn) *out_fn = fn;
     fn((ppc_dynarec_gpr128_t *)&st->gpr[0]);
     g_jit_executed++;
     return 1;
 #endif /* GEKKO */
 }
 
+int ee_jit_try_execute_one(ee_state_t *st, uint32_t instr)
+{
+    return ee_jit_resolve_and_execute(st, instr, NULL, NULL);
+}
+
+int ee_jit_try_execute_one_at(ee_state_t *st, uint32_t pc, uint32_t instr)
+{
+#if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
+    (void)pc;
+    return ee_jit_resolve_and_execute(st, instr, NULL, NULL);
+#else
+    uint32_t i = ee_jit_pc_l0_index(pc);
+    ee_jit_pc_l0_slot_t *e = &g_pc_l0[i];
+    /* R1280: compare PC+encoding once for both positive and negative
+     * cache entries. The warm positive path previously repeated both
+     * comparisons after checking rejection. Preserve every counter and
+     * exact-word validation, including self-modifying guest code. */
+    if (e->pc == pc && e->instr == instr) {
+        if (e->fn) {
+            e->fn((ppc_dynarec_gpr128_t *)&st->gpr[0]);
+            g_pc_l0_hits++;
+            g_jit_executed++;
+            return 1;
+        }
+        if (e->rejected) {
+            g_pc_l0_rejected_hits++;
+            return 0;
+        }
+    }
+
+    g_pc_l0_misses++;
+    ppc_block_fn fn = NULL;
+    int rejected = 0;
+    int ok = ee_jit_resolve_and_execute(st, instr, &fn, &rejected);
+    if (ok && fn) {
+        e->pc = pc;
+        e->instr = instr;
+        e->fn = fn;
+        e->rejected = 0;
+    } else if (rejected) {
+        e->pc = pc; e->instr = instr; e->fn = NULL; e->rejected = 1;
+    }
+    return ok;
+#endif
+}
+
+uint64_t ee_jit_get_rejected_hit_count(void) { return g_pc_l0_rejected_hits; }
+uint64_t ee_jit_get_compile_attempt_count(void) { return g_compile_attempts; }
+
 uint64_t ee_jit_get_executed_count(void) { return g_jit_executed; }
 uint32_t ee_jit_get_cache_size(void) { return g_cache_count; }
+uint64_t ee_jit_get_pc_l0_hit_count(void) { return g_pc_l0_hits; }
+uint64_t ee_jit_get_pc_l0_miss_count(void) { return g_pc_l0_misses; }
 
+static void ee_precise_reset_cache(void);
 void ee_jit_reset_stats_for_test(void)
 {
+    ee_precise_reset_cache();
     for (uint32_t i = 0; i < EE_JIT_CACHE_SLOTS; i++) {
         if (g_cache[i].fn != NULL)
             free((void *)g_cache[i].fn);
     }
     memset(g_cache, 0, sizeof(g_cache));
+    memset(g_l1, 0, sizeof(g_l1));
+    memset(g_pc_l0, 0, sizeof(g_pc_l0));
+    memset(g_ee_rejected, 0, sizeof(g_ee_rejected));
+    g_pc_l0_hits = g_pc_l0_misses = g_pc_l0_rejected_hits = g_compile_attempts = 0;
     g_cache_count = 0;
     g_jit_executed = 0;
+}
+
+/* Bounded PC/tag cache; first conservative precise EE block integration. */
+typedef unsigned (*ee_precise_fn)(ee_state_t *,unsigned);
+typedef struct {uint32_t pc,words[8],count;ee_precise_fn fn;} ee_precise_slot;
+static ee_precise_slot precise_cache[256];
+static uint64_t precise_runs,precise_retired;
+static int precise_active;
+uint64_t ee_jit_get_block_count(void){return precise_runs;}
+uint64_t ee_jit_get_block_retired(void){return precise_retired;}
+static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetched,uint32_t first_word)
+{
+#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)
+ if(!st||budget<2u||st->halted||st->idle||st->branch_pending||precise_active)return 0;
+ uint32_t pc=st->pc,words[8];unsigned count=0,limit=budget<8u?budget:8u;
+ ee_precise_slot *slot=&precise_cache[((pc>>2)^(pc>>12))&255u];
+ /* The emitted prepare callback validates live mapping/encoding before
+  * EACH instruction. A warm entry needs no duplicate full-block scan. */
+ if(slot->fn&&slot->pc==pc&&slot->count<=budget&&(!fetched||slot->words[0]==first_word))goto execute_slot;
+ limit=ee_core_block_words(st,pc,words,limit);
+ for(;count<limit&&ee_jit_block_candidate(words[count]);count++){}
+ if(count<2u)return 0;
+ if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
+  ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,count*2u))return 0;
+  if(ppc_dynarec_translate_ee_prepared_block(&c,pc,words,count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_commit)) {
+   ppc_dynarec_free(&c);return 0;
+  }
+  ee_precise_fn fn=(ee_precise_fn)ppc_dynarec_finalize(&c);
+  if(!fn){ppc_dynarec_free(&c);return 0;}
+  if(slot->fn)free((void*)slot->fn);
+  slot->fn=fn;slot->pc=pc;slot->count=count;memcpy(slot->words,words,count*4u);
+ }
+execute_slot:
+ if(fetched) {
+  if(slot->words[0]!=first_word||!ee_core_block_prepare_fetched(st,pc))return 0;
+ }
+ precise_active=1;unsigned n=slot->fn(st,fetched);precise_active=0;
+ precise_runs++;precise_retired+=n;
+ /* Changed first word/mapping: release only after the native function
+  * returns. The scalar path handles this instruction; later visits retry. */
+ if(!n){free((void*)slot->fn);memset(slot,0,sizeof(*slot));}
+ return n;
+#else
+ (void)st;(void)budget;(void)fetched;(void)first_word;return 0;
+#endif
+}
+
+unsigned ee_jit_try_execute_block(ee_state_t *st,unsigned budget)
+{return ee_precise_execute(st,budget,0u,0u);}
+unsigned ee_jit_try_execute_block_fetched(ee_state_t *st,unsigned budget,uint32_t first_word)
+{return ee_precise_execute(st,budget,1u,first_word);}
+
+static void ee_precise_reset_cache(void)
+{
+ if(precise_active)return; /* Never release the currently executing buffer. */
+ for(unsigned n=0;n<256;n++)if(precise_cache[n].fn)free((void*)precise_cache[n].fn);
+ memset(precise_cache,0,sizeof(precise_cache));precise_runs=precise_retired=0;
 }

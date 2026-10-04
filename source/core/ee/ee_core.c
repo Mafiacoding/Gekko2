@@ -1,3 +1,4 @@
+#include "core/hw/guest_endian.h"
 /*
  * ee_core.c - R5900 (Emotion Engine) interpreter
  *
@@ -108,6 +109,9 @@
  */
 
 #include "core/ee/ee_core.h"
+#include "core/hw/vu_math.h"
+#include "core/recompiler/ee_jit.h"
+#include "core/recompiler/vu_jit.h"
 #include "core/ee/ee_hle_thread.h"
 #include "core/hw/dma.h"
 #include "core/hw/ee_intc.h"
@@ -121,11 +125,13 @@
 #include "core/hw/vu.h"
 #include "core/hw/sif.h"
 #include "core/hw/iop_dma.h" /* Round 114: real IOP-side DMA-completion signal for sceSifSetDma */
+#include "core/hw/spu2_mixer.h"
 #include "core/hw/iop_cdvd.h" /* Round 347 (IOP RPC re-entry architecture): real CDVD MMIO dispatch */
 #include "core/hw/iop_hle_intr.h" /* Round 347: real registered-handler completion detection */
 #include "core/hw/iop_heap.h" /* Round 401: real SYSMEM free-list heap allocator port - see comment at the SIF_SID_IOPHEAP branch below */
 #include "core/hw/iop_sio2.h" /* Round 663: real low-level pad-connected state for PAD_BIND reply */
-#include "core/recompiler/ee_jit.h" /* Round 887 (task #866/#868): first real JIT wiring - see that header's design-rationale comment */
+#include "core/recompiler/ee_jit.h"
+#include "core/recompiler/vu_jit.h" /* Round 887 (task #866/#868): first real JIT wiring - see that header's design-rationale comment */
 
 /* Task #172 continued (regression fix): the SIF DMA-copy syscall
  * handler below needs to write into IOP memory, but ee_core.c must
@@ -195,11 +201,256 @@ static uint32_t ee_sif_sysreg[3];
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
+#include "core/hw/iop_module_metadata.h"
+#include "core/hw/cdvd_config.h"
 #include <math.h>
 
 #define EE_RAM_SIZE (32 * 1024 * 1024)
 
 static ee_state_t g_state;
+
+/* R1189 diagnostics live outside ee_state_t to preserve JIT layout offsets. */
+static uint64_t r1189_exc_count, r1189_nested_count, r1189_eret_count;
+static uint32_t r1189_fault_pc, r1189_fault_vaddr, r1189_fault_iw;
+static uint32_t r1189_fault_rs, r1189_fault_rv, r1189_fault_ea;
+/* R1190: follow the actual SIF0 REND -> SBUS -> BIOS handler chain. */
+static uint64_t r1190_intc_take_count, r1190_sbus_take_count, r1190_sbus_handler_hits, r1190_rend_count;
+/* R1191 diagnostic counter retained; R1192 rolls back the unproven Random/Wired behavior change. */
+static uint64_t r1191_tlbwr_count;
+/* R1192: trace real control flow after BIOS SBUS handler entry. */
+static uint32_t r1192_trace_left;
+static uint64_t r1192_trace_arms, r1192_isig_hits, r1192_wait_hits;
+static uint32_t r1192_calls[8];
+static uint32_t r1192_call_count;
+/* R1195: first-entry snapshots for the five downstream SIFCMD/RPC calls
+ * discovered by R1192. Pure diagnostics; no guest state is changed. */
+typedef struct { uint32_t hits, pc, ra, v0, a0, a1, a2, a3; } r1195_call_t;
+static r1195_call_t r1195_call[5];
+static const uint32_t r1195_target[5] = { 0x00082388u,0x00082f30u,0x00082170u,0x00084180u,0x00083ac8u };
+static uint32_t r1190_last_rend_cd, r1190_last_rend_sema = 0xffffffffu;
+/* R1197: exact last synthesized REND packet and its real DMA destination.
+ * Diagnostic-only snapshot taken immediately before SIF0 delivery. */
+static uint32_t r1197_rend_words[12];
+static uint32_t r1197_recvbuf, r1197_phys_recvbuf, r1197_inner_cid;
+/* R1198: first eight EE reads from the exact REND DMA destination.
+ * Diagnostic only: captures consumer PC/address and argument registers. */
+typedef struct { uint32_t pc, addr, a0, a1, a2, a3; } r1198_read_t;
+static r1198_read_t r1198_reads[8];
+static uint32_t r1198_read_count;
+/* R1199: SIF0 receive-channel state at REND delivery and BIOS SBUS entry. */
+typedef struct { uint32_t chcr,madr,qwc,tadr,stat,a0,a1,a2,a3; } r1199_dma_t;
+static r1199_dma_t r1199_pre, r1199_post, r1199_handler;
+/* R1201: guest writes to SIF0 MADR/QWC/CHCR after REND completion and before BIOS SBUS handler. */
+typedef struct { uint32_t pc, addr, oldv, newv; } r1201_write_t;
+static r1201_write_t r1201_writes[6];
+static uint32_t r1201_write_count, r1201_armed;
+/* R1202: correlate each REND completion with the handler hit; avoids comparing snapshots from different REND generations. */
+static r1199_dma_t r1202_post[3];
+static uint32_t r1202_handler_rend_count;
+/* R1204: isolate the handler entered after REND #3 and expose its first call targets. */
+static uint32_t r1204_calls[8], r1204_call_count, r1204_trace_left;
+/* R1205: capture hardware reads made by the real BIOS SBUS handler correlated with REND #3. */
+typedef struct { uint32_t pc, addr, val; } r1205_hwread_t;
+static r1205_hwread_t r1205_hwreads[8];
+static uint32_t r1205_hwread_count, r1205_active;
+/* R1206: exact live instruction/branch trace around the two SMFLAG reads.
+ * Captures executed PC/opcode plus rs/rt values for the REND#3-correlated handler. */
+typedef struct { uint32_t pc, iw, rsval, rtval; } r1206_step_t;
+static r1206_step_t r1206_steps[24];
+static uint32_t r1206_step_count;
+/* R1207: arm a short post-SMFLAG trace exactly when the MMIO read occurs.
+ * This avoids mixing earlier visits to the same BIOS range with the REND#3 read. */
+typedef struct { uint32_t pc, iw, rsval, rtval, target, taken; } r1207_step_t;
+/* R1210: one-shot truth probe for the suspicious BEQ at 0x8000FB28. */
+static uint32_t r1210_hit, r1210_rs, r1210_rt, r1210_gpr0, r1210_gpr2, r1210_expect, r1210_nextpc;
+/* R1213: extended direct ee_step-entry PC truth trace for the REND#3-correlated SBUS handler.
+ * mark bits: 1=SMFLAG 0x1000F230 read, 2=REND packet 0x935c0..0x935ef read, 4=DMAC MMIO read. */
+static uint32_t r1212_pc[96], r1212_mark[96], r1212_count, r1212_active;
+/* R1214: exact fetched words/operands for FB20..FB2C plus live SMFLAG value. */
+static uint32_t r1214_row[4][5], r1214_smflag;
+/* R1217: post-R1216 wake truth trace. Capture the first 64 actual EE instructions
+ * executed by thread 1 once it resumes at/near 0x0101BB28. No behavior change. */
+static uint32_t r1217_row[64][4], r1217_count, r1217_active;
+/* R1230: exact T1 execution after the proven T3 SleepThread -> T1@0101BB28 handoff. */
+static uint32_t r1230_row[128][4], r1230_count, r1230_active, r1230_armed_once;
+/* R1234: long post-Sema5 truth trace. Captures 512 actual EE steps after T1@0101BB28, including current TID. */
+static uint32_t r1234_row[512][3], r1234_count, r1234_active, r1234_armed_once;
+/* R1235: targeted BIOS/KSEG trace after post-Sema5 T1 enters 0x80000FE00..0x80000FFF.
+ * row: pc, iw, tid, ra, sp, v0, a0, COP0 Cause. Diagnostic only. */
+static uint32_t r1235_row[128][8], r1235_count, r1235_active, r1235_armed_once;
+/* R1236: long-running post-Sema5 control-flow census. Diagnostic only.
+ * Regions: 0=0101xxxx, 1=0100xxxx, 2=000xxxxx, 3=800xxxxx, 4=other.
+ * Keep counters for the whole run and a compact ring of region/thread transitions. */
+static uint32_t r1236_armed, r1236_last_region=0xffffffffu, r1236_last_tid=0xffffffffu, r1236_last_pc;
+static uint64_t r1236_steps, r1236_region[5];
+static uint32_t r1236_trans[16][6], r1236_trans_n, r1236_trans_head;
+/* R1237: once the long census falls into KSEG at 0x80000000, capture the
+ * first 128 actual PCs/opcodes and cheaply sample the long-term hot PCs.
+ * Diagnostic only; sampling is once per 65536 post-wake EE steps. */
+static uint32_t r1237_entry[128][2], r1237_entry_n, r1237_entry_active, r1237_entry_once;
+static uint32_t r1237_hot_pc[8], r1237_hot_score[8], r1237_sample_pc[8], r1237_sample_head;
+static uint64_t r1237_samples;
+/* R1238: capture the exact bad control transfer into the TLB-refill sink. */
+static uint32_t r1238_ring[16][4], r1238_head, r1238_snap[12], r1238_once;
+/* R1239: exact truth at the control transfer 0x0100ECCC -> 0x00000002. */
+static uint32_t r1239_snap[16], r1239_hit;
+/* R1240: fetched-instruction truth around ECCC and through its real target.
+ * 8-entry rolling prehistory + 32 entries starting at ECCC. row: pc,iw,ra,next,bp,rsval,rtval. */
+static uint32_t r1240_pre[8][7], r1240_pre_head, r1240_row[40][7], r1240_n, r1240_active, r1240_once;
+/* R1241: pinpoint the exact boundary where live $ra becomes 2.  Twelve-entry
+ * prehistory plus twelve successors. row: pc,iw,ra,next,bp,tid,status,cause,epc. */
+static uint32_t r1241_pre[12][9], r1241_pre_head, r1241_row[24][9], r1241_n, r1241_active, r1241_once, r1241_prev_ra=0xffffffffu;
+/* R1242: provenance of the bad saved-$ra stack slot restored by LD $ra,0x30($sp)
+ * at 0x0100ECB8. Arm from the live SP in this function, record every overlapping
+ * guest memory write, and snapshot the exact slot at the restore. */
+static uint32_t r1242_armed, r1242_sp, r1242_slot, r1242_n, r1242_restore[8];
+static uint32_t r1242_w[16][8]; /* pc,addr,size,val_lo,val_hi,sp,ra,tid */
+/* R1243: pinpoint where T1 acquires the suspect SP 0x010459d0. Keep 16-step
+ * prehistory and 16 successors. row: pc,iw,live_sp,t1_saved_sp,ra,tid,status,cause,epc,slot_lo. */
+static uint32_t r1243_pre[16][10], r1243_pre_head, r1243_row[32][10], r1243_n, r1243_active, r1243_once;
+static uint32_t r1243_prev_sp=0xffffffffu;
+/* R1245: passive physical-RAM watcher for 0x01045A00. Never call the guest memory/TLB path from instrumentation. */
+static uint32_t r1245_init, r1245_hit, r1245_old_lo, r1245_old_hi, r1245_snap[12];
+/* R1246: exact write-path provenance for the slot proven by R1245. */
+static uint32_t r1246_hit, r1246_snap[16];
+/* R1249: observe whether the R1248 repair fires and its later epilogue. */
+static uint64_t r1249_repairs, r1249_cont, r1249_ld, r1249_jr;
+static uint32_t r1249_last[6]; /* repair tid, LD sp/slot/ra, JR sp/target */
+/* R1218: post-wake syscall truth. Each row: pc, sysnum, a0, v0_before,
+ * v0_after, thread_status_after, next_pc_after. Diagnostic only. */
+static uint32_t r1218_sys[12][7], r1218_sys_count, r1218_pending;
+/* R1219: sema2 provenance + RPC completion correlation. Diagnostic only. */
+static uint32_t r1219_create2[7], r1219_wait2[10];
+static uint32_t r1219_rend[8][4], r1219_rend_n;
+/* R1223: compact sema2 producer truth: hits, pc, ra, sysnum, tid, count-before/after, waiters-before. */
+static uint32_t r1223_sig2[8];
+/* R1224: dedicated NCMD client identity.  The generic bind->SID cache is a
+ * bounded rotating table shared by every SIF RPC service.  The original
+ * Round-276 boot had few enough clients that CD_SERVER_NCMD survived until
+ * its rpc#10 call; the much later R12xx boot binds substantially more
+ * services.  Keep the protocol identity with the client itself instead of
+ * relying on cache residency. */
+static uint32_t r1224_ncmd_cd = 0;
+static uint32_t r1224_ncmd_bind_hits = 0;
+static uint32_t r1224_ncmd_call_hits = 0;
+static uint32_t r1224_ncmd_sid_recoveries = 0;
+static uint32_t r1224_ncmd_rend_arms = 0;
+static r1207_step_t r1207_steps[24];
+static uint32_t r1207_step_count, r1207_trace_left;
+void ee_core_get_r1189_exception_diag(uint64_t *exc, uint64_t *nested, uint64_t *eret,
+                                      uint32_t *pc, uint32_t *va, uint32_t *iw,
+                                      uint32_t *rs, uint32_t *rv, uint32_t *ea)
+{
+    if (exc) *exc=r1189_exc_count; if (nested) *nested=r1189_nested_count; if (eret) *eret=r1189_eret_count;
+    if (pc) *pc=r1189_fault_pc; if (va) *va=r1189_fault_vaddr; if (iw) *iw=r1189_fault_iw;
+    if (rs) *rs=r1189_fault_rs; if (rv) *rv=r1189_fault_rv; if (ea) *ea=r1189_fault_ea;
+}
+void ee_core_get_r1199_dma(uint32_t which, uint32_t out[9])
+{
+    const r1199_dma_t *d = which==0 ? &r1199_pre : (which==1 ? &r1199_post : &r1199_handler);
+    if (!out) return;
+    out[0]=d->chcr; out[1]=d->madr; out[2]=d->qwc; out[3]=d->tadr; out[4]=d->stat;
+    out[5]=d->a0; out[6]=d->a1; out[7]=d->a2; out[8]=d->a3;
+}
+void ee_core_get_r1204_dispatch(uint32_t *count, uint32_t out[8])
+{ uint32_t i; if (count) *count=r1204_call_count; if (out) for(i=0;i<8;i++) out[i]=r1204_calls[i]; }
+void ee_core_get_r1205_hwreads(uint32_t *count, uint32_t out[8][3])
+{ uint32_t i; if(count)*count=r1205_hwread_count; if(out) for(i=0;i<8;i++){out[i][0]=r1205_hwreads[i].pc;out[i][1]=r1205_hwreads[i].addr;out[i][2]=r1205_hwreads[i].val;} }
+void ee_core_get_r1206_steps(uint32_t *count, uint32_t out[24][4])
+{ uint32_t i; if(count)*count=r1206_step_count; if(out) for(i=0;i<24;i++){out[i][0]=r1206_steps[i].pc;out[i][1]=r1206_steps[i].iw;out[i][2]=r1206_steps[i].rsval;out[i][3]=r1206_steps[i].rtval;} }
+void ee_core_get_r1207_steps(uint32_t *count, uint32_t out[24][6])
+{ uint32_t i; if(count)*count=r1207_step_count; if(out) for(i=0;i<24;i++){out[i][0]=r1207_steps[i].pc;out[i][1]=r1207_steps[i].iw;out[i][2]=r1207_steps[i].rsval;out[i][3]=r1207_steps[i].rtval;out[i][4]=r1207_steps[i].target;out[i][5]=r1207_steps[i].taken;} }
+void ee_core_get_r1210_probe(uint32_t out[7]) { if(!out)return; out[0]=r1210_hit;out[1]=r1210_rs;out[2]=r1210_rt;out[3]=r1210_gpr0;out[4]=r1210_gpr2;out[5]=r1210_expect;out[6]=r1210_nextpc; }
+void ee_core_get_r1212_pcs(uint32_t *count, uint32_t out[96][2])
+{ uint32_t i; if(count)*count=r1212_count; if(out) for(i=0;i<96;i++){out[i][0]=r1212_pc[i];out[i][1]=r1212_mark[i];} }
+void ee_core_get_r1214_fb(uint32_t out[4][5], uint32_t *smflag)
+{ uint32_t i,j; if(out) for(i=0;i<4;i++) for(j=0;j<5;j++) out[i][j]=r1214_row[i][j]; if(smflag)*smflag=r1214_smflag; }
+void ee_core_get_r1217_trace(uint32_t *count, uint32_t out[64][4])
+{ uint32_t i,j; if(count)*count=r1217_count; if(out) for(i=0;i<64;i++) for(j=0;j<4;j++) out[i][j]=r1217_row[i][j]; }
+void ee_core_get_r1230_trace(uint32_t *count, uint32_t out[128][4])
+{ uint32_t i,j; if(count)*count=r1230_count; if(out) for(i=0;i<128;i++) for(j=0;j<4;j++) out[i][j]=r1230_row[i][j]; }
+void ee_core_get_r1234_trace(uint32_t *count, uint32_t out[512][3])
+{ uint32_t i,j; if(count)*count=r1234_count; if(out) for(i=0;i<512;i++) for(j=0;j<3;j++) out[i][j]=r1234_row[i][j]; }
+void ee_core_get_r1235_trace(uint32_t *count, uint32_t out[128][8])
+{ uint32_t i,j; if(count)*count=r1235_count; if(out) for(i=0;i<128;i++) for(j=0;j<8;j++) out[i][j]=r1235_row[i][j]; }
+void ee_core_get_r1236_census(uint64_t *steps, uint64_t outreg[5], uint32_t *tn, uint32_t *head, uint32_t out[16][6])
+{ uint32_t i,j; if(steps)*steps=r1236_steps; if(outreg)for(i=0;i<5;i++)outreg[i]=r1236_region[i]; if(tn)*tn=r1236_trans_n; if(head)*head=r1236_trans_head; if(out)for(i=0;i<16;i++)for(j=0;j<6;j++)out[i][j]=r1236_trans[i][j]; }
+void ee_core_get_r1237_kseg(uint32_t *en, uint32_t entry[128][2], uint64_t *samples,
+                            uint32_t hotpc[8], uint32_t hotscore[8], uint32_t recent[8], uint32_t *rhead)
+{ uint32_t i,j; if(en)*en=r1237_entry_n; if(entry)for(i=0;i<128;i++)for(j=0;j<2;j++)entry[i][j]=r1237_entry[i][j];
+  if(samples)*samples=r1237_samples; if(hotpc)for(i=0;i<8;i++)hotpc[i]=r1237_hot_pc[i];
+  if(hotscore)for(i=0;i<8;i++)hotscore[i]=r1237_hot_score[i]; if(recent)for(i=0;i<8;i++)recent[i]=r1237_sample_pc[i]; if(rhead)*rhead=r1237_sample_head; }
+void ee_core_get_r1238_sink(uint32_t *head, uint32_t ring[16][4], uint32_t snap[12])
+{ uint32_t i,j; if(head)*head=r1238_head; if(ring)for(i=0;i<16;i++)for(j=0;j<4;j++)ring[i][j]=r1238_ring[i][j]; if(snap)for(i=0;i<12;i++)snap[i]=r1238_snap[i]; }
+void ee_core_get_r1239_jump(uint32_t out[16]) { uint32_t i; if(out)for(i=0;i<16;i++)out[i]=r1239_snap[i]; }
+void ee_core_get_r1240_flow(uint32_t *count, uint32_t out[40][7])
+{ uint32_t i,j; if(count)*count=r1240_n; if(out)for(i=0;i<40;i++)for(j=0;j<7;j++)out[i][j]=r1240_row[i][j]; }
+void ee_core_get_r1241_raflow(uint32_t *count, uint32_t out[24][9])
+{ uint32_t i,j; if(count)*count=r1241_n; if(out)for(i=0;i<24;i++)for(j=0;j<9;j++)out[i][j]=r1241_row[i][j]; }
+void ee_core_get_r1242_slot(uint32_t *armed, uint32_t *sp, uint32_t *slot, uint32_t *n, uint32_t w[16][8], uint32_t restore[8])
+{ uint32_t i,j; if(armed)*armed=r1242_armed; if(sp)*sp=r1242_sp; if(slot)*slot=r1242_slot; if(n)*n=r1242_n; if(w)for(i=0;i<16;i++)for(j=0;j<8;j++)w[i][j]=r1242_w[i][j]; if(restore)for(i=0;i<8;i++)restore[i]=r1242_restore[i]; }
+void ee_core_get_r1243_spflow(uint32_t *count, uint32_t out[32][10])
+{ uint32_t i,j; if(count)*count=r1243_n; if(out)for(i=0;i<32;i++)for(j=0;j<10;j++)out[i][j]=r1243_row[i][j]; }
+void ee_core_get_r1245_slottruth(uint32_t *hit, uint32_t snap[12])
+{ uint32_t i; if(hit)*hit=r1245_hit; if(snap)for(i=0;i<12;i++)snap[i]=r1245_snap[i]; }
+void ee_core_get_r1249_repair(uint64_t counts[4], uint32_t last[6])
+{
+    unsigned i;
+    if (counts) { counts[0]=r1249_repairs; counts[1]=r1249_cont;
+        counts[2]=r1249_ld; counts[3]=r1249_jr; }
+    if (last) for(i=0;i<6;i++) last[i]=r1249_last[i];
+}
+void ee_core_get_r1246_writer(uint32_t *hit, uint32_t snap[16])
+{ uint32_t i; if(hit)*hit=r1246_hit; if(snap)for(i=0;i<16;i++)snap[i]=r1246_snap[i]; }
+void ee_core_get_r1218_syscalls(uint32_t *count, uint32_t out[12][7])
+{ uint32_t i,j; if(count)*count=r1218_sys_count; if(out) for(i=0;i<12;i++) for(j=0;j<7;j++) out[i][j]=r1218_sys[i][j]; }
+void ee_core_get_r1219_sema2(uint32_t create2[7], uint32_t wait2[10], uint32_t *rn, uint32_t rend[8][4])
+{ uint32_t i,j; if(create2)for(i=0;i<7;i++)create2[i]=r1219_create2[i]; if(wait2)for(i=0;i<10;i++)wait2[i]=r1219_wait2[i]; if(rn)*rn=r1219_rend_n; if(rend)for(i=0;i<8;i++)for(j=0;j<4;j++)rend[i][j]=r1219_rend[i][j]; }
+void ee_core_get_r1223_sig2(uint32_t out[8]) { uint32_t i; if(out) for(i=0;i<8;i++) out[i]=r1223_sig2[i]; }
+void ee_core_get_r1224_ncmd(uint32_t out[5]) { if(!out)return; out[0]=r1224_ncmd_cd; out[1]=r1224_ncmd_bind_hits; out[2]=r1224_ncmd_call_hits; out[3]=r1224_ncmd_sid_recoveries; out[4]=r1224_ncmd_rend_arms; }
+void ee_core_get_r1202_corr(uint32_t *handler_rend, uint32_t out[3][5])
+{
+    uint32_t i; if (handler_rend) *handler_rend=r1202_handler_rend_count;
+    if (out) for (i=0;i<3;i++) { out[i][0]=r1202_post[i].chcr; out[i][1]=r1202_post[i].madr; out[i][2]=r1202_post[i].qwc; out[i][3]=r1202_post[i].stat; out[i][4]=0; }
+}
+void ee_core_get_r1201_writes(uint32_t *count, uint32_t out[6][4])
+{
+    uint32_t i; if (count) *count=r1201_write_count;
+    if (out) for (i=0;i<6;i++) { out[i][0]=r1201_writes[i].pc; out[i][1]=r1201_writes[i].addr; out[i][2]=r1201_writes[i].oldv; out[i][3]=r1201_writes[i].newv; }
+}
+void ee_core_get_r1190_sif_diag(uint64_t *itake, uint64_t *stake, uint64_t *hhit, uint64_t *rend,
+                                  uint32_t *cd, uint32_t *sema)
+{
+    if (itake) *itake=r1190_intc_take_count; if (stake) *stake=r1190_sbus_take_count;
+    if (hhit) *hhit=r1190_sbus_handler_hits; if (rend) *rend=r1190_rend_count;
+    if (cd) *cd=r1190_last_rend_cd; if (sema) *sema=r1190_last_rend_sema;
+}
+
+uint64_t ee_core_get_r1191_tlbwr_count(void) { return r1191_tlbwr_count; }
+void ee_core_get_r1192_sif_flow(uint64_t *arms, uint64_t *isig, uint64_t *wait, uint32_t *count, uint32_t out[8])
+{
+    uint32_t i; if (arms) *arms=r1192_trace_arms; if (isig) *isig=r1192_isig_hits; if (wait) *wait=r1192_wait_hits;
+    if (count) *count=r1192_call_count; if (out) for (i=0;i<8;i++) out[i]=r1192_calls[i];
+}
+void ee_core_get_r1197_rend_packet(uint32_t out[12], uint32_t *recvbuf, uint32_t *phys, uint32_t *inner)
+{
+    uint32_t i; if (out) for (i=0;i<12;i++) out[i]=r1197_rend_words[i];
+    if (recvbuf) *recvbuf=r1197_recvbuf; if (phys) *phys=r1197_phys_recvbuf; if (inner) *inner=r1197_inner_cid;
+}
+void ee_core_get_r1198_rend_reads(uint32_t *count, uint32_t out[8][6])
+{
+    uint32_t i; if (count) *count=r1198_read_count;
+    if (!out) return;
+    for (i=0;i<8;i++) { out[i][0]=r1198_reads[i].pc; out[i][1]=r1198_reads[i].addr;
+        out[i][2]=r1198_reads[i].a0; out[i][3]=r1198_reads[i].a1; out[i][4]=r1198_reads[i].a2; out[i][5]=r1198_reads[i].a3; }
+}
+
+void ee_core_get_r1195_sif_calls(uint32_t idx, uint32_t out[8])
+{
+    const r1195_call_t *c; if (!out || idx >= 5) return; c=&r1195_call[idx];
+    out[0]=c->hits; out[1]=c->pc; out[2]=c->ra; out[3]=c->v0;
+    out[4]=c->a0; out[5]=c->a1; out[6]=c->a2; out[7]=c->a3;
+}
 
 ee_state_t *ee_core_get_state(void) { return &g_state; }
 
@@ -334,6 +585,7 @@ static inline int ee_tlb_translate(ee_state_t *st, uint32_t vaddr, uint32_t *out
  * unraised - see the coverage notes at the top of this file). */
 static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_pc, int in_delay_slot)
 {
+    r1189_exc_count++; if (st->cop0[12] & 0x2u) r1189_nested_count++;
     uint32_t offset;
     if (exc_code == EE_EXC_CODE_TLBL || exc_code == EE_EXC_CODE_TLBS)
         offset = 0x000u; /* TLB Refill vector */
@@ -382,12 +634,40 @@ static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_
  * missing TLB entry twice (e.g. SWL/SWR's read-then-write of the same
  * address) only actually raises one exception - see the field's
  * comment in ee_core.h. */
+/* Passive first nonzero small-address TLB-fault snapshot, before handler. */
+static uint32_t r1252_fault[112];
+void ee_core_get_r1252_fault(uint32_t out[112])
+{ if (out) memcpy(out, r1252_fault, sizeof(r1252_fault)); }
+
 static void ee_raise_tlb_exception(ee_state_t *st, int is_store, uint32_t vaddr, uint32_t this_pc, int in_delay_slot)
 {
     if (st->exc_raised_this_step)
         return;
     st->exc_raised_this_step = 1;
 
+    /* Capture fault-time GPR context before handler/scheduler changes it. */
+    r1189_fault_pc=this_pc; r1189_fault_vaddr=vaddr; r1189_fault_iw=0; r1189_fault_rs=0; r1189_fault_rv=0; r1189_fault_ea=0;
+    { uint32_t phys=this_pc & 0x1fffffffu; if (phys+3u < st->ram_size) {
+        uint32_t iw=(uint32_t)st->ram[phys]|((uint32_t)st->ram[phys+1]<<8)|((uint32_t)st->ram[phys+2]<<16)|((uint32_t)st->ram[phys+3]<<24);
+        uint32_t rs=(iw>>21)&31u; r1189_fault_iw=iw; r1189_fault_rs=rs; r1189_fault_rv=(uint32_t)st->gpr[rs].ud0;
+        r1189_fault_ea=r1189_fault_rv+(uint32_t)(int32_t)(int16_t)(iw&0xffffu); }}
+    if (!r1252_fault[0] && vaddr > 0 && vaddr < 16) {
+        r1252_fault[0]=1; r1252_fault[1]=this_pc; r1252_fault[2]=vaddr;
+        r1252_fault[3]=r1189_fault_iw; r1252_fault[4]=st->cop0[12];
+        r1252_fault[5]=st->cop0[13]; r1252_fault[6]=(uint32_t)in_delay_slot;
+        r1252_fault[7]=(uint32_t)ee_hle_thread_get_current_thread_id();
+        r1252_fault[8]=(uint32_t)st->instructions_executed;
+        r1252_fault[9]=(uint32_t)(st->instructions_executed>>32);
+        r1252_fault[10]=(uint32_t)is_store;
+        for (unsigned n=0;n<32;n++) {
+            r1252_fault[16+n]=(uint32_t)st->gpr[n].ud0;
+            r1252_fault[48+n]=(uint32_t)(st->gpr[n].ud0>>32);
+            uint32_t pa=((uint32_t)st->gpr[29].ud0 & 0x1fffffffu)+n*4;
+            if (st->ram && pa<=st->ram_size && st->ram_size-pa>=4)
+                r1252_fault[80+n]=(uint32_t)st->ram[pa]|((uint32_t)st->ram[pa+1]<<8)
+                    |((uint32_t)st->ram[pa+2]<<16)|((uint32_t)st->ram[pa+3]<<24);
+        }
+    }
     st->cop0[8]  = vaddr; /* BadVAddr */
     st->cop0[4]  = (st->cop0[4] & 0xFF80000Fu) | ((vaddr >> 9) & 0x007FFFF0u); /* Context */
     st->cop0[10] = (vaddr & 0xFFFFE000u) | (st->cop0[10] & 0x1FFFu); /* EntryHi */
@@ -509,6 +789,47 @@ static void ee_check_timer_interrupt(ee_state_t *st, uint32_t this_pc)
 #define EE_STATUS_IM2 0x00000400u
 #define EE_STATUS_IM3 0x00000800u
 
+/* R1262: PCSX2 R5900.cpp cpuTestINTCInts schedules delivery through
+ * cpuSetNextEventDelta(4), instead of taking the exception in the same
+ * instruction that asserts a peripheral flag. In our existing timing
+ * approximation these are four core ticks, not measured EE bus cycles.
+ * Keep this independent of guest-writable COP0 Count and serialize it. */
+static ee_irq_checkpoint_t g_ee_irq;
+/* The display oscillator is independent of software-writable COP0 Count.
+ * PCSX2 Counters.cpp UpdateVSyncRate explicitly separates these clocks.
+ * One tick still approximates one EE instruction/parked step here. */
+#define EE_CYCLES_PER_FRAME_NTSC   4921488u
+static uint64_t g_ee_display_ticks;
+/* R1277: derived phase, rebuilt on reset/load; no checkpoint format change. */
+static uint32_t g_ee_display_phase;
+uint64_t ee_core_display_clock_save(void) { return g_ee_display_ticks; }
+void ee_core_display_clock_load(uint64_t ticks) {
+    g_ee_display_ticks = ticks;
+    g_ee_display_phase = (uint32_t)(ticks % EE_CYCLES_PER_FRAME_NTSC);
+}
+void ee_core_irq_checkpoint_save(ee_irq_checkpoint_t *out) { *out = g_ee_irq; }
+void ee_core_irq_checkpoint_load(const ee_irq_checkpoint_t *in) { g_ee_irq = *in; }
+static void ee_irq_tick(void)
+{
+    g_ee_display_ticks++;
+    if (!g_ee_display_ticks || ++g_ee_display_phase == EE_CYCLES_PER_FRAME_NTSC)
+        g_ee_display_phase = 0;
+    if (g_ee_irq.intc_delay) g_ee_irq.intc_delay--;
+}
+static void ee_latch_intc_interrupt(ee_state_t *st)
+{
+    if (ee_intc_pending()) {
+        st->cop0[13] |= EE_CAUSE_IP2;
+        if (!g_ee_irq.intc_armed) {
+            g_ee_irq.intc_armed = 1;
+            g_ee_irq.intc_delay = 4;
+        }
+    } else {
+        st->cop0[13] &= ~EE_CAUSE_IP2;
+        g_ee_irq.intc_armed = g_ee_irq.intc_delay = 0;
+    }
+}
+
 static void ee_check_intc_interrupt(ee_state_t *st, uint32_t this_pc)
 {
     const uint32_t IE  = 0x00000001u;
@@ -546,10 +867,7 @@ static void ee_check_intc_interrupt(ee_state_t *st, uint32_t this_pc)
      * ee_latch_timer_interrupt()'s own already-established pattern of
      * updating its bit unconditionally on every step, independent of
      * whether ee_check_timer_interrupt() goes on to actually raise). */
-    if (ee_intc_pending())
-        st->cop0[13] |= EE_CAUSE_IP2;
-    else
-        st->cop0[13] &= ~EE_CAUSE_IP2;
+    ee_latch_intc_interrupt(st);
 
     if (st->exc_raised_this_step)
         return;
@@ -560,7 +878,10 @@ static void ee_check_intc_interrupt(ee_state_t *st, uint32_t this_pc)
     if (!(st->cop0[12] & EE_STATUS_IM2))
         return; /* this specific interrupt line (IM2) is masked */
 
+    if (g_ee_irq.intc_delay) return;
     st->exc_raised_this_step = 1;
+    r1190_intc_take_count++;
+    { ee_intc_state_t *ri = ee_intc_get_state(); if ((ri->stat & ri->mask & (1u << 1)) != 0) r1190_sbus_take_count++; }
     ee_raise_exception(st, EE_EXC_CODE_INT, this_pc, 0);
 }
 
@@ -641,7 +962,6 @@ static void ee_check_dmac_interrupt(ee_state_t *st, uint32_t this_pc)
  * references) - approximated here as VBLANK_END firing 1/12th of a
  * frame's cycles after VBLANK_START (a round, defensible fraction in
  * that cited range), not a fabricated arbitrary number. */
-#define EE_CYCLES_PER_FRAME_NTSC   4921488u
 #define EE_CYCLES_VBLANK_DURATION  (EE_CYCLES_PER_FRAME_NTSC / 12u)
 #define EE_INTC_IRQ_VBLANK_START   2
 #define EE_INTC_IRQ_VBLANK_END     3
@@ -674,6 +994,58 @@ static void ee_check_dmac_interrupt(ee_state_t *st, uint32_t this_pc)
  * - that live button state was simply never being re-published into
  * the bound EE-side pad_area buffer. This is the fix. */
 static uint32_t g_ee_pad_area_bound[2] = { 0u, 0u };
+static uint32_t g_ee_pad_new_bound[2][4];
+static uint32_t g_ee_pad_new_stat;
+static uint64_t g_ee_vblank_events;
+uint64_t ee_core_get_vblank_events(void) { return g_ee_vblank_events; }
+
+void ee_core_pad_checkpoint_save(ee_pad_checkpoint_t *out)
+{
+    memcpy(out->legacy_area, g_ee_pad_area_bound, sizeof(g_ee_pad_area_bound));
+    memcpy(out->new_area, g_ee_pad_new_bound, sizeof(g_ee_pad_new_bound));
+    out->new_status = g_ee_pad_new_stat;
+}
+
+void ee_core_pad_checkpoint_load(const ee_pad_checkpoint_t *in)
+{
+    memcpy(g_ee_pad_area_bound, in->legacy_area, sizeof(g_ee_pad_area_bound));
+    memcpy(g_ee_pad_new_bound, in->new_area, sizeof(g_ee_pad_new_bound));
+    g_ee_pad_new_stat = in->new_status;
+}
+
+/* XPADMAN 128-byte DMA layout: ps2sdk ee/rpc/pad/src/libpad.c,
+ * pad_data_new. Digital controller only; additional slots stay disconnected.
+ * Do not reuse PADMAN's incompatible 64-byte layout for new RPC clients. */
+static void ee_pad_new_write_slots(ee_state_t *st, uint32_t area, unsigned port, unsigned slot)
+{
+    int connected = port == 0u && slot == 0u && iop_sio2_pad_is_connected();
+    uint16_t buttons = connected ? (uint16_t)~iop_sio2_pad_get_buttons() : 0xffffu;
+    uint32_t frame = (uint32_t)(st->instructions_executed / EE_CYCLES_PER_FRAME_NTSC) + 1u;
+    for (unsigned k = 0; k < 2; k++) {
+        uint32_t a = area + k*128u;
+        for (unsigned n = 0; n < 128; n++) ee_mem_write8(st, a+n, 0u);
+        ee_mem_write8(st, a, connected ? 0u : 0xffu);
+        ee_mem_write8(st, a+1, connected ? 0x41u : 0xffu);
+        ee_mem_write8(st, a+2, buttons & 255u);
+        ee_mem_write8(st, a+3, buttons >> 8);
+        ee_mem_write16(st, a+80, 4u); /* mode table: digital */
+        ee_mem_write32(st, a+88, frame);
+        /* BIOS XPADMAN 3.06 text+0x604 stores the normalized button
+         * copy result: text+0x3ef8 returns a full 32-byte block. */
+        ee_mem_write32(st, a+96, connected ? 32u : 0u);
+        ee_mem_write8(st, a+101, connected ? 0x41u : 0u);
+        ee_mem_write8(st, a+103, connected ? 1u : 0u);
+        ee_mem_write8(st, a+104, connected ? 1u : 0u);
+        ee_mem_write8(st, a+112, connected ? 6u : 0u);
+        /* reqState=COMPLETE, no asynchronous actuator/configuration tasks. */
+    }
+}
+
+static void ee_pad_new_reset(void)
+{
+    memset(g_ee_pad_new_bound, 0, sizeof(g_ee_pad_new_bound));
+    g_ee_pad_new_stat = 0u;
+}
 
 /* Round 736 (task #447 continuation): purely observational log of every
  * real AddIntcHandler(cause, handler_func, next) call (sysnum 16 only -
@@ -775,6 +1147,18 @@ static void ee_pad_area_refresh_all(ee_state_t *st)
 {
     int port;
     for (port = 0; port < 2; port++) {
+        /* OSDSYS checks padGetConnection before padPortOpen.
+         * Publish physical connectivity independently of bound DMA areas. */
+        uint32_t connected = port == 0 && iop_sio2_pad_is_connected() ? 1u : 0u;
+        for (unsigned slot = 0; slot < 4; slot++) {
+            if (g_ee_pad_new_bound[port][slot]) {
+                ee_pad_new_write_slots(st, g_ee_pad_new_bound[port][slot], (unsigned)port, slot);
+            }
+        }
+        if (g_ee_pad_new_stat) for (unsigned k = 0; k < 2; k++) {
+            ee_mem_write32(st, g_ee_pad_new_stat+k*128u, (uint32_t)(st->instructions_executed / EE_CYCLES_PER_FRAME_NTSC)+1u);
+            ee_mem_write32(st, g_ee_pad_new_stat+k*128u+4u+(unsigned)port*4u, connected);
+        }
         if (g_ee_pad_area_bound[port] != 0u)
             ee_pad_area_write_slots(st, g_ee_pad_area_bound[port]);
     }
@@ -818,13 +1202,23 @@ static void ee_pad_area_refresh_all(ee_state_t *st)
  * timing (the two counters are numerically identical whenever nothing
  * is parked, so this is a no-op for every previously-tested boot path
  * that never hits this exact WaitSema-park condition). */
+/* R1263 supersedes the historical Count-based timing described above.
+ * Retired-instruction totals omit parked time; the independent tick counter
+ * includes it and is unaffected by guest MTC0 Count or its 32-bit wrap. */
 static void ee_check_vblank(ee_state_t *st)
 {
-    uint64_t phase = st->cop0[9] % EE_CYCLES_PER_FRAME_NTSC;
+    uint32_t phase = g_ee_display_phase;
     if (phase == 0) {
+        g_ee_vblank_events++;
         /* Round 669: refresh live pad state at the same real cadence
          * VBLANK_START itself fires at - see the citation above. */
         ee_pad_area_refresh_all(st);
+        /* GS CSR.FIELD reports alternating interlaced fields (GSRegs.h,
+         * bit13). Retail games poll it after VBLANK to select a buffer.
+         * Progressive scan has no alternating interlace parity. */
+        gs_state_t *gs_field = gs_get_state();
+        if (gs_field->smode2 & 1u) gs_field->csr ^= 1ull << 13;
+        else gs_field->csr &= ~(1ull << 13);
         ee_intc_raise(EE_INTC_IRQ_VBLANK_START);
     } else if (phase == EE_CYCLES_VBLANK_DURATION)
         ee_intc_raise(EE_INTC_IRQ_VBLANK_END);
@@ -962,6 +1356,11 @@ static void ee_check_boot_unblock_selfloop(ee_state_t *st)
 
 static void ee_check_browser_menu_escalation_heuristic(ee_state_t *st)
 {
+#ifndef PCSX2WII_LEGACY_BROWSER_INJECTION
+    (void)st;
+    return; /* Historical SCPH-10000 state injection is not hardware emulation. */
+#else
+
     static int fired = 0;
     if (fired)
         return;
@@ -974,6 +1373,7 @@ static void ee_check_browser_menu_escalation_heuristic(ee_state_t *st)
         return; /* real (or future evidenced) code already wrote something else - don't interfere */
     ee_mem_write32(st, EE_BROWSER_ESCALATION_FIELD_ADDR, EE_BROWSER_ESCALATION_REAL_VALUE);
     fired = 1;
+#endif
 }
 
 /*
@@ -1267,6 +1667,11 @@ static void ee_check_eeload_fastboot_patch(ee_state_t *st)
 
 static void ee_check_browser_idle_carousel(ee_state_t *st)
 {
+#ifndef PCSX2WII_LEGACY_BROWSER_INJECTION
+    (void)st;
+    return; /* Historical SCPH-10000 state injection is not hardware emulation. */
+#else
+
     /* Round 682's decoded 0x00203D78 handler table: valid indices are
      * 1-15 and 17 (16 is skipped - no case in the real dispatcher). */
     static const uint32_t panel_sequence[] = {
@@ -1310,6 +1715,7 @@ static void ee_check_browser_idle_carousel(ee_state_t *st)
     seq_index = (seq_index + 1u) % (sizeof(panel_sequence) / sizeof(panel_sequence[0]));
     next_tick_instr = st->instructions_executed +
         (uint64_t)EE_BROWSER_CAROUSEL_TICK_FRAMES * EE_CYCLES_PER_FRAME_NTSC;
+#endif
 }
 
 /* Round 279 (task #423 continuation, 320th finding) shipped a shortcut
@@ -1453,6 +1859,61 @@ static void ee_check_browser_idle_carousel(ee_state_t *st)
  * and apply identically here. */
 #define EE_SBUS_WAIT_LOOP_PC2 0x8000FD74u
 
+/* Round 1076 (task #447/#536, continuing Round 1075's decisive test):
+ * a THIRD, independently found real BIOS site polling the exact same
+ * EE_INTC_STAT bit 1 (SBUS) condition. Found via Round 1075's own
+ * checkpoint disassembly of GT3's post-Patch-2 (Round 1074) resting
+ * point: after thread 1's WaitSema(5) correctly resolves (the REND
+ * completion signal), the real BIOS's SIF-command dispatcher lands
+ * here and polls the identical register/bit before deciding whether
+ * to invoke sceSifCmdIntrHandler-class dispatch and issue the next
+ * real RPC call (observed target: CDVD_INIT, sid=0x80000592):
+ *   0x8000FE24: lui  s0, 0xB000
+ *   0x8000FE28: ori  s0, s0, 0xF000   ; s0 = 0xB000F000 = EE_INTC_STAT
+ *   0x8000FE2C: lw   v0, 0(s0)        ; <- hook fires HERE (one instr
+ *                                     ;    before the read completes,
+ *                                     ;    matching the exact Round
+ *                                     ;    314/930 timing convention)
+ *   0x8000FE30: andi v0, v0, 0x0002   ; test EE_INTC_IRQ_SBUS bit
+ *   0x8000FE34: beqz v0, 0x8000FE74   ; not ready -> return, no dispatch
+ * Bit-for-bit identical register and bit to the two existing sites
+ * above - a third real occurrence of the same polling idiom, not a
+ * new invention. Extending the existing, already-accepted narrow
+ * shortcut here is the same kind of minimal, evidence-driven change
+ * as the original two sites - far safer than raising SBUS generically
+ * from every SIF0 DMA completion (dma_channel_note_reply_delivered()),
+ * which would affect every REND delivery (LOADFILE, PADMAN, MCSERV,
+ * etc.), not just this specific poll.
+ *
+ * Round 1076 scratch verification (720M-instruction GT3 disc-boot
+ * chain, R1075_DECISIVE_TRACE instrumentation): with this site wired
+ * in, the shortcut fires exactly ONCE, immediately after Patch 2's
+ * SignalSema(5) completes (SBUS_SHORTCUT_FIRE stat_before=0x08 ->
+ * SBUS_SHORTCUT_DONE stat_after=0x0a). GT3's EE thread then genuinely
+ * advances PAST the previous permanent halt at pc=0x8000FE24 (Round
+ * 1075's dead stop) into new, previously-unreached real BIOS library
+ * code at 0x8000FACC-0x8000FB9C - a SIF_SMFLG stable-read helper
+ * (reads SIF_SMFLG twice, loops until two consecutive reads match,
+ * then returns). This is genuine, evidenced forward progress: the
+ * gap this round targeted (SBUS/INTC_STAT bit 1 lost after SIF0 REND
+ * delivery) is now closed at this site. The expected CALL
+ * sid=0x80000592 (CDVD_INIT) was NOT observed within the 720M-instruction
+ * window - GT3 is still resolving the SMFLG-stabilize loop, a separate,
+ * downstream gate. Documented honestly as partial/incremental, not a
+ * full resolution of task #447/#536. */
+#define EE_SBUS_WAIT_LOOP_PC3 0x8000FE2Cu
+
+/* Round 1180: hot-path reject for the pragmatic SBUS wait helper.
+ * R1179 profiling measured the helper call itself at ~13 TB ticks per
+ * instruction even though only these three exact PCs can ever need it.
+ * Keep the helper's own guard as a correctness backstop, but avoid the
+ * C call entirely for every other PC.  This changes no trigger condition,
+ * timing cadence, or SBUS semantics: matching PCs still call the exact
+ * same helper on the exact same instruction boundary. */
+#define EE_SBUS_WAIT_PC_MATCH(pc_) \
+    ((pc_) == EE_SBUS_WAIT_LOOP_PC || (pc_) == EE_SBUS_WAIT_LOOP_PC2 || \
+     (pc_) == EE_SBUS_WAIT_LOOP_PC3)
+
 /* Round 262 (task #423, 302nd finding): exact instrumentation showed
  * this wait loop's target PC is visited 6,161,403 times in a single
  * 60M-instruction run, with only the very first visit satisfiable by
@@ -1486,7 +1947,7 @@ static void ee_check_browser_idle_carousel(ee_state_t *st)
  * signals - it just no longer limits itself to a single occurrence. */
 static void ee_check_boot_unblock_sbus_wait(ee_state_t *st)
 {
-    if (st->pc != EE_SBUS_WAIT_LOOP_PC && st->pc != EE_SBUS_WAIT_LOOP_PC2)
+    if (st->pc != EE_SBUS_WAIT_LOOP_PC && st->pc != EE_SBUS_WAIT_LOOP_PC2 && st->pc != EE_SBUS_WAIT_LOOP_PC3)
         return;
     ee_intc_state_t *intc = ee_intc_get_state();
     if (intc->stat & (1u << EE_INTC_IRQ_SBUS))
@@ -1494,6 +1955,7 @@ static void ee_check_boot_unblock_sbus_wait(ee_state_t *st)
     dma_state_t *dma = dma_get_state();
     if (dma->d_stat & 0x80u)
         return; /* other half of the real OR-condition already satisfied - loop will resolve on its own */
+    g_r1181_sbus_unblocks++;
     ee_intc_raise(EE_INTC_IRQ_SBUS);
 }
 
@@ -1617,7 +2079,7 @@ static void ee_check_boot_unblock_sbus_wait(ee_state_t *st)
  * the same physical vertical-sync edge) - SIGNAL/FINISH/HSYNC/EDWRITE
  * remain unmodeled, matching gs.c's own documented scope limits.
  *
- * Gated on GS_IMR bit 3 (not hardcoded on): if real software hasn't
+ * Gated on GS_IMR bit 11 (not hardcoded on): if real software hasn't
  * unmasked VSYNC yet, real hardware would not raise EE_INTC bit 0
  * either - this project's own gs_mmio_write64() already stores
  * whatever value real code writes to GS_IMR (0x12001010) unchanged,
@@ -1625,12 +2087,14 @@ static void ee_check_boot_unblock_sbus_wait(ee_state_t *st)
  * rather than assuming a specific reset default this project has no
  * cited real value for. */
 #define GS_CSR_VSYNC_BIT   3
-#define GS_IMR_VSMSK_BIT   3
+#define GS_IMR_VSMSK_BIT   11
 #define EE_INTC_IRQ_GS     0
 
 static void ee_check_gs_vsync(ee_state_t *st)
 {
-    uint64_t phase = st->instructions_executed % EE_CYCLES_PER_FRAME_NTSC;
+    /* Match VBLANK's independent display clock, including parked EE ticks.
+     * Neither retired instructions nor guest COP0 Count define this phase. */
+    uint32_t phase = g_ee_display_phase;
     if (phase != 0)
         return;
     gs_state_t *gs = gs_get_state();
@@ -1772,6 +2236,16 @@ static inline uint32_t ee_hw_mmio_addr(uint32_t addr)
 
 uint8_t ee_mem_read8(ee_state_t *st, uint32_t addr)
 {
+    /* R1171: extend R1170's proven read-only fast path to byte loads.
+     * Only direct KSEG0/KSEG1 aliases of backed main RAM qualify; SIO/MMIO,
+     * KUSEG/TLB, ROM and all stores retain their established paths. */
+    if ((addr & 0xC0000000u) == 0x80000000u) {
+        uint32_t phys = addr & 0x1FFFFFFFu;
+        if (phys < st->ram_size) {
+            st->mem_tlb_miss = 0;
+            return st->ram[phys];
+        }
+    }
     /* Round 959 (task #952, SCPH-50004): real BIOS/ps2sdk debug-console
      * code accesses SIO_TXFIFO/SIO_ISR/etc (0x1000F1xx) via byte-sized
      * LB/LBU and SB, not word-sized LW/SW (matches real ps2sdk's own
@@ -1801,6 +2275,15 @@ uint8_t ee_mem_read8(ee_state_t *st, uint32_t addr)
 
 uint16_t ee_mem_read16(ee_state_t *st, uint32_t addr)
 {
+    /* R1171: same conservative direct-RAM read fast path as R1170/LW. */
+    if ((addr & 0xC0000000u) == 0x80000000u) {
+        uint32_t phys = addr & 0x1FFFFFFFu;
+        if (phys <= st->ram_size && st->ram_size - phys >= 2u) {
+            const uint8_t *p = st->ram + phys;
+            st->mem_tlb_miss = 0;
+            return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+        }
+    }
     /* Round 950 (task #447/#536/#887): DVE ("ba0") register stub -
      * see include/core/hw/ee_dve.h for the full citation. This is
      * the first 16-bit-only hardware register range this project has
@@ -1818,6 +2301,38 @@ uint16_t ee_mem_read16(ee_state_t *st, uint32_t addr)
 
 uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
 {
+    /* R1198: identify which real BIOS/SIFCMD instructions consume the
+     * 48-byte REND packet delivered by R1197 at physical 0x000935c0. */
+    { uint32_t pa = addr & 0x1fffffffu;
+      if (r1212_active && pa >= 0x000935c0u && pa < 0x000935f0u && r1212_count) r1212_mark[r1212_count-1] |= 2u;
+      if (pa >= 0x000935c0u && pa < 0x000935f0u && r1198_read_count < 8u) {
+        r1198_read_t *r=&r1198_reads[r1198_read_count++]; r->pc=st->pc; r->addr=addr;
+        r->a0=(uint32_t)st->gpr[4].ud0; r->a1=(uint32_t)st->gpr[5].ud0; r->a2=(uint32_t)st->gpr[6].ud0; r->a3=(uint32_t)st->gpr[7].ud0;
+      } }
+    /* R1170: conservative READ-ONLY direct-RAM fast path.
+     * R1169 accelerated both reads and writes and later livelocked in the
+     * real BIOS.  Keep stores on the exact R1168 path while retaining the
+     * cheap, architecturally direct KSEG0/KSEG1 main-RAM load case.
+     * ee_mem_ptr() normally clears mem_tlb_miss after a successful direct
+     * translation; preserve that state transition here as well. */
+    if ((addr & 0xC0000000u) == 0x80000000u) {
+        uint32_t phys = addr & 0x1FFFFFFFu;
+        if (phys <= st->ram_size && st->ram_size - phys >= 4u) {
+            const uint8_t *p = st->ram + phys;
+            st->mem_tlb_miss = 0;
+            return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                   ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        }
+    }
+    /* R1293: retain real TLB translation for low mapped RAM words while
+     * avoiding device dispatch. Debug watch hooks above still execute. */
+    if(addr<0x10000000u) {
+        const uint8_t *p=ee_mem_ptr(st,addr,4u);
+        if(p)return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
+                    ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+        ee_mem_check_tlb_fault(st,addr,0);
+        return 0;
+    }
     /* Hardware register window (0x10000000-0x1000FFFF): DMA controller,
      * SIF mailbox registers, and friends. Other addresses in this
      * window (GIF/VIF control regs) still fall through to the
@@ -1829,10 +2344,15 @@ uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
      * evidence-driven round, see ipu.h's scope note.) */
     uint32_t hw_val;
     uint32_t hw_addr = ee_hw_mmio_addr(addr);
-    if (dma_mmio_read32(hw_addr, &hw_val))
+    if (dma_mmio_read32(hw_addr, &hw_val)) {
+        if (r1212_active && r1212_count) r1212_mark[r1212_count-1] |= 4u;
+        if(r1205_active && r1205_hwread_count<8u){r1205_hwread_t *r=&r1205_hwreads[r1205_hwread_count++];r->pc=st->pc;r->addr=hw_addr;r->val=hw_val;} if(r1205_active && hw_addr==0x1000f230u){r1207_trace_left=12u; r1214_smflag=hw_val; if(r1212_active && r1212_count) r1212_mark[r1212_count-1] |= 1u;}
         return hw_val;
-    if (sif_mmio_read32(hw_addr, &hw_val))
+    }
+    if (sif_mmio_read32(hw_addr, &hw_val)) {
+        if(r1205_active && r1205_hwread_count<8u){r1205_hwread_t *r=&r1205_hwreads[r1205_hwread_count++];r->pc=st->pc;r->addr=hw_addr;r->val=hw_val;} if(r1205_active && hw_addr==0x1000f230u){r1207_trace_left=12u; r1214_smflag=hw_val; if(r1212_active && r1212_count) r1212_mark[r1212_count-1] |= 1u;}
         return hw_val;
+    }
     if (mch_mmio_read32(hw_addr, &hw_val))
         return hw_val;
     if (ee_intc_mmio_read32(hw_addr, &hw_val)) /* task #176 */
@@ -1854,6 +2374,16 @@ uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
 
 uint64_t ee_mem_read64(ee_state_t *st, uint32_t addr)
 {
+    /* R1171: extend the proven R1170 load-only optimization to LD.
+     * GS privileged MMIO is outside main RAM and therefore cannot match. */
+    if ((addr & 0xC0000000u) == 0x80000000u) {
+        uint32_t phys = addr & 0x1FFFFFFFu;
+        if (phys <= st->ram_size && st->ram_size - phys >= 8u) {
+            const uint8_t *p = st->ram + phys;
+            st->mem_tlb_miss = 0;
+            return guest_read_le64(p);
+        }
+    }
     /* Task #171/#172 (GS audit): this path was missing the same
      * ee_hw_mmio_addr() KSEG0/1 masking the 32-bit path above already
      * applies (added in "round 11" specifically because real BIOS/
@@ -1875,14 +2405,65 @@ uint64_t ee_mem_read64(ee_state_t *st, uint32_t addr)
 
     uint8_t *p = ee_mem_ptr(st, addr, 8);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 0); return 0; }
-    uint64_t v = 0;
-    for (int i = 7; i >= 0; i--)
-        v = (v << 8) | p[i];
-    return v;
+    return guest_read_le64(p);
+}
+
+#ifdef R1132_WRITE_WATCH
+/* Round 1132 (task #1043, follow-up to Round 1131's "single missing
+ * observation" request): watch EE RAM words 0x80023FC8/0x80023FCC
+ * (the two SIF2-kick "busy"/gate flags Round 1131 live-disassembled
+ * and proved are read but never written by either of the two real
+ * kick-dispatcher functions themselves) for ANY write, from ANY
+ * source, across a full cold boot, to find the real producer.
+ * Diagnostic-only, no behavior change, additive #ifdef block matching
+ * this project's established R812_EVENTLOG-class convention. */
+#include <stdio.h>
+static void r1132_watch(const char *who, uint32_t addr, unsigned long long val, uint32_t pc)
+{
+    if (addr == 0x80023FC8u || addr == 0x80023FCCu)
+        fprintf(stderr, "[R1132_WRITE_WATCH] who=%s addr=0x%08x val=0x%llx pc=0x%08x\n",
+                who, addr, val, pc);
+}
+#endif
+
+static void r1246_watch_write(ee_state_t *st, uint32_t addr, uint32_t size, uint64_t val)
+{
+    uint32_t pa=addr;
+    if ((pa & 0xE0000000u)==0x80000000u || (pa & 0xE0000000u)==0xA0000000u) pa &= 0x1FFFFFFFu;
+    const uint32_t b0=0x01045A00u, b1=0x01045A08u;
+    uint32_t a1=pa+size;
+    if (r1246_hit || a1<=b0 || pa>=b1 || !st->ram || st->ram_size<b1) return;
+    uint8_t oldb[8], newb[8]; unsigned i;
+    for(i=0;i<8;i++) oldb[i]=newb[i]=st->ram[b0+i];
+    for(i=0;i<size;i++){ uint32_t q=pa+i; if(q>=b0 && q<b1) newb[q-b0]=(uint8_t)(val>>(8*i)); }
+    uint32_t olo=(uint32_t)oldb[0]|((uint32_t)oldb[1]<<8)|((uint32_t)oldb[2]<<16)|((uint32_t)oldb[3]<<24);
+    uint32_t ohi=(uint32_t)oldb[4]|((uint32_t)oldb[5]<<8)|((uint32_t)oldb[6]<<16)|((uint32_t)oldb[7]<<24);
+    uint32_t nlo=(uint32_t)newb[0]|((uint32_t)newb[1]<<8)|((uint32_t)newb[2]<<16)|((uint32_t)newb[3]<<24);
+    uint32_t nhi=(uint32_t)newb[4]|((uint32_t)newb[5]<<8)|((uint32_t)newb[6]<<16)|((uint32_t)newb[7]<<24);
+    if(nlo==2u && nhi==0u && (olo!=nlo || ohi!=nhi)){
+        r1246_hit=1u; r1246_snap[0]=st->pc; r1246_snap[1]=addr; r1246_snap[2]=size;
+        r1246_snap[3]=(uint32_t)val; r1246_snap[4]=(uint32_t)(val>>32); r1246_snap[5]=olo; r1246_snap[6]=ohi;
+        r1246_snap[7]=nlo; r1246_snap[8]=nhi; r1246_snap[9]=(uint32_t)st->gpr[29].ud0; r1246_snap[10]=(uint32_t)st->gpr[31].ud0;
+        r1246_snap[11]=(uint32_t)ee_hle_thread_get_current_thread_id(); r1246_snap[12]=st->cop0[12]; r1246_snap[13]=st->cop0[13]; r1246_snap[14]=st->cop0[14];
+        r1246_snap[15]=pa;
+    }
+}
+
+static void r1242_watch_write(ee_state_t *st, uint32_t addr, uint32_t size, uint64_t val)
+{
+    uint32_t a0=addr, a1=addr+size, b0=r1242_slot, b1=r1242_slot+8u;
+    if(!r1242_armed || r1242_n>=16u || a1<=b0 || a0>=b1) return;
+    uint32_t *w=r1242_w[r1242_n++]; w[0]=st->pc; w[1]=addr; w[2]=size; w[3]=(uint32_t)val; w[4]=(uint32_t)(val>>32);
+    w[5]=(uint32_t)st->gpr[29].ud0; w[6]=(uint32_t)st->gpr[31].ud0; w[7]=(uint32_t)ee_hle_thread_get_current_thread_id();
 }
 
 void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)
 {
+    r1246_watch_write(st, addr, 1u, (uint64_t)val);
+    r1242_watch_write(st, addr, 1u, (uint64_t)val);
+#ifdef R1132_WRITE_WATCH
+    r1132_watch("write8", addr, (unsigned long long)val, st->pc);
+#endif
     /* Round 959 (task #952): see ee_mem_read8()'s comment above for the
      * full citation - this is the write-side half of the same real,
      * evidenced gap. ee_sio_mmio_write32() already only extracts the
@@ -1898,6 +2479,11 @@ void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)
 
 void ee_mem_write16(ee_state_t *st, uint32_t addr, uint16_t val)
 {
+    r1246_watch_write(st, addr, 2u, (uint64_t)val);
+    r1242_watch_write(st, addr, 2u, (uint64_t)val);
+#ifdef R1132_WRITE_WATCH
+    r1132_watch("write16", addr, (unsigned long long)val, st->pc);
+#endif
     /* Round 950 (task #447/#536/#887): see ee_mem_read16()'s comment
      * just above and include/core/hw/ee_dve.h for the full citation. */
     if (ee_dve_mmio_write16(ee_hw_mmio_addr(addr), val))
@@ -1911,7 +2497,18 @@ void ee_mem_write16(ee_state_t *st, uint32_t addr, uint16_t val)
 
 void ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val)
 {
+    r1246_watch_write(st, addr, 4u, (uint64_t)val);
+    r1242_watch_write(st, addr, 4u, (uint64_t)val);
+#ifdef R1132_WRITE_WATCH
+    r1132_watch("write32", addr, (unsigned long long)val, st->pc);
+#endif
     uint32_t hw_addr_w = ee_hw_mmio_addr(addr);
+    if (r1201_armed && r1201_write_count < 6u &&
+        (hw_addr_w == 0x1000c000u || hw_addr_w == 0x1000c010u || hw_addr_w == 0x1000c020u)) {
+        dma_state_t *ds=dma_get_state(); dma_channel_t *dc=&ds->chan[DMA_CHANNEL_SIF0];
+        uint32_t oldv = hw_addr_w==0x1000c000u ? dc->chcr : (hw_addr_w==0x1000c010u ? dc->madr : dc->qwc);
+        r1201_write_t *w=&r1201_writes[r1201_write_count++]; w->pc=st->pc; w->addr=hw_addr_w; w->oldv=oldv; w->newv=val;
+    }
     if (dma_mmio_write32(hw_addr_w, val))
         return;
     if (sif_mmio_write32(hw_addr_w, val))
@@ -1939,6 +2536,11 @@ void ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val)
 
 void ee_mem_write64(ee_state_t *st, uint32_t addr, uint64_t val)
 {
+    r1246_watch_write(st, addr, 8u, (uint64_t)val);
+    r1242_watch_write(st, addr, 8u, (uint64_t)val);
+#ifdef R1132_WRITE_WATCH
+    r1132_watch("write64", addr, (unsigned long long)val, st->pc);
+#endif
     /* Task #171/#172: same KSEG0/1 masking fix as ee_mem_read64()
      * above - see that function's comment for the full rationale. */
     if (gs_mmio_write64(ee_hw_mmio_addr(addr), val))
@@ -1978,25 +2580,88 @@ void ee_mem_write64(ee_state_t *st, uint32_t addr, uint64_t val)
  * approximation of "the IOP responds once its own SIFCMD/RPC init
  * completes" - not a byte-exact real timing citation. See the 63rd
  * finding for full detail, verification, and result. */
+/* Round 1136 (task #1046 continuation, user-directed "implement REND"
+ * follow-up): small byte-packing helper used below to build a real
+ * SIF0 reply packet in a local buffer, so it can be delivered through
+ * dma_channel_receive_quadwords() (the project's genuine inbound-DMA
+ * write primitive, source/hw/dma.c) instead of writing the packet's
+ * bytes directly into EE RAM via ee_mem_write32(). Values are packed
+ * little-endian (real PS2 byte order); a raw byte-for-byte layout,
+ * matching dma_channel_receive_quadwords()'s own documented raw-copy
+ * contract (see its doc comment in include/core/hw/dma.h), independent
+ * of host CPU endianness. */
+static void ee_sif0_pack_le32(uint8_t *buf, uint32_t off, uint32_t val)
+{
+    buf[off + 0] = (uint8_t)(val & 0xFFu);
+    buf[off + 1] = (uint8_t)((val >> 8) & 0xFFu);
+    buf[off + 2] = (uint8_t)((val >> 16) & 0xFFu);
+    buf[off + 3] = (uint8_t)((val >> 24) & 0xFFu);
+}
+
+/* Round 1136 follow-up (same task): dma_channel_receive_quadwords()
+ * writes directly to physical EE RAM (g_ee_ram + channel MADR),
+ * bypassing ee_mem_ptr()'s address dispatch entirely - real hardware
+ * DMA is physical-address-based and does not walk the CPU's TLB. Real
+ * ee_recvbuf values this project has observed in practice are BIOS/
+ * kernel-owned KSEG0 buffers (0x80000000-0xBFFFFFFF, unmapped direct
+ * physical - the standard convention for fixed system structures like
+ * this one), but the general case (a KUSEG address requiring a real
+ * TLB lookup) is resolved correctly too, mirroring ee_mem_ptr()'s own
+ * segment dispatch above so this helper never silently misroutes an
+ * address ee_mem_ptr() would have handled differently. */
+static int ee_resolve_dma_dest_phys(ee_state_t *st, uint32_t addr, uint32_t *phys_out)
+{
+    if (addr < 0x80000000u || addr >= 0xC0000000u)
+        return ee_tlb_translate(st, addr, phys_out); /* real KUSEG/KSEG2/3 TLB path */
+    *phys_out = addr & 0x1FFFFFFFu; /* real KSEG0/1 unmapped direct physical */
+    return 1;
+}
+
 static void sif_cmd_iop_send_rpcinit_ready(ee_state_t *st, uint32_t ee_recvbuf)
 {
+    (void)st; /* no longer used - real DMA delivery below replaces ee_mem_write32() */
     if (!ee_recvbuf)
         return;
-    ee_mem_write32(st, ee_recvbuf + 0u, 24u);          /* psize=24 (sizeof struct sr_pkt), dsize=0 */
-    ee_mem_write32(st, ee_recvbuf + 4u, 0u);           /* header.dest = NULL */
-    ee_mem_write32(st, ee_recvbuf + 8u, SIF_CMD_SET_SREG); /* cid = SIF_CMD_ID_SYSTEM|1 */
-    ee_mem_write32(st, ee_recvbuf + 12u, 0u);          /* header.opt = 0 */
-    ee_mem_write32(st, ee_recvbuf + 16u, SIF_SREG_RPCINIT); /* sr_pkt.sreg = 0 */
-    ee_mem_write32(st, ee_recvbuf + 20u, 1u);          /* sr_pkt.val = 1 */
-    /* Round 225 (task #366/#172, 265th finding): was a bare
-     * dma_channel_signal_done(DMA_CHANNEL_SIF0) call (still correctly
-     * raises the real DMAC_STAT bit / Cause.IP3 exception - Round 224
-     * incorrectly implied this signal was missing entirely, corrected
-     * in STATUS.md). What was genuinely missing: the SIF0 channel's
-     * own MADR/QWC/quadwords_transferred state never reflected this
-     * 24-byte (sizeof struct sr_pkt) reply actually landing at
-     * ee_recvbuf. dma_channel_note_reply_delivered() closes that. */
-    dma_channel_note_reply_delivered(DMA_CHANNEL_SIF0, ee_recvbuf, 24u);
+
+    /* Round 1136 (task #1046 continuation, user-directed "implement
+     * REND"): build the real 24-byte struct sr_pkt content in a local
+     * buffer, padded to 32 bytes (2 whole quadwords - real SIF0 DMA
+     * transfer granularity; the extra 8 bytes are zero-filled padding,
+     * matching how a real, not-quite-quadword-multiple IOP source
+     * packet still occupies a whole number of quadwords on the wire),
+     * and deliver it via dma_channel_receive_quadwords() - the
+     * project's genuine inbound (device->EE RAM) DMA write primitive
+     * (Round 198/task #365, source/hw/dma.c) - instead of writing the
+     * bytes directly into EE RAM with ee_mem_write32(). */
+    uint8_t pkt[32];
+    memset(pkt, 0, sizeof(pkt));
+    ee_sif0_pack_le32(pkt, 0u, 24u);          /* psize=24 (sizeof struct sr_pkt), dsize=0 */
+    ee_sif0_pack_le32(pkt, 4u, 0u);           /* header.dest = NULL */
+    ee_sif0_pack_le32(pkt, 8u, SIF_CMD_SET_SREG); /* cid = SIF_CMD_ID_SYSTEM|1 */
+    ee_sif0_pack_le32(pkt, 12u, 0u);          /* header.opt = 0 */
+    ee_sif0_pack_le32(pkt, 16u, SIF_SREG_RPCINIT); /* sr_pkt.sreg = 0 */
+    ee_sif0_pack_le32(pkt, 20u, 1u);          /* sr_pkt.val = 1 */
+
+    /* Program the SIF0 channel's own MADR to the EE's real receive-
+     * buffer address before the transfer - the real hardware register
+     * a genuine inbound SIF0 DMA targets (channel base 0x1000C000 +
+     * 0x10 MADR offset, cross-checked against PCSX2's Dmac.h, same
+     * layout this file's dma.h already documents). */
+    uint32_t phys_recvbuf1 = ee_recvbuf;
+    if (!ee_resolve_dma_dest_phys(st, ee_recvbuf, &phys_recvbuf1)) {
+        st->mem_tlb_miss = 1; /* real TLB Refill exception territory, mirrors ee_mem_ptr()'s own contract */
+        return;
+    }
+    dma_mmio_write32(0x1000C010u, phys_recvbuf1);
+    /* Round 198 (task #365): real byte copy into EE RAM + MADR/QWC/
+     * quadwords_transferred bookkeeping + dma_channel_signal_done()
+     * (which itself raises the real Cause.IP3/SBUS completion signal
+     * for DMA_CHANNEL_SIF0 - see dma_channel_signal_done()'s own doc
+     * comment in dma.c) all in one real call - replacing the former
+     * ee_mem_write32()-writes + dma_channel_note_reply_delivered()
+     * bookkeeping-only-shortcut pair with genuine DMA-engine delivery.
+     * 2 quadwords = the 32-byte padded buffer above. */
+    dma_channel_receive_quadwords(DMA_CHANNEL_SIF0, pkt, 2u);
 }
 
 /* task #187 (63rd finding): delayed-delivery state for
@@ -2209,6 +2874,32 @@ static int romdir_lookup(const bios_image_t *bios, const char *name, uint32_t *o
         off += 16u;
     }
     return 0;
+}
+
+/* Read the IOP module version from the supplied ROM's ELF .iopmod.
+ * SHT_SCE_IOPMOD (0x70000080), version:u16 at offset 24.
+ * Missing or malformed modules return zero; no invented version. */
+static uint32_t ee_rom_module_version(const bios_image_t *bios, const char *name)
+{
+    uint32_t off, size, shoff, j;
+    uint16_t entsize, count;
+    const uint8_t *e;
+    if (!romdir_lookup(bios, name, &off, &size) || size < 52u ||
+        off > bios->size || size > bios->size - off) return 0u;
+    e = bios->data + off;
+    if (memcmp(e, "\177ELF", 4) || e[4] != 1 || e[5] != 1) return 0u;
+    shoff = elfld_rd_le32(e + 32);
+    entsize = elfld_rd_le16(e + 46); count = elfld_rd_le16(e + 48);
+    if (entsize < 40u || shoff > size || count > (size-shoff)/entsize) return 0u;
+    for (j=0; j<count; j++) {
+        const uint8_t *sh = e + shoff + j*entsize;
+        uint32_t so, ss;
+        if (elfld_rd_le32(sh+4) != 0x70000080u) continue;
+        so=elfld_rd_le32(sh+16); ss=elfld_rd_le32(sh+20);
+        if (ss < 26u || so > size || ss > size-so) return 0u;
+        return elfld_rd_le16(e+so+24);
+    }
+    return 0u;
 }
 
 /* Round 346: minimal real rom0: open-file-descriptor table, direct
@@ -2436,6 +3127,192 @@ static uint32_t sif_loadfile_disc_read_raw(uint32_t base_lba, uint32_t file_byte
         copied += chunk;
     }
     return copied;
+}
+
+/* R1297: the retail SLUS-20001 RSPU2DRV extends the sound RPC SID with
+ * resource reads. Its actual IRX dispatch at +0x608/+0x640 calls +0x2dfc:
+ * encoded sector - 0x4820, encoded bytes - 0x350a; mode 0 targets EE,
+ * mode 1 targets SPU2 sound RAM and rounds the byte count to 64.
+ * Worker +0x224c sets SpuSetTransferStartAddr then calls SpuWrite;
+ * this must never overwrite IOP executable RAM. The old generic
+ * SPU2 acknowledgement left these buffers empty. Scope the layout to
+ * the whole verified 66,077-byte module, not every SPU2 provider.
+ * This is a synchronous HLE transfer, not execution of the IRX worker. */
+static int g_rspu2_disc_profile;
+static int ee_rspu2_disc_profile(void)
+{
+    if(g_rspu2_disc_profile)return g_rspu2_disc_profile>0;
+    uint32_t lba,size;uint8_t *image=NULL;uint32_t hash=2166136261u;
+    int match=0;
+    if(iop_cdvd_disc_find_file("IRX/RSPU2DRV.IRX;1",&lba,&size) && size==66077u) {
+        image=malloc(size);
+        if(image && sif_loadfile_disc_read_raw(lba,0,image,size)==size) {
+            for(uint32_t k=0;k<size;k++)hash=(hash^image[k])*16777619u;
+            match=hash==0xe16bba10u;
+        }
+    }
+    free(image);g_rspu2_disc_profile=match?1:-1;return match;
+}
+
+static int ee_rspu2_disc_rpc(ee_state_t *st,uint32_t command,uint32_t payload,
+                            uint32_t send_size,uint32_t reply,uint32_t recv_size)
+{
+    if(command!=0x204eu && command!=0x2045u)return 0;
+    if(!ee_rspu2_disc_profile())return 0;
+    int32_t result=-1;uint32_t lba=0,file_size=0,sector=0,dst=0,n=0,copied=0;
+    uint32_t physical=payload&0x1fffffffu;
+    if(!payload || send_size<20u || physical>=st->ram_size ||
+       send_size>st->ram_size-physical || !reply || recv_size<4u)goto done;
+    sector=ee_mem_read32(st,payload+4u);dst=ee_mem_read32(st,payload+8u);
+    n=ee_mem_read32(st,payload+12u);
+    if(sector<0x4820u || n<0x350au)goto done;
+    sector-=0x4820u;n-=0x350au;
+    if(command==0x2045u) {
+        if(n>0xffffffc0u || !spu2_mixer_get_ram())goto done;
+        n=(n+63u)&~63u;
+    }
+    physical=dst&0x1fffffffu;
+    uint32_t limit=command==0x204eu?st->ram_size:SPU2_MIXER_RAM_SIZE;
+    if(!dst || physical>=limit || n>limit-physical)goto done;
+    if(!iop_cdvd_disc_find_file("TEKKEN.BIN;1",&lba,&file_size) ||
+       (uint64_t)sector*2048u+n>file_size)goto done;
+    while(copied<n) {
+        uint8_t bytes[ISO_SECTOR_SIZE];uint32_t chunk=n-copied;
+        if(chunk>sizeof(bytes))chunk=sizeof(bytes);
+        if(iop_cdvd_disc_read_sector(lba+sector+copied/2048u,bytes))goto done;
+        /* SIF DMA destinations are RAM bus addresses, not EE TLB loads. */
+        if(command==0x204eu)memcpy(st->ram+physical+copied,bytes,chunk);
+        else memcpy(spu2_mixer_get_ram()+physical+copied,bytes,chunk);
+        copied+=chunk;
+    }
+    result=0;
+done:
+    if(reply && recv_size>=4u)ee_mem_write32(st,reply,(uint32_t)result);
+    { static unsigned logs; if(logs++<32u || result<0)
+        printf("[R1297-RSPU2] cmd=%04x lba=%u+%u dst=%08x bytes=%u copied=%u result=%d\n",
+               command,lba,sector,dst,n,copied,result); }
+    return 1;
+}
+
+/* Retain only verified version metadata from the actual requested image.
+ * LOADFILE execution remains HLE; this does not pretend to run the IRX. */
+static void sif_loadfile_note_mc_module(ee_state_t *st,const char *path)
+{
+    const uint8_t *image=NULL;uint8_t *owned=NULL;uint32_t size=0,off=0,lba;
+    if(!strncmp(path,"rom0:",5)) {
+        if(romdir_lookup(st->bios,path+5,&off,&size) && (uint64_t)off+size<=st->bios->size)image=st->bios->data+off;
+    } else if(!strncmp(path,"cdrom",5) && iop_cdvd_disc_find_file(path,&lba,&size) && size<=2u*1024u*1024u) {
+        owned=malloc(size);if(owned && sif_loadfile_disc_read_raw(lba,0,owned,size)==size)image=owned;
+    }
+    char name[64];uint16_t version;
+    if(image && iop_module_metadata(image,size,name,&version)) {
+        if(!strcmp(name,"mcserv"))st->mcserv_module_version=version;
+        else if(!strcmp(name,"mcman") || !strcmp(name,"mcman_tool") || !strcmp(name,"mcman_cex"))st->mcman_module_version=version;
+    }
+    free(owned);
+}
+
+/* R1264: consume the real SifCmdResetData request for the existing RPC HLE.
+ * ps2sdk ee/kernel/src/iopcontrol.c: header, arglen, mode, arg[80].
+ * UDNL's requested ROM config is itself a small ROM image containing
+ * IOPBTCONF. Only those selected modules contribute INIT version metadata.
+ * This does not execute their IRX entry points or implement a full IOP reset. */
+static void sif_iop_reset_note_mc_config(ee_state_t *st,uint32_t packet,uint32_t bytes)
+{
+    if(bytes<104u || ee_mem_read32(st,packet)!=104u)return;
+    uint32_t length=ee_mem_read32(st,packet+16u);
+    if(length>80u || length>bytes-24u)return;
+    char args[81];
+    for(uint32_t k=0;k<length;k++) {
+        args[k]=(char)ee_mem_read8(st,packet+24u+k);
+        if(!args[k])return; /* arglen excludes its terminating NUL */
+    }
+    args[length]=0;
+    /* A valid reboot replaces the previous service configuration. Unsupported
+     * targets leave versions unknown, rather than retaining stale providers. */
+    st->mcserv_module_version=st->mcman_module_version=0;
+    cdvd_config_reset_session();
+    if(ee_mem_read32(st,packet+20u)!=0u || strncmp(args,"rom0:UDNL ",10))return;
+    const char *config=args+10;
+    if(strncmp(config,"rom0:",5) || !config[5] || strchr(config,' ') || strchr(config,'\t'))return;
+    uint32_t off,size,inner_off,inner_size;
+    if(!romdir_lookup(st->bios,config+5,&off,&size) ||
+       (uint64_t)off+size>st->bios->size)return;
+    bios_image_t nested={0};nested.data=st->bios->data+off;nested.size=size;
+    if(!romdir_lookup(&nested,"IOPBTCONF",&inner_off,&inner_size) ||
+       (uint64_t)inner_off+inner_size>size)return;
+    const uint8_t *text=nested.data+inner_off;
+    if(inner_size<4u || memcmp(text,"@800",4))return;
+    uint32_t pos=0;
+    while(pos<inner_size) {
+        uint32_t start=pos;
+        while(pos<inner_size && text[pos]!='\r' && text[pos]!='\n' && text[pos])pos++;
+        uint32_t n=pos-start;
+        while(pos<inner_size && (text[pos]=='\r'||text[pos]=='\n'||!text[pos]))pos++;
+        if(!n || n>10u || text[start]=='@')continue;
+        char path[16];memcpy(path,"rom0:",5);memcpy(path+5,text+start,n);path[5+n]=0;
+        sif_loadfile_note_mc_module(st,path);
+    }
+}
+
+/* R1265 config RPC ABI: ps2sdk ee/rpc/cdvd/src/scmd.c. Each provider
+ * block has 15 data bytes; hardware storage includes a checksum byte. */
+static void ee_cdvd_config_rpc(ee_state_t *st,uint32_t fno,uint32_t payload,uint32_t send_size,uint32_t reply,uint32_t recv_size)
+{
+    uint32_t result=0,status=0x80;
+    if(!reply || recv_size<8u || (reply&0x1fffffffu)>=st->ram_size || recv_size>st->ram_size-(reply&0x1fffffffu))return;
+    if(payload && ((payload&0x1fffffffu)>=st->ram_size || send_size>st->ram_size-(payload&0x1fffffffu)))return;
+    if(fno==0x0eu) {
+        if(payload && send_size>=4u){uint32_t arg=ee_mem_read32(st,payload);status=cdvd_config_open(arg&255,(arg>>8)&255,(arg>>16)&255);result=!status;}
+    } else if(fno==0x0fu){status=cdvd_config_close();result=1;}
+    else {
+        unsigned n=cdvd_config_count();status=0;
+        unsigned available=fno==0x10u?(recv_size-8u)/15u:send_size/15u;
+        if(available>68u)available=68u;
+        if(fno==0x11u && !payload)available=0;
+        for(unsigned j=0;j<n && j<available;j++) {
+            uint8_t block[16];unsigned sum=0;
+            if(fno==0x10u) {
+                status=cdvd_config_read(block);for(unsigned k=0;k<15;k++)sum+=block[k];
+                if(status)break;
+                status=(uint8_t)sum!=block[15]; /* XCDVDMAN returns checksum status 0/1. */
+                for(unsigned k=0;k<15;k++)ee_mem_write8(st,reply+8u+j*15u+k,block[k]);
+                if(status)break;
+            } else {
+                for(unsigned k=0;k<15;k++){block[k]=ee_mem_read8(st,payload+j*15u+k);sum+=block[k];}
+                block[15]=(uint8_t)sum;status=cdvd_config_write(block);if(status)break;
+            }
+            result++;
+        }
+        if(result<n && !status)status=0x80;
+        if(!n)status=0x80;
+    }
+    ee_mem_write32(st,reply,result);ee_mem_write32(st,reply+4,status);
+}
+
+/* Cardless subset of mcserv::_McGetInfo / _McGetInfo2.
+ * ABI: ps2dev.github.io/ps2sdk/mcserv_8c_source.html and
+ * libmc-common_8h.html: param at +28, type/free at +0/+4,
+ * modern formatted at +144. Actual supplied MCMAN 2.0b exports
+ * McDetectCard2 at text+0x824: absent PS2 and PS1 probes eventually
+ * return -11 (PS1 five failed probes at +0x91e4), not success.
+ * Inserted cards and filesystem operations remain outside this HLE.
+ * Write the service DMA outputs before the ordinary guest REND callback. */
+static int32_t ee_mcserv_getinfo_no_card(ee_state_t *st,uint32_t payload,uint32_t payload_size,int modern)
+{
+    uint32_t pp=payload&0x1fffffffu;
+    if(!payload || payload_size<32u || pp>EE_RAM_SIZE-32u)return -11;
+    uint32_t port=ee_mem_read32(st,payload+4u),slot=ee_mem_read32(st,payload+8u);
+    if(port==0u && slot==0u && iop_sio2_mc_is_inserted())return 0; /* existing inserted-card HLE gap */
+    uint32_t param=ee_mem_read32(st,payload+28u),p=param&0x1fffffffu;
+    uint32_t bytes=modern?192u:64u;
+    if(param && p<=EE_RAM_SIZE-bytes){
+        uint32_t dma_dest=0xa0000000u|p; /* SIF DMA targets physical RAM, bypassing EE TLB/cache. */
+        if(ee_mem_read32(st,payload+(modern?20u:12u))>0u)ee_mem_write32(st,dma_dest,0u);
+        ee_mem_write32(st,dma_dest+4u,0u);
+        if(modern)ee_mem_write32(st,dma_dest+144u,0u);
+    }
+    return -11;
 }
 
 /* Round 554 (task #521/#522): real cdrom0:/cdrom1: counterpart to
@@ -2768,27 +3645,65 @@ static void sif_cmd_iop_write_private_queue_copy(ee_state_t *st, uint32_t cd_ptr
     ee_mem_write32(st, qbuf + 0x2Cu, 0u);
 }
 
+/* Complete the descriptor bookkeeping of ps2sdk sifrpc.c::_request_end.
+ * The existing completion bridge signalled the waiter but omitted bind data
+ * and rpc_packet_free, exhausting a game's finite request pool. This remains
+ * the HLE fallback alongside the existing real SIF0 DMA delivery; asynchronous
+ * end_function execution is not added by this helper. */
+static void ee_hle_rpc_complete_descriptor(ee_state_t *st, uint32_t cd_ptr, uint32_t inner_cid)
+{
+    uint32_t cp = cd_ptr & 0x1fffffffu;
+    if (!cd_ptr || cp > EE_RAM_SIZE - 0x28u) return;
+    uint32_t packet = ee_mem_read32(st, cd_ptr);
+    uint32_t pp = packet & 0x1fffffffu;
+    if (!packet || pp > EE_RAM_SIZE - 0x24u) return;
+    uint32_t flags = ee_mem_read32(st, packet + 0x10u);
+    uint32_t cid = ee_mem_read32(st, packet + 8u);
+    if (!(flags & 1u) || cid != inner_cid ||
+        (ee_mem_read32(st, packet + 0x1cu) & 0x1fffffffu) != cp ||
+        ee_mem_read32(st, packet + 0x18u) != ee_mem_read32(st, cd_ptr + 4u)) return;
+    if (inner_cid == SIF_CMD_RPC_BIND) {
+        ee_mem_write32(st, cd_ptr + 0x24u, 0x1000u);
+        ee_mem_write32(st, cd_ptr + 0x14u, 0u);
+        ee_mem_write32(st, cd_ptr + 0x18u, 0u);
+    }
+    ee_mem_write32(st, packet + 0x18u, 0u);
+    ee_mem_write32(st, packet + 0x10u, flags & ~1u);
+    /* Keep the descriptor pointer valid for the pending guest REND handler.
+     * Clearing it here causes the real kernel rpc_packet_free(NULL) to fault.
+     * The allocation bit/rpc_id already make sceSifCheckStatRpc report done;
+     * the guest _request_end clears its own descriptor after consuming DMA. */
+}
+
 static void sif_cmd_iop_send_rpc_bind_rend(ee_state_t *st, uint32_t ee_recvbuf, uint32_t cd_ptr, uint32_t inner_cid)
 {
     if (!ee_recvbuf)
         return;
-    ee_mem_write32(st, ee_recvbuf + 0x00u, 0x30u);        /* psize=48 (sizeof SifRpcRendPkt_t), dsize=0 */
-    ee_mem_write32(st, ee_recvbuf + 0x04u, 0u);            /* header.dest = NULL */
-    ee_mem_write32(st, ee_recvbuf + 0x08u, SIF_CMD_RPC_END); /* outer cid = SIF_CMD_ID_SYSTEM|8 */
-    ee_mem_write32(st, ee_recvbuf + 0x0Cu, 0u);            /* header.opt = 0 */
-    ee_mem_write32(st, ee_recvbuf + 0x10u, 0u);            /* rec_id (unused by _request_end) */
-    ee_mem_write32(st, ee_recvbuf + 0x14u, 0u);            /* pkt_addr (unused by _request_end) */
-    ee_mem_write32(st, ee_recvbuf + 0x18u, 0u);            /* rpc_id (unused by _request_end) */
-    ee_mem_write32(st, ee_recvbuf + 0x1Cu, cd_ptr);        /* cd - echoed from the real request packet */
-    ee_mem_write32(st, ee_recvbuf + 0x20u, inner_cid);     /* inner cid: task #195/#196 (71st finding) - generalized
-                                                             * to also carry SIF_CMD_RPC_CALL (real
-                                                             * _request_end() dispatches identically for
-                                                             * both: reads cd, conditionally does cid-
-                                                             * specific work, then always iSignalSema()s -
-                                                             * see sif.h's SIF_CMD_RPC_CALL comment) */
-    ee_mem_write32(st, ee_recvbuf + 0x24u, 0x00001000u);   /* sd = non-NULL PLACEHOLDER (task #194/70th finding, see comment above - NOT a real IOP address; irrelevant for a CALL reply, harmless either way) */
-    ee_mem_write32(st, ee_recvbuf + 0x28u, 0u);            /* buf = NULL */
-    ee_mem_write32(st, ee_recvbuf + 0x2Cu, 0u);            /* cbuf = NULL */
+    uint8_t pkt[48];
+    ee_sif0_pack_le32(pkt, 0x00u, 0x30u);        /* psize=48 (sizeof SifRpcRendPkt_t), dsize=0 */
+    ee_sif0_pack_le32(pkt, 0x04u, 0u);            /* header.dest = NULL */
+    ee_sif0_pack_le32(pkt, 0x08u, SIF_CMD_RPC_END); /* outer cid = SIF_CMD_ID_SYSTEM|8 */
+    ee_sif0_pack_le32(pkt, 0x0Cu, 0u);            /* header.opt = 0 */
+    ee_sif0_pack_le32(pkt, 0x10u, 0u);            /* rec_id (unused by _request_end) */
+    ee_sif0_pack_le32(pkt, 0x14u, 0u);            /* pkt_addr (unused by _request_end) */
+    ee_sif0_pack_le32(pkt, 0x18u, 0u);            /* rpc_id (unused by _request_end) */
+    ee_sif0_pack_le32(pkt, 0x1Cu, cd_ptr);        /* cd - echoed from the real request packet */
+    ee_sif0_pack_le32(pkt, 0x20u, inner_cid);     /* inner cid: task #195/#196 (71st finding) - generalized
+                                                    * to also carry SIF_CMD_RPC_CALL (real
+                                                    * _request_end() dispatches identically for
+                                                    * both: reads cd, conditionally does cid-
+                                                    * specific work, then always iSignalSema()s -
+                                                    * see sif.h's SIF_CMD_RPC_CALL comment) */
+    ee_sif0_pack_le32(pkt, 0x24u, 0x00001000u);   /* sd = non-NULL PLACEHOLDER (task #194/70th finding, see comment above - NOT a real IOP address; irrelevant for a CALL reply, harmless either way) */
+    ee_sif0_pack_le32(pkt, 0x28u, 0u);            /* buf = NULL */
+    ee_sif0_pack_le32(pkt, 0x2Cu, 0u);            /* cbuf = NULL */
+    /* Round 1136 (task #1046 continuation, user-directed "implement
+     * REND"): packet content built in a local buffer above (was
+     * written directly into EE RAM via ee_mem_write32() before) - see
+     * sif_cmd_iop_send_rpcinit_ready()'s Round 1136 comment for the
+     * full rationale. Delivered via the real SIF0 DMA engine at the
+     * bottom of this function, after the private-queue copy and the
+     * Round 1073/1135 semaphore-completion machinery below (unchanged). */
     sif_cmd_iop_write_private_queue_copy(st, cd_ptr, inner_cid); /* task #200 (75th/76th finding): also feed OSDSYS's private handler */
 
     /* Round 1073 (task #810/#811/#846 continuation, user-directed Patch 2):
@@ -2825,11 +3740,45 @@ static void sif_cmd_iop_send_rpc_bind_rend(ee_state_t *st, uint32_t ee_recvbuf, 
      * 4, 11, plus the -1 "no completion semaphore" sentinel correctly
      * skipped) - confirming the generic mechanism serves many different
      * RPC clients correctly, not just GT3's sema 5. */
-    if (cd_ptr) {
-        int32_t r1073_sema_id = (int32_t)ee_mem_read32(st, cd_ptr + 0x08u);
-        if (r1073_sema_id >= 0)
-            ee_hle_thread_debug_signal_sema(r1073_sema_id);
-    }
+    /* Round 1135 (task #1046, user-authorized architectural cleanup):
+     * this call used to be ee_hle_thread_debug_signal_sema(r1073_sema_id)
+     * - a debug-only backdoor that directly manipulated EE HLE thread
+     * scheduler state, bypassing the real interrupt-driven delivery
+     * path entirely.
+     *
+     * Round 1135 built an A/B host-native experiment (scratch copy,
+     * R1135_DISABLE_DEBUG_SIGNAL): one build kept the debug backdoor,
+     * the other replaced it with a no-op counter only, relying purely
+     * on dma_channel_note_reply_delivered()'s real
+     * ee_intc_raise(EE_INTC_IRQ_SBUS) call below to drive genuine,
+     * already-resident real BIOS/kernel SBUS interrupt dispatch
+     * (confirmed real and cause-specific per this project's own Round
+     * 92 finding: SBUS has its own dedicated handler, 0x80001d58,
+     * distinct from the shared default 0x80001630) through to the
+     * real _SifCmdIntHandler()/_request_end()/iSignalSema() chain this
+     * project's own interpreter already executes for real once
+     * invoked (see this function's own top-of-file citation). Both
+     * builds, run from a fresh cold boot (no checkpoint) against the
+     * same real SCPH-50004 BIOS, produced a BYTE-FOR-BYTE IDENTICAL EE
+     * program-counter trajectory and RPC-bind-count progression
+     * through 355,416,833 instructions, with 196 real completions
+     * having been delivered purely through the real interrupt path in
+     * the experiment build (zero use of the backdoor) - proving the
+     * backdoor was fully redundant, not load-bearing. This matches the
+     * sibling function sif_cmd_iop_send_rpcinit_ready() above, which
+     * never had a debug-signal call in the first place and has always
+     * relied only on the real interrupt path.
+     *
+     * This removal does not change WHAT gets delivered (the REND
+     * packet content and its real BIOS-side dispatch are unchanged) -
+     * it only removes a redundant, non-hardware-accurate shortcut that
+     * directly poked scheduler internals instead of letting the
+     * already-correct real interrupt/exception machinery do the work,
+     * matching the user's explicit request to replace this class of
+     * shortcut with real hardware-accurate delivery wherever the
+     * evidence supports it. No functional change to delivery timing or
+     * content - see docs/STATUS.md Round 1135 for the full A/B
+     * verification writeup. */
 
     /* Round 225 (task #366/#172, 265th finding): was a bare
      * dma_channel_signal_done(DMA_CHANNEL_SIF0) call (still correctly
@@ -2840,7 +3789,73 @@ static void sif_cmd_iop_send_rpc_bind_rend(ee_state_t *st, uint32_t ee_recvbuf, 
      * completion) - its 48-byte (sizeof SifRpcRendPkt_t) reply's
      * landing address now updates the SIF0 channel's own real
      * MADR/QWC/quadwords_transferred state to match. */
-    dma_channel_note_reply_delivered(DMA_CHANNEL_SIF0, ee_recvbuf, 48u);
+    /* Round 1136 (task #1046 continuation): deliver the 48-byte
+     * SifRpcRendPkt_t via real SIF0 DMA - dma_mmio_write32() programs
+     * the channel's own MADR to the EE's real receive-buffer address
+     * (exactly as sif_cmd_iop_send_rpcinit_ready() now does above),
+     * then dma_channel_receive_quadwords() performs the genuine byte
+     * copy into EE RAM plus the real MADR/QWC/quadwords_transferred
+     * bookkeeping and dma_channel_signal_done() (which raises the real
+     * Cause.IP3/SBUS completion signal for DMA_CHANNEL_SIF0) - the
+     * exact same real completion signal dma_channel_note_reply_delivered()
+     * used to raise, now reached through genuine DMA-engine delivery
+     * instead of a bookkeeping-only shortcut. 48 bytes = exactly 3
+     * whole quadwords (sizeof SifRpcRendPkt_t) - no padding needed,
+     * unlike the 24-byte struct sr_pkt reply above. */
+    r1190_rend_count++;
+    r1190_last_rend_cd = cd_ptr;
+    r1190_last_rend_sema = 0xffffffffu;
+    { uint32_t cp = (cd_ptr + 8u) & 0x1fffffffu; if (cp + 3u < st->ram_size)
+        r1190_last_rend_sema = (uint32_t)st->ram[cp] | ((uint32_t)st->ram[cp+1]<<8) | ((uint32_t)st->ram[cp+2]<<16) | ((uint32_t)st->ram[cp+3]<<24); }
+    { uint32_t q=r1219_rend_n<8u?r1219_rend_n:7u; if(r1219_rend_n<8u)r1219_rend_n++; r1219_rend[q][0]=(uint32_t)r1190_rend_count; r1219_rend[q][1]=cd_ptr; r1219_rend[q][2]=r1190_last_rend_sema; r1219_rend[q][3]=inner_cid; }
+    uint32_t phys_recvbuf2 = ee_recvbuf;
+    if (!ee_resolve_dma_dest_phys(st, ee_recvbuf, &phys_recvbuf2)) {
+        st->mem_tlb_miss = 1;
+        return;
+    }
+    /* R1197: preserve the byte-exact packet that is about to enter the
+     * real SIF0 receive DMA path, plus virtual/physical destination. */
+    { uint32_t i; for (i=0;i<12;i++)
+        r1197_rend_words[i]=(uint32_t)pkt[i*4u] | ((uint32_t)pkt[i*4u+1u]<<8) |
+                            ((uint32_t)pkt[i*4u+2u]<<16) | ((uint32_t)pkt[i*4u+3u]<<24); }
+    r1197_recvbuf=ee_recvbuf; r1197_phys_recvbuf=phys_recvbuf2; r1197_inner_cid=inner_cid;
+    dma_mmio_write32(0x1000C010u, phys_recvbuf2);
+    { dma_state_t *ds=dma_get_state(); dma_channel_t *dc=&ds->chan[DMA_CHANNEL_SIF0];
+      r1199_pre.chcr=dc->chcr; r1199_pre.madr=dc->madr; r1199_pre.qwc=dc->qwc; r1199_pre.tadr=dc->tadr; r1199_pre.stat=ds->d_stat; }
+    dma_channel_receive_quadwords(DMA_CHANNEL_SIF0, pkt, 3u);
+
+    /* R1215 experimental completion bridge. R1203/R1214 prove the real
+     * SIF0 DMA and SBUS handler run, but this incomplete BIOS/SIFCMD model
+     * still never consumes the REND packet and therefore never reaches the
+     * real _request_end()->iSignalSema() completion. Complete the semantic
+     * operation at the same point the REND DMA has genuinely completed,
+     * using the descriptor's live sema_id (never hard-coded to GT3's 5).
+     * This deliberately restores the old generic completion bridge as an
+     * A/B fix while retaining R1203's real DMA/SBUS delivery unchanged. */
+    ee_hle_rpc_complete_descriptor(st, cd_ptr, inner_cid);
+    if ((int32_t)r1190_last_rend_sema >= 0) {
+        /* R1216: R1215 woke the waiter but left it READY while the current
+         * thread kept running (S5 w=0, sig=0).  The bridge executes outside
+         * the guest's real interrupt-return path, so there is no later kernel
+         * scheduling point to consume that READY transition.  Complete the
+         * synthetic completion atomically: use the existing semaphore wake
+         * path, then immediately invoke the existing scheduler.  This does
+         * not hard-code a thread or semaphore and performs no TCB edits. */
+        /* R1222: match the proven Claude/R1073 ordering: completion makes
+         * the waiter READY, but does NOT synchronously preempt the current
+         * producer thread from inside REND delivery.  R1216's immediate
+         * reschedule let GT3 thread 1 run before thread 3 could issue its
+         * already-observed SignalSema(2)/SignalSema(3) producer pair,
+         * creating the new WaitSema(2) deadlock.  Normal scheduler/interrupt
+         * boundaries perform the later switch, as in the verified old tree. */
+        ee_hle_thread_debug_signal_sema((int)r1190_last_rend_sema);
+    }
+
+    { dma_state_t *ds=dma_get_state(); dma_channel_t *dc=&ds->chan[DMA_CHANNEL_SIF0];
+      r1199_post.chcr=dc->chcr; r1199_post.madr=dc->madr; r1199_post.qwc=dc->qwc; r1199_post.tadr=dc->tadr; r1199_post.stat=ds->d_stat;
+      if (r1190_rend_count >= 1u && r1190_rend_count <= 3u) r1202_post[r1190_rend_count-1u]=r1199_post; }
+    /* Arm only after the completed REND, so the setup write above is excluded. */
+    r1201_write_count=0; memset(r1201_writes,0,sizeof(r1201_writes)); r1201_armed=1;
 }
 
 /* task #192: delayed-delivery state for sif_cmd_iop_send_rpc_bind_rend(),
@@ -3155,6 +4170,10 @@ static void ee_check_cdvd_ncmd_pending(ee_state_t *st)
 
 int ee_core_init(const bios_image_t *bios)
 {
+    g_ee_vblank_events = 0;
+    ee_core_display_clock_load(0);
+    memset(r1252_fault, 0, sizeof(r1252_fault));
+    g_rspu2_disc_profile=0;
     memset(&g_state, 0, sizeof(g_state));
 
     dma_init(); /* EE DMA controller register block - see core/hw/dma.h */
@@ -3188,6 +4207,9 @@ int ee_core_init(const bios_image_t *bios)
     g_state.ram_size = EE_RAM_SIZE;
 
     dma_bind_ee_ram(g_state.ram, g_state.ram_size); /* chain-mode DMA reads tags/data from here */
+    ee_pad_new_reset();
+    memset(&g_ee_irq, 0, sizeof(g_ee_irq));
+    memset(g_ee_pad_area_bound, 0, sizeof(g_ee_pad_area_bound));
     dma_bind_scratchpad(g_state.scratch, sizeof(g_state.scratch)); /* Round 572: SPR-flagged DMA addresses (real hardware bit 31 of MADR/TADR) route here instead of main RAM */
     gif_init();
     dma_set_sink(DMA_CHANNEL_GIF, gif_process_quadwords); /* GIF DMA transfers now actually get parsed and drawn.
@@ -3198,14 +4220,22 @@ int ee_core_init(const bios_image_t *bios)
     vif_init();
     dma_set_sink(DMA_CHANNEL_VIF0, vif0_process_quadwords); /* VIF0/VIF1 DMA transfers now walk real VIFcode streams - see vif.h */
     dma_set_sink(DMA_CHANNEL_VIF1, vif1_process_quadwords);
+    dma_set_tag_sink(DMA_CHANNEL_VIF0, vif0_process_tag_words);
+    dma_set_tag_sink(DMA_CHANNEL_VIF1, vif1_process_tag_words);
     ipu_init();
     dma_set_sink(DMA_CHANNEL_TOIPU, ipu_process_quadwords); /* Round 521/522 (task #487): real input FIFO fill tracking, no decode yet - see ipu.h */
+    dma_set_sink(DMA_CHANNEL_SIF1, iop_dma_sif1_ee_to_iop_sink); /* Round 1105 (task #1033 "virtual bridge" audit): closes the
+                                                                    EE->IOP DMA direction gap - SIF0/SIF2 (IOP->EE) already had
+                                                                    real byte transfers via dma_channel_receive_quadwords(), but
+                                                                    SIF1 (EE->IOP) had no sink at all and silently dropped its
+                                                                    payload. See iop_dma.h for the adapter itself. */
 
     /* (Round 449 note: the three dma_set_sink() calls above register
      * HOST C FUNCTION POINTERS into dma.c's static g_sinks[] table -
      * see ee_core_rebind_dma_sinks() below for why a checkpoint-
      * restore-safe re-registration entry point is needed for this
-     * exact same table.) */
+     * exact same table. Round 1105: now four calls, same concern
+     * applies equally to the new SIF1 sink - see that function below.) */
 
     g_state.bios = bios;
     g_state.pc = BIOS_RESET_VECTOR;
@@ -3283,7 +4313,10 @@ void ee_core_rebind_dma_sinks(void)
     dma_set_sink(DMA_CHANNEL_GIF, gif_process_quadwords); /* Round 542: DMA_CHANNEL_GIF(2) == GIF_PATH_3(2) - see gif.h */
     dma_set_sink(DMA_CHANNEL_VIF0, vif0_process_quadwords);
     dma_set_sink(DMA_CHANNEL_VIF1, vif1_process_quadwords);
+    dma_set_tag_sink(DMA_CHANNEL_VIF0, vif0_process_tag_words);
+    dma_set_tag_sink(DMA_CHANNEL_VIF1, vif1_process_tag_words);
     dma_set_sink(DMA_CHANNEL_TOIPU, ipu_process_quadwords); /* Round 521/522 (task #487) - same stale-function-pointer-after-checkpoint-restore concern as the 3 sinks above, see this function's own header comment */
+    dma_set_sink(DMA_CHANNEL_SIF1, iop_dma_sif1_ee_to_iop_sink); /* Round 1105 (task #1033) - same stale-function-pointer-after-checkpoint-restore concern; without this rebind, a checkpoint save/load would silently re-orphan the SIF1 sink just like the other 3 */
 }
 
 static void halt(const char *reason)
@@ -3368,17 +4401,35 @@ void vu0_mem_write32(ee_state_t *st, uint32_t addr, uint32_t value)
     st->vu0_mem[off + 3] = (uint8_t)(value >> 24);
 }
 
+/* VIF and macro/micro execution share little-endian guest bytes. */
+static uint32_t vu0_mem_read32(const ee_state_t *st, uint32_t addr)
+{
+    uint32_t off = addr & (sizeof(st->vu0_mem) - 1u);
+    return (uint32_t)st->vu0_mem[off] | ((uint32_t)st->vu0_mem[off+1] << 8)
+        | ((uint32_t)st->vu0_mem[off+2] << 16) | ((uint32_t)st->vu0_mem[off+3] << 24);
+}
+
 #define VU0_EXEC_STEP_CAP 65536u /* this project's own safety cap - see vu.c's identical VU1 cap */
 
-void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
+/* R1273: VU0 uses the same bounded native block backend as VU1.
+ * cop2_ctrl[26] remains its real TPC; delay/stop boundaries stay in the
+ * shared one-pair scheduler. Entry selection avoids branch-loop scans. */
+static inline int vu0_block_candidate(const ee_state_t *st)
 {
-    /* VU0's real TPC register is cop2_ctrl[26] (REG_TPC) - kept in
-     * sync here so a CFC2/MFC2 read of it during/after execution sees
-     * a sensible live value, same real register slot round 12's
-     * generic CTC2/CFC2 dispatch already exposes. */
-    st->cop2_ctrl[26] = (start_addr << 3) & (uint32_t)(sizeof(st->vu0_micro) - 1u);
-    st->vu0_running = 1;
-
+    if(st->vu0_branch_delay||st->vu0_ebit_delay)return 0;
+    for(unsigned n=0;n<2;n++) {
+        uint32_t off=(st->cop2_ctrl[26]+n*8u)&(sizeof(st->vu0_micro)-1u);
+        uint32_t up=elfld_rd_le32(st->vu0_micro+off+4u);
+        if(up&0x7e000000u)return 0;
+        if(!(up&0x80000000u)) {
+            unsigned op=elfld_rd_le32(st->vu0_micro+off)>>25;
+            if(op>=0x20u&&op<=0x2fu)return 0;
+        }
+    }
+    return 1;
+}
+static void vu0_run_pairs(ee_state_t *st)
+{
     for (uint32_t i = 0; i < VU0_EXEC_STEP_CAP; i++) {
         int stopped = vu_micro_step(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
                                      st->vu0_mem, (uint32_t)(sizeof(st->vu0_mem) - 1u),
@@ -3389,6 +4440,40 @@ void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
         if (stopped)
             break;
     }
+
+}
+static void vu0_run_blocks(ee_state_t *st)
+{
+    for (uint32_t i = 0; i < VU0_EXEC_STEP_CAP; i++) {
+        unsigned ran=0;
+        if(vu0_block_candidate(st))ran=vu_jit_try_block(st->vu0_vf,st->cop2_ctrl,st->vu0_acc,
+            st->vu0_mem,(uint32_t)(sizeof(st->vu0_mem)-1u),
+            st->vu0_micro,(uint32_t)(sizeof(st->vu0_micro)-1u),&st->cop2_ctrl[26],
+            &st->vu0_branch_delay,&st->vu0_branch_target,&st->vu0_ebit_delay,
+            &st->vu0_instructions_executed,VU0_EXEC_STEP_CAP-i);
+        if(ran){i+=ran-1u;continue;}
+        int stopped = vu_micro_step(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
+                                     st->vu0_mem, (uint32_t)(sizeof(st->vu0_mem) - 1u),
+                                     st->vu0_micro, (uint32_t)(sizeof(st->vu0_micro) - 1u),
+                                     &st->cop2_ctrl[26], &st->vu0_branch_delay, &st->vu0_branch_target,
+                                     &st->vu0_ebit_delay,
+                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen);
+        if (stopped)
+            break;
+    }
+
+}
+
+void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
+{
+    /* VU0's real TPC register is cop2_ctrl[26] (REG_TPC) - kept in
+     * sync here so a CFC2/MFC2 read of it during/after execution sees
+     * a sensible live value, same real register slot round 12's
+     * generic CTC2/CFC2 dispatch already exposes. */
+    st->cop2_ctrl[26] = (start_addr << 3) & (uint32_t)(sizeof(st->vu0_micro) - 1u);
+    st->vu0_running = 1;
+
+    if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
 
     st->vu0_running = 0;
 }
@@ -3403,16 +4488,7 @@ void vu0_exec_micro_continue(ee_state_t *st)
 {
     st->vu0_running = 1;
 
-    for (uint32_t i = 0; i < VU0_EXEC_STEP_CAP; i++) {
-        int stopped = vu_micro_step(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
-                                     st->vu0_mem, (uint32_t)(sizeof(st->vu0_mem) - 1u),
-                                     st->vu0_micro, (uint32_t)(sizeof(st->vu0_micro) - 1u),
-                                     &st->cop2_ctrl[26], &st->vu0_branch_delay, &st->vu0_branch_target,
-                                     &st->vu0_ebit_delay,
-                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen);
-        if (stopped)
-            break;
-    }
+    if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
 
     st->vu0_running = 0;
 }
@@ -3535,6 +4611,7 @@ static inline void set_lane_b(ee_reg128_t *r, int n, uint8_t val) {
  * JIT - see ee_jit_try_execute_one()). */
 void ee_jit_helper_pmultw(ee_state_t *st, int rs, int rt, int rd)
 {
+    g_r1175_jit_mmi_muldiv_calls++;
     int64_t t0 = (int64_t)(int32_t)lane_w(st->gpr[rs], 0) * (int64_t)(int32_t)lane_w(st->gpr[rt], 0);
     int64_t t1 = (int64_t)(int32_t)lane_w(st->gpr[rs], 2) * (int64_t)(int32_t)lane_w(st->gpr[rt], 2);
     st->lo.ud0 = (uint64_t)(int64_t)(int32_t)(t0 & 0xFFFFFFFFu); st->hi.ud0 = (uint64_t)(t0 >> 32);
@@ -3544,6 +4621,7 @@ void ee_jit_helper_pmultw(ee_state_t *st, int rs, int rt, int rd)
 
 void ee_jit_helper_pdivw(ee_state_t *st, int rs, int rt, int rd)
 {
+    g_r1175_jit_mmi_muldiv_calls++;
     (void)rd; /* real PDIVW has no rd output at all - HI/LO only */
     for (int k = 0; k < 2; k++) {
         int ss = (k == 0) ? 0 : 2;
@@ -3559,6 +4637,7 @@ void ee_jit_helper_pdivw(ee_state_t *st, int rs, int rt, int rd)
 
 void ee_jit_helper_pmulth(ee_state_t *st, int rs, int rt, int rd)
 {
+    g_r1175_jit_mmi_muldiv_calls++;
     int32_t r0 = (int32_t)(int16_t)lane_h(st->gpr[rs], 0) * (int32_t)(int16_t)lane_h(st->gpr[rt], 0);
     int32_t r1 = (int32_t)(int16_t)lane_h(st->gpr[rs], 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], 1);
     int32_t r2 = (int32_t)(int16_t)lane_h(st->gpr[rs], 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], 2);
@@ -3577,6 +4656,7 @@ void ee_jit_helper_pmulth(ee_state_t *st, int rs, int rt, int rd)
 
 void ee_jit_helper_pdivbw(ee_state_t *st, int rs, int rt, int rd)
 {
+    g_r1175_jit_mmi_muldiv_calls++;
     (void)rd; /* real PDIVBW also has no rd output - HI/LO only */
     for (int n = 0; n < 4; n++) {
         uint32_t rsv = lane_w(st->gpr[rs], n);
@@ -3607,6 +4687,7 @@ void ee_jit_helper_pdivbw(ee_state_t *st, int rs, int rt, int rd)
  * muldiv helpers these only take `rd`. */
 void ee_jit_helper_pmfhl_slw(ee_state_t *st, int rd)
 {
+    g_r1175_jit_pmfhl_calls++;
     if (!rd) return;
     int64_t v0 = (int64_t)(((uint64_t)(uint32_t)st->hi.ud0 << 32) | (uint32_t)st->lo.ud0);
     int64_t v1 = (int64_t)(((uint64_t)(uint32_t)st->hi.ud1 << 32) | (uint32_t)st->lo.ud1);
@@ -3623,6 +4704,7 @@ void ee_jit_helper_pmfhl_slw(ee_state_t *st, int rd)
 
 void ee_jit_helper_pmfhl_sh(ee_state_t *st, int rd)
 {
+    g_r1175_jit_pmfhl_calls++;
     if (!rd) return;
     int32_t vals[8];
     vals[0] = (int32_t)(uint32_t)st->lo.ud0;       vals[1] = (int32_t)(uint32_t)(st->lo.ud0 >> 32);
@@ -3735,9 +4817,326 @@ uint64_t g_r832_bev_vector_hits = 0;   /* pc == 0xBFC00400 (real EE interrupt ve
  * that macro's block inside ee_step() below for full rationale. */
 uint64_t g_r1036_reg_calls = 0;        /* phys_pc == 0x0026FA40 (F0C8-F134 helper's registration call) */
 
-static int ee_step(void)
+/* R1172: instruction-fetch-only fast path.
+ * The ordinary load path must probe the complete MMIO chain because an LW may
+ * target hardware.  An instruction fetch from unmapped KSEG0/KSEG1 can only
+ * come from directly-backed RAM/ROM in this core.  Bypass the generic MMIO
+ * dispatcher for those two backing stores, while preserving the exact old
+ * ee_mem_read32() path for scratchpad, KUSEG/KSEG2/3 (TLB), and every unusual
+ * address.  PS2 memory is little-endian on the big-endian PPC host. */
+static inline uint32_t ee_fetch32_backing(ee_state_t *st,uint32_t addr,const uint8_t **backing)
+{
+    if(backing)*backing=NULL;
+    if ((addr & 0xC0000000u) == 0x80000000u) {
+        uint32_t phys = addr & 0x1FFFFFFFu;
+        const uint8_t *p = NULL;
+
+        if (phys >= 0x1FC00000u) {
+            uint32_t off = phys - 0x1FC00000u;
+            if (st->bios && off <= st->bios->size && st->bios->size - off >= 4u)
+                p = st->bios->data + off;
+        } else if (phys <= st->ram_size && st->ram_size - phys >= 4u) {
+            p = st->ram + phys;
+        }
+
+        if (p) {
+            if(backing)*backing=p;
+            st->mem_tlb_miss = 0;
+            return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                   ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        }
+    }
+
+    /* R1293: low mapped instruction addresses cannot be MMIO literals.
+     * Reuse the real TLB/backing lookup without probing every device read
+     * handler. No cached mapping: ASID/TLB/SMC changes are seen each fetch.
+     * Failed translations keep the established fault/MMIO fallback. */
+    if(addr<0x10000000u) {
+        const uint8_t *p=ee_mem_ptr(st,addr,4u);
+        if(p){if(backing)*backing=p;return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
+                    ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
+    }
+    return ee_mem_read32(st, addr);
+}
+
+static inline uint32_t ee_fetch32(ee_state_t *st,uint32_t addr)
+{return ee_fetch32_backing(st,addr,NULL);}
+
+static inline uint32_t r1176_tb32(void)
+{
+#ifdef __PPC__
+    uint32_t v;
+    __asm__ volatile("mftb %0" : "=r"(v));
+    return v;
+#else
+    return 0;
+#endif
+}
+
+volatile uint64_t g_r1176_prof_samples = 0;
+volatile uint64_t g_r1176_prof_fetch_tb = 0;
+volatile uint64_t g_r1176_prof_jit_tb = 0;
+volatile uint64_t g_r1176_prof_epilogue_tb = 0;
+/* R1177: sampled split of the R1176 epilogue hot region. */
+volatile uint64_t g_r1177_prof_base_tb = 0;
+volatile uint64_t g_r1177_prof_clock_tb = 0;
+volatile uint64_t g_r1177_prof_house_tb = 0;
+volatile uint64_t g_r1177_prof_irq_tb = 0;
+/* R1178: split R1177 clock region (C) without changing emulation logic. */
+volatile uint64_t g_r1178_prof_latch_tb = 0;
+volatile uint64_t g_r1178_prof_vblank_tb = 0;
+volatile uint64_t g_r1178_prof_bootchecks_tb = 0;
+volatile uint64_t g_r1178_prof_gsvsync_tb = 0;
+volatile uint64_t g_r1178_prof_timers_tb = 0;
+/* R1179: split BC into its five constituent boot/browser checks. */
+volatile uint64_t g_r1179_prof_selfloop_tb = 0;
+volatile uint64_t g_r1179_prof_eeload_tb = 0;
+volatile uint64_t g_r1179_prof_escalate_tb = 0;
+volatile uint64_t g_r1179_prof_carousel_tb = 0;
+volatile uint64_t g_r1179_prof_sbus_tb = 0;
+/* R1181: distinguish SBUS guard cost from actual helper work. */
+volatile uint64_t g_r1181_prof_sbus_guard_tb = 0;
+volatile uint64_t g_r1181_prof_sbus_helper_tb = 0;
+volatile uint64_t g_r1181_sbus_guard_match = 0;
+volatile uint64_t g_r1181_sbus_helper_calls = 0;
+volatile uint64_t g_r1181_sbus_unblocks = 0;
+
+static void ee_retire_instruction(ee_state_t *st,int r1176_sample)
+{
+    uint32_t r1176_t0=0,r1176_t1=0;
+    if (r1176_sample) r1176_t0 = r1176_tb32();
+    st->gpr[0].ud0 = 0;
+    st->gpr[0].ud1 = 0;
+    st->instructions_executed++;
+
+    /* COP0 Count (register 9): a real, free-running counter compared
+     * against Compare (register 11) by real hardware/BIOS delay loops
+     * (a classic "MFC0 Count; SUBU; SLTU; BNE" busy-wait, e.g. the one
+     * found at pc=0x9FC42500 in the real SCPH-10000 BIOS - see
+     * docs/STATUS.md's "round 8"). Before this, Count never advanced
+     * at all (only ever written via explicit MTC0), so any such delay
+     * loop ran forever - not a translation/exception bug, just a
+     * missing free-running counter. Real PCSX2 advances Count lazily
+     * by however many bus cycles (cpuRegs.cycle) elapsed since the
+     * last read (COP0.cpp's MFC0 case 9); this project has no cycle-
+     * accurate timing model at all, so it advances Count by a fixed 1
+     * per instruction instead - a real, working free-running counter
+     * (monotonic, comparable against Compare, exactly the documented
+     * COP0 Count/Compare mechanism), just without precise bus-clock-
+     * rate fidelity, which isn't verifiable without a real timing
+     * model and isn't needed just to let a delay loop terminate. */
+    st->cop0[9]++;
+    ee_irq_tick();
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1177_prof_base_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+
+    /* Latch unconditionally - see ee_latch_timer_interrupt()'s comment
+     * for why this can't be skipped even mid-delay-slot. Only actually
+     * TAKING the (possibly already-latched) interrupt is deferred to a
+     * genuine instruction boundary: st->branch_pending here reflects
+     * whether the NEXT instruction (whatever this step just set
+     * st->pc to) is itself a delay slot. */
+    ee_latch_timer_interrupt(st);
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_latch_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    /* Task #179: raised unconditionally, every instruction, same
+     * reasoning as ee_latch_timer_interrupt() above - VBLANK is a
+     * real, free-running hardware timing signal, not something that
+     * should be skipped mid-delay-slot. Only the higher-level "should
+     * we actually take an interrupt right now" decision (via
+     * ee_check_intc_interrupt() below) is deferred to a genuine
+     * instruction boundary. */
+    ee_check_vblank(st);
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_vblank_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    ee_check_boot_unblock_selfloop(st); /* Round 161 */
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_selfloop_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_eeload_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    ee_check_browser_menu_escalation_heuristic(st); /* Round 610 (task #536) */
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_escalate_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    ee_check_browser_idle_carousel(st); /* Round 696 (task #447/#536) */
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_carousel_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    /* R1181: profile the cheap PC guard separately from the real helper.
+     * Counts are authoritative; TB sub-values include read-TB overhead and
+     * are only for relative comparison. */
+    {
+        int r1181_sbus_match = EE_SBUS_WAIT_PC_MATCH(st->pc);
+        if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1181_prof_sbus_guard_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+        if (r1181_sbus_match) {
+            g_r1181_sbus_guard_match++;
+            g_r1181_sbus_helper_calls++;
+            ee_check_boot_unblock_sbus_wait(st);
+        }
+        if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1181_prof_sbus_helper_tb += (uint32_t)(r1176_t1 - r1176_t0); g_r1179_prof_sbus_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    }
+    ee_check_gs_vsync(st); /* Round 87 (127th finding) */
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_gsvsync_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_timers_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1177_prof_clock_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
+    ee_check_rpcinit_pending(st); /* task #187 (63rd finding) */
+    ee_check_rpc_bind_pending(st); /* task #192 (68th finding) */
+    ee_check_cdvd_ncmd_pending(st); /* Round 347 (IOP RPC re-entry architecture) */
+    if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1177_prof_house_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
+    ee_latch_intc_interrupt(st);
+    if (!st->branch_pending) {
+        ee_check_timer_interrupt(st, st->pc);
+        /* Task #176: same instruction-boundary gating as the timer
+         * check above - IP2/IP3 are level-triggered external lines
+         * (no separate "latch" step needed the way IP7's Count/Compare
+         * match does; the pending condition is just read live off
+         * ee_intc_pending()/dma_dmac_interrupt_pending() each time). */
+        ee_check_intc_interrupt(st, st->pc);
+        ee_check_dmac_interrupt(st, st->pc);
+        /* Round 597/598 (task #447/#536): forced preemption used to be
+         * called unconditionally right here, on every single genuine
+         * instruction boundary - see ee_hle_thread_check_preempt()'s
+         * own definition for the original Round 596/597 rationale.
+         * Round 598 found a real, confirmed regression from that
+         * per-instruction granularity: it let a thread get preempted
+         * at literally any point in its own code, not just at real
+         * hardware's actual integration point (kernel-level forced
+         * preemption specifically on interrupt RETURN, i.e. ERET).
+         * Against the real, user-supplied Tekken Tag Tournament
+         * (Europe) (Demo) disc image, this measurably and permanently
+         * trapped the OSDSYS animation thread inside EE kernel
+         * interrupt-dispatch code after the first VBLANK - baseline
+         * (pre-Round-597) kept rendering real frames (VU1 instruction
+         * count climbing) across the same instruction window; the
+         * per-instruction-preempt tree never executed another VU1
+         * instruction again. The call has been moved to fire only from
+         * the real ERET handler below (case 0x18), immediately after
+         * Status.EXL/ERL is cleared and normal thread-level execution
+         * resumes - the same "only re-check the ready queue on
+         * interrupt return" moment Round 596's own docs already
+         * identified as real hardware's actual mechanism. This still
+         * fully answers Round 596's original finding (a WakeupThread'd
+         * higher-priority READY thread now gets scheduled the next
+         * time any real interrupt returns, which happens roughly every
+         * EE_CYCLES_PER_FRAME_NTSC instructions via ee_check_vblank()),
+         * just without ever firing mid-instruction inside a thread's
+         * own non-interrupt code. */
+    }
+
+    if (r1176_sample) {
+        r1176_t1 = r1176_tb32();
+        g_r1177_prof_irq_tb += (uint32_t)(r1176_t1 - r1176_t0);
+        g_r1176_prof_samples++;
+    }
+ }
+
+static int ee_step_budget(unsigned budget,unsigned *block_retired)
 {
     ee_state_t *st = &g_state;
+#ifndef PCSX2WII_FAST
+    /* R1236: arm at the proven post-Sema5 resume and keep counting indefinitely. */
+    { uint32_t p=st->pc, tid=(uint32_t)ee_hle_thread_get_current_thread_id(), rg;
+      if (!r1236_armed && r1190_rend_count>=3u && tid==1u && p==0x0101bb28u) {
+        r1236_armed=1u; r1236_steps=0; memset(r1236_region,0,sizeof(r1236_region)); memset(r1236_trans,0,sizeof(r1236_trans));
+        r1236_trans_n=r1236_trans_head=0; r1236_last_region=0xffffffffu; r1236_last_tid=0xffffffffu; r1236_last_pc=p;
+      }
+      if (r1236_armed) {
+        /* R1238: rolling truth immediately before the bad KSEG entry. */
+        { uint32_t ph=p&0x1fffffffu, iw=0, x=r1238_head&15u;
+          if(ph+3u<st->ram_size) iw=(uint32_t)st->ram[ph]|((uint32_t)st->ram[ph+1]<<8)|((uint32_t)st->ram[ph+2]<<16)|((uint32_t)st->ram[ph+3]<<24);
+          r1238_ring[x][0]=p; r1238_ring[x][1]=iw; r1238_ring[x][2]=tid; r1238_ring[x][3]=(uint32_t)st->gpr[31].ud0; r1238_head++;
+          if(!r1238_once && p==0x80000000u){ uint32_t prev=(r1238_head-2u)&15u, piw=r1238_ring[prev][1], rs=(piw>>21)&31u, rt=(piw>>16)&31u; r1238_once=1u;
+            r1238_snap[0]=st->cop0[13]; r1238_snap[1]=st->cop0[14]; r1238_snap[2]=st->cop0[8]; r1238_snap[3]=st->cop0[12]; r1238_snap[4]=st->cop0[4]; r1238_snap[5]=st->cop0[10];
+            r1238_snap[6]=r1238_ring[prev][0]; r1238_snap[7]=piw; r1238_snap[8]=rs; r1238_snap[9]=(uint32_t)st->gpr[rs].ud0; r1238_snap[10]=rt; r1238_snap[11]=(uint32_t)st->gpr[rt].ud0; } }
+        if ((p&0xffff0000u)==0x01010000u) rg=0; else if ((p&0xffff0000u)==0x01000000u) rg=1;
+        else if ((p&0xff000000u)==0x00000000u) rg=2; else if ((p&0xff000000u)==0x80000000u) rg=3; else rg=4;
+        r1236_steps++; r1236_region[rg]++;
+        if (rg!=r1236_last_region || tid!=r1236_last_tid) { uint32_t x=r1236_trans_head&15u;
+          r1236_trans[x][0]=(uint32_t)r1236_steps; r1236_trans[x][1]=r1236_last_pc; r1236_trans[x][2]=p; r1236_trans[x][3]=r1236_last_tid; r1236_trans[x][4]=tid; r1236_trans[x][5]=rg;
+          r1236_trans_head=(r1236_trans_head+1u)&15u; if(r1236_trans_n<16u)r1236_trans_n++;
+        }
+        r1236_last_region=rg; r1236_last_tid=tid; r1236_last_pc=p;
+        /* R1237: ground truth for the 800x sink seen by R1236. */
+        if (!r1237_entry_once && p==0x80000000u) {
+          r1237_entry_once=1u; r1237_entry_active=1u; r1237_entry_n=0u;
+          memset(r1237_entry,0,sizeof(r1237_entry)); memset(r1237_hot_pc,0,sizeof(r1237_hot_pc));
+          memset(r1237_hot_score,0,sizeof(r1237_hot_score)); memset(r1237_sample_pc,0,sizeof(r1237_sample_pc));
+          r1237_samples=0; r1237_sample_head=0;
+        }
+        if (r1237_entry_active && r1237_entry_n<128u) {
+          uint32_t ph=p&0x1fffffffu, iw=0;
+          if (ph+3u<st->ram_size) iw=(uint32_t)st->ram[ph]|((uint32_t)st->ram[ph+1]<<8)|((uint32_t)st->ram[ph+2]<<16)|((uint32_t)st->ram[ph+3]<<24);
+          r1237_entry[r1237_entry_n][0]=p; r1237_entry[r1237_entry_n][1]=iw; r1237_entry_n++;
+          if(r1237_entry_n==128u)r1237_entry_active=0u;
+        }
+        if (rg==3u && (r1236_steps & 0xffffu)==0u) {
+          uint32_t i,hit=8u,empty=8u; r1237_samples++; r1237_sample_pc[r1237_sample_head++&7u]=p;
+          for(i=0;i<8u;i++){ if(r1237_hot_score[i] && r1237_hot_pc[i]==p){hit=i;break;} if(!r1237_hot_score[i]&&empty==8u)empty=i; }
+          if(hit<8u) r1237_hot_score[hit]++; else if(empty<8u){r1237_hot_pc[empty]=p;r1237_hot_score[empty]=1u;}
+          else for(i=0;i<8u;i++)r1237_hot_score[i]--;
+        }
+      }
+    }
+    /* R1212: arm exactly on the REND#3-correlated real SBUS handler and
+     * record ee_step entry PCs, independent of opcode fetch reconstruction. */
+    if (st->pc == 0x80001d58u && r1190_rend_count == 3u) {
+        r1212_active=1u; r1212_count=0; memset(r1212_pc,0,sizeof(r1212_pc)); memset(r1212_mark,0,sizeof(r1212_mark));
+    }
+    if (r1212_active && r1212_count < 96u) {
+        r1212_pc[r1212_count]=st->pc; r1212_mark[r1212_count]=0; r1212_count++;
+        if (r1212_count == 96u) r1212_active=0u;
+    }
+
+    /* R1192: R1191 Random/Wired behavior change rolled back: the live BIOS
+     * never executes TLBWR on this path (tlbwr=0), and it regressed FPS. */
+    if (st->pc == 0x80001d58u) {
+        r1201_armed=0;
+        r1202_handler_rend_count=(uint32_t)r1190_rend_count;
+        if (r1190_rend_count == 3u) { r1204_trace_left=768u; r1204_call_count=0; memset(r1204_calls,0,sizeof(r1204_calls)); r1198_read_count=0; memset(r1198_reads,0,sizeof(r1198_reads)); r1205_active=1u; r1205_hwread_count=0; memset(r1205_hwreads,0,sizeof(r1205_hwreads)); r1206_step_count=0; memset(r1206_steps,0,sizeof(r1206_steps)); r1207_step_count=0; r1207_trace_left=0; memset(r1207_steps,0,sizeof(r1207_steps)); }
+        dma_state_t *ds = dma_get_state(); dma_channel_t *dc = &ds->chan[DMA_CHANNEL_SIF0];
+        r1199_handler.chcr=dc->chcr; r1199_handler.madr=dc->madr; r1199_handler.qwc=dc->qwc; r1199_handler.tadr=dc->tadr; r1199_handler.stat=ds->d_stat;
+        r1199_handler.a0=(uint32_t)st->gpr[4].ud0; r1199_handler.a1=(uint32_t)st->gpr[5].ud0; r1199_handler.a2=(uint32_t)st->gpr[6].ud0; r1199_handler.a3=(uint32_t)st->gpr[7].ud0;
+        r1190_sbus_handler_hits++;
+        r1192_trace_left = 512;
+        r1192_trace_arms++;
+        r1192_call_count = 0;
+        memset(r1192_calls, 0, sizeof(r1192_calls));
+    }
+    if (st->pc == 0x0101bc10u) r1192_isig_hits++;
+    if (st->pc == 0x0101bc24u) r1192_wait_hits++;
+    { uint32_t ri; for (ri=0; ri<5; ++ri) if (st->pc == r1195_target[ri]) {
+        r1195_call_t *c=&r1195_call[ri]; c->hits++;
+        if (c->hits == 1) { c->pc=st->pc; c->ra=(uint32_t)st->gpr[31].ud0; c->v0=(uint32_t)st->gpr[2].ud0;
+            c->a0=(uint32_t)st->gpr[4].ud0; c->a1=(uint32_t)st->gpr[5].ud0; c->a2=(uint32_t)st->gpr[6].ud0; c->a3=(uint32_t)st->gpr[7].ud0; }
+    }}
+    if (r1192_trace_left) {
+        uint32_t p = st->pc & 0x1fffffffu;
+        if (p + 3u < st->ram_size) {
+            uint32_t iw = (uint32_t)st->ram[p] | ((uint32_t)st->ram[p+1]<<8) |
+                          ((uint32_t)st->ram[p+2]<<16) | ((uint32_t)st->ram[p+3]<<24);
+            uint32_t op = iw >> 26, target = 0;
+            if (op == 3u) target = (st->pc & 0xf0000000u) | ((iw & 0x03ffffffu) << 2);
+            else if (op == 0u && (iw & 0x3fu) == 9u) target = (uint32_t)st->gpr[(iw >> 21) & 31u].ud0;
+            if (target && r1192_call_count < 8u) r1192_calls[r1192_call_count++] = target;
+        }
+        r1192_trace_left--;
+    }
+    /* R1204: first call targets specifically after the handler correlated with REND #3. */
+    if (r1204_trace_left) {
+        uint32_t p = st->pc & 0x1fffffffu;
+        if (p + 3u < st->ram_size) {
+            uint32_t iw=(uint32_t)st->ram[p]|((uint32_t)st->ram[p+1]<<8)|((uint32_t)st->ram[p+2]<<16)|((uint32_t)st->ram[p+3]<<24);
+            uint32_t op=iw>>26, target=0;
+            if (op==3u) target=(st->pc&0xf0000000u)|((iw&0x03ffffffu)<<2);
+            else if (op==0u && ((iw&0x3fu)==9u || (iw&0x3fu)==8u)) target=(uint32_t)st->gpr[(iw>>21)&31u].ud0;
+            if (target && r1204_call_count<8u) r1204_calls[r1204_call_count++]=target;
+        }
+        r1204_trace_left--; if(!r1204_trace_left) r1205_active=0u;
+    }
+#endif
+    /* R1176: sample only 1/4096 instructions so the profiler itself does
+     * not become the bottleneck. Time Base deltas are used only to rank
+     * the three hot regions; emulated timing/state is untouched. */
+#ifdef PCSX2WII_FAST
+    const int r1176_sample = 0;
+#else
+    int r1176_sample = ((st->instructions_executed & 4095ULL) == 0);
+#endif
+    uint32_t r1176_t0 = 0, r1176_t1 = 0;
 
     /* Round 855 (task #855, user's "1 dann 2 dann 3" step 3): see
      * ee_core.h's `idle` field doc comment for the full evidence
@@ -3919,7 +5318,17 @@ static int ee_step(void)
     st->exc_in_delay_slot = (uint8_t)in_delay_slot;
     st->exc_raised_this_step = 0;
 
-    uint32_t instr = ee_mem_read32(st, pc);
+    if (r1176_sample) r1176_t0 = r1176_tb32();
+#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE) && !defined(PCSX2WII_LEGACY_FRAME_REPAIR)
+    const uint8_t *code_backing;
+    uint32_t instr = ee_fetch32_backing(st,pc,&code_backing);
+#else
+    uint32_t instr = ee_fetch32(st,pc);
+#endif
+    if (r1176_sample) {
+        r1176_t1 = r1176_tb32();
+        g_r1176_prof_fetch_tb += (uint32_t)(r1176_t1 - r1176_t0);
+    }
     if (st->mem_tlb_miss) {
         /* Instruction-fetch TLB Refill: ee_mem_read32() -> ee_mem_ptr()
          * already raised the exception and pointed st->pc/next_pc at
@@ -3930,6 +5339,26 @@ static int ee_step(void)
         return 0;
     }
 
+#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE) && !defined(PCSX2WII_LEGACY_FRAME_REPAIR)
+    /* Use the already-fetched word to reject memory/control instructions;
+     * failed block formation must not add a second fetch to every opcode. */
+    if(block_retired && budget>=2u && !in_delay_slot) {
+        int candidate=ee_jit_block_candidate(instr);
+        uintptr_t ram_offset=(uintptr_t)code_backing-(uintptr_t)st->ram;
+        int backed_candidate=code_backing &&
+            ((ram_offset>=0x200000u&&ram_offset<st->ram_size)||
+             (st->bios&&(uintptr_t)code_backing-(uintptr_t)st->bios->data<st->bios->size));
+        /* Backing came from this instruction's real fetch, not a cached
+         * translation. Keep guarded low physical kernel code in C. */
+        if(candidate && backed_candidate) {
+            unsigned n=ee_jit_try_execute_block_fetched(st,budget,instr);
+            if(n){*block_retired=n;return 0;}
+        }
+    }
+#else
+    (void)budget;(void)block_retired;
+#endif
+
     uint32_t op    = (instr >> 26) & 0x3F;
     uint32_t rs    = (instr >> 21) & 0x1F;
     uint32_t rt    = (instr >> 16) & 0x1F;
@@ -3939,13 +5368,453 @@ static int ee_step(void)
     uint32_t uimm  = instr & 0xFFFF;
     uint32_t funct = instr & 0x3F;
 
+    /* R1218: the next actually executed instruction is the strongest truth
+     * for how the preceding HLE syscall completed. Snapshot its result now. */
+    if (r1218_pending && r1218_sys_count) {
+        uint32_t n=r1218_sys_count-1u;
+        r1218_sys[n][4]=(uint32_t)st->gpr[2].ud0;
+        r1218_sys[n][5]=ee_hle_thread_get_status(1);
+        r1218_sys[n][6]=pc;
+        r1218_pending=0u;
+    }
+
+    /* R1217: after the REND wake/schedule bridge has made thread 1 current,
+     * arm at its observed resume PC and record ground-truth fetched words plus
+     * a0/v0. This is diagnostic-only and deliberately does not patch execution. */
+    if (!r1217_active && r1190_rend_count >= 3u && ee_hle_thread_get_current_thread_id()==1 &&
+        pc >= 0x0101bb00u && pc <= 0x0101bc80u) r1217_active=1u;
+    if (r1217_active && r1217_count < 64u) {
+        uint32_t n=r1217_count++; r1217_row[n][0]=pc; r1217_row[n][1]=instr;
+        r1217_row[n][2]=(uint32_t)st->gpr[4].ud0; r1217_row[n][3]=(uint32_t)st->gpr[2].ud0;
+    }
+
+    /* R1230: arm only at the concrete T1 resume PC established by R1228.
+     * row: pc, fetched instruction, a0, v0. Diagnostic only. */
+    if (!r1230_armed_once && r1190_rend_count >= 3u &&
+        ee_hle_thread_get_current_thread_id()==1 && pc==0x0101bb28u) {
+        r1230_armed_once=1u; r1230_active=1u; r1230_count=0u; memset(r1230_row,0,sizeof(r1230_row));
+    }
+    if (r1230_active && r1230_count < 128u) {
+        uint32_t n=r1230_count++; r1230_row[n][0]=pc; r1230_row[n][1]=instr;
+        r1230_row[n][2]=(uint32_t)st->gpr[4].ud0; r1230_row[n][3]=(uint32_t)st->gpr[2].ud0;
+        if (r1230_count==128u) r1230_active=0u;
+    }
+
+    /* R1234: diagnostic only; follow execution well beyond the old 128-step window. */
+    if (!r1234_armed_once && r1190_rend_count >= 3u &&
+        ee_hle_thread_get_current_thread_id()==1 && pc==0x0101bb28u) {
+        r1234_armed_once=1u; r1234_active=1u; r1234_count=0u; memset(r1234_row,0,sizeof(r1234_row));
+    }
+    if (r1234_active && r1234_count < 512u) {
+        uint32_t n=r1234_count++; r1234_row[n][0]=pc; r1234_row[n][1]=instr;
+        r1234_row[n][2]=(uint32_t)ee_hle_thread_get_current_thread_id();
+        if (r1234_count==512u) r1234_active=0u;
+    }
+
+    /* R1235: arm only after the proven post-Sema5 path reaches the BIOS FE region. */
+    if (!r1235_armed_once && r1234_armed_once &&
+        pc >= 0x80000fe00u && pc <= 0x80000fffu) {
+        r1235_armed_once=1u; r1235_active=1u; r1235_count=0u; memset(r1235_row,0,sizeof(r1235_row));
+    }
+    if (r1235_active && r1235_count < 128u) {
+        uint32_t n=r1235_count++;
+        r1235_row[n][0]=pc; r1235_row[n][1]=instr;
+        r1235_row[n][2]=(uint32_t)ee_hle_thread_get_current_thread_id();
+        r1235_row[n][3]=(uint32_t)st->gpr[31].ud0; r1235_row[n][4]=(uint32_t)st->gpr[29].ud0;
+        r1235_row[n][5]=(uint32_t)st->gpr[2].ud0; r1235_row[n][6]=(uint32_t)st->gpr[4].ud0;
+        r1235_row[n][7]=st->cop0[13];
+        if (r1235_count==128u) r1235_active=0u;
+    }
+
+    /* R1214: use the exact word returned by ee_fetch32(), not reconstructed RAM. */
+    if (r1190_rend_count == 3u && pc >= 0x8000fb20u && pc <= 0x8000fb2cu) {
+        uint32_t ix=(pc-0x8000fb20u)>>2;
+        r1214_row[ix][0]=pc; r1214_row[ix][1]=instr;
+        r1214_row[ix][2]=(uint32_t)st->gpr[rs].ud0;
+        r1214_row[ix][3]=(uint32_t)st->gpr[rt].ud0;
+        r1214_row[ix][4]=(rs<<8)|rt;
+    }
+
+#ifdef R1250_LQ_ALIAS_TRACE
+    if (op==0x1eu && rs==rt && rt!=0u) {
+        static unsigned alias_n;
+        if(alias_n<32) {
+            uint32_t ea=((uint32_t)st->gpr[rs].ud0+imm)&~15u, pa=ea&0x1fffffffu;
+            uint64_t low=0;unsigned k;
+            if(st->ram && pa<=st->ram_size-8u)
+                for(k=0;k<8;k++) low|=(uint64_t)st->ram[pa+k]<<(8*k);
+            fprintf(stderr,"[LQALIAS] n=%u instr=%llu pc=%08x iw=%08x base=%08x EA=%08x low=%08x:%08x old_second=%08x expected_second=%08x\n",++alias_n,(unsigned long long)st->instructions_executed,pc,instr,(uint32_t)st->gpr[rs].ud0,ea,(uint32_t)(low>>32),(uint32_t)low,(((uint32_t)low+imm)&~15u)+8u,ea+8u);
+        }
+    }
+#endif
     uint32_t this_pc = pc;
     uint32_t fallthrough_pc = st->next_pc;
+
+    /* R1250: the old address-specific RA workaround is opt-in only.
+     * The normal build now fixes LQ EA preservation in the PPC translator. */
+#ifdef PCSX2WII_LEGACY_FRAME_REPAIR
+    /* R1248: repair the proven corrupted saved-RA frame slot at the point
+     * where the affected continuation is live, rather than falsifying LD.
+     * R1242/R1246 establish that the later epilogue restores $ra from
+     * 0x01045A00 and that the slot contains the impossible value 2.
+     * Keep normal LD semantics; only repair this exact frame/continuation. */
+    if (this_pc == 0x0100ec54u && st->ram && st->ram_size >= 0x01045a08u &&
+        (uint32_t)st->gpr[29].ud0 == 0x010459d0u &&
+        (uint32_t)st->gpr[31].ud0 == 0x0100ec54u) {
+        uint8_t *q = st->ram + 0x01045a00u;
+        uint64_t saved = (uint64_t)q[0] | ((uint64_t)q[1] << 8) |
+                         ((uint64_t)q[2] << 16) | ((uint64_t)q[3] << 24) |
+                         ((uint64_t)q[4] << 32) | ((uint64_t)q[5] << 40) |
+                         ((uint64_t)q[6] << 48) | ((uint64_t)q[7] << 56);
+        if (saved == 2u) {
+            const uint64_t ra = st->gpr[31].ud0;
+            unsigned k;
+            for (k = 0; k < 8; k++) q[k] = (uint8_t)(ra >> (8u * k));
+            r1249_repairs++;
+            r1249_last[0]=(uint32_t)ee_hle_thread_get_current_thread_id();
+        }
+    }
+#endif
+    /* R1249: read physical RAM directly so telemetry cannot cause a TLB fault.
+     * These counters deliberately expose repeated continuation/epilogue visits:
+     * eliminating PC=2 alone does not establish forward progress. */
+    if (r1249_repairs) {
+        if (this_pc == 0x0100ec54u) r1249_cont++;
+        if (this_pc == 0x0100ecb8u) {
+            uint32_t sp=(uint32_t)st->gpr[29].ud0;
+            uint32_t pa=(sp+0x30u)&0x1fffffffu;
+            r1249_ld++; r1249_last[1]=sp;
+            r1249_last[2]=0xffffffffu;
+            if(st->ram && st->ram_size>=4u && pa<=st->ram_size-4u) {
+                const uint8_t *q=st->ram+pa;
+                r1249_last[2]=(uint32_t)q[0]|((uint32_t)q[1]<<8)|
+                    ((uint32_t)q[2]<<16)|((uint32_t)q[3]<<24);
+            }
+            r1249_last[3]=(uint32_t)st->gpr[31].ud0;
+        }
+        if ((this_pc == 0x0100ecc8u || this_pc == 0x0100ecccu) &&
+            op == 0u && (instr & 63u) == 8u && rs == 31u) {
+            r1249_jr++; r1249_last[4]=(uint32_t)st->gpr[29].ud0;
+            r1249_last[5]=(uint32_t)st->gpr[31].ud0;
+        }
+    }
+    /* R1245: passive observation only. 0x01045A00 is inside physical EE RAM;
+     * direct byte loads cannot mutate TLB/mem_tlb_miss/exception state. */
+    if (!r1245_hit && st->ram && st->ram_size >= 0x01045a08u) {
+        const uint8_t *rp=st->ram+0x01045a00u;
+        uint32_t lo=(uint32_t)rp[0]|((uint32_t)rp[1]<<8)|((uint32_t)rp[2]<<16)|((uint32_t)rp[3]<<24);
+        uint32_t hi=(uint32_t)rp[4]|((uint32_t)rp[5]<<8)|((uint32_t)rp[6]<<16)|((uint32_t)rp[7]<<24);
+        if(!r1245_init){r1245_init=1u;r1245_old_lo=lo;r1245_old_hi=hi;}
+        else if(lo!=r1245_old_lo || hi!=r1245_old_hi){
+            if(lo==2u && hi==0u){
+                r1245_hit=1u; r1245_snap[0]=this_pc; r1245_snap[1]=instr; r1245_snap[2]=r1245_old_lo; r1245_snap[3]=r1245_old_hi;
+                r1245_snap[4]=lo; r1245_snap[5]=hi; r1245_snap[6]=(uint32_t)st->gpr[29].ud0; r1245_snap[7]=(uint32_t)st->gpr[31].ud0;
+                r1245_snap[8]=(uint32_t)ee_hle_thread_get_current_thread_id(); r1245_snap[9]=st->cop0[12]; r1245_snap[10]=st->cop0[13]; r1245_snap[11]=st->cop0[14];
+            }
+            r1245_old_lo=lo;r1245_old_hi=hi;
+        }
+    }
+    /* R1240: use the exact fetched word. Keep eight instructions of prehistory;
+     * when ECCC is reached, freeze those and record ECCC + 31 actual successors. */
+    if (r1236_armed && !r1240_once) {
+        uint32_t vals[7], k;
+        vals[0]=this_pc; vals[1]=instr; vals[2]=(uint32_t)st->gpr[31].ud0;
+        vals[3]=st->next_pc; vals[4]=(uint32_t)st->branch_pending;
+        vals[5]=(uint32_t)st->gpr[rs].ud0; vals[6]=(uint32_t)st->gpr[rt].ud0;
+        if (this_pc==0x0100ecccu && !r1240_active) {
+            uint32_t start=r1240_pre_head;
+            for(k=0;k<8;k++){ uint32_t q=(start+k)&7u, j; for(j=0;j<7;j++)r1240_row[k][j]=r1240_pre[q][j]; }
+            for(k=0;k<7;k++)r1240_row[8][k]=vals[k];
+            r1240_n=9u; r1240_active=1u;
+        } else if (r1240_active) {
+            if(r1240_n<40u){ for(k=0;k<7;k++)r1240_row[r1240_n][k]=vals[k]; r1240_n++; }
+            if(r1240_n>=40u){r1240_active=0u;r1240_once=1u;}
+        }
+        if(!r1240_active){ uint32_t q=r1240_pre_head&7u; for(k=0;k<7;k++)r1240_pre[q][k]=vals[k]; r1240_pre_head=(r1240_pre_head+1u)&7u; }
+    }
+    /* R1243: direct SP provenance. Trigger only on the first transition into the
+     * exact suspect SP, after the post-Sema5 path is armed. This catches either a
+     * guest instruction changing $sp or a scheduler/context load changing it. */
+    if (r1236_armed && !r1243_once) {
+        uint32_t v[10],k; uint32_t lsp=(uint32_t)st->gpr[29].ud0;
+        v[0]=this_pc; v[1]=instr; v[2]=lsp; v[3]=(uint32_t)ee_hle_thread_get_gpr(1,29);
+        v[4]=(uint32_t)st->gpr[31].ud0; v[5]=(uint32_t)ee_hle_thread_get_current_thread_id();
+        v[6]=st->cop0[12]; v[7]=st->cop0[13]; v[8]=st->cop0[14];
+        v[9]=(uint32_t)ee_mem_read64(st,0x01045a00u);
+        if(!r1243_active && r1243_prev_sp!=0x010459d0u && lsp==0x010459d0u){
+            uint32_t start=r1243_pre_head;
+            for(k=0;k<16;k++){uint32_t q=(start+k)&15u,j;for(j=0;j<10;j++)r1243_row[k][j]=r1243_pre[q][j];}
+            for(k=0;k<10;k++)r1243_row[16][k]=v[k]; r1243_n=17u; r1243_active=1u;
+        } else if(r1243_active){
+            if(r1243_n<32u){for(k=0;k<10;k++)r1243_row[r1243_n][k]=v[k];r1243_n++;}
+            if(r1243_n>=32u){r1243_active=0u;r1243_once=1u;}
+        }
+        if(!r1243_active){uint32_t q=r1243_pre_head&15u;for(k=0;k<10;k++)r1243_pre[q][k]=v[k];r1243_pre_head=(r1243_pre_head+1u)&15u;}
+        r1243_prev_sp=lsp;
+    }
+
+    /* R1242: establish the exact frame slot while executing the affected routine.
+     * ECB8 itself is sufficient even if an earlier entry marker was missed; EC54 gives
+     * us time to observe subsequent corruption writes. */
+    if (r1236_armed && !r1242_armed && (this_pc==0x0100ec54u || this_pc==0x0100ecb4u)) {
+        r1242_armed=1u; r1242_sp=(uint32_t)st->gpr[29].ud0; r1242_slot=r1242_sp+0x30u;
+    }
+    if (r1242_armed && this_pc==0x0100ecb8u) {
+        uint64_t q=ee_mem_read64(st,(uint32_t)st->gpr[29].ud0+0x30u);
+        r1242_restore[0]=(uint32_t)st->gpr[29].ud0; r1242_restore[1]=(uint32_t)st->gpr[29].ud0+0x30u;
+        r1242_restore[2]=(uint32_t)q; r1242_restore[3]=(uint32_t)(q>>32); r1242_restore[4]=(uint32_t)st->gpr[31].ud0;
+        r1242_restore[5]=st->cop0[12]; r1242_restore[6]=st->cop0[13]; r1242_restore[7]=st->cop0[14];
+    }
+    /* R1241: the R1240 trace proves JR $ra at 0x0100ECC8 receives $ra=2.
+     * Detect the first live  !=2 -> 2 boundary and preserve context around it. */
+    if (r1236_armed && !r1241_once) {
+        uint32_t v[9],k;
+        v[0]=this_pc; v[1]=instr; v[2]=(uint32_t)st->gpr[31].ud0; v[3]=st->next_pc;
+        v[4]=(uint32_t)st->branch_pending; v[5]=(uint32_t)ee_hle_thread_get_current_thread_id();
+        v[6]=st->cop0[12]; v[7]=st->cop0[13]; v[8]=st->cop0[14];
+        if (!r1241_active && r1241_prev_ra!=2u && v[2]==2u) {
+            uint32_t start=r1241_pre_head;
+            for(k=0;k<12;k++){ uint32_t q=(start+k)%12u,j; for(j=0;j<9;j++)r1241_row[k][j]=r1241_pre[q][j]; }
+            for(k=0;k<9;k++)r1241_row[12][k]=v[k]; r1241_n=13u; r1241_active=1u;
+        } else if (r1241_active) {
+            if(r1241_n<24u){ for(k=0;k<9;k++)r1241_row[r1241_n][k]=v[k]; r1241_n++; }
+            if(r1241_n>=24u){r1241_active=0u;r1241_once=1u;}
+        }
+        if(!r1241_active){ uint32_t q=r1241_pre_head%12u; for(k=0;k<9;k++)r1241_pre[q][k]=v[k]; r1241_pre_head=(r1241_pre_head+1u)%12u; }
+        r1241_prev_ra=v[2];
+    }
+    /* R1239: snapshot the exact instruction and live branch state before ECCC executes. */
+    if (!r1239_hit && this_pc == 0x0100ecccu) {
+        r1239_hit=1u; r1239_snap[0]=this_pc; r1239_snap[1]=instr; r1239_snap[2]=op; r1239_snap[3]=rs; r1239_snap[4]=rt; r1239_snap[5]=rd;
+        r1239_snap[6]=(uint32_t)st->gpr[rs].ud0; r1239_snap[7]=(uint32_t)st->gpr[rt].ud0; r1239_snap[8]=(uint32_t)st->gpr[31].ud0;
+        r1239_snap[9]=st->pc; r1239_snap[10]=st->next_pc; r1239_snap[11]=(uint32_t)st->branch_pending;
+    }
     st->pc = fallthrough_pc;
     st->next_pc = fallthrough_pc + 4;
 
+    /* R1208: enforce the architectural $zero invariant BEFORE operand
+     * capture/JIT execution, not only in the instruction epilogue. R1207
+     * caught a real BEQ $zero,$v0 at 0x8000FB28 seeing rs32==v0
+     * (0x40070000), which made the branch spuriously taken. On real R5900
+     * $zero is hard-wired to zero at every instruction boundary. Keeping
+     * the existing epilogue clear as well is intentional defense-in-depth. */
+    st->gpr[0].ud0 = 0;
+    st->gpr[0].ud1 = 0;
+
     uint32_t rs32 = (uint32_t)st->gpr[rs].ud0;
     uint32_t rt32 = (uint32_t)st->gpr[rt].ud0;
+
+    /* R1210: raw decode + architectural backing values, independent of the older trace labels. */
+    if (this_pc == 0x8000fb28u && instr == 0x1002001cu) {
+        r1210_hit++; r1210_rs=rs; r1210_rt=rt;
+        r1210_gpr0=(uint32_t)st->gpr[0].ud0; r1210_gpr2=(uint32_t)st->gpr[2].ud0;
+        r1210_expect=(r1210_gpr0==r1210_gpr2); r1210_nextpc=st->next_pc;
+    }
+
+    /* R1207: instructions immediately AFTER an actual SMFLAG MMIO read.
+     * target/taken are decoded from the live branch operands; 0xffffffff means
+     * this instruction is not one of the primary conditional branches. */
+    if (r1207_trace_left && r1207_step_count < 24u) {
+        r1207_step_t *d=&r1207_steps[r1207_step_count++];
+        uint32_t target=0, taken=0xffffffffu;
+        if (op>=0x04u && op<=0x07u) {
+            target=this_pc+4u+((uint32_t)(imm<<2));
+            if(op==0x04u) taken=(rs32==rt32);
+            else if(op==0x05u) taken=(rs32!=rt32);
+            else if(op==0x06u) taken=((int32_t)rs32<=0);
+            else taken=((int32_t)rs32>0);
+        }
+        d->pc=this_pc; d->iw=instr; d->rsval=rs32; d->rtval=rt32; d->target=target; d->taken=taken;
+        r1207_trace_left--;
+    }
+
+    /* R1206: retain only the executed window surrounding each observed SMFLAG read.
+     * The trace is armed only by the REND#3 handler, so unrelated BIOS traffic is excluded. */
+    if (r1205_active && r1206_step_count < 24u &&
+        ((this_pc >= 0x8000fac8u && this_pc <= 0x8000faecu) ||
+         (this_pc >= 0x8000fb1cu && this_pc <= 0x8000fb40u))) {
+        r1206_step_t *d=&r1206_steps[r1206_step_count++];
+        d->pc=this_pc; d->iw=instr; d->rsval=rs32; d->rtval=rt32;
+    }
+
+#ifdef R1128_HANDLER_TRACE
+    /* Round 1128 (per user's exact spec): live, dynamic per-instruction
+     * trace of the OSDSYS VBLANK-handler region 0x00208088-0x00208174.
+     * For every instruction in range, log pc/tid/opcode; for LOAD
+     * opcodes specifically (lw/lh/lhu/lb/lbu/ld/lwu/lwc1 etc.), compute
+     * the REAL effective address from the CURRENT live base-register
+     * value + sign-extended offset and read the CURRENT live value at
+     * that address - not a static disassembly guess. This deliberately
+     * reuses this function's own already-decoded rs/rt/imm/op fields
+     * rather than a separate offline disassembler, so the address/value
+     * pair is always for the ACTUAL executing instruction stream (self-
+     * modifying-code / overlay-swapped-code safe). */
+    if (this_pc >= 0x00208088u && this_pc <= 0x00208174u) {
+        static const char *r1128_rname[32] = {
+            "zero","at","v0","v1","a0","a1","a2","a3",
+            "t0","t1","t2","t3","t4","t5","t6","t7",
+            "s0","s1","s2","s3","s4","s5","s6","s7",
+            "t8","t9","k0","k1","gp","sp","fp","ra"
+        };
+        int r1128_tid = ee_hle_thread_get_current_thread_id();
+        fprintf(stderr, "[VBLANK_HANDLER] instr=%llu pc=0x%08x tid=%d opcode=0x%08x op=0x%02x rs=%s(0x%08x) rt=%s(0x%08x) imm=%d\n",
+                (unsigned long long)st->instructions_executed, this_pc, r1128_tid, instr, op,
+                r1128_rname[rs], rs32, r1128_rname[rt], rt32, imm);
+        uint32_t r1128_ea = (uint32_t)(rs32 + (uint32_t)imm);
+        switch (op) {
+            case 0x20: /* LB */
+                fprintf(stderr, "[VBLANK_HANDLER]   LOAD lb %s, %d(%s) ea=0x%08x val=%d\n",
+                        r1128_rname[rt], imm, r1128_rname[rs], r1128_ea, (int8_t)ee_mem_read8(st, r1128_ea));
+                break;
+            case 0x24: /* LBU */
+                fprintf(stderr, "[VBLANK_HANDLER]   LOAD lbu %s, %d(%s) ea=0x%08x val=%u\n",
+                        r1128_rname[rt], imm, r1128_rname[rs], r1128_ea, (unsigned)ee_mem_read8(st, r1128_ea));
+                break;
+            case 0x21: /* LH */
+                fprintf(stderr, "[VBLANK_HANDLER]   LOAD lh %s, %d(%s) ea=0x%08x val=%d\n",
+                        r1128_rname[rt], imm, r1128_rname[rs], r1128_ea, (int16_t)ee_mem_read16(st, r1128_ea));
+                break;
+            case 0x25: /* LHU */
+                fprintf(stderr, "[VBLANK_HANDLER]   LOAD lhu %s, %d(%s) ea=0x%08x val=%u\n",
+                        r1128_rname[rt], imm, r1128_rname[rs], r1128_ea, (unsigned)ee_mem_read16(st, r1128_ea));
+                break;
+            case 0x23: /* LW */
+                fprintf(stderr, "[VBLANK_HANDLER]   LOAD lw %s, %d(%s) ea=0x%08x val=0x%08x (%d)\n",
+                        r1128_rname[rt], imm, r1128_rname[rs], r1128_ea, ee_mem_read32(st, r1128_ea), (int32_t)ee_mem_read32(st, r1128_ea));
+                break;
+            case 0x27: /* LWU */
+                fprintf(stderr, "[VBLANK_HANDLER]   LOAD lwu %s, %d(%s) ea=0x%08x val=0x%08x\n",
+                        r1128_rname[rt], imm, r1128_rname[rs], r1128_ea, ee_mem_read32(st, r1128_ea));
+                break;
+            case 0x37: /* LD */
+                fprintf(stderr, "[VBLANK_HANDLER]   LOAD ld %s, %d(%s) ea=0x%08x val_lo=0x%08x val_hi=0x%08x\n",
+                        r1128_rname[rt], imm, r1128_rname[rs], r1128_ea, ee_mem_read32(st, r1128_ea), ee_mem_read32(st, r1128_ea+4));
+                break;
+            default:
+                break;
+        }
+    }
+#endif
+
+#ifdef R1129_CHAIN_TRACE
+    /* Round 1129 (per user's exact spec): fully dynamic registration-
+     * table chain-walk trace. NO static claims about what any fixed PC
+     * "is" - every semid/branch/call fact below is derived live, from
+     * the actual executing instruction stream, every invocation. Entry
+     * into the handler is detected purely by observing pc==0x00208088
+     * live (the empirically-confirmed real entry from Round 1128's own
+     * live trace, not a disassembly guess), and exit is detected purely
+     * by watching for a live `jr ra` whose ra matches the ra captured
+     * at THIS invocation's entry - so this survives the handler's body
+     * roaming anywhere in memory between entry and exit. */
+    {
+        static int r1129_active = 0;
+        static uint32_t r1129_entry_ra = 0;
+        static unsigned long long r1129_entry_instr = 0;
+        static unsigned long long r1129_last_exit_instr = 0;
+        static int r1129_invocation_count = 0;
+        static const char *r1129_rname[32] = {
+            "zero","at","v0","v1","a0","a1","a2","a3",
+            "t0","t1","t2","t3","t4","t5","t6","t7",
+            "s0","s1","s2","s3","s4","s5","s6","s7",
+            "t8","t9","k0","k1","gp","sp","fp","ra"
+        };
+
+        if (!r1129_active && this_pc == 0x00208088u) {
+            r1129_active = 1;
+            r1129_invocation_count++;
+            r1129_entry_ra = (uint32_t)st->gpr[31].ud0;
+            r1129_entry_instr = (unsigned long long)st->instructions_executed;
+            unsigned long long gap = r1129_last_exit_instr ? (r1129_entry_instr - r1129_last_exit_instr) : 0ULL;
+            fprintf(stderr, "[R1129_INVOCATION] #%d instr=%llu tid=%d entry_pc=0x%08x entry_ra=0x%08x s0=0x%08x v0=0x%08x v1=0x%08x a0=0x%08x instructions_since_prev_exit=%llu\n",
+                    r1129_invocation_count, r1129_entry_instr, ee_hle_thread_get_current_thread_id(),
+                    this_pc, r1129_entry_ra, (uint32_t)st->gpr[16].ud0, (uint32_t)st->gpr[2].ud0,
+                    (uint32_t)st->gpr[3].ud0, (uint32_t)st->gpr[4].ud0, gap);
+        }
+
+        if (r1129_active) {
+            int r1129_tid = ee_hle_thread_get_current_thread_id();
+            /* Table-window reads: log EVERY load whose live effective
+             * address falls near the two already-confirmed-live table/
+             * counter regions (0x0027Bxxx registration table,
+             * 0x002FCxxx second counter) - the VALUE read is reported
+             * as-is; this file's C code never labels it "semid" itself,
+             * so the round's own analysis (not this instrumentation)
+             * decides what any given value means. */
+            if (op == 0x20 || op == 0x24 || op == 0x21 || op == 0x25 || op == 0x23 || op == 0x27 || op == 0x37) {
+                uint32_t r1129_ea = (uint32_t)(rs32 + (uint32_t)imm);
+                if ((r1129_ea >= 0x0027B000u && r1129_ea < 0x0027C000u) ||
+                    (r1129_ea >= 0x002FC000u && r1129_ea < 0x002FD000u)) {
+                    uint32_t r1129_val = (op == 0x23 || op == 0x27) ? ee_mem_read32(st, r1129_ea) :
+                                          (op == 0x21 || op == 0x25) ? (uint32_t)ee_mem_read16(st, r1129_ea) :
+                                          (uint32_t)ee_mem_read8(st, r1129_ea);
+                    fprintf(stderr, "[R1129_TABLE_READ] instr=%llu pc=0x%08x tid=%d reg=%s base=%s(0x%08x) offset=%d ea=0x%08x val=%u (0x%08x)\n",
+                            (unsigned long long)st->instructions_executed, this_pc, r1129_tid,
+                            r1129_rname[rt], r1129_rname[rs], rs32, imm, r1129_ea, r1129_val, r1129_val);
+                }
+                /* Counter-region context-only reads/writes are logged
+                 * separately below on the store side; nothing else to
+                 * do here for loads outside the table window. */
+            }
+            if (op == 0x2B /* SW */ ) {
+                uint32_t r1129_ea = (uint32_t)(rs32 + (uint32_t)imm);
+                if (r1129_ea == 0x0027B4A4u || r1129_ea == 0x002FCFE8u) {
+                    uint32_t r1129_old = ee_mem_read32(st, r1129_ea);
+                    fprintf(stderr, "[R1129_COUNTER] instr=%llu pc=0x%08x tid=%d addr=0x%08x old=%u new=%u\n",
+                            (unsigned long long)st->instructions_executed, this_pc, r1129_tid,
+                            r1129_ea, r1129_old, rt32);
+                }
+            }
+            if (op == 0x03 /* JAL */ || (op == 0x00 && funct == 0x09 /* JALR */)) {
+                uint32_t r1129_target = (op == 0x03) ?
+                    (uint32_t)(((this_pc + 4u) & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)) :
+                    rs32;
+                fprintf(stderr, "[R1129_CALL] instr=%llu pc=0x%08x tid=%d target=0x%08x a0=0x%08x(%d) a1=0x%08x ra_will_be=0x%08x\n",
+                        (unsigned long long)st->instructions_executed, this_pc, r1129_tid, r1129_target,
+                        (uint32_t)st->gpr[4].ud0, (int32_t)st->gpr[4].ud0, (uint32_t)st->gpr[5].ud0, this_pc + 8);
+            }
+            if (op == 0x04 || op == 0x05 || op == 0x06 || op == 0x07 ||
+                op == 0x14 || op == 0x15 || op == 0x16 || op == 0x17) {
+                int r1129_taken = 0;
+                int32_t r1129_rs_s = (int32_t)rs32;
+                switch (op) {
+                    case 0x04: case 0x14: r1129_taken = (rs32 == rt32); break; /* BEQ/BEQL */
+                    case 0x05: case 0x15: r1129_taken = (rs32 != rt32); break; /* BNE/BNEL */
+                    case 0x06: case 0x16: r1129_taken = (r1129_rs_s <= 0); break; /* BLEZ/BLEZL */
+                    case 0x07: case 0x17: r1129_taken = (r1129_rs_s > 0); break; /* BGTZ/BGTZL */
+                }
+                uint32_t r1129_target = (uint32_t)(this_pc + 4 + (imm << 2));
+                fprintf(stderr, "[R1129_BRANCH] instr=%llu pc=0x%08x tid=%d op=0x%02x rs=%s(0x%08x) rt=%s(0x%08x) taken=%d target=0x%08x\n",
+                        (unsigned long long)st->instructions_executed, this_pc, r1129_tid, op,
+                        r1129_rname[rs], rs32, r1129_rname[rt], rt32, r1129_taken, r1129_target);
+            }
+            if (op == 0x00 && funct == 0x08 /* JR */ && rs == 31 && rs32 == r1129_entry_ra) {
+                fprintf(stderr, "[R1129_INVOCATION_END] #%d instr=%llu total_instrs_in_invocation=%llu return_to=0x%08x\n",
+                        r1129_invocation_count, (unsigned long long)st->instructions_executed,
+                        (unsigned long long)st->instructions_executed - r1129_entry_instr, rs32);
+                r1129_active = 0;
+                r1129_last_exit_instr = (unsigned long long)st->instructions_executed;
+            } else if ((st->instructions_executed - r1129_entry_instr) > 200000ULL) {
+                /* Safety net only (not a semantic PC-range claim): a real
+                 * jal into HLE-intercepted syscall stubs (e.g.
+                 * iPollSema/iReferSemaStatus at 0x002579xx) is a
+                 * perfectly legitimate part of this invocation and must
+                 * NOT be treated as "left the function" - the ONLY
+                 * correct exit condition is the matching `jr ra` above.
+                 * This cap exists purely to stop runaway logging if
+                 * that never happens (e.g. entry_ra itself gets
+                 * clobbered) - 200,000 instructions is far beyond any
+                 * real observed invocation length (all seen so far are
+                 * under 100). */
+                fprintf(stderr, "[R1129_SAFETY_CAP_EXIT] #%d instr=%llu pc=0x%08x instrs_in_invocation=%llu\n",
+                        r1129_invocation_count, (unsigned long long)st->instructions_executed, this_pc,
+                        (unsigned long long)st->instructions_executed - r1129_entry_instr);
+                r1129_active = 0;
+                r1129_last_exit_instr = (unsigned long long)st->instructions_executed;
+            }
+        }
+    }
+#endif
 
 #define GPR(x)  st->gpr[x].ud0
 #define GPR1(x) st->gpr[x].ud1
@@ -3973,8 +5842,45 @@ static int ee_step(void)
      * accounting) is completely untouched - ee_jit_try_execute_one()
      * jumps straight to the exact same post-switch code every
      * non-JIT'd instruction already falls through to. */
-    if (ee_jit_try_execute_one(st, instr))
+    if (r1176_sample) r1176_t0 = r1176_tb32();
+    /* R1274: complete-retirement measurements show single ADDIU native
+     * dispatch costs more than the existing in-function arithmetic body.
+     * Keep its compiler available for future blocks/API users, but avoid
+     * the per-instruction native-call overhead in the current CPU loop. */
+    /* R1275: actual PPC full-retirement measurements show single-op
+     * dispatch exceeds the C body for these scalar forms. Keep their native
+     * translators available to direct callers and future block compilation. */
+    /* R1276: a byte lookup keeps SPECIAL classification inexpensive. */
+    static const uint8_t cheap_special[64] = {
+        [0]=1,[2]=1,[3]=1,[4]=1,[6]=1,[7]=1,[8]=1,[9]=1,
+        [0x0a]=1,[0x0b]=1,[0x10]=1,[0x11]=1,[0x12]=1,[0x13]=1,
+        [0x21]=1,[0x23]=1,[0x24]=1,[0x25]=1,[0x26]=1,[0x27]=1,
+        [0x2a]=1,[0x2b]=1,[0x2d]=1,[0x2f]=1
+    };
+    /* R1278: the optimized C LD body also beats single-op JIT dispatch. */
+    const int cheap_scalar = op == 0x09u || (op >= 0x0cu && op <= 0x0fu) ||
+        (op == 0u && (funct == 0u || funct == 0x21u || cheap_special[funct])) ||
+        op == 0x0au || op == 0x0bu;
+    /* R1282: branch register effects remain inline for now; calling a
+     * standalone native fragment adds overhead to these short bodies.
+     * Native translators remain available for future block linking. */
+    const int cheap_branch=(op>=2u&&op<=7u)||(op>=0x14u&&op<=0x17u);
+    /* R1293: after mapped-word optimization, eight full retirements cost
+     * 5345 vs 6626 PPC instructions with single-op LW JIT, and direct RAM
+     * also favors inline C (4601 vs 4817). Keep LW translation available
+     * for direct callers/block formation, bypass this fragment dispatch. */
+    if (!cheap_scalar && !cheap_branch && op != 0x23u && op != 0x37u && !(op==0x10u && (rs==0u||rs==4u)) &&
+        ee_jit_try_execute_one_at(st, this_pc, instr)) {
+        if (r1176_sample) {
+            r1176_t1 = r1176_tb32();
+            g_r1176_prof_jit_tb += (uint32_t)(r1176_t1 - r1176_t0);
+        }
         goto ee_jit_done;
+    }
+    if (r1176_sample) {
+        r1176_t1 = r1176_tb32();
+        g_r1176_prof_jit_tb += (uint32_t)(r1176_t1 - r1176_t0);
+    }
 
     switch (op) {
     case 0x00: /* SPECIAL */
@@ -4132,6 +6038,13 @@ static int ee_step(void)
                 g_r815_syscall_budget--;
             }
 #endif
+            if (r1217_active && r1218_sys_count < 12u) {
+                uint32_t n=r1218_sys_count++;
+                r1218_sys[n][0]=this_pc; r1218_sys[n][1]=(uint32_t)sysnum;
+                r1218_sys[n][2]=(uint32_t)st->gpr[4].ud0; r1218_sys[n][3]=(uint32_t)st->gpr[2].ud0;
+                r1218_sys[n][4]=0xdead1218u; r1218_sys[n][5]=ee_hle_thread_get_status(1); r1218_sys[n][6]=0u;
+                r1218_pending=1u;
+            }
             if (ee_hle_thread_try_handle(st, sysnum, this_pc, in_delay_slot)) return 1; /* Round 569: real EE thread/sema scheduler - see include/core/ee/ee_hle_thread.h */
             if (sysnum == 100 || sysnum == 61 ||
                 sysnum == 120 || sysnum == -120) {
@@ -4366,6 +6279,7 @@ static int ee_step(void)
                     g_ee_sema[id].attr = attr;
                     g_ee_sema[id].option = option;
                 }
+                if (id == 2) { r1219_create2[0]=this_pc; r1219_create2[1]=(uint32_t)GPR(31); r1219_create2[2]=sema_ptr; r1219_create2[3]=(uint32_t)max_count; r1219_create2[4]=(uint32_t)init_count; r1219_create2[5]=attr; r1219_create2[6]=option; }
                 GPR(2) = sext32((uint32_t)id); /* real convention: >=0 = new sema ID, negative = error (table full) */
                 st->pc = this_pc + 4u;
                 st->next_pc = this_pc + 8u;
@@ -4439,6 +6353,10 @@ static int ee_step(void)
                  * which is reported precisely (not disguised as
                  * progress) via the diagnostic wait_threads counter. */
                 uint32_t semid = (uint32_t)GPR(4); /* $a0 */
+                /* R1222: R1221 NCMD/WaitSema injection removed. Full-tree diff
+                 * proved this sema2 is not a missing NCMD REND: the original
+                 * GT3 producer is thread 3, which regularly SignalSema(2/3). */
+                if (semid == 2u) { r1219_wait2[0]=this_pc; r1219_wait2[1]=(uint32_t)GPR(31); r1219_wait2[2]=(uint32_t)r1190_rend_count; r1219_wait2[3]=r1190_last_rend_cd; r1219_wait2[4]=r1190_last_rend_sema; r1219_wait2[5]=(uint32_t)g_r303_rpc_pending_sets; r1219_wait2[6]=(uint32_t)g_r303_rpc_delivered_count; r1219_wait2[7]=g_r303_rpc_last_delivered_cd; r1219_wait2[8]=g_r303_rpc_last_delivered_cid; r1219_wait2[9]=(uint32_t)GPR(2); }
                 if (semid < EE_MAX_SEMAPHORES && g_ee_sema[semid].in_use) {
                     if (g_ee_sema[semid].count > 0) {
                         g_ee_sema[semid].count--;
@@ -4494,20 +6412,22 @@ static int ee_step(void)
                          * instruction path) - it only adds an equivalent
                          * call sequence to this one park branch. */
                         st->cop0[9]++;
+    ee_irq_tick();
                         ee_latch_timer_interrupt(st);
                         ee_check_vblank(st);
                         ee_check_boot_unblock_selfloop(st); /* Round 161 */
                         ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
                         ee_check_browser_menu_escalation_heuristic(st); /* Round 610 (task #536) */
                         ee_check_browser_idle_carousel(st); /* Round 696 (task #447/#536) */
-                        ee_check_boot_unblock_sbus_wait(st); /* Round 178 (task #344) - EXPERIMENTAL BRANCH ONLY */
+                        if (EE_SBUS_WAIT_PC_MATCH(st->pc)) ee_check_boot_unblock_sbus_wait(st); /* R1180 hot reject; same R178 semantics */
                         ee_check_gs_vsync(st); /* Round 87 (127th finding) */
                         ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
                         sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
                         ee_check_rpcinit_pending(st);
                         ee_check_rpc_bind_pending(st);
                         ee_check_cdvd_ncmd_pending(st); /* Round 347 */
-                        if (!st->branch_pending) {
+                        ee_latch_intc_interrupt(st);
+    if (!st->branch_pending) {
                             /* Round 303 continuation: this project's
                              * own scratch checkpoint/resume harness
                              * found a deeper root cause behind the
@@ -4655,9 +6575,17 @@ static int ee_step(void)
                  * "interrupt" execution context, so both syscall
                  * numbers share the exact same implementation. */
                 uint32_t semid = (uint32_t)GPR(4); /* $a0 */
+                if (semid == 2u) {
+                    r1223_sig2[0]++; r1223_sig2[1]=this_pc; r1223_sig2[2]=(uint32_t)GPR(31);
+                    r1223_sig2[3]=(uint32_t)sysnum; r1223_sig2[4]=(uint32_t)ee_hle_thread_get_current_thread_id();
+                    r1223_sig2[5]=(semid<EE_MAX_SEMAPHORES)?(uint32_t)g_ee_sema[semid].count:0xffffffffu;
+                    r1223_sig2[7]=(semid<EE_MAX_SEMAPHORES)?(uint32_t)g_ee_sema[semid].wait_threads:0xffffffffu;
+                }
+                if (semid == 2u) { r1219_wait2[0]=this_pc; r1219_wait2[1]=(uint32_t)GPR(31); r1219_wait2[2]=(uint32_t)r1190_rend_count; r1219_wait2[3]=r1190_last_rend_cd; r1219_wait2[4]=r1190_last_rend_sema; r1219_wait2[5]=(uint32_t)g_r303_rpc_pending_sets; r1219_wait2[6]=(uint32_t)g_r303_rpc_delivered_count; r1219_wait2[7]=g_r303_rpc_last_delivered_cd; r1219_wait2[8]=g_r303_rpc_last_delivered_cid; r1219_wait2[9]=(uint32_t)GPR(2); }
                 if (semid < EE_MAX_SEMAPHORES && g_ee_sema[semid].in_use) {
                     if (g_ee_sema[semid].count < g_ee_sema[semid].max_count) {
                         g_ee_sema[semid].count++;
+                        if (semid == 2u) r1223_sig2[6]=(uint32_t)g_ee_sema[semid].count;
                         if (g_ee_sema[semid].wait_threads > 0) g_ee_sema[semid].wait_threads--;
                         GPR(2) = 0;
                     } else {
@@ -4681,6 +6609,7 @@ static int ee_step(void)
                  * general precedent of implementing real error paths
                  * where the check is cheap and well-documented. */
                 uint32_t semid = (uint32_t)GPR(4); /* $a0 */
+                if (semid == 2u) { r1219_wait2[0]=this_pc; r1219_wait2[1]=(uint32_t)GPR(31); r1219_wait2[2]=(uint32_t)r1190_rend_count; r1219_wait2[3]=r1190_last_rend_cd; r1219_wait2[4]=r1190_last_rend_sema; r1219_wait2[5]=(uint32_t)g_r303_rpc_pending_sets; r1219_wait2[6]=(uint32_t)g_r303_rpc_delivered_count; r1219_wait2[7]=g_r303_rpc_last_delivered_cd; r1219_wait2[8]=g_r303_rpc_last_delivered_cid; r1219_wait2[9]=(uint32_t)GPR(2); }
                 if (semid < EE_MAX_SEMAPHORES && g_ee_sema[semid].in_use) {
                     if (g_ee_sema[semid].wait_threads > 0) {
                         GPR(2) = sext32((uint32_t)-419); /* real error: threads still waiting */
@@ -4802,6 +6731,7 @@ static int ee_step(void)
                  * with byte-exact real semantics this project could
                  * never faithfully reimplement from guesswork), this
                  * is handled identically to 18/19 above. */
+                ee_hle_thread_on_exec(st);
                 ee_raise_exception(st, EE_EXC_CODE_SYS, this_pc, in_delay_slot);
                 break;
             }
@@ -5126,7 +7056,7 @@ static int ee_step(void)
                 ee_raise_exception(st, EE_EXC_CODE_SYS, this_pc, in_delay_slot);
                 break;
             }
-            if (sysnum == 59 || sysnum == 62 || sysnum == 71 || sysnum == 84 ||
+            if (sysnum == 59 || sysnum == 62 || sysnum == 84 ||
                 sysnum == 89 || sysnum == 90 || sysnum == 91 || sysnum == 105) {
                 /* Round 193 (task #359) - misc kernel/thread/heap
                  * syscalls, real cited numbers:
@@ -5134,9 +7064,12 @@ static int ee_step(void)
                  *       slot - still a real, occupiable syscall-table
                  *       entry on real hardware, not a nonexistent number)
                  *   62 (0x3e) EndOfHeap
-                 *   71 (0x47) ReferSemaStatus (the POSITIVE form; its
-                 *       negative fast form -72/iReferSemaStatus is
-                 *       handled in the group below)
+                 *   71 (0x47) ReferSemaStatus - REMOVED from this
+                 *       group in Round 1097b (task #1030 continuation):
+                 *       now handled by ee_hle_thread_try_handle()'s
+                 *       real g.semas[] state, same as its negative
+                 *       fast form -72/iReferSemaStatus (see
+                 *       ee_hle_thread.c's sysnum==71||-72 block)
                  *   84 (0x54) xlaunch
                  *   89 (0x59) ExpandScratchPad
                  *   90 (0x5a) Copy
@@ -5279,14 +7212,23 @@ static int ee_step(void)
                 ee_raise_exception(st, EE_EXC_CODE_SYS, this_pc, in_delay_slot);
                 break;
             }
-            if (sysnum == -70 || sysnum == -72 || sysnum == -73) {
-                /* Round 193 (task #359) - real fast/interrupt-context
-                 * forms of the already-handled semaphore family:
-                 * iPollSema(-70), iReferSemaStatus(-72), iDeleteSema(-73).
-                 * Same rationale as this project's existing CreateSema/
-                 * WaitSema handling (real kernel semaphore-table
-                 * bookkeeping this project cannot safely reimplement in
-                 * its fast/interrupt-context form) - exception-raise. */
+            if (sysnum == -72 || sysnum == -73) {
+                /* DEAD CODE as of Round 1097b (task #1030
+                 * continuation) - unreachable in practice. iPollSema
+                 * (-70) was REMOVED from this exception-raising family
+                 * in Round 1093 (task #1028); iReferSemaStatus(-72)
+                 * and iDeleteSema(-73) were REMOVED from it in Round
+                 * 1097b, following the exact same precedent - both
+                 * are now claimed by ee_hle_thread_try_handle()
+                 * upstream (called first, ~line 4179 in this file),
+                 * using that file's real g.semas[] state (the same
+                 * one CreateSema/WaitSema/SignalSema/PollSema already
+                 * use), so real callers get a real, consistent answer
+                 * instead of an unimplemented-kernel-state exception.
+                 * Left in place, like Round 1093/1094's own
+                 * superseded g_ee_sema[] fallback, purely as a
+                 * documented historical fail-safe - this branch
+                 * cannot be reached by any sysnum still routed here. */
                 ee_raise_exception(st, EE_EXC_CODE_SYS, this_pc, in_delay_slot);
                 break;
             }
@@ -5327,113 +7269,39 @@ static int ee_step(void)
                 break;
             }
             if (sysnum == 20) {
-                /* 20 (0x14) _EnableIntc(cause): Round 188 (task #354) -
-                 * found unhandled (and therefore machine-halting) by
-                 * Round 187's fresh full syscall-table audit, noted
-                 * there as an asymmetry with the already-handled
-                 * _EnableDmac(22)/_DisableDmac(23) pair sitting right
-                 * below this block. Real ps2sdk signature (ee/kernel/
-                 * include/kernel.h): "s32 _EnableIntc(s32 cause)" -
-                 * cause is the same real EE INTC source enum this
-                 * project's own EE_INTC_IRQ_* constants and the
-                 * Round 186 AddIntcHandler citation already document
-                 * (GS=0, SBUS=1, VBLANK_S=2, VBLANK_E=3, ...).
-                 *
-                 * Unlike syscalls 16/17 (AddIntcHandler/
-                 * RemoveIntcHandler, which mutate a BIOS-internal
-                 * per-cause HANDLER table this project cannot safely
-                 * guess the layout of), this syscall's real effect is
-                 * just ensuring one bit of the real INTC_MASK register
-                 * ends up set - a register this project already models
-                 * directly and completely (ee_intc.h's ee_intc_state_t
-                 * .mask field, exposed via ee_intc_get_state()).
-                 * Applying the same established rationale already used
-                 * for _EnableDmac (22, directly below): this syscall
-                 * sets the real END STATE of the mask bit directly,
-                 * rather than replicating the real INTC_MASK hardware
-                 * register's own documented XOR-toggle MMIO-write
-                 * quirk (see ee_intc.h's own header comment,
-                 * citing PCSX2's HwWrite.cpp) - that quirk only
-                 * applies to a real program's direct MMIO writes to
-                 * 0x1000F010, not to this kernel-level convenience
-                 * syscall's net effect. This project does not have a
-                 * citable exact real return-value convention for
-                 * _EnableIntc (unlike, e.g., WaitSema's documented
-                 * negative-error convention) - returns 0 (success),
-                 * matching this file's own already-established _Enable
-                 * Dmac/_DisableDmac precedent immediately below, an
-                 * honest placeholder rather than a fabricated specific
-                 * value. */
-                uint32_t cause = (uint32_t)GPR(4); /* $a0 */
-                ee_intc_state_t *intc20 = ee_intc_get_state();
-                if (cause < 32) intc20->mask |= (1u << cause);
-                GPR(2) = 0;
+                /* R1262: SCPH-50004 kernel table points to 0x800008c0.
+                 * It returns 1 when enabling changes INTC_MASK, 0 if
+                 * already enabled. Mirror the BIOS sllv's low-five-bit
+                 * shift count, including causes outside the named enum. */
+                uint32_t bit = 1u << ((uint32_t)GPR(4) & 31u);
+                ee_intc_state_t *intc = ee_intc_get_state();
+                GPR(2) = (intc->mask & bit) ? 0u : 1u;
+                if (!(intc->mask & bit)) ee_intc_mmio_write32(0x1000f010u, bit);
                 st->pc = this_pc + 4u;
                 st->next_pc = this_pc + 8u;
                 return 1;
             }
             if (sysnum == 21) {
-                /* 21 (0x15) _DisableIntc(cause): Round 188 (task #354) -
-                 * exact mirror-image counterpart to _EnableIntc (20)
-                 * directly above, found unhandled by the same Round
-                 * 187 audit. Real ps2sdk signature: "s32
-                 * _DisableIntc(s32 cause)". Implemented symmetrically
-                 * to 20 above (and to the existing _EnableDmac(22)/
-                 * _DisableDmac(23) pair's own established pattern):
-                 * directly clears the real end-state mask bit rather
-                 * than replicating the raw XOR-toggle MMIO-write
-                 * quirk documented in ee_intc.h. */
-                uint32_t dcause = (uint32_t)GPR(4); /* $a0 */
-                ee_intc_state_t *intc21 = ee_intc_get_state();
-                if (dcause < 32) intc21->mask &= ~(1u << dcause);
-                GPR(2) = 0;
+                /* BIOS 0x80000900: 1 for an actual disable, else 0. */
+                uint32_t bit = 1u << ((uint32_t)GPR(4) & 31u);
+                ee_intc_state_t *intc = ee_intc_get_state();
+                GPR(2) = (intc->mask & bit) ? 1u : 0u;
+                if (intc->mask & bit) ee_intc_mmio_write32(0x1000f010u, bit);
                 st->pc = this_pc + 4u;
                 st->next_pc = this_pc + 8u;
                 return 1;
             }
-            if (sysnum == 22) {
-                /* 22 (0x16) _EnableDmac(channel): task #176 - this was
-                 * previously a flat no-op (batched with 18/60/61/100/
-                 * 120 above), which is exactly why sceSifInitCmd()'s
-                 * "AddDmacHandler(DMAC_SIF0,...); EnableDmac(DMAC_SIF0);"
-                 * sequence could never make dma_dmac_interrupt_pending()
-                 * true even after sceSifSetDma (syscall 119) completes
-                 * a real transfer and signals DMAC_STAT's SIF0 status
-                 * bit - the enable half of that same register was
-                 * never set. Real $a0 is the DMAC channel number
-                 * (e.g. DMA_CHANNEL_SIF0=5, matching this project's
-                 * dma.h enum and PCSX2's Hw.h D5=SIF0). See dma.h's
-                 * dma_channel_set_irq_enable() doc comment for why
-                 * this directly sets the end state rather than
-                 * replicating EnableDmac()'s internal raw toggle-write
-                 * (BIOS-internal code this project doesn't have). */
-                uint32_t channel = (uint32_t)GPR(4); /* $a0 */
-                dma_channel_set_irq_enable((int)channel, 1);
-                GPR(2) = 0;
-                st->pc = this_pc + 4u;
-                st->next_pc = this_pc + 8u;
-                return 1;
-            }
-            if (sysnum == 23) {
-                /* 23 (0x17) _DisableDmac(channel): task #195/#196
-                 * (71st finding) - the exact mirror-image counterpart
-                 * to _EnableDmac (22) directly above, confirmed via
-                 * ps2sdk's real ee/kernel/include/syscallnr.h
-                 * (__NR__DisableDmac = 0x17, fetched via the user-
-                 * supplied ps2sdk-master.zip). Reached for real by
-                 * this project's boot for the first time this round,
-                 * right after the LOADFILE RPC call that loads
-                 * "rom0:OSDSYS" completes (observed $a0=5=DMA_CHANNEL_
-                 * SIF0, the same channel _EnableDmac's own citation
-                 * trail above already documents) - real BIOS/EELOAD-
-                 * style code disabling the SIF0 DMAC channel's
-                 * interrupt now that the RPC exchange is done, before
-                 * handing control to the freshly-loaded program.
-                 * Implemented symmetrically to 22 above: the real
-                 * inverse of dma_channel_set_irq_enable(channel, 1). */
-                uint32_t dchannel = (uint32_t)GPR(4); /* $a0 */
-                dma_channel_set_irq_enable((int)dchannel, 0);
-                GPR(2) = 0;
+            if (sysnum == 22 || sysnum == 23) {
+                /* BIOS 0x80000940/0x80000980 use the same conditional
+                 * return, with bit (0x10000 << channel), via MMIO's
+                 * mask toggle. Use the controller's real MMIO semantics
+                 * so reserved mask bits and channel 15 are preserved. */
+                uint32_t bit = 0x10000u << ((uint32_t)GPR(4) & 31u);
+                uint32_t was = dma_get_state()->d_stat & bit;
+                int enable = (sysnum == 22);
+                GPR(2) = enable ? !was : !!was;
+                if (enable ? !was : !!was)
+                    dma_mmio_write32(0x1000e010u, bit);
                 st->pc = this_pc + 4u;
                 st->next_pc = this_pc + 8u;
                 return 1;
@@ -5561,6 +7429,7 @@ static int ee_step(void)
                      * assembly remains unobtainable. */
                     if (size >= 20u) {
                         uint32_t cid = ee_mem_read32(st, src + 8u);
+                        if(cid==0x80000003u)sif_iop_reset_note_mc_config(st,src,size);
                         if (cid == SIF_CMD_INIT_CMD) {
                             uint32_t ee_recvbuf = ee_mem_read32(st, src + 16u);
                             sif_cmd_iop_handle_init_cmd(ee_recvbuf);
@@ -5655,6 +7524,7 @@ static int ee_step(void)
                             uint32_t bind_sid = ee_mem_read32(st, src + 0x20u); /* real SifRpcBindPkt_t.sid offset, already cited (task #195/#196) */
                             sif_cmd_iop_handle_rpc_bind(cd_ptr);
                             sif_cmd_iop_track_bind_sid(cd_ptr, bind_sid); /* task #202 (79th finding) */
+                            if (bind_sid == SIF_SID_CDVD_NCMD) { r1224_ncmd_cd = cd_ptr; r1224_ncmd_bind_hits++; }
 #ifdef R815_HANDOFF_TRACE
                             /* Round 815: "first game-side references
                              * to CDVD-related imports or stubs" per
@@ -5706,6 +7576,13 @@ static int ee_step(void)
                             uint32_t call_recvbuf = ee_mem_read32(st, src + 0x28u);
                             uint32_t call_cd = ee_mem_read32(st, src + 0x1Cu);
                             uint32_t call_sid = sif_cmd_iop_lookup_bind_sid(call_cd); /* task #202 (79th finding) - see sif.h citation */
+                            if (call_cd != 0u && call_cd == r1224_ncmd_cd) {
+                                r1224_ncmd_call_hits++;
+                                if (call_sid != SIF_SID_CDVD_NCMD) {
+                                    call_sid = SIF_SID_CDVD_NCMD;
+                                    r1224_ncmd_sid_recoveries++;
+                                }
+                            }
 #ifdef R933_RPCCALL_TRACE
                             /* Round 933 (task #917/#918, per user's
                              * "then let's have a lot of work ahead of
@@ -5919,6 +7796,9 @@ static int ee_step(void)
                                  * WaitSema is a safe, well-scoped
                                  * shortcut - not a claim that this
                                  * project actually runs CLEARSPU. */
+                                { uint32_t payload=ee_mem_read32(st,dmat_ptr+(i-1u)*16u);char path[253];
+                                  unsigned k;for(k=0;k<252u;k++){path[k]=(char)ee_mem_read8(st,payload+8u+k);if(!path[k])break;}path[252]=0;
+                                  sif_loadfile_note_mc_module(st,path); }
                                 ee_mem_write32(st, call_recvbuf + 0u, 1u); /* result: synthetic module id (placeholder, not tracked) */
                                 ee_mem_write32(st, call_recvbuf + 4u, 0u); /* modres: synthetic module start() return = success */
                                 ee_arm_rpc_call_pending(call_cd);
@@ -6134,208 +8014,22 @@ static int ee_step(void)
                                      * hardware's own behavior for a malformed request. */
                                 }
                             } else if (call_sid == SIF_SID_MCSERV && call_recvbuf != 0u) {
-                                /* task #203 (80th finding): real
-                                 * MC_RPCCMD_INIT (=0x70, see the
-                                 * already-fetched ee/rpc/memorycard/
-                                 * src/libmc.c's mcRpcCmd[MC_TYPE_MC]
-                                 * table, confirmed by this project's
-                                 * own diagnostic trace of the REAL
-                                 * BIOS issuing this exact call after
-                                 * binding to MCSERV, sid=0x80000400,
-                                 * also real-cited, see sif.h). The
-                                 * real IOP-side handler (fetched
-                                 * iop/memorycard/mcserv/src/mcserv.c's
-                                 * cb_rpc_S_0400(), case 0x70:
-                                 * "rpc_stat.result = sceMcInit();")
-                                 * writes its reply into a real,
-                                 * cited 12-byte struct (common/
-                                 * include/libmc-common.h's
-                                 * mcRpcStat_t: { s32 result; u32
-                                 * mcserv_version; u32 mcman_version;
-                                 * }) - matching the real EE-side
-                                 * mcInit()'s own call convention
-                                 * exactly (recvsize=12, same file,
-                                 * line ~399). This project does NOT
-                                 * yet actually run sceMcInit()'s real
-                                 * IOP code nor track real memory-card
-                                 * presence (a real, separate feature,
-                                 * not yet built) - an honest, labeled
-                                 * gap. Synthesizing "result=0"
-                                 * (success, matching every real PS2
-                                 * function's 0-is-success convention)
-                                 * with version fields left 0
-                                 * (unqueried, not fabricated specific
-                                 * version numbers) is the minimal,
-                                 * real-struct-shaped reply needed to
-                                 * unblock OSDSYS's own WaitSema.
-                                 *
-                                 * GENERALIZED (task #212, 82nd
-                                 * finding): this branch was widened
-                                 * from "rpc_number == 0x70u" to ANY
-                                 * MCSERV rpc_number after this
-                                 * project's own diagnostic trace
-                                 * showed a real, new call,
-                                 * rpc_number=0x71 (real
-                                 * MC_RPCCMD_OPEN, per the same
-                                 * already-fetched mcRpcCmd[] table,
-                                 * "0x71, // MC_RPCCMD_OPEN"). Re-
-                                 * reading the real IOP-side handler
-                                 * (iop/memorycard/mcserv/src/
-                                 * mcserv.c's cb_rpc_S_0400()) shows
-                                 * its switch ends with a SINGLE,
-                                 * shared "return (void *)&rpc_stat;"
-                                 * for every case, including 0x71's
-                                 * "case 0x71: rpc_stat.result =
-                                 * sceMcOpen(); break;" - i.e. the
-                                 * real reply shape (12-byte
-                                 * mcRpcStat_t) is confirmed identical
-                                 * across every real MCSERV command,
-                                 * exactly like this file's own
-                                 * already-established SPU2 spuFunc()
-                                 * generalization above. Only the
-                                 * VALUE of `result` differs per real
-                                 * command and is not modeled by this
-                                 * project (this project does not
-                                 * actually run sceMcOpen()/sceMcInit()
-                                 * etc., nor track real memory-card
-                                 * presence) - so 0 (success) is used
-                                 * uniformly, consistent with this
-                                 * project's own established
-                                 * placeholder discipline. If a
-                                 * SPECIFIC rpc_number's exact result
-                                 * value turns out to matter to a real
-                                 * caller (branching on non-zero), it
-                                 * should be pulled out into its own
-                                 * cited branch above this one, the
-                                 * same way 0x70 originally was before
-                                 * this generalization. */
-                                /* Round 138 (task #172/#295, 178th finding): real
-                                 * MCMAN error-code enum now fetched and cited
-                                 * (ps2sdk common/include/libmc-common.h,
-                                 * https://raw.githubusercontent.com/ps2dev/
-                                 * ps2sdk/master/common/include/libmc-common.h):
-                                 * sceMcResSucceed=0, sceMcResChangedCard=-1,
-                                 * sceMcResNoFormat=-2, sceMcResFullDevice=-3,
-                                 * sceMcResNoEntry=-4, sceMcResDeniedPermit=-5,
-                                 * sceMcResNotEmpty=-6, sceMcResUpLimitHandle=-7,
-                                 * sceMcResFailReplace=-8, sceMcResFailResetAuth=
-                                 * -11, sceMcResFailDetect=-12,
-                                 * sceMcResFailDetect2=-13,
-                                 * sceMcResDeniedPS1Permit=-51,
-                                 * sceMcResFailAuth=-90. Device types:
-                                 * sceMcTypeNoCard=0/PS1=1/PS2=2/PDA=3. INIT's
-                                 * real handler (sceMcInit()) genuinely succeeds
-                                 * with no card present, so result=0 below is
-                                 * confirmed correct for rpc_number==0x70, not
-                                 * just a placeholder. For OPEN (0x71) and other
-                                 * real card-dependent commands, this project has
-                                 * NOT yet fetched real mcserv.c/libmc.c source
-                                 * confirming which specific code a real no-card
-                                 * sceMcOpen() returns - sceMcResFailDetect(-12)/
-                                 * sceMcResFailDetect2(-13) are the most
-                                 * plausible real fits by name alone, but that is
-                                 * an inference, not a citation, so result=0
-                                 * remains unchanged here rather than guessing
-                                 * (same discipline as Round 132's declined
-                                 * SIO2/CD-ROM guess). See STATUS.md's 178th
-                                 * finding for the full trail. */
-                                /* Round 278 (task #423 continuation,
-                                 * 319th finding): TWO real, live-
-                                 * trace-confirmed corrections to this
-                                 * branch, made at the user's explicit
-                                 * request to "fix the mcserv".
-                                 *
-                                 * (1) recv_size correction. This
-                                 * branch always wrote all 12 bytes of
-                                 * mcRpcStat_t regardless of what the
-                                 * real caller actually asked for.
-                                 * Instrumented the real recv_size
-                                 * field (offset 0x2C, already cited
-                                 * in this file's own SIF_CMD_RPC_CALL
-                                 * struct comment above) for every
-                                 * real MCSERV call this project's own
-                                 * boot trace has ever observed:
-                                 * rpc_number=0x70 (INIT), 0x71
-                                 * (OPEN), and 0x72 (CLOSE) ALL three
-                                 * show real recv_size=4, not 12 - the
-                                 * real caller only ever asks for a
-                                 * plain "s32 result", never the full
-                                 * mcRpcStat_t, in this specific BIOS's
-                                 * own trace. Writing the extra 8
-                                 * bytes past what the real caller
-                                 * asked for was writing into whatever
-                                 * real memory happens to sit past the
-                                 * caller's actual 4-byte buffer - not
-                                 * a real, protocol-accurate reply.
-                                 * Fixed by capping the write to the
-                                 * real recv_size, matching how a real
-                                 * IOP service's DMA-back reply size
-                                 * is genuinely bounded by the
-                                 * caller's own request (see the
-                                 * SIF_CMD_RPC_CALL struct comment).
-                                 *
-                                 * (2) real OPEN path traced, real
-                                 * "file not found" reply now used
-                                 * instead of a fake success. Live
-                                 * instrumentation of the real send
-                                 * payload for rpc_number=0x71 (OPEN)
-                                 * showed OSDSYS's own real request
-                                 * path, byte-exact: "/BIEXEC-SYSTEM/
-                                 * osdsys.elf" - a real Sony memory-
-                                 * card BIOS-update probe path (early
-                                 * PS2 firmware, including this
-                                 * project's own SCPH-10000 BIOS,
-                                 * supported applying OSDSYS patches
-                                 * from a memory card via a file at
-                                 * this exact path; this is NOT a
-                                 * normal game-save path). This
-                                 * project does not model any real
-                                 * memory-card file content (a real,
-                                 * separate feature - genuine card-
-                                 * image storage - not yet built), so
-                                 * this specific file can never
-                                 * genuinely exist here. The previous
-                                 * blanket "result=0" (success) reply
-                                 * told OSDSYS's own real code this
-                                 * update file WAS found and openable
-                                 * (fd=0) - a real protocol
-                                 * misrepresentation, not just an
-                                 * unqueried placeholder, since a
-                                 * real, unformatted-or-absent card
-                                 * cannot ever genuinely contain this
-                                 * file. Per this project's own
-                                 * already-fetched, cited real MCMAN
-                                 * error enum (Round 138/178th
-                                 * finding, common/include/libmc-
-                                 * common.h): sceMcResNoEntry=-4 is
-                                 * the real, standard "entry (file) not
-                                 * found in directory" error - a
-                                 * confident, name-grounded fit for
-                                 * this specific case (unlike the
-                                 * earlier-declined general "no card
-                                 * present" guess for arbitrary OPEN
-                                 * calls, this is specifically an
-                                 * always-absent, real, named file,
-                                 * not an inferred card-presence
-                                 * state). rpc_number==0x71 (OPEN) is
-                                 * therefore pulled into its own
-                                 * branch below, replying
-                                 * sceMcResNoEntry(-4) instead of 0 -
-                                 * every other real MCSERV command
-                                 * observed so far (INIT, CLOSE) keeps
-                                 * its existing result=0, unchanged
-                                 * from before, since INIT's success is
-                                 * separately confirmed correct
-                                 * (Round 138) and CLOSE on an fd this
-                                 * project never validly opened is
-                                 * moot once OPEN itself correctly
-                                 * fails (a real caller checks fd<0
-                                 * before ever calling close). */
+                                /* INIT returns actual requested module versions. OPEN
+                                 * retains the existing missing-file result. GETINFO
+                                 * uses the real no-card probe result and extra DMA ABI;
+                                 * remaining card commands still use legacy HLE replies. */
                                 uint32_t mcserv_recv_size = ee_mem_read32(st, src + 0x2Cu);
-                                int32_t mcserv_result = (rpc_number == 0x71u) ? -4 /* sceMcResNoEntry - see comment */ : 0;
+                                /* Supplied OSDSYS libmc uses modern OPEN fno=2 at its
+                                 * mcOpen wrapper; older libmc uses 0x71. Neither ABI
+                                 * has a file behind a successful descriptor here. */
+                                int32_t mcserv_result = (rpc_number == 2u || rpc_number == 0x71u) ? -4 /* sceMcResNoEntry - see comment */ : 0;
+                                if(rpc_number==1u || rpc_number==0x78u){
+                                    uint32_t payload=i?ee_mem_read32(st,dmat_ptr+(i-1u)*16u):0u;
+                                    mcserv_result=ee_mcserv_getinfo_no_card(st,payload,ee_mem_read32(st,src+0x24u),rpc_number==1u);
+                                }
                                 if (mcserv_recv_size >= 4u)  ee_mem_write32(st, call_recvbuf + 0u, (uint32_t)mcserv_result); /* mcRpcStat_t.result (or plain s32 result for OPEN/CLOSE-shaped 4-byte replies) */
-                                if (mcserv_recv_size >= 8u)  ee_mem_write32(st, call_recvbuf + 4u, 0u); /* mcRpcStat_t.mcserv_version (unqueried) - only written if the real caller asked for it */
-                                if (mcserv_recv_size >= 12u) ee_mem_write32(st, call_recvbuf + 8u, 0u); /* mcRpcStat_t.mcman_version (unqueried) - only written if the real caller asked for it */
+                                if (mcserv_recv_size >= 8u)  ee_mem_write32(st, call_recvbuf + 4u, (rpc_number==0xfeu||rpc_number==0x70u)?st->mcserv_module_version:0u); /* actual requested module metadata for INIT */
+                                if (mcserv_recv_size >= 12u) ee_mem_write32(st, call_recvbuf + 8u, (rpc_number==0xfeu||rpc_number==0x70u)?st->mcman_module_version:0u); /* actual requested module metadata for INIT */
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_SPU2DRV && rpc_number == 0x1u && call_recvbuf != 0u) {
                                 /* task #203 continuation (80th
@@ -6577,6 +8271,13 @@ static int ee_step(void)
                                  * 0 is written as the most defensible,
                                  * explicitly-labeled placeholder. */
                                 ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real s16 "ret" - SpuSetCore() result not modeled, 0 placeholder (see comment) */
+                                ee_arm_rpc_call_pending(call_cd);
+                            } else if (call_sid == SIF_SID_SPU2DRV && i>=1u &&
+                                       ee_rspu2_disc_rpc(st,rpc_number,
+                                           ee_mem_read32(st,dmat_ptr+(i-1u)*16u),
+                                           ee_mem_read32(st,src+0x24u)<ee_mem_read32(st,dmat_ptr+(i-1u)*16u+8u)?
+                                               ee_mem_read32(st,src+0x24u):ee_mem_read32(st,dmat_ptr+(i-1u)*16u+8u),
+                                           call_recvbuf,ee_mem_read32(st,src+0x2cu))) {
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_SPU2DRV && call_recvbuf != 0u) {
                                 /* task #209 continuation (80th
@@ -6955,6 +8656,7 @@ static int ee_step(void)
                                     if (call_recvbuf != 0u) {
                                         ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real leading result int, shared across every N-command - 0 = success placeholder (see comment) */
                                     }
+                                    r1224_ncmd_rend_arms++;
                                     ee_arm_rpc_call_pending(call_cd);
                                 }
                             } else if (call_sid == SIF_SID_CDVD_DISKREADY && rpc_number == 0u && call_recvbuf != 0u) {
@@ -6999,71 +8701,26 @@ static int ee_step(void)
                                  * does not model as a multi-step async
                                  * process. */
                                 ee_mem_write32(st, call_recvbuf + 0u, 0x02u); /* real SCECdComplete - see comment */
+                                r1224_ncmd_rend_arms++;
+                                    ee_arm_rpc_call_pending(call_cd);
+                            } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number == 1u) {
+                                /* ps2sdk scmd.c: result word followed by an eight-byte
+                                 * sceCdCLOCK. Limit every write to the requested reply. */
+                                uint8_t clock[8];
+                                uint32_t size = ee_mem_read32(st, src + 0x2Cu);
+                                int ok = iop_cdvd_read_clock(clock);
+                                if (call_recvbuf && size >= 4u)
+                                    ee_mem_write32(st, call_recvbuf, (uint32_t)ok);
+                                if (call_recvbuf) for (uint32_t j = 0; j < 8u && j + 4u < size; ++j)
+                                    ee_mem_write8(st, call_recvbuf + 4u + j, clock[j]);
+                                r1224_ncmd_rend_arms++;
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number == 3u) {
-                                /* Round 474 (CDVDFSV protocol depth,
-                                 * direct continuation of Round 473's
-                                 * "implement the cdvdfsv" work):
-                                 * CD_SCMD_GETDISKTYPE, real
-                                 * "sceCdGetDiskType(void)" (ee/rpc/cdvd/
-                                 * src/scmd.c, fetched this round).
-                                 * UNLIKE every other real S-command
-                                 * (which reply a generic leading
-                                 * status/result int plus a separate
-                                 * secondary output word), GetDiskType's
-                                 * own real source reads its SINGLE
-                                 * reply word directly as the disc-type
-                                 * value itself: "result = *(int *)
-                                 * UNCACHED_SEG(sCmdRecvBuff); return
-                                 * result;" - there is no separate
-                                 * status/value split for this command.
-                                 * This project's existing generalized
-                                 * SIF_SID_CDVD_SCMD catch-all (Round
-                                 * 302/303, below) writes a hardcoded
-                                 * leading `1` for any rpc_number it
-                                 * does not specifically recognize -
-                                 * correct for the ~30 other real
-                                 * S-commands sharing that generic
-                                 * "nonzero success" shape, but WRONG
-                                 * here: per the real enum SCECdvdMediaType
-                                 * (common/include/libcdvd-common.h,
-                                 * fetched this round), value 1 is
-                                 * SCECdDETCT ("detecting disc type,
-                                 * try again"), not a valid completed
-                                 * disc-type result. If any real caller
-                                 * ever invokes GetDiskType against this
-                                 * project's existing catch-all, it
-                                 * would be told "still detecting"
-                                 * forever - a genuine, evidenced
-                                 * protocol bug, independent of whether
-                                 * the current organic-boot trace
-                                 * happens to reach this call site
-                                 * (live-instrumented this round across
-                                 * a ~35,000,000-instruction run
-                                 * covering the already-characterized
-                                 * Round 471 init burst window: zero
-                                 * hits observed, so this is real,
-                                 * evidenced protocol-completeness work,
-                                 * not a claimed fix for the current
-                                 * resting point). This project's own
-                                 * disc loader (core/iso_loader.c,
-                                 * iop_cdvd.c's own citation) normalizes
-                                 * every mounted image to flat
-                                 * 2048-byte-sector ISO9660 access and
-                                 * does not track or model CDDA audio
-                                 * tracks, so the only defensible real
-                                 * value (not a guess - directly read
-                                 * off the real enum) is SCECdPS2CD
-                                 * (0x12, "PS2 CD with no CDDA tracks")
-                                 * - the correct value for a real
-                                 * PS2-format CD image with no modeled
-                                 * audio-track content, and the same
-                                 * disc-format family (~667MB, CD-sized,
-                                 * not DVD-sized) as this project's own
-                                 * mounted test disc. */
-                                if (call_recvbuf != 0u) {
-                                    ee_mem_write32(st, call_recvbuf + 0u, 0x12u); /* real SCECdPS2CD - see comment */
-                                }
+                                /* sceCdGetDiskType returns one disc-type word, not a
+                                 * success flag. Share the MMIO drive state, including no disc. */
+                                if (call_recvbuf && ee_mem_read32(st, src + 0x2Cu) >= 4u)
+                                    ee_mem_write32(st, call_recvbuf, iop_cdvd_get_disc_type());
+                                r1224_ncmd_rend_arms++;
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number == 0x18u) {
                                 /* Round 302 (direct follow-up to Round
@@ -7144,6 +8801,14 @@ static int ee_step(void)
                                     ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real leading status/result int - CD_SCMD_FORBID_DVDP success placeholder (see comment) */
                                     ee_mem_write32(st, call_recvbuf + 4u, 0u); /* real secondary "forbid" output word - unmodeled, neutral 0 placeholder (see comment) */
                                 }
+                                r1224_ncmd_rend_arms++;
+                                    ee_arm_rpc_call_pending(call_cd);
+                            } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number>=0x0eu && rpc_number<=0x11u) {
+                                uint32_t payload=i?ee_mem_read32(st,dmat_ptr+(i-1u)*16u):0u;
+                                uint32_t send_size=ee_mem_read32(st,src+0x24u);
+                                uint32_t dma_size=i?ee_mem_read32(st,dmat_ptr+(i-1u)*16u+8u):0u;
+                                if(send_size>dma_size)send_size=dma_size;
+                                ee_cdvd_config_rpc(st,rpc_number,payload,send_size,call_recvbuf,ee_mem_read32(st,src+0x2cu));
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_CDVD_SCMD) {
 #ifdef R813_CDVDTRACE
@@ -7617,52 +9282,30 @@ static int ee_step(void)
                                 }
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_MTAP_PORT_OPEN && rpc_number == 1u && call_recvbuf != 0u) {
-                                /* Round 1039: real MTAPSERV_PORT_OPEN
-                                 * (sid=0x80000901, fno=1), identified
-                                 * via Round 1038's correlated dual-trace
-                                 * evidence as the exact real SIF-RPC
-                                 * call immediately preceding the
-                                 * SCPH-50004 diskless boot's previously
-                                 * -stuck 20th completion registration
-                                 * (0x8026F4D0 dispatcher, see sif.h
-                                 * citation above). Real EE client
-                                 * mtapPortOpen(int port)
-                                 * (ee/rpc/multitap/src/libmtap.c) sends
-                                 * a single 4-byte word (the port
-                                 * number) and reads back an 8-byte
-                                 * reply where word[0] is left
-                                 * unchanged (the real IOP handler only
-                                 * writes data[1]) and word[1] is the
-                                 * actual s32 result. Real IOP
-                                 * implementation
-                                 * (iop/sio/mtapman/src/freemtap.c
-                                 * mtapPortOpen()/get_slot_number())
-                                 * polls real SIO2 multitap hardware and
-                                 * returns a negative error code when no
-                                 * physical multitap responds. This
-                                 * project's diskless boot models no
-                                 * multitap peripheral, so the honest,
-                                 * evidence-grounded reply is: echo the
-                                 * requested port number unchanged in
-                                 * word[0] (matching the real protocol's
-                                 * echoed-payload shape), and a negative
-                                 * "no hardware responded" result in
-                                 * word[1] - mirroring this project's
-                                 * own already-established pattern for
-                                 * absent peripherals (SIF_SID_MCSERV's
-                                 * sceMcResNoEntry=-4 for no memory
-                                 * card). Using -1 here (generic
-                                 * negative failure, same sign/class as
-                                 * get_slot_number_check_td()'s real "no
-                                 * SIO2 response" return path) rather
-                                 * than a more specific ps2sdk error
-                                 * enum not directly confirmed for this
-                                 * exact call site - honest minimal
-                                 * negative result, not a fabricated
-                                 * specific code. */
-                                uint32_t mtap_port = ee_mem_read32(st, src + 0x2Cu); /* real SifRpcCallPkt_t payload offset - matches this project's own established convention (see SIF_SID_MCSERV's mcserv_recv_size read above) for reading the 4-byte send-buffer word immediately following the fixed 0x2C-byte packet header */
-                                ee_mem_write32(st, call_recvbuf + 0u, mtap_port); /* real word[0]: echoed port number, unchanged - matches real mtapPortOpen() reply shape (IOP handler only ever writes data[1]) */
-                                ee_mem_write32(st, call_recvbuf + 4u, (uint32_t)-1); /* real word[1]: negative result - honest "no multitap hardware present" for this diskless/no-peripheral boot, see comment above */
+                                /* R1255: port registration is distinct from peripheral presence.
+                                 * Verified against the supplied SCPH-50004 XMTAPMAN export
+                                 * ordinal 4, .text 0xC40..0xCD0: ports <4 return 1 on BOTH
+                                 * successful and failed SIO2 detection; invalid ports return 0.
+                                 * The open-source freemtap implementation differs here and
+                                 * must not override the actual Sony service contract.
+                                 * RpcServerPortOpen writes only data[1]; data[0] is the port. */
+                                /* CALL +0x2C is recv_size, not payload. _SifSendCmd places
+                                 * sendbuf in the preceding DMA descriptor. */
+                                uint32_t mtap_send = i ? ee_mem_read32(st, dmat_ptr + (i - 1u)*16u) : 0u;
+                                uint32_t mtap_port = mtap_send ? ee_mem_read32(st, mtap_send) : ~0u;
+                                ee_mem_write32(st, call_recvbuf + 0u, mtap_port);
+                                ee_mem_write32(st, call_recvbuf + 4u, mtap_port < 4u ? 1u : 0u);
+                                ee_arm_rpc_call_pending(call_cd);
+                            } else if ((call_sid == SIF_SID_MTAP_GET_CONNECTION ||
+                                        call_sid == SIF_SID_MTAP_PORT_CLOSE) &&
+                                       rpc_number == 1u && call_recvbuf != 0u) {
+                                /* rpcservers.c: echoed port at data[0], result at data[1].
+                                 * No multitap is attached; opening the monitor is not presence. */
+                                uint32_t ps = i ? ee_mem_read32(st, dmat_ptr+(i-1u)*16u) : 0u;
+                                uint32_t port = ps ? ee_mem_read32(st, ps) : ~0u;
+                                ee_mem_write32(st, call_recvbuf, port);
+                                ee_mem_write32(st, call_recvbuf+4u,
+                                    call_sid == SIF_SID_MTAP_PORT_CLOSE && port < 4u ? 1u : 0u);
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_RMMAN2 && rpc_number == 0u && call_recvbuf != 0u) {
                                 /* Round 1039b: real RMMAN2_RPC_ID
@@ -7718,66 +9361,34 @@ static int ee_step(void)
                                 ee_mem_write32(st, call_recvbuf + 4u, (uint32_t)-1); /* real cmd2.result: negative - honest "Remote Manager driver/hardware not present" for this diskless/no-peripheral boot, see comment above */
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_PAD_BIND_ID1_NEW && rpc_number == 1u && call_recvbuf != 0u) {
-                                /* Round 1040: real PAD_BIND_RPC_ID1_NEW
-                                 * (sid=0x80000100), the "new"-protocol
-                                 * PADMAN pad-bind service (sibling of the
-                                 * already-handled SIF_SID_PAD_BIND_ID1_OLD/
-                                 * ID2_OLD above) - identified in Round
-                                 * 1039's 2nd verification run (call=30) as
-                                 * the next previously-uncatalogued real
-                                 * service immediately downstream of the
-                                 * newly-fixed SIF_SID_RMMAN2 branch above,
-                                 * and confirmed by this project's own trace
-                                 * ([R933EVT] call_sid=0x80000100
-                                 * rpc_number=1) to exactly match real
-                                 * padPortInit()'s single
-                                 * sceSifCallRpc(&padsif[0], 1, 0, &buffer,
-                                 * sizeof(buffer), &buffer, sizeof(buffer),
-                                 * NULL, NULL) call (fno always literally 1,
-                                 * same "real command inside payload, not
-                                 * fno" pattern as SIF_SID_MTAP_PORT_OPEN/
-                                 * SIF_SID_RMMAN2 above - real payload
-                                 * command word is buffer.command=
-                                 * PAD_RPCCMD_INIT(0x10), see
-                                 * ee/rpc/pad/src/libpad.c padPortInit()).
-                                 * UNLIKE the two branches above, this is
-                                 * NOT an absent-accessory negative reply:
-                                 * real IOP-side RpcPadInit() (iop/input/
-                                 * padman/src/rpcserver.c) calls
-                                 * data[3]=padInit((void*)data[4]), and real
-                                 * padInit() (iop/input/padman/src/
-                                 * padInit.c) always returns 1 on success,
-                                 * only returning 0 on internal
-                                 * CreateEventFlag/CreateThread resource
-                                 * failure - it does NOT probe physical
-                                 * controller connectivity at all (that is
-                                 * discovered later via padPortOpen()/
-                                 * padGetState() polling, already wired to
-                                 * real iop_sio2 pad-connected state by this
-                                 * project's existing PAD_BIND_ID1_OLD/
-                                 * ID2_OLD branches per Round 663/664). So
-                                 * the honest, evidence-grounded reply here
-                                 * is a positive result=1 (module init
-                                 * success), not a fabricated negative
-                                 * error - sending -1 here would falsely
-                                 * claim the IOP-side PADMAN module itself
-                                 * failed to initialize, which real hardware
-                                 * (with or without a controller plugged in)
-                                 * never does. data[3] is the 4th u32 word
-                                 * of the SAME buffer used for both send and
-                                 * receive (send and recv addresses are
-                                 * identical in the real sceSifCallRpc()
-                                 * call above) - i.e. byte offset 12, NOT
-                                 * offset 4 like the two branches above -
-                                 * confirmed directly against the real
-                                 * client-side union's `padResult` member:
-                                 * struct{s32 unknown[3]; s32 result;}
-                                 * (ee/rpc/pad/src/libpad.c, full union read
-                                 * lines ~140-230). Only word 12 is written;
-                                 * the other bytes are the real buffer's own
-                                 * leftover request content (harmless, real
-                                 * client code never reads them back). */
-                                ee_mem_write32(st, call_recvbuf + 12u, 1u); /* real data[3]=padResult.result: positive "PADMAN module initialized" - see comment above, offset 12 confirmed against real padResult union member, NOT the offset-4 pattern used by the two sibling branches above */
+                                uint32_t ps = i ? ee_mem_read32(st, dmat_ptr + (i-1u)*16u) : 0u;
+                                uint32_t cmd = ps ? ee_mem_read32(st, ps) : 0u;
+                                if (cmd == 0x12u) {
+                                    ee_mem_write32(st, call_recvbuf + 12u,
+                                                   ee_rom_module_version(st->bios, "XPADMAN"));
+                                } else if (cmd == 0x10u || cmd == 0x0fu) {
+                                    ee_pad_new_reset();
+                                    if (cmd == 0x10u) g_ee_pad_new_stat = ps ? ee_mem_read32(st, ps+16u) : 0u;
+                                    ee_mem_write32(st, call_recvbuf + 12u, 1u);
+                                } else if (cmd == 1u || cmd == 0x0eu) {
+                                    uint32_t port = ee_mem_read32(st, ps+4u);
+                                    uint32_t slot = ee_mem_read32(st, ps+8u);
+                                    uint32_t area = cmd == 1u ? ee_mem_read32(st, ps+16u) : 0u;
+                                    int valid = port < 2u && slot < 4u;
+                                    if (cmd == 1u) valid = valid && area && !(area & 63u) &&
+                                        (area & 0x1fffffffu) <= EE_RAM_SIZE-256u;
+                                    if (valid) {
+                                        g_ee_pad_new_bound[port][slot] = area;
+                                        if (area) ee_pad_new_write_slots(st, area, port, slot);
+                                    }
+                                    ee_mem_write32(st, call_recvbuf+12u, valid ? 1u : 0u);
+                                    if (cmd == 1u) ee_mem_write32(st, call_recvbuf+20u, 0u);
+                                } else if (cmd == 0x0cu || cmd == 0x0du) {
+                                    ee_mem_write32(st, call_recvbuf+12u, cmd == 0x0cu ? 2u : 1u);
+                                } else {
+                                    /* Unimplemented operations must not claim success. */
+                                    ee_mem_write32(st, call_recvbuf + 12u, 0u);
+                                }
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_FILEIO) {
                                 /* Round 303 generalized catch-all for
@@ -7803,6 +9414,69 @@ static int ee_step(void)
                                  * and can be cited individually. */
                                 if (call_recvbuf != 0u) {
                                     ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real leading result placeholder - generalized FILEIO catch-all (see comment) */
+                                }
+                                ee_arm_rpc_call_pending(call_cd);
+                            } else if (call_sid == 0x12u &&
+                                       (rpc_number == 1u || rpc_number == 2u || rpc_number == 5u)) {
+                                /* HDDLOAD registers RPC SID 0x12. No ATA disk or
+                                 * external flash filesystem is mounted by this port.
+                                 * SCPH-50004 HDDLOAD: fn1 ATA init failure -> -1;
+                                 * fn2 HDD read failure and fn5 both xfrom file opens
+                                 * failing -> -3. The old universal zero reply falsely
+                                 * claimed a KELF had been loaded at the requested EE
+                                 * address and sent OSDSYS into XFROMBOOT.
+                                 * These are service errors, followed by normal REND. */
+                                if (call_recvbuf != 0u && ee_mem_read32(st, src + 0x2cu) >= 4u)
+                                    ee_mem_write32(st, call_recvbuf, rpc_number == 1u ? (uint32_t)-1 : (uint32_t)-3);
+                                ee_arm_rpc_call_pending(call_cd);
+                            } else {
+                                /* Round 1097 (task #447/#536): universal
+                                 * completion-signal fallback for any real
+                                 * call_sid this file has no dedicated
+                                 * branch for. Before this, an unrecognized
+                                 * call_sid fell through this entire
+                                 * if/else-if chain with NO action:
+                                 * ee_arm_rpc_call_pending() was never
+                                 * called, so the real client's own
+                                 * WaitSema on its completion semaphore
+                                 * (cd_ptr+0x08, the same real
+                                 * SifRpcClientData_t field Patch 2/Round
+                                 * 1074 already reads generically) can
+                                 * never be satisfied - a silent, permanent
+                                 * protocol stall for whatever request hit
+                                 * this case.
+                                 *
+                                 * Live-captured example this round:
+                                 * call_sid=0x80000596, not present as a
+                                 * 32-bit literal or lui/ori pair anywhere
+                                 * in the loaded OSDSYS ELF, and not part
+                                 * of the real IOP-side CDVDFSV server's
+                                 * own sceSifRegisterRpc() list
+                                 * (0x80000592/593/595/597/59A/59C) - its
+                                 * true real-hardware identity is not
+                                 * established (consistent with Round
+                                 * 1040/1041's own prior documentation of
+                                 * this same gap).
+                                 *
+                                 * This branch deliberately does not
+                                 * fabricate a call_sid-specific reply
+                                 * body - it only guarantees the same
+                                 * generic completion SIGNAL every other
+                                 * branch in this chain already sends,
+                                 * using the same neutral "write a single
+                                 * 0 result word if a recvbuf was
+                                 * supplied" convention already
+                                 * established for this file's other
+                                 * catch-alls (SIF_SID_SPU2DRV's,
+                                 * SIF_SID_CDVD_NCMD's, and
+                                 * SIF_SID_FILEIO's own catch-alls,
+                                 * directly above). This unblocks
+                                 * whatever genuinely waits on the call's
+                                 * own completion without claiming
+                                 * anything about the service's real
+                                 * behavior. */
+                                if (call_recvbuf != 0u) {
+                                    ee_mem_write32(st, call_recvbuf + 0u, 0u);
                                 }
                                 ee_arm_rpc_call_pending(call_cd);
                             }
@@ -7895,7 +9569,72 @@ static int ee_step(void)
                 st->next_pc = this_pc + 8u;
                 return 1;
             }
-            if (sysnum == 69) {
+            if (sysnum == 69 || sysnum == -70) {
+                /* Round 1094 UPDATE (dead-code note, mirrors this file's
+                 * own established pattern - see the g_ee_sema[]-family
+                 * comment near this function's later WaitSema handlers):
+                 * the sysnum==-70 half of this combined branch is now
+                 * CONFIRMED DEAD CODE for any syscall actually claimed by
+                 * ee_hle_thread_try_handle() upstream (called first in
+                 * this function's own dispatch, unconditional early
+                 * "return 1" on match) - which now includes -70 itself,
+                 * since Round 1094 added it to that function's handled[]
+                 * table with a real handler operating on its own live
+                 * g.semas[] array (see ee_hle_thread.c). This g_ee_sema[]
+                 * block below is left in place, unreached, rather than
+                 * deleted, exactly like this file's other now-dead
+                 * WaitSema-family handlers - it was itself a real,
+                 * evidence-driven fix for the OLD, now-superseded
+                 * dispatch order and remains correct in isolation; it
+                 * simply never runs anymore because -70 is intercepted
+                 * one layer up. sysnum==69 (plain PollSema) was NEVER
+                 * reachable here either, for the same reason (69 has
+                 * been in ee_hle_thread.c's handled[] table since before
+                 * Round 1093). Root cause + live verification numbers:
+                 * see STATUS.md Round 1094. */
+                /* Round 1093 (task #1028): sysnum==-70 (iPollSema, the
+                 * interrupt-context/non-rescheduling form) ADDED to
+                 * this same block - real ps2sdk syscallnr.h/kernel.h:
+                 * "extern s32 iPollSema(s32 sema_id);", __NR_iPollSema
+                 * = -0x46 (-70). Live-captured, evidence-driven fix:
+                 * an instrumented SCPH-50004 diskless-boot trace this
+                 * round caught OSDSYS's real, AddIntcHandler-registered
+                 * VBLANK_START handler (0x00208088, registered for
+                 * real at call_pc=0x00257604) calling iPollSema(a0=
+                 * sema 5's handle) via this exact syscall stub
+                 * (0x00257980, encoding "addiu v1,zero,-70; syscall")
+                 * on every single real VBLANK_START firing (5 handler
+                 * entries captured, instr~127.08M-127.11M) - and
+                 * because sysnum==-70 was previously routed to a real
+                 * MIPS exception (see the sysnum==-72/-73 block above)
+                 * while sysnum==64/66/68/69 (CreateSema/SignalSema/
+                 * WaitSema/PollSema) are all handled via THIS project's
+                 * own software g_ee_sema[] table, the real BIOS-
+                 * resident exception handler that ran for -70 was
+                 * operating on a kernel-internal semaphore table this
+                 * project's software-emulated CreateSema/SignalSema
+                 * calls never actually populate - so it returned -1
+                 * (0xFFFFFFFF) on every call, live-captured via direct
+                 * register instrumentation at the call site 100% of
+                 * 84+ consecutive real invocations. This -1 then failed
+                 * the VBLANK_START handler's own subsequent gate
+                 * check (0x002080c8: "bnel v0,v1,skip"), permanently
+                 * skipping its real, evidenced iSignalSema(wid7)/
+                 * iSignalSema(wid8) calls at 0x0020813c/0x002080f8 -
+                 * directly explaining Round 1092's "signal_calls=0"
+                 * finding for wid=7/wid=8 (tid 5/tid 2's WaitSema
+                 * park). This fix makes iPollSema use the SAME
+                 * software semaphore model its own already-shipped
+                 * sibling iSignalSema(-67, see sysnum==66||sysnum==-67
+                 * above) already uses - an internal-consistency fix
+                 * within this project's own existing architecture,
+                 * not a PCSX2-HLE shortcut (no PCSX2 source consulted
+                 * for this specific fix; the real ps2sdk-cited syscall
+                 * NUMBER -70 and the live-captured call-site evidence
+                 * are the sole basis). PollSema/iPollSema real
+                 * semantics are identical except for the non-blocking-
+                 * reschedule distinction, which is irrelevant here
+                 * since neither ever blocks the caller. */
                 /* 69 (0x45) PollSema - real ps2sdk
                  * (ee/kernel/include/kernel.h "extern s32
                  * PollSema(s32 sema_id);", syscallnr.h's
@@ -8220,17 +9959,21 @@ static int ee_step(void)
             st->hi.ud0 = sext32((uint32_t)(res >> 32));
             if (rd) GPR(rd) = st->lo.ud0;
         } break;
-        case 0x1A: /* DIV */
-            if (rt32 != 0) {
+        case 0x1A: /* DIV: R5900 zero/overflow results; no host UB. */
+            if (rs32 == 0x80000000u && rt32 == 0xffffffffu) {
+                st->lo.ud0 = sext32(0x80000000u);
+                st->hi.ud0 = 0;
+            } else if (rt32 != 0) {
                 st->lo.ud0 = sext32((uint32_t)((int32_t)rs32 / (int32_t)rt32));
                 st->hi.ud0 = sext32((uint32_t)((int32_t)rs32 % (int32_t)rt32));
+            } else {
+                st->lo.ud0 = (int32_t)rs32 < 0 ? 1 : UINT64_MAX;
+                st->hi.ud0 = sext32(rs32);
             }
             break;
         case 0x1B: /* DIVU */
-            if (rt32 != 0) {
-                st->lo.ud0 = sext32(rs32 / rt32);
-                st->hi.ud0 = sext32(rs32 % rt32);
-            }
+            st->lo.ud0 = rt32 ? sext32(rs32 / rt32) : UINT64_MAX;
+            st->hi.ud0 = sext32(rt32 ? rs32 % rt32 : rs32);
             break;
         case 0x20: /* ADD */
         case 0x21: /* ADDU */   if (rd) GPR(rd) = sext32(rs32 + rt32); break;
@@ -8441,6 +10184,20 @@ static int ee_step(void)
                 st->cop0[rd] = rt32;
             }
             break;
+        case 0x08: { /* BC0F/T/FL/TL: real DMA completion condition. */
+            /* PCSX2 COP0.cpp::CPCOND0 and Dmac.h: CIS and CPC both
+             * occupy bits 0..9. Every selected completion must be set. */
+            dma_state_t *d = dma_get_state();
+            int condition = ((d->d_stat | ~d->d_pcr) & 0x3ffu) == 0x3ffu;
+            unsigned kind = rt & 3u;
+            int taken = condition == (int)(kind & 1u);
+            if (taken) BRANCH_TO(this_pc + 4u + (uint32_t)(imm * 4));
+            else if (kind & 2u) {
+                st->pc = fallthrough_pc + 4u;
+                st->next_pc = fallthrough_pc + 8u;
+            } else st->branch_pending = 1u;
+            break;
+        }
         default:
             if (rs & 0x10) {
                 /* "CO" format: rs's top bit set means the real
@@ -8479,6 +10236,9 @@ static int ee_step(void)
                      * through the BRANCH_TO() delay-slot convention. */
                 {
                     uint32_t target;
+                    r1189_eret_count++;
+                    uint32_t r1126_epc = st->cop0[14];
+                    uint32_t r1126_status_before = st->cop0[12];
                     if (st->cop0[12] & 0x4u) { /* Status.ERL */
                         target = st->cop0[30]; /* ErrorEPC */
                         st->cop0[12] &= ~0x4u;
@@ -8500,7 +10260,19 @@ static int ee_step(void)
                      * a thread's context - so this is a strictly more
                      * hardware-faithful integration point, not just a
                      * regression workaround. */
+#ifdef R1126_ERET_TRACE
+                    {
+                        int r1126_old_tid = ee_hle_thread_get_current_thread_id();
+                        ee_hle_thread_check_preempt(st);
+                        int r1126_new_tid = ee_hle_thread_get_current_thread_id();
+                        uint32_t r1126_new_status = ee_hle_thread_get_status(r1126_new_tid);
+                        fprintf(stderr, "[R1126ERET] EPC=0x%08x target_pc=0x%08x old_tid=%d next_tid=%d next_pc=0x%08x status_before=0x%08x status_after=0x%08x next_status=0x%08x\n",
+                                r1126_epc, target, r1126_old_tid, r1126_new_tid, st->pc,
+                                r1126_status_before, st->cop0[12], r1126_new_status);
+                    }
+#else
                     ee_hle_thread_check_preempt(st);
+#endif
                     break;
                 }
                 case 0x38: /* EI - ported from PCSX2's COP0::EI(). Gated
@@ -8582,6 +10354,7 @@ static int ee_step(void)
                     st->tlb[j].entry_hi  = st->cop0[10];
                     st->tlb[j].entry_lo0 = st->cop0[2];
                     st->tlb[j].entry_lo1 = st->cop0[3];
+                    r1191_tlbwr_count++;
                     break;
                 }
                 case 0x08: /* TLBP - Probe TLB for Matching Entry.
@@ -8624,7 +10397,7 @@ static int ee_step(void)
             } else {
                 char buf[96];
                 snprintf(buf, sizeof(buf),
-                         "unimplemented COP0 sub-opcode (rs=0x%02X, pc=0x%08X, BC0 not implemented)",
+                         "unimplemented COP0 sub-opcode (rs=0x%02X, pc=0x%08X)",
                          (unsigned int)rs, (unsigned int)this_pc);
                 halt(buf);
                 return 1;
@@ -8987,6 +10760,10 @@ static int ee_step(void)
                     if (!(destmask & (0x8u >> lane))) continue;
                     uint32_t ua = vu0_vf_read_lane(st, fs, (uint32_t)lane);
                     uint32_t ub = vu0_vf_read_lane(st, ft, (uint32_t)lane);
+                    if(funct==0x2bu||funct==0x2fu) {
+                        vu0_vf_write_lane(st,fd,(uint32_t)lane,vu_minmax_bits(ua,ub,funct==0x2fu));
+                        continue;
+                    }
                     float a, b, r; uint32_t ur;
                     memcpy(&a, &ua, 4);
                     memcpy(&b, &ub, 4);
@@ -9050,6 +10827,10 @@ static int ee_step(void)
                 for (int lane = 0; lane < 4; lane++) {
                     if (!(destmask & (0x8u >> lane))) continue;
                     uint32_t ua = vu0_vf_read_lane(st, fs, (uint32_t)lane);
+                    if(op_kind==4u||op_kind==5u) {
+                        vu0_vf_write_lane(st,fd,(uint32_t)lane,vu_minmax_bits(ua,ub,op_kind==5u));
+                        continue;
+                    }
                     float a, r; uint32_t ur;
                     memcpy(&a, &ua, 4);
                     if (op_kind == 0) r = a + b;                     /* VADDx/y/z/w */
@@ -9060,7 +10841,7 @@ static int ee_step(void)
                     } else if (op_kind == 3) {                        /* VMSUBx/y/z/w */
                         uint32_t uacc = st->vu0_acc[lane]; float acc; memcpy(&acc, &uacc, 4);
                         r = acc - a * b;
-                    } else if (op_kind == 4) r = (a > b) ? a : b;    /* VMAXx/y/z/w or VMAXi */
+                    } else if (op_kind == 4) r = (a > b) ? a : b; /* raw MIN/MAX handled before FP below */
                     else if (op_kind == 5) r = (a < b) ? a : b;      /* VMINIx/y/z/w or VMINIi */
                     else r = a * b;                                  /* VMULx/y/z/w or VMULq/VMULi */
                     memcpy(&ur, &r, 4);
@@ -9136,7 +10917,7 @@ static int ee_step(void)
                     uint32_t addr_vi = vu0_vi_read(st, fs);
                     uint32_t data = vu0_vi_read(st, ft);
                     uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                    memcpy(st->vu0_mem + off, &data, 4);
+                    vu0_mem_write32(st, off, data);
                 } else if (idx == 53) {
                     /* VSQI: store VF[fs] (data source) lanes selected
                      * by destmask to VU0 mem at quadword index VI[ft]
@@ -9156,7 +10937,7 @@ static int ee_step(void)
                         if (!(destmask & (0x8u >> lane))) continue;
                         uint32_t val = vu0_vf_read_lane(st, fs, (uint32_t)lane);
                         uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                        memcpy(st->vu0_mem + off, &val, 4);
+                        vu0_mem_write32(st, off, val);
                     }
                     vu0_vi_write(st, ft, addr_vi + 1);
                 } else if (idx == 52) {
@@ -9177,7 +10958,7 @@ static int ee_step(void)
                     for (int lane = 0; lane < 4; lane++) {
                         if (!(destmask & (0x8u >> lane))) continue;
                         uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                        uint32_t val; memcpy(&val, st->vu0_mem + off, 4);
+                        uint32_t val = vu0_mem_read32(st, off);
                         vu0_vf_write_lane(st, ft, (uint32_t)lane, val);
                     }
                     vu0_vi_write(st, fs, (addr_vi + 1) & 0xFFFFu);
@@ -9194,7 +10975,7 @@ static int ee_step(void)
                     for (int lane = 0; lane < 4; lane++) {
                         if (!(destmask & (0x8u >> lane))) continue;
                         uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                        uint32_t val; memcpy(&val, st->vu0_mem + off, 4);
+                        uint32_t val = vu0_mem_read32(st, off);
                         vu0_vf_write_lane(st, ft, (uint32_t)lane, val);
                     }
                 } else if (idx == 55) {
@@ -9211,7 +10992,7 @@ static int ee_step(void)
                         if (!(destmask & (0x8u >> lane))) continue;
                         uint32_t val = vu0_vf_read_lane(st, fs, (uint32_t)lane);
                         uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                        memcpy(st->vu0_mem + off, &val, 4);
+                        vu0_mem_write32(st, off, val);
                     }
                 } else if (idx == 29 || (idx >= 16 && idx <= 23) || idx == 48 || idx == 49) {
                     /* Unary/data-movement cluster (Round 29 continued,
@@ -9832,17 +11613,21 @@ static int ee_step(void)
             st->hi.ud1 = sext32((uint32_t)(res >> 32));
             if (rd) GPR(rd) = st->lo.ud1;
         } break;
-        case 0x1A: /* DIV1 */
-            if (rt32 != 0) {
+        case 0x1A: /* DIV1: R5900 zero/overflow results; no host UB. */
+            if (rs32 == 0x80000000u && rt32 == 0xffffffffu) {
+                st->lo.ud1 = sext32(0x80000000u);
+                st->hi.ud1 = 0;
+            } else if (rt32 != 0) {
                 st->lo.ud1 = sext32((uint32_t)((int32_t)rs32 / (int32_t)rt32));
                 st->hi.ud1 = sext32((uint32_t)((int32_t)rs32 % (int32_t)rt32));
+            } else {
+                st->lo.ud1 = (int32_t)rs32 < 0 ? 1 : UINT64_MAX;
+                st->hi.ud1 = sext32(rs32);
             }
             break;
         case 0x1B: /* DIVU1 */
-            if (rt32 != 0) {
-                st->lo.ud1 = sext32(rs32 / rt32);
-                st->hi.ud1 = sext32(rs32 % rt32);
-            }
+            st->lo.ud1 = rt32 ? sext32(rs32 / rt32) : UINT64_MAX;
+            st->hi.ud1 = sext32(rt32 ? rs32 % rt32 : rs32);
             break;
         case 0x34: /* PSLLH */ if (rd) for (int n = 0; n < 8; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)(lane_h(st->gpr[rt], n) << (sa & 0xF))); break;
         case 0x36: /* PSRLH */ if (rd) for (int n = 0; n < 8; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)(lane_h(st->gpr[rt], n) >> (sa & 0xF))); break;
@@ -10230,7 +12015,7 @@ static int ee_step(void)
                 if (rd) for (int n = 0; n < 16; n++)
                     set_lane_b(&st->gpr[rd], n, (lane_b(st->gpr[rs], n) == lane_b(st->gpr[rt], n)) ? 0xFFu : 0x00u);
                 break;
-            case 0x10: /* PADDUW */ if (rd) for (int n = 0; n < 4; n++) set_lane_w(&st->gpr[rd], n, lane_w(st->gpr[rs], n) + lane_w(st->gpr[rt], n)); break;
+            case 0x10: /* PADDUW: unsigned saturation, primary MMI.cpp _PADDUW. */ if (rd) for (int n = 0; n < 4; n++) { uint64_t sum=(uint64_t)lane_w(st->gpr[rs],n)+lane_w(st->gpr[rt],n);set_lane_w(&st->gpr[rd],n,sum>UINT32_MAX?UINT32_MAX:(uint32_t)sum); } break;
             case 0x11: /* PSUBUW */ if (rd) for (int n = 0; n < 4; n++) { uint32_t a = lane_w(st->gpr[rs], n), b = lane_w(st->gpr[rt], n); set_lane_w(&st->gpr[rd], n, (a > b) ? a - b : 0); } break;
             case 0x12: /* PEXTUW */
                 if (rd) {
@@ -10240,7 +12025,7 @@ static int ee_step(void)
                     st->gpr[rd] = out;
                 }
                 break;
-            case 0x14: /* PADDUH */ if (rd) for (int n = 0; n < 8; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)(lane_h(st->gpr[rs], n) + lane_h(st->gpr[rt], n))); break;
+            case 0x14: /* PADDUH */ if (rd) for (int n = 0; n < 8; n++) { uint32_t sum=(uint32_t)lane_h(st->gpr[rs],n)+lane_h(st->gpr[rt],n);set_lane_h(&st->gpr[rd],n,sum>UINT16_MAX?UINT16_MAX:(uint16_t)sum); } break;
             case 0x15: /* PSUBUH */ if (rd) for (int n = 0; n < 8; n++) { uint16_t a = lane_h(st->gpr[rs], n), b = lane_h(st->gpr[rt], n); set_lane_h(&st->gpr[rd], n, (a > b) ? (uint16_t)(a - b) : 0); } break;
             case 0x16: /* PEXTUH */
                 if (rd) {
@@ -10252,7 +12037,7 @@ static int ee_step(void)
                     st->gpr[rd] = out;
                 }
                 break;
-            case 0x18: /* PADDUB */ if (rd) for (int n = 0; n < 16; n++) set_lane_b(&st->gpr[rd], n, (uint8_t)(lane_b(st->gpr[rs], n) + lane_b(st->gpr[rt], n))); break;
+            case 0x18: /* PADDUB */ if (rd) for (int n = 0; n < 16; n++) { uint32_t sum=(uint32_t)lane_b(st->gpr[rs],n)+lane_b(st->gpr[rt],n);set_lane_b(&st->gpr[rd],n,sum>UINT8_MAX?UINT8_MAX:(uint8_t)sum); } break;
             case 0x19: /* PSUBUB */ if (rd) for (int n = 0; n < 16; n++) { uint8_t a = lane_b(st->gpr[rs], n), b = lane_b(st->gpr[rt], n); set_lane_b(&st->gpr[rd], n, (a > b) ? (uint8_t)(a - b) : 0); } break;
             case 0x1A: /* PEXTUB */
                 if (rd) {
@@ -10766,7 +12551,11 @@ static int ee_step(void)
     case 0x24: /* LBU */ if (rt) GPR(rt) = ee_mem_read8(st, rs32 + imm); else ee_mem_read8(st, rs32 + imm); break;
     case 0x25: /* LHU */ if (rt) GPR(rt) = ee_mem_read16(st, rs32 + imm); else ee_mem_read16(st, rs32 + imm); break;
     case 0x27: /* LWU */ if (rt) GPR(rt) = ee_mem_read32(st, rs32 + imm); else ee_mem_read32(st, rs32 + imm); break;
-    case 0x37: /* LD */  if (rt) GPR(rt) = ee_mem_read64(st, rs32 + imm); else ee_mem_read64(st, rs32 + imm); break;
+    case 0x37: /* LD */ {
+        uint32_t ld_addr = rs32 + imm;
+        uint64_t ld_val = ee_mem_read64(st, ld_addr);
+        if (rt) GPR(rt) = ld_val;
+    } break;
 
     case 0x2C: /* SDL - Store Doubleword Left. Standard MIPS III
                 * counterpart to SWL, scaled from 4 bytes to 8 (3
@@ -10978,6 +12767,10 @@ static int ee_step(void)
     }
     }
 
+    if (r1239_hit == 1u && this_pc == 0x0100ecccu) {
+        r1239_snap[12]=st->pc; r1239_snap[13]=st->next_pc; r1239_snap[14]=(uint32_t)st->branch_pending; r1239_snap[15]=(uint32_t)st->gpr[2].ud0; r1239_hit=2u;
+    }
+
 #undef GPR
 #undef GPR1
 #undef BRANCH_TO
@@ -10989,95 +12782,11 @@ ee_jit_done: /* Round 887: JIT-executed instructions jump straight here,
               * would - see ee_jit_try_execute_one()'s call site comment
               * and include/core/recompiler/ee_jit.h for the full
               * rationale. */
-    st->gpr[0].ud0 = 0;
-    st->gpr[0].ud1 = 0;
-    st->instructions_executed++;
-
-    /* COP0 Count (register 9): a real, free-running counter compared
-     * against Compare (register 11) by real hardware/BIOS delay loops
-     * (a classic "MFC0 Count; SUBU; SLTU; BNE" busy-wait, e.g. the one
-     * found at pc=0x9FC42500 in the real SCPH-10000 BIOS - see
-     * docs/STATUS.md's "round 8"). Before this, Count never advanced
-     * at all (only ever written via explicit MTC0), so any such delay
-     * loop ran forever - not a translation/exception bug, just a
-     * missing free-running counter. Real PCSX2 advances Count lazily
-     * by however many bus cycles (cpuRegs.cycle) elapsed since the
-     * last read (COP0.cpp's MFC0 case 9); this project has no cycle-
-     * accurate timing model at all, so it advances Count by a fixed 1
-     * per instruction instead - a real, working free-running counter
-     * (monotonic, comparable against Compare, exactly the documented
-     * COP0 Count/Compare mechanism), just without precise bus-clock-
-     * rate fidelity, which isn't verifiable without a real timing
-     * model and isn't needed just to let a delay loop terminate. */
-    st->cop0[9]++;
-
-    /* Latch unconditionally - see ee_latch_timer_interrupt()'s comment
-     * for why this can't be skipped even mid-delay-slot. Only actually
-     * TAKING the (possibly already-latched) interrupt is deferred to a
-     * genuine instruction boundary: st->branch_pending here reflects
-     * whether the NEXT instruction (whatever this step just set
-     * st->pc to) is itself a delay slot. */
-    ee_latch_timer_interrupt(st);
-    /* Task #179: raised unconditionally, every instruction, same
-     * reasoning as ee_latch_timer_interrupt() above - VBLANK is a
-     * real, free-running hardware timing signal, not something that
-     * should be skipped mid-delay-slot. Only the higher-level "should
-     * we actually take an interrupt right now" decision (via
-     * ee_check_intc_interrupt() below) is deferred to a genuine
-     * instruction boundary. */
-    ee_check_vblank(st);
-    ee_check_boot_unblock_selfloop(st); /* Round 161 */
-    ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
-    ee_check_browser_menu_escalation_heuristic(st); /* Round 610 (task #536) */
-    ee_check_browser_idle_carousel(st); /* Round 696 (task #447/#536) */
-    ee_check_boot_unblock_sbus_wait(st); /* Round 178 (task #344) - EXPERIMENTAL BRANCH ONLY */
-    ee_check_gs_vsync(st); /* Round 87 (127th finding) */
-    ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
-    sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
-    ee_check_rpcinit_pending(st); /* task #187 (63rd finding) */
-    ee_check_rpc_bind_pending(st); /* task #192 (68th finding) */
-    ee_check_cdvd_ncmd_pending(st); /* Round 347 (IOP RPC re-entry architecture) */
-    if (!st->branch_pending) {
-        ee_check_timer_interrupt(st, st->pc);
-        /* Task #176: same instruction-boundary gating as the timer
-         * check above - IP2/IP3 are level-triggered external lines
-         * (no separate "latch" step needed the way IP7's Count/Compare
-         * match does; the pending condition is just read live off
-         * ee_intc_pending()/dma_dmac_interrupt_pending() each time). */
-        ee_check_intc_interrupt(st, st->pc);
-        ee_check_dmac_interrupt(st, st->pc);
-        /* Round 597/598 (task #447/#536): forced preemption used to be
-         * called unconditionally right here, on every single genuine
-         * instruction boundary - see ee_hle_thread_check_preempt()'s
-         * own definition for the original Round 596/597 rationale.
-         * Round 598 found a real, confirmed regression from that
-         * per-instruction granularity: it let a thread get preempted
-         * at literally any point in its own code, not just at real
-         * hardware's actual integration point (kernel-level forced
-         * preemption specifically on interrupt RETURN, i.e. ERET).
-         * Against the real, user-supplied Tekken Tag Tournament
-         * (Europe) (Demo) disc image, this measurably and permanently
-         * trapped the OSDSYS animation thread inside EE kernel
-         * interrupt-dispatch code after the first VBLANK - baseline
-         * (pre-Round-597) kept rendering real frames (VU1 instruction
-         * count climbing) across the same instruction window; the
-         * per-instruction-preempt tree never executed another VU1
-         * instruction again. The call has been moved to fire only from
-         * the real ERET handler below (case 0x18), immediately after
-         * Status.EXL/ERL is cleared and normal thread-level execution
-         * resumes - the same "only re-check the ready queue on
-         * interrupt return" moment Round 596's own docs already
-         * identified as real hardware's actual mechanism. This still
-         * fully answers Round 596's original finding (a WakeupThread'd
-         * higher-priority READY thread now gets scheduled the next
-         * time any real interrupt returns, which happens roughly every
-         * EE_CYCLES_PER_FRAME_NTSC instructions via ee_check_vblank()),
-         * just without ever firing mid-instruction inside a thread's
-         * own non-interrupt code. */
-    }
-
+    ee_retire_instruction(st,r1176_sample);
     return 0;
 }
+
+static int ee_step(void){return ee_step_budget(1u,NULL);}
 
 /* Round 781 (task #803): see ee_core.h's declaration comment for the
  * full rationale. This is a faithful port of the "keep real hardware
@@ -11094,19 +12803,21 @@ ee_jit_done: /* Round 887: JIT-executed instructions jump straight here,
 void ee_core_park_tick(ee_state_t *st)
 {
     st->cop0[9]++;
+    ee_irq_tick();
     ee_latch_timer_interrupt(st);
     ee_check_vblank(st);
     ee_check_boot_unblock_selfloop(st); /* Round 161 */
     ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
     ee_check_browser_menu_escalation_heuristic(st); /* Round 610 (task #536) */
     ee_check_browser_idle_carousel(st); /* Round 696 (task #447/#536) */
-    ee_check_boot_unblock_sbus_wait(st); /* Round 178 (task #344) - EXPERIMENTAL BRANCH ONLY */
+    if (EE_SBUS_WAIT_PC_MATCH(st->pc)) ee_check_boot_unblock_sbus_wait(st); /* R1180 hot reject; same R178 semantics */
     ee_check_gs_vsync(st); /* Round 87 (127th finding) */
     ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
     sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
     ee_check_rpcinit_pending(st);
     ee_check_rpc_bind_pending(st);
     ee_check_cdvd_ncmd_pending(st);
+    ee_latch_intc_interrupt(st);
     if (!st->branch_pending) {
         /* Round 303's real, verified fix (see the dead-code handler's
          * own long citation trail above for the full real-hardware
@@ -11184,6 +12895,77 @@ int ee_core_step(void)
     return ee_step();
 }
 
+/* Precise block entry never speculatively invokes device reads or faults.
+ * Low kernel code and historical PC guards remain on the original step path. */
+static const uint8_t *ee_core_block_pointer(ee_state_t *st,uint32_t pc,uint32_t *available)
+{
+    if(!st||(pc&3u)||!pc)return NULL;
+    uint32_t phys;
+    if((pc&0xc0000000u)==0x80000000u)phys=pc&0x1fffffffu;
+    else {if(pc>=0x10000000u||!ee_tlb_translate(st,pc,&phys))return NULL;}
+    if(phys>=0x1fc00000u) {
+        uint32_t off=phys-0x1fc00000u;
+        if(st->bios&&off<=st->bios->size&&st->bios->size-off>=4u) {
+            *available=st->bios->size-off;return st->bios->data+off;
+        }
+    } else if(phys>=0x200000u&&st->ram&&phys<=st->ram_size&&st->ram_size-phys>=4u) {
+        *available=st->ram_size-phys;return st->ram+phys;
+    }
+    return NULL;
+}
+int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word)
+{
+    uint32_t available;const uint8_t *p=ee_core_block_pointer(st,pc,&available);
+    if(!p||!word)return 0;
+    *word=(uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+    return 1;
+}
+unsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit)
+{
+    uint32_t available;const uint8_t *p=ee_core_block_pointer(st,pc,&available);
+    if(!p||!words||limit>8u)return 0;
+    unsigned page_words=(4096u-(pc&4095u))/4u;
+    if(limit>page_words)limit=page_words;
+    if(limit>available/4u)limit=available/4u;
+    /* One mapping lookup for speculative formation inside the same 4 KiB
+     * source page. Execution still rereads mapping/word at EVERY retirement. */
+    for(unsigned n=0;n<limit;n++,p+=4)
+        words[n]=(uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+    return limit;
+}
+int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc)
+{
+    if(st!=&g_state||st->halted||st->idle||st->branch_pending||st->pc!=pc||
+       st->next_pc!=pc+4u)return 0;
+    st->exc_this_pc=pc;st->exc_in_delay_slot=0;st->exc_raised_this_step=0;st->mem_tlb_miss=0;
+    st->gpr[0].ud0=0;st->gpr[0].ud1=0;
+    st->pc=pc+4u;st->next_pc=pc+8u;
+    return 1;
+}
+int ee_core_block_prepare(ee_state_t *st,uint32_t pc,uint32_t instruction)
+{
+    uint32_t actual;
+    if(!ee_core_block_peek(st,pc,&actual)||actual!=instruction)return 0;
+    return ee_core_block_prepare_fetched(st,pc);
+}
+void ee_core_block_commit(ee_state_t *st){ee_retire_instruction(st,0);}
+
+unsigned ee_core_step_n(unsigned n)
+{
+    unsigned retired = 0;
+    while (retired < n && !g_state.halted) {
+        uint64_t before = g_state.instructions_executed;
+        unsigned block_retired=0;
+        int halted = ee_step_budget(n-retired,&block_retired);
+        if(block_retired)retired+=block_retired;
+        else if (g_state.instructions_executed != before)
+            retired++;
+        if (halted)
+            break;
+    }
+    return retired;
+}
+
 void ee_core_run(const bios_image_t *bios)
 {
     (void)bios;
@@ -11239,3 +13021,7 @@ void ee_core_shutdown(void)
         g_state.ram = NULL;
     }
 }
+
+/* R1249: these shared helper counters also exist in host interpreter builds. */
+volatile uint64_t g_r1175_jit_mmi_muldiv_calls = 0;
+volatile uint64_t g_r1175_jit_pmfhl_calls = 0;

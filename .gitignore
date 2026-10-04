@@ -23,3 +23,40 @@ tests/test_*
 # pre-commit leak-check grep.
 checkpoints/
 *.ckpt
+
+# R1250 verification/build mode outputs
+build-r1250-*/
+outputs/
+*.so
+
+# Public repository: local builds and private runtime material
+build-r*/
+*.o
+*.a
+*.d
+*.iso
+*.chd
+*.bin
+*.cue
+*.mdf
+*.mds
+*.z[0-9][0-9]
+*.zip
+*.7z
+*.log
+*.ckpt*
+*.raw
+*.ppm
+*.pgm
+*.tar*
+*.gz
+*.tmp
+__pycache__/
+.private*/
+private*/
+screenshots/
+captures/
+
+# Source history belongs in Git, not copied backup trees
+backups/
+*.bak

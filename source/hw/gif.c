@@ -4,19 +4,24 @@
 
 #include "core/hw/gif.h"
 #include "core/hw/gs_mem.h"
+#include "core/hw/gs_gx.h"
 #include <string.h>
 #include <math.h> /* Round 28: log2() for mipmap LOD selection - see rasterize_sprite()'s mip-level logic */
 
 static gif_state_t g_gif;
+static int g_gx_opaque; /* CT24 GPU import preserves destination alpha. */
+static int g_texel_cache_enabled;
+static uint32_t g_texel_tags[128],g_texel_values[128];
+static double g_sprite_u[640];
+static uint64_t g_sprite_cached_draws,g_sprite_fast_rows;
+static uint64_t g_draw_routes[10]; /* overlapping state reasons, per primitive */
+uint64_t gif_get_render_work(unsigned index)
+{if(index<10u)return g_draw_routes[index];return index==10u?g_sprite_cached_draws:index==11u?g_sprite_fast_rows:0;}
+static int g_opaque_pixel; /* Recomputed after context activation per draw. */
 
-/* Round 635 (task #536/#614): upper bound on how many qwords an
- * IMAGE-mode carry-over is allowed to track (see gif.h's
- * image_carry_remaining_qwords comment). 4096 qwords = 64KB - several
- * times larger than any single BIOS menu label/glyph texture observed
- * so far (Round 633's captured transfer needed well under 1KB), so
- * legitimate transfers are never affected, while a bogus/mis-decoded
- * NLOOP can never turn into a large, slow-to-drain carry. */
-#define GIF_IMAGE_CARRY_MAX_QWORDS 4096u
+/* GIFtag.NLOOP is a 15-bit qword count: every legal IMAGE payload
+ * must survive a split DMA transfer, including textures larger than 64 KiB. */
+#define GIF_IMAGE_CARRY_MAX_QWORDS 32767u
 
 /* Round 542: which real GIF_PATH_1/2/3 value is driving the packet
  * currently being parsed by process_one_packet() - set by
@@ -29,6 +34,7 @@ static uint32_t s_gif_active_path = GIF_PATH_3;
 
 void gif_init(void)
 {
+    g_texel_cache_enabled=0;
     memset(&g_gif, 0, sizeof(g_gif));
     g_gif.fbw = 640; /* sane default so an A+D FRAME write isn't strictly required for tests/demos */
     /* Round 27: both contexts' permanent storage gets the same guarded
@@ -161,33 +167,81 @@ static inline float u32_to_float(uint32_t v)
  * to treating the raw index as if it were already a packed RGBA
  * color (better than a crash, honestly wrong rather than silently
  * "correct"). */
+static uint32_t gs_expand_16(uint32_t v);
+/* GS Users Manual 6.0 sections 2.7.3 and 3.4.7: source palette
+ * coordinates and destination CSA in the temporary palette are distinct.
+ * The logical cache models same-format palette reuse; cross-format aliases
+ * of the physical temporary storage are not yet modeled. */
+static void gs_load_clut(uint32_t psm,uint32_t cbp,uint32_t cpsm,uint32_t csm,uint32_t csa,uint32_t cld)
+{
+    int is8=psm==0x13u || psm==0x1bu;
+    int is4=psm==0x14u || psm==0x24u || psm==0x2cu;
+    if(!(is8||is4) || !(cpsm==0u || cpsm==2u || cpsm==10u))return;
+    int load=cld>=1u && cld<=3u;
+    if(cld==4u)load=g_gif.clut_cbp0!=cbp;
+    if(cld==5u)load=g_gif.clut_cbp1!=cbp;
+    if(!load)return;
+    if(cld==2u || cld==4u)g_gif.clut_cbp0=cbp;
+    if(cld==3u || cld==5u)g_gif.clut_cbp1=cbp;
+    unsigned mask=cpsm==0u?255u:511u;
+    unsigned dst=csm?0u:(csa&(cpsm==0u?15u:31u))*16u;
+    for(unsigned i=0;i<(is8?256u:16u);i++){
+        unsigned x,y,bw;
+        if(csm){x=g_gif.texclut_cou*16u+i;y=g_gif.texclut_cov;bw=g_gif.texclut_cbw*64u;if(!bw)bw=64;}
+        else if(is8){x=(i&7u)|((i&16u)>>1);y=((i&8u)>>3)|((i&224u)>>4);bw=64;}
+        else{x=i&7u;y=i>>3;bw=64;}
+        uint32_t v=cpsm==0u?gs_mem_read_psmct32(cbp*64u,bw,x,y):
+            (cpsm==10u?gs_mem_read_psmct16s:gs_mem_read_psmct16)(cbp*64u,bw,x,y);
+        g_gif.clut_cache[(dst+i)&mask]=v;
+    }
+}
 static uint32_t gs_sample_clut(uint32_t index)
 {
-    uint32_t flat = g_gif.tex_csa * CLUT_CSA_UNIT + index;
-    uint32_t cx = flat % CLUT_ROW_WIDTH;
-    uint32_t cy = flat / CLUT_ROW_WIDTH;
-    /* Round 640: CBP is TEX0.CBP - real unit is 256 bytes (Address/64
-     * words), not the plain functions' 4-byte-word assumption. */
-    return gs_mem_read_psmct32_blk(g_gif.tex_cbp, CLUT_ROW_WIDTH, cx, cy);
+    unsigned mask=g_gif.tex_cpsm==0u?255u:511u;
+    unsigned start=g_gif.tex_csm?0u:(g_gif.tex_csa&(g_gif.tex_cpsm==0u?15u:31u))*16u;
+    uint32_t v=g_gif.clut_cache[(start+index)&mask];
+    return g_gif.tex_cpsm==0u?v:gs_expand_16(v);
 }
 
-static uint32_t gs_sample_texel(int32_t tex_x, int32_t tex_y)
+static uint32_t gs_expand_16(uint32_t v)
+{
+    uint32_t rgb = ((v & 0x1fu) << 3) | ((v & 0x3e0u) << 6) | ((v & 0x7c00u) << 9);
+    uint32_t alpha = (v & 0x8000u) ? g_gif.texa_ta1 :
+                     (g_gif.texa_aem && (v & 0x7fffu) == 0 ? 0u : g_gif.texa_ta0);
+    return rgb | (alpha << 24);
+}
+
+static uint32_t gs_sample_texel_uncached(int32_t tex_x, int32_t tex_y)
 {
     /* Round 640: TBP0 is TEX0.TBP0 - real unit is 256 bytes (Address/64
      * words), not the plain functions' 4-byte-word assumption. */
+    if (g_gif.tex_psm == 2u || g_gif.tex_psm == 10u)
+        return gs_expand_16((g_gif.tex_psm == 10u ? gs_mem_read_psmct16s : gs_mem_read_psmct16)(g_gif.tex_tbp0 * 64u,
+                              g_gif.tex_tbw, (uint32_t)tex_x, (uint32_t)tex_y));
     uint32_t raw = gs_mem_read_psmct32_blk(g_gif.tex_tbp0, g_gif.tex_tbw,
                                             (uint32_t)tex_x, (uint32_t)tex_y);
-    if (g_gif.tex_psm == TEX_PSM_PSMT8) {
-        uint32_t idx = raw & 0xFFu;
-        uint32_t swizzled = (idx & 0xE7u) | ((idx & 0x08u) << 1) | ((idx & 0x10u) >> 1);
-        return gs_sample_clut(swizzled);
-    } else if (g_gif.tex_psm == TEX_PSM_PSMT4) {
-        uint32_t idx = raw & 0x0Fu;
+    if (g_gif.tex_psm == TEX_PSM_PSMT8 || g_gif.tex_psm == TEX_PSM_PSMT4 ||
+        g_gif.tex_psm == TEX_PSM_PSMT8H || g_gif.tex_psm == TEX_PSM_PSMT4HL || g_gif.tex_psm == TEX_PSM_PSMT4HH) {
+        uint32_t idx=gs_mem_read_index(g_gif.tex_tbp0*64u,g_gif.tex_tbw,(uint32_t)tex_x,(uint32_t)tex_y,g_gif.tex_psm);
         return gs_sample_clut(idx);
+    }
+    if (g_gif.tex_psm == TEX_PSM_PSMCT24) {
+        uint32_t rgb = raw & 0x00ffffffu;
+        uint32_t alpha = g_gif.texa_aem && rgb == 0 ? 0 : g_gif.texa_ta0;
+        return rgb | (alpha << 24);
     }
     /* PSMCT32 (default) and any other unsupported PSM: sample
      * directly, no CLUT indirection. */
     return raw;
+}
+
+static uint32_t gs_sample_texel(int32_t x,int32_t y)
+{
+    if(!g_texel_cache_enabled)return gs_sample_texel_uncached(x,y);
+    uint32_t key=((uint32_t)y<<16)|(uint32_t)x,index=((uint32_t)x^(uint32_t)y*131u)&127u;
+    if(g_texel_tags[index]==key)return g_texel_values[index];
+    uint32_t value=gs_sample_texel_uncached(x,y);
+    g_texel_tags[index]=key;g_texel_values[index]=value;return value;
 }
 
 /* Round 23: real alpha test (TEST_1's ATE/ATST/AREF/AFAIL) and real
@@ -218,28 +272,42 @@ static uint32_t gs_sample_texel(int32_t tex_x, int32_t tex_y)
  * it for the ABE check - Round 99, task #254. */
 static uint32_t gs_effective_attr_prim(void);
 
-/* Round 101 (142nd finding, task #254 - GS gap follow-up 5/N): COLCLAMP -
- * see gif.h's GS_REG_COLCLAMP/colclamp field comments for the full
- * citation. Applied at every RGB-channel clamp site in this file's
- * render pipeline (alpha blend, fog blend, Gouraud interpolation,
- * texture modulate) - not just the single "final" write, since this
- * codebase's pipeline clamps defensively at each stage rather than
- * carrying unclamped wide intermediates through to one final point;
- * treating every one of those clamp sites as COLCLAMP-governed is the
- * most faithful and consistent way to honor a MASK-mode configuration
- * anywhere overflow can occur (texture modulate's (tex*color)/128 is
- * the most likely real site to actually exceed 255, e.g. 255*255/128
- * = 507) without a larger internal-precision rework. Negative inputs
- * (not expected in practice, since every caller already computes non-
- * negative sums/products) still wrap via the same low-8-bits masking,
- * treating the value's two's-complement bit pattern like a real
- * hardware register would. */
+/* COLCLAMP controls framebuffer color arithmetic. The texture function
+ * has its own saturating stage (see gs_texture_function below). */
 static uint32_t gs_colclamp_channel(int32_t v)
 {
     if (!g_gif.colclamp_configured || g_gif.colclamp)
         return (uint32_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
     return (uint32_t)v & 0xFFu;
 }
+
+/* R1253: TEX0.TCC and all four texture functions, matching the provided
+ * PCSX2 GSDrawScanline.cpp AlphaTFX/ColorTFX paths. Texture arithmetic
+ * saturates before framebuffer blending; RGB-only textures keep vertex alpha. */
+static uint32_t gs_texture_function(uint32_t texel, uint32_t vertex)
+{
+    uint32_t c[4];
+    uint32_t va = rgba_channel(vertex, 24), ta = rgba_channel(texel, 24);
+    for (unsigned k = 0; k < 3; k++) {
+        c[k] = rgba_channel(texel, k * 8);
+        if (g_gif.tex_tfx != TEX_TFX_DECAL) {
+            c[k] = c[k] * rgba_channel(vertex, k * 8) / 128u;
+            if (g_gif.tex_tfx >= TEX_TFX_HIGHLIGHT) c[k] += va;
+            if (c[k] > 255u) c[k] = 255u;
+        }
+    }
+    c[3] = va;
+    if (g_gif.tex_tcc) {
+        switch (g_gif.tex_tfx) {
+        case TEX_TFX_MODULATE: c[3] = ta * va / 128u; break;
+        case TEX_TFX_DECAL: case TEX_TFX_HIGHLIGHT2: c[3] = ta; break;
+        case TEX_TFX_HIGHLIGHT: c[3] = ta + va; break;
+        }
+        if (c[3] > 255u) c[3] = 255u;
+    }
+    return rgba_pack(c[0], c[1], c[2], c[3]);
+}
+
 
 /* Round 106 (147th finding, task #254 - GS gap follow-up 10/N):
  * SCANMSK - real GS Users Manual "SCANMSK : Raster Address Mask
@@ -260,6 +328,8 @@ static int scanmsk_allows_y(int32_t yy)
     return 1; /* MSK=0 (normal) or MSK=1 (reserved, treated as normal) */
 }
 
+static int gs_blend_shift7(int value)
+{return value>=0?value/128:-((-value+127)/128);}
 static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_t frag_z, int z_write_allowed)
 {
     if (!scanmsk_allows_y(yy)) return;
@@ -320,6 +390,9 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
              * matching real GS hardware (see gif.h's ALPHA field
              * comment). */
             uint32_t dst = gs_mem_read_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);
+            /* RGB24 destinations contribute a fixed 0x80 destination alpha,
+             * independent of the byte preserved in physical VRAM (PCSX2 AlphaBlend). */
+            if (g_gif.frame_psm == TEX_PSM_PSMCT24) dst = (dst & 0xffffffu) | 0x80000000u;
             uint32_t dst_r = rgba_channel(dst, 0),  dst_g = rgba_channel(dst, 8);
             uint32_t dst_b = rgba_channel(dst, 16), dst_a = rgba_channel(dst, 24);
 
@@ -351,9 +424,9 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
              * which now genuinely honors COLCLAMP=0's real "wrap
              * instead of clamp" mode - previously a known, deliberately
              * un-modeled gap noted right here; closed this round. */
-            int32_t r = ((r_a - r_b) * (int32_t)coeff) / 128 + r_d;
-            int32_t g = ((g_a - g_b) * (int32_t)coeff) / 128 + g_d;
-            int32_t b = ((b_a - b_b) * (int32_t)coeff) / 128 + b_d;
+            int32_t r = gs_blend_shift7((r_a - r_b) * (int32_t)coeff) + r_d;
+            int32_t g = gs_blend_shift7((g_a - g_b) * (int32_t)coeff) + g_d;
+            int32_t b = gs_blend_shift7((b_a - b_b) * (int32_t)coeff) + b_d;
             out_r = gs_colclamp_channel(r);
             out_g = gs_colclamp_channel(g);
             out_b = gs_colclamp_channel(b);
@@ -409,12 +482,34 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
             out_a = out_a | 0x80u;
         }
 
-        gs_mem_write_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, rgba_pack(out_r, out_g, out_b, out_a));
+        /* FRAME.FBMSK is a bit mask: protected bits retain their old value.
+         * PSMCT24 additionally preserves the physical alpha byte. Native 16-bit
+         * framebuffer conversion remains separate and is not claimed here. */
+        uint32_t mask = g_gif.fbmask;
+        if (g_gif.frame_psm == TEX_PSM_PSMCT24) mask |= 0xff000000u;
+        uint32_t color = rgba_pack(out_r, out_g, out_b, out_a);
+        if (mask) {
+            uint32_t old = gs_mem_read_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);
+            color = (color & ~mask) | (old & mask);
+        }
+        gs_mem_write_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, color);
     }
 
     if (z_write) {
-        gs_mem_write_psmct32(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, frag_z);
+        gs_mem_write_z(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, g_gif.zpsm, frag_z);
     }
+}
+
+/* Derived draw state is valid only inside rasterization. Keep the general
+ * pixel helper usable independently (including direct semantic tests). */
+static inline __attribute__((always_inline)) void gs_finish_draw_pixel(
+    int32_t xx,int32_t yy,uint32_t frag_color,uint32_t frag_z,int z_write_allowed)
+{
+    if(g_opaque_pixel) {
+        if(!scanmsk_allows_y(yy))return;
+        gs_mem_write_psmct32(g_gif.fbp,g_gif.fbw,(uint32_t)xx,(uint32_t)yy,frag_color);
+        if(z_write_allowed)gs_mem_write_z(g_gif.zbp,g_gif.fbw,(uint32_t)xx,(uint32_t)yy,g_gif.zpsm,frag_z);
+    } else gs_finish_pixel(xx,yy,frag_color,frag_z,z_write_allowed);
 }
 
 /* Round 99 (140th finding, task #254 - GS gap follow-up 3/N): resolves
@@ -460,11 +555,14 @@ static void gs_activate_context(void)
     if (gs_effective_attr_prim() & PRIM_CTXT_MASK) {
         g_gif.fbp = g_gif.ctx2_fbp;
         g_gif.fbw = g_gif.ctx2_fbw;
+        g_gif.fbmask = g_gif.ctx2_fbmask;
+        g_gif.frame_psm = g_gif.ctx2_frame_psm;
         g_gif.xyoffset_x = g_gif.ctx2_xyoffset_x;
         g_gif.xyoffset_y = g_gif.ctx2_xyoffset_y;
         g_gif.tex_tbp0 = g_gif.ctx2_tex_tbp0;
         g_gif.tex_tbw = g_gif.ctx2_tex_tbw;
         g_gif.tex_tfx = g_gif.ctx2_tex_tfx;
+        g_gif.tex_tcc = g_gif.ctx2_tex_tcc;
         g_gif.tex_tw = g_gif.ctx2_tex_tw;
         g_gif.tex_th = g_gif.ctx2_tex_th;
         g_gif.tex_psm = g_gif.ctx2_tex_psm;
@@ -472,7 +570,9 @@ static void gs_activate_context(void)
         g_gif.tex_cpsm = g_gif.ctx2_tex_cpsm;
         g_gif.tex_csa = g_gif.ctx2_tex_csa;
         g_gif.tex_cld = g_gif.ctx2_tex_cld;
+        g_gif.tex_csm = g_gif.ctx2_tex_csm;
         g_gif.zbp = g_gif.ctx2_zbp;
+        g_gif.zpsm = g_gif.ctx2_zpsm;
         g_gif.zmsk = g_gif.ctx2_zmsk;
         g_gif.zbuf_configured = g_gif.ctx2_zbuf_configured;
         g_gif.zte = g_gif.ctx2_zte;
@@ -514,11 +614,14 @@ static void gs_activate_context(void)
     } else {
         g_gif.fbp = g_gif.ctx1_fbp;
         g_gif.fbw = g_gif.ctx1_fbw;
+        g_gif.fbmask = g_gif.ctx1_fbmask;
+        g_gif.frame_psm = g_gif.ctx1_frame_psm;
         g_gif.xyoffset_x = g_gif.ctx1_xyoffset_x;
         g_gif.xyoffset_y = g_gif.ctx1_xyoffset_y;
         g_gif.tex_tbp0 = g_gif.ctx1_tex_tbp0;
         g_gif.tex_tbw = g_gif.ctx1_tex_tbw;
         g_gif.tex_tfx = g_gif.ctx1_tex_tfx;
+        g_gif.tex_tcc = g_gif.ctx1_tex_tcc;
         g_gif.tex_tw = g_gif.ctx1_tex_tw;
         g_gif.tex_th = g_gif.ctx1_tex_th;
         g_gif.tex_psm = g_gif.ctx1_tex_psm;
@@ -526,7 +629,9 @@ static void gs_activate_context(void)
         g_gif.tex_cpsm = g_gif.ctx1_tex_cpsm;
         g_gif.tex_csa = g_gif.ctx1_tex_csa;
         g_gif.tex_cld = g_gif.ctx1_tex_cld;
+        g_gif.tex_csm = g_gif.ctx1_tex_csm;
         g_gif.zbp = g_gif.ctx1_zbp;
+        g_gif.zpsm = g_gif.ctx1_zpsm;
         g_gif.zmsk = g_gif.ctx1_zmsk;
         g_gif.zbuf_configured = g_gif.ctx1_zbuf_configured;
         g_gif.zte = g_gif.ctx1_zte;
@@ -566,6 +671,51 @@ static void gs_activate_context(void)
         g_gif.fba = g_gif.ctx1_fba;
         g_gif.fba_configured = g_gif.ctx1_fba_configured;
     }
+    g_texel_cache_enabled=0;
+    uint32_t attr=gs_effective_attr_prim();
+    g_draw_routes[0]++;
+    if(attr&PRIM_TME_MASK)g_draw_routes[1]++;
+    if(attr&PRIM_ABE_MASK)g_draw_routes[2]++;
+    if(g_gif.zbuf_configured&&!g_gif.zmsk)g_draw_routes[3]++;
+    if(g_gif.zbuf_configured&&g_gif.zte&&g_gif.ztst!=GS_ZTST_ALWAYS)g_draw_routes[4]++;
+    if(g_gif.ate)g_draw_routes[5]++;
+    if(g_gif.fbmask)g_draw_routes[6]++;
+    if(g_gif.dthe||g_gif.fba)g_draw_routes[7]++;
+    if(attr&PRIM_FGE_MASK)g_draw_routes[8]++;
+    if((attr&PRIM_IIP_MASK)&&(g_gif.prim&7u)>=3u&&(g_gif.prim&7u)<=5u)g_draw_routes[9]++;
+    /* Drawing attributes remain fixed during this synchronous primitive. */
+    g_gx_opaque=!g_gif.ate && !g_gif.dthe && !g_gif.fba && !g_gif.fbmask &&
+        (g_gif.frame_psm==TEX_PSM_PSMCT32 || g_gif.frame_psm==TEX_PSM_PSMCT24) &&
+        !(gs_effective_attr_prim()&PRIM_ABE_MASK);
+    g_opaque_pixel=g_gx_opaque && g_gif.frame_psm==TEX_PSM_PSMCT32;
+
+}
+
+static int gs_depth_is_inactive(void)
+{return !g_gif.zbuf_configured || (g_gif.zmsk && (!g_gif.zte || g_gif.ztst==GS_ZTST_ALWAYS));}
+
+/* Conservative physical page envelopes cover all supported texture layouts.
+ * A draw-local cache is safe only when framebuffer AND writable depth are
+ * disjoint from the source. No persistent VRAM generation assumptions. */
+static uint64_t gs_page_end(uint64_t base,uint32_t bw,uint32_t width,uint32_t height)
+{
+    uint64_t pages=bw/64u;if(!pages)pages=1u;
+    return base+(((uint64_t)height+31u)/32u*pages+((uint64_t)width+63u)/64u)*8192u;
+}
+static int gs_sprite_cache_begin(int32_t sx0,int32_t sy0,int32_t sx1,int32_t sy1)
+{
+    if(sx0<0||sy0<0||sx1<=sx0||sy1<=sy0||
+       (uint64_t)(sx1-sx0)*(uint32_t)(sy1-sy0)<512u||
+       !g_gif.clamp_configured||g_gif.clamp_wms>1u||g_gif.clamp_wmt>1u||g_gif.tex_tw>10u||g_gif.tex_th>10u)return 0;
+    uint64_t source=(uint64_t)g_gif.tex_tbp0*256u;
+    uint64_t source_end=gs_page_end(source,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th);
+    uint64_t frame=(uint64_t)g_gif.fbp*4u,frame_end=gs_page_end(frame,g_gif.fbw,sx1,sy1);
+    if(source_end>GS_MEM_SIZE||frame_end>GS_MEM_SIZE||!(source_end<=frame||frame_end<=source))return 0;
+    if(g_gif.zbuf_configured&&!g_gif.zmsk) {
+        uint64_t z=(uint64_t)g_gif.zbp*4u,z_end=gs_page_end(z,g_gif.fbw,sx1,sy1);
+        if(z_end>GS_MEM_SIZE||!(source_end<=z||z_end<=source))return 0;
+    }
+    memset(g_texel_tags,0xff,sizeof(g_texel_tags));g_texel_cache_enabled=1;g_sprite_cached_draws++;return 1;
 }
 
 /* Round 96: real SCISSOR clipping (GS Users Manual "SCISSOR_1/2:
@@ -677,6 +827,44 @@ static int32_t gs_apply_clamp_wrap(int32_t coord, uint32_t size_log2, uint32_t w
     }
 }
 
+/* UV/STQ linear filtering when both magnification and non-mipmapped
+ * minification request linear. This selection is independent of LOD.
+ * Mixed MMAG/MMIN and mipmapped filtering remain on the existing path.
+ * GS texel centers are at n+0.5; the bundled PCSX2 scanline reference
+ * subtracts 0x8000 in 16.16 coordinates before its four-tap lookup. */
+static uint32_t gs_sample_texture(double u, double v)
+{
+    /* TEX1 filtering applies to both UV and STQ coordinates. */
+    if (g_gif.tex1_mmag == 1u && g_gif.tex1_mmin == 1u) {
+        u -= 0.5; v -= 0.5;
+        if (!(u > -2147483647.0 && u < 2147483646.0 &&
+              v > -2147483647.0 && v < 2147483646.0)) return 0u;
+        int32_t x0 = (int32_t)u, y0 = (int32_t)v;
+        if (u < (double)x0) --x0;
+        if (v < (double)y0) --y0;
+        uint32_t fx = (uint32_t)((u - (double)x0) * 16.0);
+        uint32_t fy = (uint32_t)((v - (double)y0) * 16.0);
+        int32_t xs[2], ys[2];
+        for (unsigned i = 0; i < 2; ++i) {
+            xs[i] = gs_apply_clamp_wrap(x0+(int32_t)i,g_gif.tex_tw,g_gif.clamp_wms,g_gif.clamp_minu,g_gif.clamp_maxu);
+            ys[i] = gs_apply_clamp_wrap(y0+(int32_t)i,g_gif.tex_th,g_gif.clamp_wmt,g_gif.clamp_minv,g_gif.clamp_maxv);
+        }
+        uint32_t c00=gs_sample_texel(xs[0],ys[0]), c01=gs_sample_texel(xs[1],ys[0]);
+        uint32_t c10=gs_sample_texel(xs[0],ys[1]), c11=gs_sample_texel(xs[1],ys[1]);
+        uint32_t result=0;
+        for (unsigned shift=0; shift<32; shift+=8) {
+            uint32_t a=(rgba_channel(c00,shift)*(16u-fx)+rgba_channel(c01,shift)*fx)>>4;
+            uint32_t b=(rgba_channel(c10,shift)*(16u-fx)+rgba_channel(c11,shift)*fx)>>4;
+            result |= ((a*(16u-fy)+b*fy)>>4)<<shift;
+        }
+        return result;
+    }
+    int32_t x=(u<0.0)?0:(int32_t)(u+0.5), y=(v<0.0)?0:(int32_t)(v+0.5);
+    x=gs_apply_clamp_wrap(x,g_gif.tex_tw,g_gif.clamp_wms,g_gif.clamp_minu,g_gif.clamp_maxu);
+    y=gs_apply_clamp_wrap(y,g_gif.tex_th,g_gif.clamp_wmt,g_gif.clamp_minv,g_gif.clamp_maxv);
+    return gs_sample_texel(x,y);
+}
+
 static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
                                 int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
@@ -713,6 +901,24 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
     uint32_t flat_r = rgba_channel(c2, 0), flat_g = rgba_channel(c2, 8);
     uint32_t flat_b = rgba_channel(c2, 16), flat_a = rgba_channel(c2, 24);
 
+    if(g_gx_opaque && !textured && !gouraud && gs_depth_is_inactive() &&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK)) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};
+        if(gs_gx_draw_flat_psm(g_gif.frame_psm,3,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,c2,g_gif.scanmsk)) {
+            g_gif.triangles_drawn++;return;
+        }
+    }
+    if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&gs_gx_render_active()) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};
+        gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
+            g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,z2,
+            !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
+            g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp};
+        if(gs_gx_draw_flat_pipeline(g_gif.frame_psm,3,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,c2,g_gif.scanmsk,&pipe)) {
+            g_gif.triangles_drawn++;return;
+        }
+    }
     double inv_area = 1.0 / (double)area;
 
     /* Round 29 continued (14th change): extends Round 28's mipmap
@@ -753,6 +959,10 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
         }
     }
 
+    const int fog_enabled=(gs_effective_attr_prim()&PRIM_FGE_MASK)!=0;
+    const int need_z=g_gif.zbuf_configured && (!g_gif.zmsk ||
+        (g_gif.zte && g_gif.ztst>=GS_ZTST_GEQUAL));
+    const int need_weights=gouraud||textured||fog_enabled||need_z;
     for (int32_t yy = miny; yy <= maxy; yy++) {
         for (int32_t xx = minx; xx <= maxx; xx++) {
             int32_t w0 = edge(x1, y1, x2, y2, xx, yy);
@@ -774,9 +984,9 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
                  * (color-shading) bit. Plain affine (screen-space)
                  * interpolation, NOT the real GS's perspective-
                  * corrected (1/Q) one - see gif.h's scope comment. */
-                double b0 = (double)w0 * inv_area;
-                double b1 = (double)w1 * inv_area;
-                double b2 = (double)w2 * inv_area;
+                double b0 = need_weights?(double)w0 * inv_area:0.0;
+                double b1 = need_weights?(double)w1 * inv_area:0.0;
+                double b2 = need_weights?(double)w2 * inv_area:0.0;
 
                 /* Z-buffer / depth test (task #89). Z is genuinely
                  * screen-space-linear on real GS hardware (unlike
@@ -789,11 +999,11 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
                  * project's own safety gate - see gif.h) so draws
                  * that never configured a Z buffer behave exactly as
                  * before this round. */
-                double zf = b0 * (double)z0 + b1 * (double)z1 + b2 * (double)z2;
+                double zf = need_z?(b0 * (double)z0 + b1 * (double)z1 + b2 * (double)z2):0.0;
                 uint32_t frag_z = (zf < 0.0) ? 0u : (uint32_t)(zf + 0.5);
                 int z_pass = 1;
                 if (g_gif.zbuf_configured && g_gif.zte) {
-                    uint32_t stored_z = gs_mem_read_psmct32(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);
+                    uint32_t stored_z = g_gif.ztst>=GS_ZTST_GEQUAL?gs_mem_read_z(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, g_gif.zpsm):0u;
                     switch (g_gif.ztst) {
                     case GS_ZTST_NEVER:   z_pass = 0; break;
                     case GS_ZTST_ALWAYS:  z_pass = 1; break;
@@ -834,31 +1044,16 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
                         tu = b0 * (double)u0 + b1 * (double)u1 + b2 * (double)u2;
                         tv = b0 * (double)v0 + b1 * (double)v1 + b2 * (double)v2;
                     } else {
-                        /* FST=0 (ST+Q mode, task #88): genuine
-                         * perspective-correct interpolation - the
-                         * standard algorithm real GS hardware uses.
-                         * 1/Q and S/Q, T/Q (NOT S, T, Q themselves)
-                         * are what's affine/linear in screen space;
-                         * interpolate those barycentrically, then
-                         * recover the true per-pixel S/T by dividing
-                         * back out the per-pixel Q. Guard against a
-                         * degenerate Q of 0 (real hardware would
-                         * produce a divide fault/undefined result
-                         * too - clamped to a safe fallback here rather
-                         * than crashing or reading garbage memory). */
-                        double inv_q0 = (q0 != 0.0f) ? 1.0 / (double)q0 : 0.0;
-                        double inv_q1 = (q1 != 0.0f) ? 1.0 / (double)q1 : 0.0;
-                        double inv_q2 = (q2 != 0.0f) ? 1.0 / (double)q2 : 0.0;
-                        double s_over_q0 = (double)s0 * inv_q0, s_over_q1 = (double)s1 * inv_q1, s_over_q2 = (double)s2 * inv_q2;
-                        double t_over_q0 = (double)t0 * inv_q0, t_over_q1 = (double)t1 * inv_q1, t_over_q2 = (double)t2 * inv_q2;
-
-                        double inv_q_interp = b0 * inv_q0 + b1 * inv_q1 + b2 * inv_q2;
-                        double s_over_q_interp = b0 * s_over_q0 + b1 * s_over_q1 + b2 * s_over_q2;
-                        double t_over_q_interp = b0 * t_over_q0 + b1 * t_over_q1 + b2 * t_over_q2;
-
-                        double q_at_pixel = (inv_q_interp != 0.0) ? 1.0 / inv_q_interp : 0.0;
-                        double s_norm = s_over_q_interp * q_at_pixel; /* normalized 0.0-1.0 texture-space S */
-                        double t_norm = t_over_q_interp * q_at_pixel;
+                        /* GS STQ are homogeneous texture coordinates: interpolate
+                         * S, T and Q in screen space, then divide S/T by Q.
+                         * Reference: bundled PCSX2 GSDrawScanline.cpp,
+                         * DrawScanline: s/t/q setup, SampleTexture and Step.
+                         * Interpolating S/Q and 1/Q instead incorrectly cancels
+                         * a constant Q and changes varying-Q texture mapping. */
+                        double q_interp = b0 * (double)q0 + b1 * (double)q1 + b2 * (double)q2;
+                        double inv_q = (q_interp != 0.0) ? 1.0 / q_interp : 0.0;
+                        double s_norm = (b0 * (double)s0 + b1 * (double)s1 + b2 * (double)s2) * inv_q;
+                        double t_norm = (b0 * (double)t0 + b1 * (double)t1 + b2 * (double)t2) * inv_q;
 
                         /* Scale normalized ST into texel space using
                          * TEX0's real TW/TH (log2 texture width/
@@ -866,42 +1061,8 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
                         tu = s_norm * (double)(1u << g_gif.tex_tw);
                         tv = t_norm * (double)(1u << g_gif.tex_th);
                     }
-                    /* No CLAMP register modeling (wrap/clamp/region) -
-                     * negative coordinates are simply clamped to 0, a
-                     * defensive simplification, not real repeat/clamp
-                     * semantics (see gif.h's scope comment). Out-of-
-                     * range coordinates on the high side are left to
-                     * gs_mem_read_psmct32()'s own bounds check, which
-                     * safely returns 0 rather than reading garbage. */
-                    int32_t tex_x = (tu < 0.0) ? 0 : (int32_t)(tu + 0.5);
-                    int32_t tex_y = (tv < 0.0) ? 0 : (int32_t)(tv + 0.5);
-                    /* Round 98 (139th finding): real CLAMP_1/2 wrap -
-                     * see gs_apply_clamp_wrap()'s own comment. No-op
-                     * (returns tex_x/tex_y unchanged) unless CLAMP_1/2
-                     * was actually configured this draw. */
-                    tex_x = gs_apply_clamp_wrap(tex_x, g_gif.tex_tw, g_gif.clamp_wms, g_gif.clamp_minu, g_gif.clamp_maxu);
-                    tex_y = gs_apply_clamp_wrap(tex_y, g_gif.tex_th, g_gif.clamp_wmt, g_gif.clamp_minv, g_gif.clamp_maxv);
-                    /* Round 24: routes through gs_sample_texel() so
-                     * PSMT8/PSMT4 CLUT textures work here too - see
-                     * its own comment for the full scope. */
-                    uint32_t texel = gs_sample_texel(tex_x, tex_y);
-                    if (g_gif.tex_tfx == TEX_TFX_DECAL) {
-                        out = texel;
-                    } else {
-                        /* MODULATE (and, simplified, HIGHLIGHT/
-                         * HIGHLIGHT2 too - see gif.h): standard GS
-                         * modulate formula, (tex*color)/128 per
-                         * channel, clamped to 255. */
-                        uint32_t r = (rgba_channel(texel, 0)  * shaded_r) / 128u;
-                        uint32_t g = (rgba_channel(texel, 8)  * shaded_g) / 128u;
-                        uint32_t b = (rgba_channel(texel, 16) * shaded_b) / 128u;
-                        uint32_t a = (rgba_channel(texel, 24) * shaded_a) / 128u;
-                        r = gs_colclamp_channel((int32_t)r);
-                        g = gs_colclamp_channel((int32_t)g);
-                        b = gs_colclamp_channel((int32_t)b);
-                        a = gs_colclamp_channel((int32_t)a);
-                        out = rgba_pack(r, g, b, a);
-                    }
+                    uint32_t texel = gs_sample_texture(tu, tv);
+                    out = gs_texture_function(texel, rgba_pack(shaded_r, shaded_g, shaded_b, shaded_a));
                 }
                 /* Round 97 (138th finding, task #254): Fog effect -
                  * F interpolates the exact same plain-affine
@@ -909,16 +1070,18 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
                  * comment in gif.h), applied here right before the
                  * final composite, same insertion point Round 96's
                  * SCISSOR clamp used for its own gate. */
+                if(fog_enabled) {
                 double ff = b0 * (double)f0 + b1 * (double)f1 + b2 * (double)f2;
                 uint32_t frag_fog = (ff < 0.0) ? 0u : (ff > 255.0 ? 255u : (uint32_t)(ff + 0.5));
                 out = apply_fog(out, frag_fog);
+                }
                 /* ZMSK (real ZBUF register bit): 1 = Z writes
                  * disabled for this draw, matching real hardware
                  * exactly (color can still be written while Z stays
                  * untouched). Round 23: alpha test + blending now
-                 * happen inside gs_finish_pixel() - see its comment
+                 * happen inside gs_finish_draw_pixel() - see its comment
                  * above. */
-                gs_finish_pixel(xx, yy, out, frag_z, g_gif.zbuf_configured && !g_gif.zmsk);
+                gs_finish_draw_pixel(xx, yy, out, frag_z, g_gif.zbuf_configured && !g_gif.zmsk);
             }
         }
     }
@@ -951,11 +1114,60 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
  * correct - for the rarer case of a genuinely different Q per corner
  * (e.g. a "billboarded" sprite in true 3D perspective), where real
  * hardware would still interpolate more precisely. */
-static void rasterize_sprite(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+/* R1298: snapshot GS-decoded texture colors once, then use GX nearest
+ * sampling of that snapshot. Constant bilinear phase is baked exactly with
+ * the existing two-stage 4-bit GS filter, not approximated by GX bilinear. */
+static int32_t g_gx_sprite_columns[640],g_gx_sprite_rows[512];
+static double g_gx_sprite_v[512];
+static unsigned g_gx_sprite_linear,g_gx_sprite_fx,g_gx_sprite_fy,g_gx_sprite_textured;
+static uint32_t gs_gx_sprite_sample(int32_t x,int32_t y)
+{
+    if(!g_gx_sprite_textured)return g_gif.rgba;
+    double u=x,v=y;
+    if(g_gx_sprite_linear){u+=0.5+(double)g_gx_sprite_fx/16.0;v+=0.5+(double)g_gx_sprite_fy/16.0;}
+    return gs_texture_function(gs_sample_texture(u,v),g_gif.rgba);
+}
+static int gs_gx_sprite_axis(int32_t *map,uint32_t n,double first,double step,unsigned linear,unsigned *phase,const double *samples)
+{
+    unsigned selected=0;
+    for(uint32_t k=0;k<n;k++) {
+        double value=samples?samples[k]:first+step*k;
+        if(!(value>-2047.0&&value<2047.0))return 0;
+        if(linear) {
+            value-=0.5;int32_t i=(int32_t)value;if(value<(double)i)--i;
+            unsigned fraction=(unsigned)((value-i)*16.0);
+            if(k&&fraction!=selected)return 0;selected=fraction;map[k]=i;
+        }else map[k]=value<0.0?0:(int32_t)(value+0.5);
+    }
+    *phase=selected;return 1;
+}
+static void gs_gx_sprite_key(void)
+{
+ uint64_t data=0;uint32_t valid=1;
+ if(g_gx_sprite_textured) {
+  uint64_t base=(uint64_t)g_gif.tex_tbp0*256u;
+  uint64_t end=gs_page_end(base,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th);
+  valid=end<=GS_MEM_SIZE&&end>=base&&end-base<=262144u&&gs_mem_hash_range(base,end-base,&data);
+ }
+ uint32_t state[]={g_gx_sprite_textured,g_gx_sprite_linear,g_gx_sprite_fx,g_gx_sprite_fy,g_gif.rgba,
+  g_gif.tex_tbp0,g_gif.tex_tbw,g_gif.tex_tw,g_gif.tex_th,g_gif.tex_psm,g_gif.tex_cbp,g_gif.tex_cpsm,
+  g_gif.tex_csa,g_gif.tex_csm,g_gif.tex_tcc,g_gif.tex_tfx,g_gif.texa_ta0,g_gif.texa_ta1,g_gif.texa_aem,
+  g_gif.clamp_configured,g_gif.clamp_wms,g_gif.clamp_wmt,g_gif.clamp_minu,g_gif.clamp_maxu,g_gif.clamp_minv,g_gif.clamp_maxv};
+ uint32_t a=(uint32_t)data,b=data>>32;
+ for(unsigned k=0;k<sizeof(state)/sizeof(state[0]);k++){a=(a^state[k])*16777619u;b=((b<<5)|(b>>27))^state[k];}
+ for(unsigned k=0;k<512;k++){a=(a^g_gif.clut_cache[k])*16777619u;b=((b<<5)|(b>>27))^g_gif.clut_cache[k];}
+ gs_gx_source_key(a,b,valid);
+}
+static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
                               int32_t u0, int32_t v0, int32_t u1, int32_t v1,
                               float s0, float t0, float q0, float s1, float t1, float q1,
                               uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1)
 {
+    /* GS/reference DrawSprite covers [ceil(min),ceil(max)). Keep the
+     * original 12.4 positions for the texture gradient and pre-step. */
+    int32_t x0=(raw_x0+15)>>4,y0=(raw_y0+15)>>4;
+    int32_t x1=(raw_x1+15)>>4,y1=(raw_y1+15)>>4;
+    double pos_x0=(double)raw_x0/16.0,pos_y0=(double)raw_y0/16.0;
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
     int textured = (gs_effective_attr_prim() & PRIM_TME_MASK) != 0;
     /* Z (task #89): real hardware treats SPRITE Z the same way it
@@ -1016,8 +1228,8 @@ static void rasterize_sprite(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
      * selected once for the WHOLE sprite (not varied per-pixel, and
      * not trilinear-blended between adjacent levels) - a deliberate,
      * honest simplification consistent with this project's existing
-     * nearest-neighbor-only texture sampling (no bilinear/trilinear
-     * filtering anywhere in this codebase). If a non-zero level is
+     * texture sampling for mipmapped modes (trilinear filtering
+     * is not implemented). If a non-zero level is
      * selected, tex_tbp0/tex_tbw are temporarily overridden for the
      * duration of this draw and restored before returning - the same
      * save/override/restore spirit as gs_activate_context(), just
@@ -1056,12 +1268,64 @@ static void rasterize_sprite(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         }
     }
 
-    double x_span = (double)(x1 - x0);
-    double y_span = (double)(y1 - y0);
+    /* No texture/mip changes, pixel tests, fog or Z work in this subset.
+     * Scissor was already applied; SCANMSK still applies per row. */
+    if(g_gx_opaque && !textured && gs_depth_is_inactive() &&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK) && sx1>sx0) {
+        int32_t xy[4]={x0,y0,x1,y1};
+        if(gs_gx_draw_flat_psm(g_gif.frame_psm,6,g_gif.fbp,g_gif.fbw,sx0,sy0,sx1,sy1,xy,g_gif.rgba,g_gif.scanmsk)) {
+            g_gif.sprites_drawn++;return;
+        }
+    }
+    if(g_opaque_pixel && !textured && gs_depth_is_inactive() &&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK) && sx1>sx0) {
+        g_sprite_fast_rows++;
+        for(int32_t y=sy0;y<sy1;y++)if(scanmsk_allows_y(y))
+            gs_mem_fill_psmct32_span(g_gif.fbp,g_gif.fbw,(uint32_t)sx0,
+                (uint32_t)y,(uint32_t)(sx1-sx0),g_gif.rgba);
+        g_gif.sprites_drawn++;
+        return;
+    }
+
+    double x_span = (double)(raw_x1 - raw_x0)/16.0;
+    double y_span = (double)(raw_y1 - raw_y0)/16.0;
+    int cached_u=textured && sx1>sx0 && sx1-sx0<=640;
+    if(cached_u)for(int32_t x=sx0;x<sx1;x++) {
+        double fraction=x_span!=0.0?((double)x-pos_x0)/x_span:0.0;
+        g_sprite_u[x-sx0]=tex_u0+fraction*(tex_u1-tex_u0);
+    }
+    int safe_texture=textured?gs_sprite_cache_begin(sx0,sy0,sx1,sy1):0;
+    if((!textured||safe_texture)&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       (g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&gs_gx_render_active()&&
+       sx1>sx0&&sy1>sy0&&sx1-sx0<=640&&sy1-sy0<=512&&
+       (!textured||g_gif.tex_psm==0u||g_gif.tex_psm==1u||g_gif.tex_psm==2u||g_gif.tex_psm==10u||
+        g_gif.tex_psm==0x13u||g_gif.tex_psm==0x14u||g_gif.tex_psm==0x1bu||g_gif.tex_psm==0x24u||g_gif.tex_psm==0x2cu)) {
+        double du=textured&&x_span!=0.0?(tex_u1-tex_u0)/x_span:0.0;
+        double dv=textured&&y_span!=0.0?(tex_v1-tex_v0)/y_span:0.0;
+        double first_u=!textured?0.0:cached_u?g_sprite_u[0]:tex_u0;
+        double first_v=!textured?0.0:tex_v0+(y_span!=0.0?((double)sy0-pos_y0)/y_span:0.0)*(tex_v1-tex_v0);
+        g_gx_sprite_textured=textured;
+        g_gx_sprite_linear=textured&&g_gif.tex1_mmag==1u&&g_gif.tex1_mmin==1u;
+        if(textured)for(int32_t y=sy0;y<sy1;y++)g_gx_sprite_v[y-sy0]=tex_v0+
+            (y_span!=0.0?((double)y-pos_y0)/y_span:0.0)*(tex_v1-tex_v0);
+        gs_gx_pipeline pipeline={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
+            g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,frag_z,
+            !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
+            g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp};
+        if(gs_gx_sprite_axis(g_gx_sprite_columns,sx1-sx0,first_u,du,g_gx_sprite_linear,&g_gx_sprite_fx,textured?g_sprite_u:NULL)&&
+           gs_gx_sprite_axis(g_gx_sprite_rows,sy1-sy0,first_v,dv,g_gx_sprite_linear,&g_gx_sprite_fy,textured?g_gx_sprite_v:NULL)&&
+           (gs_gx_sprite_key(),gs_gx_draw_texture_sprite(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,sx0,sy0,sx1-sx0,sy1-sy0,
+                g_gx_sprite_columns,g_gx_sprite_rows,du,dv,g_gif.scanmsk,gs_gx_sprite_sample,&pipeline))) {
+            g_texel_cache_enabled=0;g_gif.tex_tbp0=saved_mip_tbp0;g_gif.tex_tbw=saved_mip_tbw;
+            g_gif.sprites_drawn++;return;
+        }
+    }
+
 
     for (int32_t yy = sy0; yy < sy1; yy++) {
         if (yy < 0) continue;
-        double frac_y = (y_span != 0.0) ? ((double)yy - (double)y0) / y_span : 0.0;
+        double frac_y = (y_span != 0.0) ? ((double)yy - pos_y0) / y_span : 0.0;
         for (int32_t xx = sx0; xx < sx1; xx++) {
             if (xx < 0) continue;
 
@@ -1071,7 +1335,7 @@ static void rasterize_sprite(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
              * above instead of a per-pixel barycentric one. */
             int z_pass = 1;
             if (g_gif.zbuf_configured && g_gif.zte) {
-                uint32_t stored_z = gs_mem_read_psmct32(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);
+                uint32_t stored_z = g_gif.ztst>=GS_ZTST_GEQUAL?gs_mem_read_z(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, g_gif.zpsm):0u;
                 switch (g_gif.ztst) {
                 case GS_ZTST_NEVER:   z_pass = 0; break;
                 case GS_ZTST_ALWAYS:  z_pass = 1; break;
@@ -1089,36 +1353,17 @@ static void rasterize_sprite(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
             if (!textured) {
                 out = g_gif.rgba;
             } else {
-                double frac_x = (x_span != 0.0) ? ((double)xx - (double)x0) / x_span : 0.0;
-                double tu = tex_u0 + frac_x * (tex_u1 - tex_u0);
+                double frac_x = (x_span != 0.0) ? ((double)xx - pos_x0) / x_span : 0.0;
+                double tu = cached_u?g_sprite_u[xx-sx0]:tex_u0 + frac_x * (tex_u1 - tex_u0);
                 double tv = tex_v0 + frac_y * (tex_v1 - tex_v0);
-                int32_t tex_x = (tu < 0.0) ? 0 : (int32_t)(tu + 0.5);
-                int32_t tex_y = (tv < 0.0) ? 0 : (int32_t)(tv + 0.5);
-                /* Round 98 (139th finding): real CLAMP_1/2 wrap - see
-                 * gs_apply_clamp_wrap()'s own comment above. */
-                tex_x = gs_apply_clamp_wrap(tex_x, g_gif.tex_tw, g_gif.clamp_wms, g_gif.clamp_minu, g_gif.clamp_maxu);
-                tex_y = gs_apply_clamp_wrap(tex_y, g_gif.tex_th, g_gif.clamp_wmt, g_gif.clamp_minv, g_gif.clamp_maxv);
-                /* Round 24: routes through gs_sample_texel() so
-                 * PSMT8/PSMT4 CLUT textures work here too. */
-                uint32_t texel = gs_sample_texel(tex_x, tex_y);
-                if (g_gif.tex_tfx == TEX_TFX_DECAL) {
-                    out = texel;
-                } else {
-                    uint32_t r = (rgba_channel(texel, 0)  * rgba_channel(g_gif.rgba, 0))  / 128u;
-                    uint32_t g = (rgba_channel(texel, 8)  * rgba_channel(g_gif.rgba, 8))  / 128u;
-                    uint32_t b = (rgba_channel(texel, 16) * rgba_channel(g_gif.rgba, 16)) / 128u;
-                    uint32_t a = (rgba_channel(texel, 24) * rgba_channel(g_gif.rgba, 24)) / 128u;
-                    r = gs_colclamp_channel((int32_t)r);
-                    g = gs_colclamp_channel((int32_t)g);
-                    b = gs_colclamp_channel((int32_t)b);
-                    a = gs_colclamp_channel((int32_t)a);
-                    out = rgba_pack(r, g, b, a);
-                }
+                uint32_t texel = gs_sample_texture(tu, tv);
+                out = gs_texture_function(texel, g_gif.rgba);
             }
             out = apply_fog(out, frag_fog);
-            gs_finish_pixel(xx, yy, out, frag_z, g_gif.zbuf_configured && !g_gif.zmsk);
+            gs_finish_draw_pixel(xx, yy, out, frag_z, g_gif.zbuf_configured && !g_gif.zmsk);
         }
     }
+    g_texel_cache_enabled=0;
     g_gif.sprites_drawn++;
 
     /* Round 28: restore tex_tbp0/tex_tbw in case a mip level other
@@ -1126,6 +1371,16 @@ static void rasterize_sprite(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
      * override strictly local to this single draw call. */
     g_gif.tex_tbp0 = saved_mip_tbp0;
     g_gif.tex_tbw = saved_mip_tbw;
+}
+
+/* Integer-coordinate entry used by native rasterizer tests. */
+static void rasterize_sprite(int32_t x0,int32_t y0,int32_t x1,int32_t y1,
+    int32_t u0,int32_t v0,int32_t u1,int32_t v1,
+    float s0,float t0,float q0,float s1,float t1,float q1,
+    uint32_t z0,uint32_t z1,uint32_t f0,uint32_t f1)
+{
+    rasterize_sprite_12_4(x0*16,y0*16,x1*16,y1*16,u0,v0,u1,v1,
+        s0,t0,q0,s1,t1,q1,z0,z1,f0,f1);
 }
 
 /* POINT rasterizer (task: "GS coverage breadth"). Real hardware
@@ -1142,7 +1397,7 @@ static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uin
 
     int z_pass = 1;
     if (g_gif.zbuf_configured && g_gif.zte) {
-        uint32_t stored_z = gs_mem_read_psmct32(g_gif.zbp, g_gif.fbw, (uint32_t)x, (uint32_t)y);
+        uint32_t stored_z = gs_mem_read_z(g_gif.zbp, g_gif.fbw, (uint32_t)x, (uint32_t)y, g_gif.zpsm);
         switch (g_gif.ztst) {
         case GS_ZTST_NEVER:   z_pass = 0; break;
         case GS_ZTST_ALWAYS:  z_pass = 1; break;
@@ -1160,7 +1415,7 @@ static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uin
      * vertex, so no interpolation is possible or needed (same "no
      * interpolation of any kind" real-hardware rule this file already
      * documents for POINT's color). */
-    gs_finish_pixel(x, y, apply_fog(rgba, fog), z, g_gif.zbuf_configured && !g_gif.zmsk);
+    gs_finish_draw_pixel(x, y, apply_fog(rgba, fog), z, g_gif.zbuf_configured && !g_gif.zmsk);
     g_gif.points_drawn++;
 }
 
@@ -1223,7 +1478,7 @@ static void rasterize_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         if (xx >= 0 && yy >= 0 && scissor_test(xx, yy)) {
             int z_pass = 1;
             if (g_gif.zbuf_configured && g_gif.zte) {
-                uint32_t stored_z = gs_mem_read_psmct32(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);
+                uint32_t stored_z = g_gif.ztst>=GS_ZTST_GEQUAL?gs_mem_read_z(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, g_gif.zpsm):0u;
                 switch (g_gif.ztst) {
                 case GS_ZTST_NEVER:   z_pass = 0; break;
                 case GS_ZTST_ALWAYS:  z_pass = 1; break;
@@ -1252,7 +1507,7 @@ static void rasterize_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                 }
                 uint32_t frag_fog = (pf < 0.0) ? 0u : (pf > 255.0 ? 255u : (uint32_t)(pf + 0.5));
                 out = apply_fog(out, frag_fog);
-                gs_finish_pixel(xx, yy, out, frag_z, g_gif.zbuf_configured && !g_gif.zmsk);
+                gs_finish_draw_pixel(xx, yy, out, frag_z, g_gif.zbuf_configured && !g_gif.zmsk);
             }
         }
 
@@ -1293,10 +1548,21 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
     int32_t raw_y = (int32_t)(word1 & 0xFFFFu);
     uint32_t raw_z = word2;
 
-    int32_t x = (raw_x - (int32_t)g_gif.xyoffset_x) >> 4;
-    int32_t y = (raw_y - (int32_t)g_gif.xyoffset_y) >> 4;
+    /* Select the vertex offset before assembly. Activating a context
+     * only in the rasterizer is too late: the first vertex after a
+     * CTXT switch would use the previous draw's cached XYOFFSET. */
+    int ctx2 = (gs_effective_attr_prim() & PRIM_CTXT_MASK) != 0;
+    uint32_t ox = ctx2 ? g_gif.ctx2_xyoffset_x : g_gif.ctx1_xyoffset_x;
+    uint32_t oy = ctx2 ? g_gif.ctx2_xyoffset_y : g_gif.ctx1_xyoffset_y;
+    int32_t x = (raw_x - (int32_t)ox) >> 4;
+    int32_t y = (raw_y - (int32_t)oy) >> 4;
 
     uint32_t ptype = g_gif.prim & 0x7u;
+    if(ptype==PRIM_TYPE_SPRITE) {
+        x=(raw_x-(int32_t)ox+15)>>4;
+        y=(raw_y-(int32_t)oy+15)>>4;
+    }
+
 
     if (ptype == PRIM_TYPE_POINT) {
         /* POINT: draws immediately on every single vertex - no
@@ -1451,6 +1717,8 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
     }
 
     if (!g_gif.has_vertex0) {
+        g_gif.sprite_pos16=(uint64_t)(uint32_t)(raw_x-(int32_t)ox)
+            |((uint64_t)(uint32_t)(raw_y-(int32_t)oy)<<32);
         g_gif.v0x = x;
         g_gif.v0y = y;
         g_gif.v0u = g_gif.cur_u;
@@ -1472,7 +1740,9 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
      * just without triggering the actual fill). */
     if (ptype == PRIM_TYPE_SPRITE) {
         if (do_draw_kick)
-            rasterize_sprite(g_gif.v0x, g_gif.v0y, x, y,
+            rasterize_sprite_12_4((int32_t)(uint32_t)g_gif.sprite_pos16,
+                              (int32_t)(uint32_t)(g_gif.sprite_pos16>>32),
+                              raw_x-(int32_t)ox,raw_y-(int32_t)oy,
                               g_gif.v0u, g_gif.v0v, g_gif.cur_u, g_gif.cur_v,
                               g_gif.v0s, g_gif.v0t, g_gif.v0q, g_gif.cur_s, g_gif.cur_t, g_gif.cur_q,
                               g_gif.v0z, raw_z, g_gif.v0f, g_gif.cur_fog);
@@ -1488,20 +1758,13 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
     g_gif.has_vertex0 = 0;
 }
 
-static void apply_rgbaq(uint32_t word0, uint32_t word1, uint32_t word2)
+static void apply_rgbaq(uint32_t r, uint32_t g, uint32_t b, uint32_t a)
 {
-    /* PACKED RGBAQ: R in word0 low byte, G in word1 low byte, B in
-     * word2 low byte (word3 holds Q, a texture perspective term we
-     * don't use). Alpha defaults to opaque (0xFF) since PACKED RGBAQ's
-     * 4th word is Q, not A, in this simplified model - real hardware
-     * does have an A field too (word "3" low byte in some
-     * descriptions); we treat draws as opaque, which is fine for flat
-     * background-style rectangles. */
-    uint8_t r = (uint8_t)(word0 & 0xFFu);
-    uint8_t g = (uint8_t)(word1 & 0xFFu);
-    uint8_t b = (uint8_t)(word2 & 0xFFu);
-    g_gif.rgba = ((uint32_t)0xFFu << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | r;
+    g_gif.rgba = (r & 255u) | ((g & 255u) << 8) |
+                 ((b & 255u) << 16) | ((a & 255u) << 24);
 }
+
+static void image_write_bytes(const uint8_t *q, uint32_t byte_count);
 
 static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
 {
@@ -1525,32 +1788,17 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         g_gif.cur_q = u32_to_float(data_hi);
     } break;
     case GS_REG_XYZ2:
-        /* A+D mode: Z is not available under this project's
-         * established A+D XYZ2 convention (word0=X-only,
-         * word1=Y-only - see gif.h's tri_z field comment for the
-         * full explanation and why it isn't changed here) - pass
-         * 0 for Z. */
-        apply_xyz2_kick(data_lo, data_hi, 0u, 1);
+    case GS_REG_XYZ3:
+        /* Natural 64-bit GS register: X/Y in low16/high16 of lo,
+         * Z in hi. PACKED uses different, expanded lanes. */
+        apply_xyz2_kick(data_lo & 0xffffu, data_lo >> 16, data_hi,
+                        addr == GS_REG_XYZ2);
         break;
     case GS_REG_XYZF2:
-        /* Round 97 (138th finding, task #254): A+D XYZF2 follows the
-         * same simplified, already-established A+D XYZ2 convention
-         * above (X-only/Y-only, no Z) - F is likewise unavailable
-         * under that convention, so cur_fog is left as whatever a
-         * prior standalone GS_REG_FOG A+D write (or the 0xFF default)
-         * already set, exactly like Z is left at 0. This performs a
-         * normal drawing-kick vertex push, same as XYZ2. */
-        apply_xyz2_kick(data_lo, data_hi, 0u, 1);
-        break;
-    case GS_REG_XYZ3:
     case GS_REG_XYZF3:
-        /* Round 97 (138th finding, task #254): "vertex kick without
-         * drawing kick" (official GS Users Manual's XYZ3/XYZF3
-         * description) - advances the vertex queue exactly like
-         * XYZ2/XYZF2 above but never triggers the terminal
-         * rasterize_*() call, see apply_xyz2_kick()'s do_draw_kick
-         * parameter. */
-        apply_xyz2_kick(data_lo, data_hi, 0u, 0);
+        g_gif.cur_fog = data_hi >> 24;
+        apply_xyz2_kick(data_lo & 0xffffu, data_lo >> 16,
+                        data_hi & 0xffffffu, addr == GS_REG_XYZF2);
         break;
     case GS_REG_FOG:
         /* Round 97 (138th finding, task #254): standalone FOG
@@ -1590,8 +1838,8 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         g_gif.prmode = data_lo & PRIM_ATTR_MASK;
         break;
     case GS_REG_FRAME_1: {
-        /* FBP: bits 0-8, FBW: bits 9-14 (units of 64px - real hardware
-         * convention), PSM: bits 15-20 (ignored, PSMCT32 assumed).
+        /* FBP: bits 0-8, FBW: bits 16-21 (units of 64px - real hardware
+         * convention), PSM: bits 24-29 (ignored, PSMCT32 assumed).
          *
          * Round 748 fix: FBP is a real "Address/2048 words" page index
          * on actual hardware (8192 bytes/unit - see gs_mem.h's Round
@@ -1617,13 +1865,15 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * ctx1_fbw (context 1's permanent storage - see gif.h's
          * dual-context field comment). */
         uint32_t fbp = (data_lo & 0x1FFu) * 2048u;
-        uint32_t fbw_field = (data_lo >> 9) & 0x3Fu;
+        uint32_t fbw_field = (data_lo >> 16) & 0x3Fu;
         uint32_t fbw = fbw_field * 64u;
         if (fbw == 0) fbw = 640; /* guard against a zero FBW making every pixel alias */
         g_gif.fbp = fbp;
         g_gif.fbw = fbw;
         g_gif.ctx1_fbp = fbp;
         g_gif.ctx1_fbw = fbw;
+        g_gif.fbmask = g_gif.ctx1_fbmask = data_hi;
+        g_gif.frame_psm = g_gif.ctx1_frame_psm = (data_lo >> 24) & 0x3fu;
     } break;
     case GS_REG_FRAME_2: {
         /* Context 2's FRAME - identical bitfield to FRAME_1 above,
@@ -1632,11 +1882,13 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * actually drawn with PRIM.CTXT=1 - see gs_activate_context()).
          * Round 748: same *2048 page-scale fix as FRAME_1 above. */
         uint32_t fbp = (data_lo & 0x1FFu) * 2048u;
-        uint32_t fbw_field = (data_lo >> 9) & 0x3Fu;
+        uint32_t fbw_field = (data_lo >> 16) & 0x3Fu;
         uint32_t fbw = fbw_field * 64u;
         if (fbw == 0) fbw = 640;
         g_gif.ctx2_fbp = fbp;
         g_gif.ctx2_fbw = fbw;
+        g_gif.ctx2_fbmask = data_hi;
+        g_gif.ctx2_frame_psm = (data_lo >> 24) & 0x3fu;
     } break;
     case GS_REG_XYOFFSET_1:
         g_gif.xyoffset_x = data_lo & 0xFFFFu;
@@ -1702,21 +1954,23 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         uint32_t cpsm = (data_hi >> 19) & 0xFu;
         uint32_t csa = (data_hi >> 24) & 0x1Fu;
         uint32_t cld = (data_hi >> 29) & 0x7u;
+        uint32_t csm = (data_hi >> 23) & 1u;
+        gs_load_clut(psm,cbp,cpsm,csm,csa,cld);
 
         if (addr == GS_REG_TEX0_1) {
             g_gif.tex_tbp0 = tbp0; g_gif.tex_tbw = tbw; g_gif.tex_tfx = tfx;
-            g_gif.tex_tw = tw; g_gif.tex_th = th;
+            g_gif.tex_tw = tw; g_gif.tex_th = th; g_gif.tex_tcc = (data_hi >> 2) & 1u;
             g_gif.tex_psm = psm; g_gif.tex_cbp = cbp; g_gif.tex_cpsm = cpsm;
-            g_gif.tex_csa = csa; g_gif.tex_cld = cld;
+            g_gif.tex_csa = csa; g_gif.tex_cld = cld; g_gif.tex_csm = csm;
             g_gif.ctx1_tex_tbp0 = tbp0; g_gif.ctx1_tex_tbw = tbw; g_gif.ctx1_tex_tfx = tfx;
-            g_gif.ctx1_tex_tw = tw; g_gif.ctx1_tex_th = th;
+            g_gif.ctx1_tex_tw = tw; g_gif.ctx1_tex_th = th; g_gif.ctx1_tex_tcc = (data_hi >> 2) & 1u;
             g_gif.ctx1_tex_psm = psm; g_gif.ctx1_tex_cbp = cbp; g_gif.ctx1_tex_cpsm = cpsm;
-            g_gif.ctx1_tex_csa = csa; g_gif.ctx1_tex_cld = cld;
+            g_gif.ctx1_tex_csa = csa; g_gif.ctx1_tex_cld = cld; g_gif.ctx1_tex_csm = csm;
         } else {
             g_gif.ctx2_tex_tbp0 = tbp0; g_gif.ctx2_tex_tbw = tbw; g_gif.ctx2_tex_tfx = tfx;
-            g_gif.ctx2_tex_tw = tw; g_gif.ctx2_tex_th = th;
+            g_gif.ctx2_tex_tw = tw; g_gif.ctx2_tex_th = th; g_gif.ctx2_tex_tcc = (data_hi >> 2) & 1u;
             g_gif.ctx2_tex_psm = psm; g_gif.ctx2_tex_cbp = cbp; g_gif.ctx2_tex_cpsm = cpsm;
-            g_gif.ctx2_tex_csa = csa; g_gif.ctx2_tex_cld = cld;
+            g_gif.ctx2_tex_csa = csa; g_gif.ctx2_tex_cld = cld; g_gif.ctx2_tex_csm = csm;
         }
     } break;
     case GS_REG_COLCLAMP:
@@ -1734,7 +1988,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         break;
     case GS_REG_DTHE:
         /* Round 102: DTHE.DTHE (bit 0 only, per the manual's BIT
-         * ASSIGN table) - see gs_finish_pixel()'s dithering block
+         * ASSIGN table) - see gs_finish_draw_pixel()'s dithering block
          * above for the full citation and how this takes effect. */
         g_gif.dthe = data_lo & 0x1u;
         break;
@@ -1744,7 +1998,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * nibbles with only the low 3 bits meaningful per the
          * manual's own BIT ASSIGN diagram), DM20-DM33 in data_hi
          * (bits 32-63 of the full 64-bit register, i.e. bits 0-31 of
-         * data_hi here). Sign-extended at parse time so gs_finish_pixel()
+         * data_hi here). Sign-extended at parse time so gs_finish_draw_pixel()
          * can just add the stored value directly. */
         for (int row = 0; row < 4; row++) {
             for (int col = 0; col < 4; col++) {
@@ -1777,7 +2031,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
     case GS_REG_PABE:
         /* Round 104 (145th finding, task #254): PABE.PABE (bit 0
          * only, per the manual's BIT ASSIGN table) - see
-         * gs_finish_pixel()'s ABE-gating check for the full citation
+         * gs_finish_draw_pixel()'s ABE-gating check for the full citation
          * and how this takes effect. Not per-context. */
         g_gif.pabe = data_lo & 0x1u;
         break;
@@ -1858,39 +2112,24 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         uint32_t cpsm = (data_hi >> 19) & 0xFu;
         uint32_t csa = (data_hi >> 24) & 0x1Fu;
         uint32_t cld = (data_hi >> 29) & 0x7u;
+        uint32_t csm = (data_hi >> 23) & 1u;
+        gs_load_clut(psm,cbp,cpsm,csm,csa,cld);
 
         if (addr == GS_REG_TEX2_1) {
             g_gif.tex_psm = psm; g_gif.tex_cbp = cbp; g_gif.tex_cpsm = cpsm;
-            g_gif.tex_csa = csa; g_gif.tex_cld = cld;
+            g_gif.tex_csa = csa; g_gif.tex_cld = cld; g_gif.tex_csm = csm;
             g_gif.ctx1_tex_psm = psm; g_gif.ctx1_tex_cbp = cbp; g_gif.ctx1_tex_cpsm = cpsm;
-            g_gif.ctx1_tex_csa = csa; g_gif.ctx1_tex_cld = cld;
+            g_gif.ctx1_tex_csa = csa; g_gif.ctx1_tex_cld = cld; g_gif.ctx1_tex_csm = csm;
         } else {
             g_gif.ctx2_tex_psm = psm; g_gif.ctx2_tex_cbp = cbp; g_gif.ctx2_tex_cpsm = cpsm;
-            g_gif.ctx2_tex_csa = csa; g_gif.ctx2_tex_cld = cld;
+            g_gif.ctx2_tex_csa = csa; g_gif.ctx2_tex_cld = cld; g_gif.ctx2_tex_csm = csm;
         }
     } break;
     case GS_REG_ZBUF_1: {
-        /* GIFRegZBUF bitfield cross-checked against PCSX2's own
-         * GS/GSRegs.h: word0 = ZBP(9):pad(15):PSM(6):pad(2);
-         * word1 = ZMSK(1):pad(31). PSM is ignored (real Z formats
-         * are PSMZ32/24/16 - this project stores Z as a plain
-         * 32-bit word via gs_mem's existing PSMCT32-shaped helpers,
-         * matching gs_mem.h's documented linear-addressing
-         * simplification). ZBP is used directly as OUR gs_mem bp
-         * convention, exactly like FRAME_1's FBP above. Real
-         * hardware's ZBUF register has NO separate width field - Z
-         * buffer addressing reuses the context's FBW, matching
-         * this project's choice to pass g_gif.fbw to the Z-buffer
-         * gs_mem_read/write_psmct32() calls in rasterize_triangle()/
-         * rasterize_sprite(). zbuf_configured is this project's own
-         * safety gate - see gif.h's field comment. Round 27: also
-         * mirrors into ctx1_zbp/ctx1_zmsk/ctx1_zbuf_configured. */
-        /* Round 748: same *2048 page-scale fix as FRAME_1/2 above -
-         * ZBUF's bp field is the same real "Address/2048 words" unit,
-         * previously left raw/unscaled (the specific gap Round 640
-         * checked for and incorrectly cleared - see FRAME_1's comment
-         * above for the full citation). */
+        /* ZBP uses 8192-byte pages; format selects native Z32/24/16/16S
+         * addressing. Depth width comes from the context FRAME.FBW. */
         g_gif.zbp = (data_lo & 0x1FFu) * 2048u;
+        g_gif.zpsm = g_gif.ctx1_zpsm = (data_lo >> 24) & 0xfu;
         g_gif.zmsk = (int)(data_hi & 0x1u);
         g_gif.zbuf_configured = 1;
         g_gif.ctx1_zbp = g_gif.zbp;
@@ -1902,6 +2141,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * written ONLY into the ctx2_zxxx permanent fields. Round 748:
          * same *2048 page-scale fix. */
         g_gif.ctx2_zbp = (data_lo & 0x1FFu) * 2048u;
+        g_gif.ctx2_zpsm = (data_lo >> 24) & 0xfu;
         g_gif.ctx2_zmsk = (int)(data_hi & 0x1u);
         g_gif.ctx2_zbuf_configured = 1;
     } break;
@@ -1909,7 +2149,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         /* GIFRegTEST bitfield cross-checked against PCSX2's own
          * GS/GSRegs.h (see TEST_ZTE_MASK, TEST_ZTST_xxx, TEST_ATE_MASK,
          * etc in gif.h). Round 23 adds real ATE/ATST/AREF/AFAIL
-         * (alpha test) - see gs_finish_pixel() below. DATE/DATM
+         * (alpha test) - see gs_finish_draw_pixel() below. DATE/DATM
          * (destination-alpha test) remain unmodeled, a separate,
          * still-open gap. Round 27: also mirrors into ctx1_zte/
          * ctx1_ztst/ctx1_ate/ctx1_atst/ctx1_aref/ctx1_afail. */
@@ -2033,24 +2273,18 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         g_gif.ctx2_clamp_configured = 1;
     } break;
     case GS_REG_TEX1_1: {
-        /* GIFRegTEX1 (Round 28) - real bit layout, moderate
-         * confidence (same session-limited-research caveat as this
-         * round's other new registers - see docs/STATUS.md's "GS
-         * Round 28" section): word0 = LCM:1(bit0), MXL:3(bits2-4),
-         * MMAG:1(bit9), MMIN:3(bits10-12), MTBA:1(bit14); word1 =
-         * L:2(bits0-1), K:12(bits2-13, signed, 1/16 units). Round 29
-         * continued (15th change): also mirrors into ctx1_tex1_xxx,
-         * same pattern as every other _1 register in this function. */
+        /* Native GIFRegTEX1 layout: LCM 0, MXL 2..4, MMAG 5,
+         * MMIN 6..8, MTBA 9, L 19..20, signed K 32..43. */
         g_gif.tex1_lcm = (data_lo & 0x1u) ? 1 : 0;
         g_gif.tex1_mxl = (data_lo >> 2) & 0x7u;
-        g_gif.tex1_mmag = (data_lo & 0x200u) ? 1 : 0;
-        g_gif.tex1_mmin = (data_lo >> 10) & 0x7u;
-        g_gif.tex1_mtba = (data_lo & 0x4000u) ? 1 : 0;
-        g_gif.tex1_l = data_hi & 0x3u;
+        g_gif.tex1_mmag = (data_lo & 0x20u) ? 1 : 0;
+        g_gif.tex1_mmin = (data_lo >> 6) & 0x7u;
+        g_gif.tex1_mtba = (data_lo & 0x200u) ? 1 : 0;
+        g_gif.tex1_l = (data_lo >> 19) & 0x3u;
         {
-            /* K is signed 12 bits (bits 2-13 of word1) - sign-extend
+            /* K is signed 12 bits (bits 0-11 of word1) - sign-extend
              * from bit 11 (the field's own top bit). */
-            int32_t k_raw = (int32_t)((data_hi >> 2) & 0xFFFu);
+            int32_t k_raw = (int32_t)(data_hi & 0xFFFu);
             if (k_raw & 0x800) k_raw -= 0x1000; /* sign-extend a 12-bit value */
             g_gif.tex1_k = k_raw;
         }
@@ -2068,12 +2302,12 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * (Round 29 continued, 15th change). */
         g_gif.ctx2_tex1_lcm = (data_lo & 0x1u) ? 1 : 0;
         g_gif.ctx2_tex1_mxl = (data_lo >> 2) & 0x7u;
-        g_gif.ctx2_tex1_mmag = (data_lo & 0x200u) ? 1 : 0;
-        g_gif.ctx2_tex1_mmin = (data_lo >> 10) & 0x7u;
-        g_gif.ctx2_tex1_mtba = (data_lo & 0x4000u) ? 1 : 0;
-        g_gif.ctx2_tex1_l = data_hi & 0x3u;
+        g_gif.ctx2_tex1_mmag = (data_lo & 0x20u) ? 1 : 0;
+        g_gif.ctx2_tex1_mmin = (data_lo >> 6) & 0x7u;
+        g_gif.ctx2_tex1_mtba = (data_lo & 0x200u) ? 1 : 0;
+        g_gif.ctx2_tex1_l = (data_lo >> 19) & 0x3u;
         {
-            int32_t k_raw = (int32_t)((data_hi >> 2) & 0xFFFu);
+            int32_t k_raw = (int32_t)(data_hi & 0xFFFu);
             if (k_raw & 0x800) k_raw -= 0x1000;
             g_gif.ctx2_tex1_k = k_raw;
         }
@@ -2149,8 +2383,8 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
     } break;
     case GS_REG_BITBLTBUF: {
         /* GIFRegBITBLTBUF (Round 26): word0 = SBP:14(0-13),
-         * SBW:6(16-21), SPSM:6(22-27); word1 = DBP:14(0-13),
-         * DBW:6(16-21), DPSM:6(22-27). Only the destination fields
+         * SBW:6(16-21), SPSM:6(24-29); word1 = DBP:14(0-13),
+         * DBW:6(16-21), DPSM:6(24-29). Only the destination fields
          * matter for the host-to-local path this project implements
          * - source fields are parsed for completeness/documentation
          * but unused (no local-to-host/local-to-local support - see
@@ -2161,7 +2395,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         uint32_t dbw_field = (data_hi >> 16) & 0x3Fu;
         g_gif.trx_dbw = dbw_field * 64u;
         if (g_gif.trx_dbw == 0) g_gif.trx_dbw = 640;
-        g_gif.trx_dpsm = (data_hi >> 22) & 0x3Fu;
+        g_gif.trx_dpsm = (data_hi >> 24) & 0x3Fu;
     } break;
     case GS_REG_TRXPOS: {
         /* GIFRegTRXPOS: word0 = SSAX:11(0-10), SSAY:11(16-26);
@@ -2201,6 +2435,13 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         g_gif.trx_rrw = data_lo & 0xFFFu;
         g_gif.trx_rrh = data_hi & 0xFFFu;
         break;
+    case GS_REG_HWREG: {
+        /* PCSX2 GSState::GIFRegHandlerHWREG feeds eight transfer bytes
+         * for host-to-local; IMAGE and HWREG share the same cursor. */
+        uint8_t bytes[8];
+        for(unsigned i=0;i<4;i++){bytes[i]=(uint8_t)(data_lo>>(i*8));bytes[i+4]=(uint8_t)(data_hi>>(i*8));}
+        if(g_gif.trx_xdir==TRXDIR_HOST_TO_LOCAL)image_write_bytes(bytes,8);
+    } break;
     case GS_REG_TRXDIR: {
         /* GIFRegTRXDIR: word0 = XDIR:2(0-1). Writing this register is
          * what actually TRIGGERS the transfer on real hardware -
@@ -2215,8 +2456,13 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         g_gif.trx_xdir = data_lo & 0x3u;
         g_gif.trx_cur_x = 0;
         g_gif.trx_cur_y = 0;
+        g_gif.trx_partial_pixel = g_gif.trx_partial_bytes = 0;
         g_gif.trx_active = (g_gif.trx_xdir == TRXDIR_HOST_TO_LOCAL) &&
-                            (g_gif.trx_dpsm == TEX_PSM_PSMCT32);
+                            (g_gif.trx_dpsm == TEX_PSM_PSMCT32 ||
+                             g_gif.trx_dpsm == TEX_PSM_PSMCT24 ||
+                             g_gif.trx_dpsm == 2u || g_gif.trx_dpsm == 10u ||
+                             g_gif.trx_dpsm == 0x13u || g_gif.trx_dpsm == 0x14u || g_gif.trx_dpsm == 0x1bu ||
+                             g_gif.trx_dpsm == 0x24u || g_gif.trx_dpsm == 0x2cu);
     } break;
     default:
         break; /* unhandled register - ignored, not an error */
@@ -2243,36 +2489,114 @@ static inline uint32_t regs_nibble(uint32_t w2, uint32_t w3, uint32_t idx)
  * branch below) drive the exact same trx_active/trx_cur_x/trx_cur_y
  * state machine - no behavioral change for the common case where a
  * transfer fits in one call, just no duplicated logic. */
-static void image_write_pixel_qwords(const uint8_t *q, uint32_t n_qwords)
+static void image_write_bytes(const uint8_t *q, uint32_t byte_count)
 {
-    for (uint32_t i = 0; i < n_qwords && g_gif.trx_active; i++) {
-        const uint8_t *qq = q + i * 16u;
-        uint32_t px[4];
-        px[0] = rd_le32(qq + 0);
-        px[1] = rd_le32(qq + 4);
-        px[2] = rd_le32(qq + 8);
-        px[3] = rd_le32(qq + 12);
-        for (int k = 0; k < 4 && g_gif.trx_active; k++) {
-            /* Round 640: DBP is BITBLTBUF.DBP - real unit is 256 bytes
-             * (Address/64 words), not the plain functions' 4-byte-word
-             * assumption. This is the fix for the VRAM-aliasing collision
-             * documented in docs/STATUS.md Round 639/640 (legitimate
-             * texture-upload dbp values like 13440 were landing inside the
-             * framebuffer's own byte range under the old, under-scaled
-             * addressing). */
-            gs_mem_write_psmct32_blk(g_gif.trx_dbp, g_gif.trx_dbw,
-                                      g_gif.trx_dsax + g_gif.trx_cur_x,
-                                      g_gif.trx_dsay + g_gif.trx_cur_y,
-                                      px[k]);
-            g_gif.trx_cur_x++;
-            if (g_gif.trx_cur_x >= g_gif.trx_rrw) {
-                g_gif.trx_cur_x = 0;
-                g_gif.trx_cur_y++;
-                if (g_gif.trx_cur_y >= g_gif.trx_rrh)
-                    g_gif.trx_active = 0; /* transfer complete - a new TRXDIR write is required to start another */
-            }
+    if(g_gif.trx_dpsm==0x13 || g_gif.trx_dpsm==0x14 || g_gif.trx_dpsm==0x1b || g_gif.trx_dpsm==0x24 || g_gif.trx_dpsm==0x2c){
+        unsigned count=(g_gif.trx_dpsm==0x14 || g_gif.trx_dpsm==0x24 || g_gif.trx_dpsm==0x2c)?2:1;
+        for(uint32_t i=0;i<byte_count&&g_gif.trx_active;i++)for(unsigned n=0;n<count&&g_gif.trx_active;n++){
+            unsigned value=count==2?(q[i]>>(n*4))&15:q[i];
+            gs_mem_write_index(g_gif.trx_dbp*64u,g_gif.trx_dbw,g_gif.trx_dsax+g_gif.trx_cur_x,g_gif.trx_dsay+g_gif.trx_cur_y,g_gif.trx_dpsm,value);
+            if(++g_gif.trx_cur_x>=g_gif.trx_rrw){g_gif.trx_cur_x=0;if(++g_gif.trx_cur_y>=g_gif.trx_rrh)g_gif.trx_active=0;}
+        }
+        return;
+    }
+    uint32_t bytes_per_pixel = (g_gif.trx_dpsm == 2u || g_gif.trx_dpsm == 10u) ? 2u :
+                               g_gif.trx_dpsm == TEX_PSM_PSMCT24 ? 3u : 4u;
+    for (uint32_t i = 0; i < byte_count && g_gif.trx_active; i++) {
+        g_gif.trx_partial_pixel |= (uint32_t)q[i] << (g_gif.trx_partial_bytes * 8u);
+        if (++g_gif.trx_partial_bytes < bytes_per_pixel) continue;
+        uint32_t x = g_gif.trx_dsax + g_gif.trx_cur_x;
+        uint32_t y = g_gif.trx_dsay + g_gif.trx_cur_y;
+        uint32_t pixel = g_gif.trx_partial_pixel;
+        if (bytes_per_pixel == 3u)
+            pixel |= gs_mem_read_psmct32_blk(g_gif.trx_dbp, g_gif.trx_dbw, x, y) & 0xff000000u;
+        if (bytes_per_pixel == 2u)
+            (g_gif.trx_dpsm == 10u ? gs_mem_write_psmct16s : gs_mem_write_psmct16)(g_gif.trx_dbp * 64u, g_gif.trx_dbw, x, y, (uint16_t)pixel);
+        else
+            gs_mem_write_psmct32_blk(g_gif.trx_dbp, g_gif.trx_dbw, x, y, pixel);
+        g_gif.trx_partial_pixel = g_gif.trx_partial_bytes = 0;
+        if (++g_gif.trx_cur_x >= g_gif.trx_rrw) {
+            g_gif.trx_cur_x = 0;
+            if (++g_gif.trx_cur_y >= g_gif.trx_rrh) g_gif.trx_active = 0;
         }
     }
+}
+
+static void image_write_pixel_qwords(const uint8_t *q,uint32_t n_qwords)
+{
+    image_write_bytes(q,n_qwords*16u);
+}
+
+static void apply_packed_register(uint32_t reg_code, const uint8_t *q)
+{
+    uint32_t w0=rd_le32(q), w1=rd_le32(q+4), w2=rd_le32(q+8), w3=rd_le32(q+12);
+            switch (reg_code) {
+            case GIF_REG_PRIM:  g_gif.prim = w0; reset_tri_vseq(); break;
+            case GS_REG_ST:
+                g_gif.cur_s = u32_to_float(w0);
+                g_gif.cur_t = u32_to_float(w1);
+                g_gif.cur_q = u32_to_float(w2);
+                break;
+            case GS_REG_UV:
+                g_gif.cur_u = (w0 & 0x3fffu) >> 4;
+                g_gif.cur_v = (w1 & 0x3fffu) >> 4;
+                break;
+            /* Packed TEX0/CLAMP carry their natural 64-bit register in
+             * the low half of the quadword. GSState::ResetHandlers in
+             * docs/reference/pcsx2 uses the same handlers as A+D. */
+            case GS_REG_TEX0_1:
+            case GS_REG_TEX0_2:
+            case GS_REG_CLAMP_1:
+            case GS_REG_CLAMP_2:
+                apply_ad_write(reg_code, w0, w1);
+                break;
+            case GIF_REG_RGBAQ: apply_rgbaq(w0, w1, w2, w3); break;
+            case GIF_REG_XYZ2:  apply_xyz2_kick(w0, w1, w2, !(w3 & 0x8000u)); break; /* w2 = real Z (task #89) */
+            /* PACKED XYZF: Z in w2 bits 4..27, F in w3 bits
+             * 4..11, ADC in w3 bit 15. Natural A+D differs. */
+            case GIF_REG_XYZF2:
+                g_gif.cur_fog = (w3 >> 4) & 0xFFu;
+                apply_xyz2_kick(w0, w1, (w2 >> 4) & 0xFFFFFFu, !(w3 & 0x8000u));
+                break;
+            /* XYZ3/XYZF3: same field layouts as XYZ2/XYZF2 above, but
+             * "vertex kick WITHOUT drawing kick" (do_draw_kick=0) -
+             * see apply_xyz2_kick()'s own comment and the official GS
+             * Users Manual's XYZ3 description. */
+            case GIF_REG_XYZ3:
+                apply_xyz2_kick(w0, w1, w2, 0);
+                break;
+            case GIF_REG_XYZF3:
+                g_gif.cur_fog = (w3 >> 4) & 0xFFu;
+                apply_xyz2_kick(w0, w1, (w2 >> 4) & 0xFFFFFFu, 0);
+                break;
+            /* PACKED FOG uses the expanded lane w3 bits 4..11. */
+            case GIF_REG_FOG:
+                g_gif.cur_fog = (w3 >> 4) & 0xFFu;
+                break;
+            case GIF_REG_AD:    apply_ad_write(w2 & 0xFFu, w0, w1); break; /* A+D: DATA in words 0-1, ADDR in word2's low byte */
+            case GIF_REG_NOP:   default: break;
+            }
+}
+
+/* PACKED/REGLIST payloads survive DMA/VIF boundaries on their own path.
+ * REGLIST padding is consumed only after the final odd register. */
+static uint32_t consume_register_payload(const uint8_t *p, uint32_t len)
+{
+    gif_register_carry_t *c=&g_gif.register_carry_path[s_gif_active_path];
+    uint32_t off=0;
+    while(c->remaining && off+16u<=len) {
+        unsigned slots=c->mode==1u?2u:1u;
+        for(unsigned half=0;half<slots && c->remaining;half++) {
+            uint32_t code=regs_nibble(c->regs_lo,c->regs_hi,c->index);
+            if(c->mode==1u)apply_ad_write(code,rd_le32(p+off+half*8u),rd_le32(p+off+half*8u+4u));
+            else apply_packed_register(code,p+off);
+            c->index=(c->index+1u)%c->nreg;
+            c->remaining--;
+        }
+        off+=16u;g_gif.quadwords_seen++;
+    }
+    if(!c->remaining)g_gif.gif_last_eop=c->eop;
+    return off;
 }
 
 static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
@@ -2356,53 +2680,20 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
      * comment for the full citation/rationale. */
     g_gif.gif_last_eop = eop;
 
-    if (pre) {
+    /* Empty tags disregard everything except EOP; PRE applies only to PACKED.
+     * Primary reference: GSState.cpp GIF transfer tag dispatch. */
+    if (nloop && flg == 0u && pre) {
         g_gif.prim = prim;
         reset_tri_vseq();
     }
 
     uint32_t consumed = 16;
 
-    /* Round 26: REGLIST mode (FLG=1). Real hardware packs TWO plain
-     * 64-bit register values per 128-bit qword (register A in words
-     * 0-1, register B in words 2-3), looping NLOOP times through the
-     * tag's NREG-register REGS descriptor - exactly the same REGS/
-     * NREG tag fields PACKED mode uses, just interpreted as a flat
-     * stream of 64-bit values instead of PACKED's per-register
-     * 128-bit expanded encodings. Total registers = NLOOP*NREG; total
-     * qwords = ceil(total/2) (the last qword's upper half is unused
-     * padding when the total is odd - real hardware behavior).
-     *
-     * Every register in the stream is routed through apply_ad_write()
-     * uniformly: it already implements the exact "natural" 64-bit
-     * encoding REGLIST uses for PRIM/RGBAQ/XYZ2/TEX0_1/FRAME_1/ZBUF_1/
-     * TEST_1/ALPHA_1/etc (the same encoding A+D writes use in PACKED
-     * mode) - reusing it here is both more complete than duplicating
-     * PACKED's own narrower inline switch and, more importantly,
-     * already tested. Note this inherits this project's existing,
-     * already-documented A+D XYZ2 simplification (no real Z - see
-     * apply_ad_write's own GS_REG_XYZ2 case) for REGLIST-mode XYZ2
-     * writes too - a consistent, not a new, limitation. */
-    if (flg == 1 /* REGLIST */) {
-        uint32_t total_regs = nloop * nreg;
-        for (uint32_t i = 0; i < total_regs; i++) {
-            uint32_t qword_idx = i / 2;
-            uint32_t half = i % 2;
-            uint32_t qoff = consumed + qword_idx * 16u;
-            if (qoff + 16 > len) {
-                /* Incomplete - report only what's fully consumed so
-                 * far (whole qwords), same policy as PACKED mode. */
-                return consumed + qword_idx * 16u;
-            }
-            const uint8_t *q = p + qoff;
-            uint32_t lo = half == 0 ? rd_le32(q + 0) : rd_le32(q + 8);
-            uint32_t hi = half == 0 ? rd_le32(q + 4) : rd_le32(q + 12);
-            uint32_t reg_code = regs_nibble(tag_w2, tag_w3, i % nreg);
-            apply_ad_write(reg_code, lo, hi);
-        }
-        uint32_t total_qwords = (total_regs + 1u) / 2u; /* ceil(total/2) */
-        g_gif.quadwords_seen += total_qwords; /* one count per whole qword actually consumed, matching PACKED's per-qword accounting */
-        return consumed + total_qwords * 16u;
+    if (flg == 0 || flg == 1) {
+        gif_register_carry_t *c=&g_gif.register_carry_path[s_gif_active_path];
+        c->remaining=nloop*nreg;c->index=0;c->nreg=nreg;c->mode=flg;
+        c->regs_lo=tag_w2;c->regs_hi=tag_w3;c->eop=eop;
+        return consumed+consume_register_payload(p+consumed,len-consumed);
     }
 
     if (flg == 2 || flg == 3 /* IMAGE (3 is the reserved/disabled variant, treated the same) */) {
@@ -2426,39 +2717,8 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
         uint32_t skip_qwords = nloop;
         uint32_t skip_bytes = skip_qwords * 16u;
 
-        /* Round 634 (task #536/#614): a real IMAGE-mode transfer's
-         * NLOOP qwords do not always all fit in this call's buffer -
-         * e.g. a large texture/font-glyph upload that the emulated
-         * DMA feed splits across multiple gif_process_quadwords()
-         * calls. The old code here returned early with NO progress
-         * when that happened, leaving this packet's un-fit pixel
-         * bytes sitting in the buffer for the CALLER's loop to
-         * immediately re-enter process_one_packet() on - which
-         * mis-parses genuine continuation pixel bytes as a fresh
-         * GIFtag. Round 633's raw-packet capture caught this exactly:
-         * prim_raw=0x3FF/type-7 ("reserved" - not a real primitive
-         * type), x=y=4095 (both pinned at the 12-bit max) - textbook
-         * "raw pixel bytes reinterpreted as tag/vertex fields"
-         * symptoms, not a real BIOS bug. Round 634 fixed the
-         * corruption statelessly (write what fits, discard the rest,
-         * return len) after an unbounded carry-over prototype was
-         * measured to occasionally desync unrelated later traffic
-         * forever once trx_active went false with owed_qwords still
-         * outstanding (every subsequent call's ENTIRE buffer got
-         * swallowed as phantom carry-over, freezing all further GS
-         * output - caught in testing before shipping).
-         *
-         * Round 635 (task #536/#614) re-enables reconstruction, but
-         * bounded and self-healing this time: only start a carry-over
-         * when the shortfall is small (<=GIF_IMAGE_CARRY_MAX_QWORDS -
-         * generous for a single BIOS menu label/glyph texture, nowhere
-         * near enough to matter if a runaway/bogus NLOOP ever occurs);
-         * gif_process_quadwords() (see below) unconditionally zeroes
-         * the carry counter the instant trx_active reads false, rather
-         * than continuing to consume future calls' bytes - this is
-         * the exact bug the Round 634 writeup identified in the
-         * discarded prototype, now fixed at its root instead of
-         * avoided by dropping reconstruction entirely. */
+        /* DMA boundaries do not terminate an IMAGE packet. Consume the
+         * full NLOOP even if its rectangle fills before the packet ends. */
         if (consumed + skip_bytes > len) {
             uint32_t avail_bytes = (len > consumed) ? (len - consumed) : 0u;
             uint32_t avail_qwords = avail_bytes / 16u;
@@ -2467,18 +2727,7 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
             if ((flg == 2 || flg == 3) && g_gif.trx_active && avail_qwords > 0)
                 image_write_pixel_qwords(p + consumed, avail_qwords);
 
-            if ((flg == 2 || flg == 3) && g_gif.trx_active &&
-                shortfall_qwords <= GIF_IMAGE_CARRY_MAX_QWORDS) {
-                g_gif.image_carry_remaining_qwords = shortfall_qwords;
-            } else {
-                /* either not a real host-to-local pixel write, the
-                 * transfer already completed mid-write, or the
-                 * shortfall is implausibly large (likely a bogus/
-                 * mis-decoded NLOOP) - fall back to the safe Round 634
-                 * behavior for this packet: drop the tail, don't carry
-                 * anything forward. */
-                g_gif.image_carry_remaining_qwords = 0;
-            }
+            g_gif.image_carry_remaining_qwords = shortfall_qwords;
 
             return len; /* fully consumed - nothing left in this buffer to misparse as a fresh tag */
         }
@@ -2489,66 +2738,6 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
         return consumed + skip_bytes;
     }
 
-    for (uint32_t loop = 0; loop < nloop; loop++) {
-        for (uint32_t reg = 0; reg < nreg; reg++) {
-            if (consumed + 16 > len)
-                return consumed; /* incomplete - caller decides what to do */
-
-            const uint8_t *q = p + consumed;
-            uint32_t w0 = rd_le32(q + 0);
-            uint32_t w1 = rd_le32(q + 4);
-            uint32_t w2 = rd_le32(q + 8);
-            uint32_t w3 = rd_le32(q + 12);
-            (void)w3; /* word 4 of the qword (XYZ2's ADC/context bit, etc.) - not used in this simplified model. w2 (Z, for XYZ2) IS used as of task #89 - see the GIF_REG_XYZ2 case below. */
-
-            uint32_t reg_code = regs_nibble(tag_w2, tag_w3, reg);
-
-            switch (reg_code) {
-            case GIF_REG_PRIM:  g_gif.prim = w0; reset_tri_vseq(); break;
-            case GIF_REG_RGBAQ: apply_rgbaq(w0, w1, w2); break;
-            case GIF_REG_XYZ2:  apply_xyz2_kick(w0, w1, w2, 1); break; /* w2 = real Z (task #89) */
-            /* Round 97 (138th finding, task #254): XYZF2 - real
-             * GIFPackedXYZF2 layout (cross-checked against PCSX2's own
-             * GS/GSRegs.h): X in w0 (same as XYZ2), Y in w1 (same as
-             * XYZ2), w2's low 24 bits = Z (narrower than XYZ2's full
-             * 32-bit Z - real hardware trades Z range for the F byte),
-             * w2's top 8 bits = Fog coefficient F. F is latched into
-             * cur_fog BEFORE the shared vertex-kick call so it's
-             * captured into the vertex's own tri_f/line_f/v0f slot
-             * exactly like Z is. */
-            case GIF_REG_XYZF2:
-                g_gif.cur_fog = (w2 >> 24) & 0xFFu;
-                apply_xyz2_kick(w0, w1, w2 & 0xFFFFFFu, 1);
-                break;
-            /* XYZ3/XYZF3: same field layouts as XYZ2/XYZF2 above, but
-             * "vertex kick WITHOUT drawing kick" (do_draw_kick=0) -
-             * see apply_xyz2_kick()'s own comment and the official GS
-             * Users Manual's XYZ3 description. */
-            case GIF_REG_XYZ3:
-                apply_xyz2_kick(w0, w1, w2, 0);
-                break;
-            case GIF_REG_XYZF3:
-                g_gif.cur_fog = (w2 >> 24) & 0xFFu;
-                apply_xyz2_kick(w0, w1, w2 & 0xFFFFFFu, 0);
-                break;
-            /* Round 97 (138th finding, task #254): standalone FOG tag
-             * - real hardware replicates a 64-bit register's value
-             * into PACKED mode's low 64 bits (w0=bits31:0, w1=bits
-             * 63:32, the same generic mapping this file already uses
-             * implicitly for e.g. RGBAQ's word0/word1 split) - F sits
-             * at bits 63:56 of that 64-bit value, i.e. the top byte of
-             * w1. */
-            case GIF_REG_FOG:
-                g_gif.cur_fog = (w1 >> 24) & 0xFFu;
-                break;
-            case GIF_REG_AD:    apply_ad_write(w2 & 0xFFu, w0, w1); break; /* A+D: DATA in words 0-1, ADDR in word2's low byte */
-            case GIF_REG_NOP:   default: break;
-            }
-
-            consumed += 16;
-            g_gif.quadwords_seen++;
-        }
-    }
 
     return consumed;
 }
@@ -2573,40 +2762,23 @@ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
     uint32_t len = qwc * 16u;
     uint32_t off = 0;
 
-    /* Round 635 (task #536/#614): drain any bounded IMAGE-mode
-     * carry-over owed from a prior call BEFORE parsing this buffer as
-     * tags - this buffer's leading bytes may be genuine continuation
-     * pixel data from a transfer that didn't fit in the previous call
-     * (see process_one_packet()'s IMAGE-mode branch and gif.h's
-     * image_carry_remaining_qwords comment).
-     *
-     * Safety property (this is what Round 634's discarded unbounded
-     * prototype got wrong): the moment trx_active reads false - the
-     * transfer legitimately completed mid-drain, OR was reset/
-     * cancelled by something else since the shortfall was recorded -
-     * the carry counter is unconditionally zeroed right here, THIS
-     * call, before it can consume any more bytes. There is no path
-     * left where a stale non-zero counter can keep swallowing future
-     * calls' data. Combined with the bounded shortfall cap at the
-     * point the carry is created, this makes the carry-over
-     * self-limiting in both size and duration. */
+    /* IMAGE continuation belongs to its GIF path, including padding after
+     * the destination rectangle completes. Other paths retain their parser. */
+    g_gif.image_carry_remaining_qwords = g_gif.image_carry_path[s_gif_active_path];
     if (g_gif.image_carry_remaining_qwords > 0) {
-        if (!g_gif.trx_active) {
-            g_gif.image_carry_remaining_qwords = 0;
-        } else {
-            uint32_t owed_qwords = g_gif.image_carry_remaining_qwords;
-            uint32_t avail_qwords = len / 16u;
-            uint32_t take_qwords = (owed_qwords < avail_qwords) ? owed_qwords : avail_qwords;
-
-            image_write_pixel_qwords(data, take_qwords);
-            g_gif.image_carry_remaining_qwords = owed_qwords - take_qwords;
-            off = take_qwords * 16u;
-
-            if (!g_gif.trx_active)
-                g_gif.image_carry_remaining_qwords = 0; /* rectangle filled mid-drain (real NLOOP overstated it) - nothing left to reconstruct */
-        }
+        uint32_t owed_qwords = g_gif.image_carry_remaining_qwords;
+        uint32_t avail_qwords = len / 16u;
+        uint32_t take_qwords = owed_qwords < avail_qwords ? owed_qwords : avail_qwords;
+        if (g_gif.trx_active) image_write_pixel_qwords(data, take_qwords);
+        g_gif.image_carry_remaining_qwords = owed_qwords - take_qwords;
+        off = take_qwords * 16u;
     }
 
+    gif_register_carry_t *carry=&g_gif.register_carry_path[s_gif_active_path];
+    if(carry->remaining) {
+        off+=consume_register_payload(data+off,len-off);
+        if(carry->remaining || (s_gif_active_path==GIF_PATH_1 && carry->eop))return;
+    }
     while (off < len) {
         uint32_t used = process_one_packet(data + off, len - off);
         if (used == 0)
@@ -2614,35 +2786,13 @@ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
         off += used;
         if (used < 16)
             break; /* incomplete packet - safety, shouldn't normally happen */
-        /* Round 641 (task #536): real hardware terminates a GIF
-         * transfer at the first tag with EOP=1, on every path - see
-         * gif.h's gif_last_eop comment for the full citation. This
-         * matters most for PATH1 (VU1 XGKICK, vu.c): that caller
-         * intentionally passes a generous upper-bound qwc (everything
-         * from the kick address to the end of VU1's 16KB local
-         * memory, matching real hardware's own "doesn't know the
-         * real length in advance either" XGKICK model) and relies on
-         * this loop to stop at the real transfer's actual end. This
-         * is a genuine, real-hardware-cited correctness fix (kept on
-         * that basis alone), but Round 641's own live verification
-         * driver found it did NOT restore textured sprite/triangle
-         * rendering: sprite_textured/tri_textured stayed at 0 across
-         * a full 150M-slice survey, byte-for-byte identical dumped
-         * framebuffers before/after, and garbled PRIM values
-         * (reserved TYPE=7, high-entropy attribute bits, repeated
-         * 0x7ff) are STILL observed live with this fix applied - see
-         * docs/STATUS.md Round 641 for the full writeup. The
-         * remaining corruption is narrowed to something that
-         * produces bad NLOOP/NREG/FLG fields WITHIN a single, already
-         * EOP-bounded transfer (or from bad VU1 source content
-         * upstream of GIF parsing entirely) - not an unbounded
-         * transfer running past its real end, which is what this fix
-         * addresses. Left in place because it is independently
-         * correct per the manual and causes no regression, not
-         * because it was confirmed to fix the visible bug. */
-        if (g_gif.gif_last_eop)
+        /* XGKICK supplies an upper bound, so PATH1 stops at EOP.
+         * DMA and VIF DIRECT supply an exact span which may contain
+         * multiple EOP-terminated GIF packets. */
+        if (s_gif_active_path == GIF_PATH_1 && g_gif.gif_last_eop && !carry->remaining && !g_gif.image_carry_remaining_qwords)
             break;
     }
+    g_gif.image_carry_path[s_gif_active_path] = g_gif.image_carry_remaining_qwords;
 }
 
 /* Round 542: real GIF MMIO register block (0x10003000-0x100030A0).

@@ -246,6 +246,9 @@ int main(void) {
 
         /* OpenConfig (0x40): real, cited 1-byte zero result (ps2tek:
          * "Dobiestation returns zero"). */
+        iop_cdvd_mmio_write8(IOP_CDVD_BASE+0x17u,0);
+        iop_cdvd_mmio_write8(IOP_CDVD_BASE+0x17u,1);
+        iop_cdvd_mmio_write8(IOP_CDVD_BASE+0x17u,1);
         iop_cdvd_mmio_write8(IOP_CDVD_BASE + 0x16u, SCMD_OPENCONFIG);
         CHECK(iop_cdvd_mmio_read8(IOP_CDVD_BASE + 0x17u, &v) && !(v & IOP_CDVD_SDATAIN_NODATA),
               "after OpenConfig: SDATAIN reports data available (NODATA bit clear)");
@@ -263,7 +266,7 @@ int main(void) {
             if (v & IOP_CDVD_SDATAIN_NODATA) break;
             uint8_t b;
             CHECK(iop_cdvd_mmio_read8(IOP_CDVD_BASE + 0x18u, &b) && b == 0x00u,
-                  "ReadConfig result byte is honestly zero-filled (no real config block modeled)");
+                  "new configuration bank starts with zero data and valid zero checksum");
             drained++;
             if (drained > 32) break; /* safety - don't let a test bug spin forever */
         }

@@ -1,0 +1,90 @@
+#include <stdio.h>
+#include "hw/gif.c"
+static void le32(unsigned char *p, unsigned v){for(int i=0;i<4;i++)p[i]=(unsigned char)(v>>(i*8));}
+int main(void){
+    /* Send literal wire bytes, without the historical fixture builder. */
+    unsigned char packet[48]={0};
+    gif_init();
+    le32(packet,2|(1u<<15));le32(packet+4,1u<<28);le32(packet+8,0xe);
+    le32(packet+16,PRIM_TYPE_TRIANGLE);le32(packet+24,GS_REG_PRIM);
+    le32(packet+32,(37u<<4)|((83u<<4)<<16));
+    le32(packet+36,0x12345678);le32(packet+40,GS_REG_XYZ2);
+    gif_process_quadwords(DMA_CHANNEL_GIF,packet,3);
+    if(g_gif.tri_x[0]!=37||g_gif.tri_y[0]!=83||g_gif.tri_z[0]!=0x12345678u)return puts("FAIL A+D XYZ fields"),1;
+    gif_init();
+    /* REGLIST uses precisely the same 64-bit register value. */
+    le32(packet,1|(1u<<15));le32(packet+4,(1u<<26)|(2u<<28));le32(packet+8,0x50);
+    le32(packet+16,PRIM_TYPE_TRIANGLE);le32(packet+20,0);
+    le32(packet+24,(19u<<4)|((61u<<4)<<16));le32(packet+28,0xaabbccdd);
+    gif_process_quadwords(DMA_CHANNEL_GIF,packet,2);
+    if(g_gif.tri_x[0]!=19||g_gif.tri_y[0]!=61||g_gif.tri_z[0]!=0xaabbccddu)return puts("FAIL REGLIST XYZ fields"),1;
+    gif_init();apply_ad_write(GS_REG_PRIM,PRIM_TYPE_TRIANGLE,0);
+    apply_ad_write(GS_REG_XYZF3,(11u<<4)|((29u<<4)<<16),0x67123456);
+    if(g_gif.tri_x[0]!=11||g_gif.tri_y[0]!=29||g_gif.tri_z[0]!=0x123456||g_gif.tri_f[0]!=0x67||g_gif.triangles_drawn)return puts("FAIL XYZF3 fields/kick"),1;
+    gif_init();
+    le32(packet,1|(1u<<15));le32(packet+4,1u<<28);le32(packet+8,GIF_REG_RGBAQ);
+    le32(packet+16,0x12);le32(packet+20,0x34);le32(packet+24,0x56);le32(packet+28,0x78);
+    gif_process_quadwords(GIF_PATH_1,packet,2);
+    if(g_gif.rgba!=0x78563412)return puts("FAIL PACKED RGBA alpha"),1;
+    le32(packet+8,GS_REG_ST);le32(packet+16,0x3f800000);le32(packet+20,0x40000000);le32(packet+24,0x40400000);
+    gif_process_quadwords(GIF_PATH_1,packet,2);
+    if(g_gif.cur_s!=1||g_gif.cur_t!=2||g_gif.cur_q!=3)return puts("FAIL PACKED STQ"),1;
+    le32(packet+8,GS_REG_UV);le32(packet+16,33<<4);le32(packet+20,71<<4);
+    gif_process_quadwords(GIF_PATH_1,packet,2);
+    if(g_gif.cur_u!=33||g_gif.cur_v!=71)return puts("FAIL PACKED UV"),1;
+    apply_ad_write(GS_REG_PRIM,PRIM_TYPE_TRIANGLE,0);
+    le32(packet+8,GIF_REG_XYZF2);le32(packet+16,11<<4);le32(packet+20,29<<4);le32(packet+24,0x123456<<4);le32(packet+28,(0x67<<4)|0x8000);
+    gif_process_quadwords(GIF_PATH_1,packet,2);
+    if(g_gif.tri_z[0]!=0x123456||g_gif.tri_f[0]!=0x67||g_gif.triangles_drawn)return puts("FAIL PACKED XYZF fields and ADC"),1;
+    gif_init();
+    apply_ad_write(GS_REG_TEX1_1,0x00180375,0x00000fe0);
+    if(g_gif.tex1_lcm!=1||g_gif.tex1_mxl!=5||g_gif.tex1_mmag!=1||g_gif.tex1_mmin!=5||g_gif.tex1_mtba!=1||g_gif.tex1_l!=3||g_gif.tex1_k!=-32)return puts("FAIL literal TEX1_1 fields"),1;
+    apply_ad_write(GS_REG_TEX1_2,0x000800c8,0x00000020);
+    if(g_gif.ctx2_tex1_mxl!=2||g_gif.ctx2_tex1_mmin!=3||g_gif.ctx2_tex1_l!=1||g_gif.ctx2_tex1_k!=32||g_gif.tex1_k!=-32)return puts("FAIL literal TEX1_2 fields/context isolation"),1;
+    gs_mem_init();
+    gif_init();
+    apply_ad_write(GS_REG_BITBLTBUF,0,(1u<<16)|(TEX_PSM_PSMCT24<<24));
+    if(g_gif.trx_dpsm!=TEX_PSM_PSMCT24||g_gif.trx_dbw!=64)return puts("FAIL BITBLTBUF field positions"),1;
+    apply_ad_write(GS_REG_TRXREG,3,2);apply_ad_write(GS_REG_TRXDIR,0,0);
+    unsigned char pixels[32];for(unsigned i=0;i<32;i++)pixels[i]=i+1;
+    gs_mem_write_psmct32(0,64,2,1,0xa5000000);
+    image_write_pixel_qwords(pixels,1);
+    if(g_gif.trx_partial_bytes!=1||g_gif.trx_cur_x!=2||g_gif.trx_cur_y!=1)return puts("FAIL PSMCT24 partial pixel"),1;
+    image_write_pixel_qwords(pixels+16,1);
+    if(g_gif.trx_active||gs_mem_read_psmct32(0,64,2,1)!=0xa5121110)return puts("FAIL PSMCT24 RGB and alpha preservation"),1;
+    g_gif.tex_tbp0=0;g_gif.tex_tbw=64;g_gif.tex_psm=TEX_PSM_PSMCT24;
+    g_gif.texa_ta0=0x80;g_gif.texa_aem=1;
+    if(gs_sample_texel(2,1)!=0x80121110)return puts("FAIL PSMCT24 TEXA alpha"),1;
+    gs_mem_write_psmct32(0,64,0,0,0xff000000);
+    if(gs_sample_texel(0,0)!=0)return puts("FAIL PSMCT24 AEM black transparency"),1;
+    gif_init();gs_mem_init();
+    apply_ad_write(GS_REG_BITBLTBUF,0,1u|(1u<<16)|(2u<<24));
+    apply_ad_write(GS_REG_TRXREG,8,1);apply_ad_write(GS_REG_TRXDIR,0,0);
+    unsigned char pixels16[16]={0};le32(pixels16,0xfc00801f);image_write_pixel_qwords(pixels16,1);
+    if(g_gif.trx_active||gs_mem_read_psmct16(64,64,0,0)!=0x801f||gs_mem_read_psmct16(64,64,1,0)!=0xfc00)return puts("FAIL PSMCT16 packed upload"),1;
+    if(gs_mem_read_psmct32(64,64,0,0)!=0x801f||gs_mem_read_psmct32(64,64,1,0)!=0xfc00)return puts("FAIL shared VRAM 16/32 little-endian view"),1;
+    g_gif.tex_psm=2;g_gif.tex_tbp0=1;g_gif.tex_tbw=64;g_gif.texa_ta0=127;g_gif.texa_ta1=129;g_gif.texa_aem=1;
+    if(gs_sample_texel(0,0)!=0x810000f8||gs_sample_texel(1,0)!=0x81f80000||gs_sample_texel(2,0)!=0)return puts("FAIL PSMCT16 channels/TEXA"),1;
+    gs_mem_write_psmct16(64,64,8,0,0xfc00);
+    if(gs_mem_read_psmct32(64,64,0,0)!=0xfc00801f)return puts("FAIL native 16/32 column alias"),1;
+    gs_mem_write_psmct16s(64,64,32,0,0xbeef);
+    if(gs_mem_read_psmct32(64,64,32,0)!=0xbeef)return puts("FAIL native PSMCT16S block order"),1;
+    gs_mem_write_psmct16(64,64,32,0,0x1234);
+    if(gs_mem_read_psmct32(64,64,0,16)!=0x1234)return puts("FAIL native PSMCT16 block order"),1;
+    gs_mem_init();
+    gs_mem_write_z(0,64,0,0,0,0x12345678);
+    if(gs_mem_get()[6144]!=0x78||gs_mem_get()[6147]!=0x12||gs_mem_read_psmct32(0,64,32,16)!=0x12345678)return puts("FAIL literal Z32 block address"),1;
+    gs_mem_write_z(0,64,0,0,1,0xabcdef);
+    if(gs_mem_read_z(0,64,0,0,1)!=0xabcdef||gs_mem_get()[6147]!=0x12)return puts("FAIL Z24 high byte preservation"),1;
+    gs_mem_write_z(0,64,0,0,2,0x9876);
+    if(gs_mem_read_z(0,64,0,0,2)!=0x9876||gs_mem_get()[6144]!=0x76||gs_mem_get()[6145]!=0x98)return puts("FAIL native Z16 bytes"),1;
+    apply_ad_write(GS_REG_ZBUF_1,2u<<24,0);
+    apply_ad_write(GS_REG_ZBUF_2,10u<<24,0);
+    if(g_gif.zpsm!=2||g_gif.ctx1_zpsm!=2||g_gif.ctx2_zpsm!=10)return puts("FAIL ZBUF format/context decode"),1;
+    unsigned char two_packets[64]={0};
+    for(unsigned i=0;i<2;i++){unsigned a=i*32;le32(two_packets+a,0x8001);le32(two_packets+a+4,1u<<28);le32(two_packets+a+8,0xe);le32(two_packets+a+16,i+2);le32(two_packets+a+24,GS_REG_PRIM);}
+    gif_init();gif_process_quadwords(GIF_PATH_2,two_packets,4);if(g_gif.prim!=3)return puts("FAIL PATH2 EOP continuation"),1;
+    gif_init();gif_process_quadwords(GIF_PATH_3,two_packets,4);if(g_gif.prim!=3)return puts("FAIL PATH3 EOP continuation"),1;
+    gif_init();gif_process_quadwords(GIF_PATH_1,two_packets,4);if(g_gif.prim!=2)return puts("FAIL PATH1 EOP termination"),1;
+    puts("PASS literal A+D/REGLIST XYZ and XYZF3 fields");return 0;
+}

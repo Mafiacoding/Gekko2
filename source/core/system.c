@@ -6,6 +6,7 @@
  * hardware's ~8:1 clock difference; see system.h).
  */
 #include "core/system.h"
+#include "core/hw/cdvd_config.h"
 #include "core/ee/ee_core.h"
 #include "core/iop/iop_core.h"
 #include <stdio.h>
@@ -87,6 +88,7 @@ static uint32_t system_iop_read_adapter(void *ctx, uint32_t addr, int width)
 
 int system_init(const bios_image_t *ee_bios, const bios_image_t *iop_bios)
 {
+    cdvd_config_reset();
     if (ee_core_init(ee_bios) != 0) {
         printf("[!] system_init: EE core init failed\n");
         return -1;
@@ -119,6 +121,25 @@ void system_rebind_iop_bridge(void)
  * anymore. See docs/STATUS.md Round 1017 for the removal rationale
  * and the fresh organic-boot survey this enabled. */
 
+/* Sample at pseudo-random intervals averaging about 256 interleaved
+ * pairs, avoiding a fixed phase against short BIOS loops. Profiling never
+ * skips instructions or changes EE/IOP interleave. */
+static system_profile_t g_profile;
+static uint32_t g_profile_remaining=256,g_profile_rng=0x12810003u;
+__attribute__((noinline)) uint32_t system_profile_clock(void)
+{
+#ifdef __PPC__
+    uint32_t ticks;__asm__ volatile("mftb %0":"=r"(ticks));return ticks;
+#else
+    return 0;
+#endif
+}
+void system_profile_reset(void)
+{
+    g_profile=(system_profile_t){0};g_profile_remaining=256;g_profile_rng=0x12810003u;
+}
+void system_profile_get(system_profile_t *out){if(out)*out=g_profile;}
+
 int system_run_interleaved(uint64_t max_slices)
 {
     ee_state_t  *ee  = ee_core_get_state();
@@ -126,12 +147,25 @@ int system_run_interleaved(uint64_t max_slices)
 
     uint64_t slice = 0;
     for (;;) {
-        for (int i = 0; i < EE_IOP_STEP_RATIO; i++) {
-            if (!ee->halted)
-                ee_core_step();
+        /* R1165: same eight genuine EE instruction boundaries as before,
+         * but cross the system.c -> ee_core.c call boundary once per slice
+         * instead of eight times. ee_core_step_n() still calls ee_step()
+         * once per guest instruction, so Count/timers/VBLANK/SIF/interrupt
+         * cadence is deliberately unchanged. */
+        if(--g_profile_remaining==0){
+            uint32_t begin=system_profile_clock();
+            if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
+            uint32_t middle=system_profile_clock();
+            if(!iop->halted)iop_core_step();
+            uint32_t end=system_profile_clock();
+            g_profile.ee_ticks+=(uint32_t)(middle-begin);
+            g_profile.iop_ticks+=(uint32_t)(end-middle);g_profile.samples++;
+            uint32_t rng=g_profile_rng;rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
+            g_profile_rng=rng;g_profile_remaining=128+(rng&255u);
+        }else{
+            if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
+            if(!iop->halted)iop_core_step();
         }
-        if (!iop->halted)
-            iop_core_step();
 
 
         if (ee->halted && iop->halted) {
@@ -148,10 +182,12 @@ int system_run_interleaved(uint64_t max_slices)
 
         slice++;
         if (max_slices != 0 && slice >= max_slices) {
+#ifndef PCSX2WII_FAST
             system_safe_printf("\n[!] system_run_interleaved: hit slice cap (%llu) before both cores halted\n",
                    (unsigned long long)max_slices);
             system_safe_printf("    EE  halted=%d pc=0x%08lX\n", ee->halted, (unsigned long)ee->pc);
             system_safe_printf("    IOP halted=%d pc=0x%08lX\n", iop->halted, (unsigned long)iop->pc);
+#endif
             return 0;
         }
     }

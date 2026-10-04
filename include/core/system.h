@@ -81,4 +81,13 @@ int system_run_interleaved(uint64_t max_slices);
  * RAM pointers. */
 void system_rebind_iop_bridge(void);
 
+/* R1281: sampled host time, independent of guest clocks and instruction order.
+ * Counters estimate the EE/IOP cost split; they are not total elapsed CPU time. */
+typedef struct {
+    uint64_t samples,ee_ticks,iop_ticks;
+} system_profile_t;
+void system_profile_reset(void);
+void system_profile_get(system_profile_t *out);
+uint32_t system_profile_clock(void);
+
 #endif

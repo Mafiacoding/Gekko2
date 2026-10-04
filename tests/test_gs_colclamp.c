@@ -1,24 +1,9 @@
-/*
- * test_gs_colclamp.c - host-native test for Round 101's real GS
- * COLCLAMP register (task #254, 142nd finding). See include/core/hw/
- * gif.h's GS_REG_COLCLAMP/colclamp field comments and gif.c's
- * gs_colclamp_channel() for the full scope and citation (official
- * Sony GS Users Manual "COLCLAMP : Color Clamp Control").
- *
- * Uses a 1x1 MODULATE-textured SPRITE (TFX=0, the default - unlike
- * test_gs_clut.c's DECAL tests) so the (tex*color)/128 formula can
- * genuinely produce an out-of-[0,255]-range intermediate: a texel of
- * (255,255,255) modulated by a vertex color of (255,255,255) gives
- * 255*255/128 = 508 per channel (integer truncating division) -
- * clamps to 255 under the default CLAMP mode, but wraps to 508&0xFF
- * = 252 under MASK mode. This is the cleanest, most direct way to
- * distinguish the two real hardware modes without relying on
- * floating-point rounding edge cases.
- */
+/* Texture arithmetic saturates before framebuffer blending. COLCLAMP
+ * controls framebuffer RGB overflow, independently of texture alpha. */
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#include "core/hw/gif.h"
+#include "hw/gif.c"
 #include "core/hw/gs_mem.h"
 
 /* Round 640: seed texture/CLUT data via the _blk (real 256-bytes/unit
@@ -52,6 +37,11 @@ static void write_tag(uint8_t *buf, int *off, uint32_t nloop, uint32_t regs_nibb
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo); wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr); wle32(buf + *off + 12, 0);
     *off += 16;
@@ -82,7 +72,7 @@ static uint32_t sample_modulate(int write_colclamp, uint32_t clamp_bit)
     append_ad(buf, &off, (10u << 9), 0, GS_REG_FRAME_1);
     append_ad(buf, &off, 0, 0, GS_REG_XYOFFSET_1);
     uint32_t tex0_lo = (TEX_BP & 0x3FFFu) | (((TEX_BW / 64u) & 0x3Fu) << 14) | (0u << 26); /* TW=0 (1 texel) */
-    uint32_t tex0_hi = (TEX_TFX_MODULATE << 3);
+    uint32_t tex0_hi = ((1u << 2) | (TEX_TFX_MODULATE << 3));
     append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
     if (write_colclamp)
         append_ad(buf, &off, clamp_bit & 0x1u, 0u, GS_REG_COLCLAMP);
@@ -119,16 +109,19 @@ int main(void)
               "COLCLAMP CLAMP=1: modulate overflow clamps to 255");
     }
 
-    { /* COLCLAMP.CLAMP=0 (MASK): the same overflow now wraps via the
-       * low 8 bits: 508 & 0xFF = 252 (0xFC) per channel, NOT 255 -
-       * proves MASK mode genuinely took effect. */
-        uint32_t px = sample_modulate(1, 0);
-        /* All 4 channels (including alpha - this project's modulate
-         * formula treats alpha the same as R/G/B, and the test's
-         * texel/vertex alpha is also 255) wrap identically. */
-        uint32_t expect = 0xFCFCFCFCu;
-        CHECK(px == expect,
-              "COLCLAMP MASK (CLAMP=0): modulate overflow (508) wraps to 252 (0xFC) on all channels, not clamped to 255");
+    { /* Texture-stage saturation is independent of COLCLAMP. */
+        CHECK(sample_modulate(1, 0) == 0xFFFFFFFFu,
+              "COLCLAMP MASK retains saturated texture result");
+        g_gif.prim |= PRIM_ABE_MASK;
+        g_gif.alpha_a = GS_ALPHA_CS; g_gif.alpha_b = GS_ALPHA_ZERO;
+        g_gif.alpha_c = GS_ALPHA_AS; g_gif.alpha_d = GS_ALPHA_ZERO;
+        gs_finish_pixel(0, 0, 0xFFFFFFFFu, 0u, 0);
+        CHECK(gs_mem_read_psmct32(0, 640, 0, 0) == 0xFFFCFCFCu,
+              "COLCLAMP MASK wraps framebuffer blend RGB 508 to 252, retains alpha");
+        g_gif.colclamp = 1;
+        gs_finish_pixel(0, 0, 0xFFFFFFFFu, 0u, 0);
+        CHECK(gs_mem_read_psmct32(0, 640, 0, 0) == 0xFFFFFFFFu,
+              "COLCLAMP CLAMP saturates framebuffer blend RGB");
     }
 
     printf(failures == 0 ? "ALL TESTS PASSED\n" : "SOME TESTS FAILED\n");

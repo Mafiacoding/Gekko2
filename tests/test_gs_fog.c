@@ -43,6 +43,11 @@ static void write_tag(uint8_t *buf, int *off, uint32_t nloop, uint32_t regs_nibb
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo); wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr); wle32(buf + *off + 12, 0);
     *off += 16;
@@ -55,9 +60,9 @@ static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi
  * coefficient) in word2's top 8 bits. */
 static void append_xyzf2_packed(uint8_t *buf, int *off, uint32_t x_raw, uint32_t y_raw, uint32_t z24, uint32_t f8)
 {
-    uint32_t w2 = (z24 & 0xFFFFFFu) | ((f8 & 0xFFu) << 24);
+    uint32_t w2 = (z24 & 0xFFFFFFu) << 4;
     wle32(buf + *off, x_raw); wle32(buf + *off + 4, y_raw);
-    wle32(buf + *off + 8, w2); wle32(buf + *off + 12, 0) /* ADC, unused */;
+    wle32(buf + *off + 8, w2); wle32(buf + *off + 12, (f8 & 0xFFu) << 4);
     *off += 16;
 }
 

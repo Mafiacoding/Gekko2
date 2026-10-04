@@ -165,9 +165,9 @@ int main(void)
         wle32(gifpkt + goff + 8, GS_REG_PRIM); wle32(gifpkt + goff + 12, 0); goff += 16;
         wle32(gifpkt + goff, 0xFF00FF00u); wle32(gifpkt + goff + 4, 0);
         wle32(gifpkt + goff + 8, GS_REG_RGBAQ); wle32(gifpkt + goff + 12, 0); goff += 16;
-        wle32(gifpkt + goff, (10u << 4)); wle32(gifpkt + goff + 4, (10u << 4));
+        wle32(gifpkt + goff, (10u << 4) | ((10u << 4) << 16)); wle32(gifpkt + goff + 4, 0u);
         wle32(gifpkt + goff + 8, GS_REG_XYZ2); wle32(gifpkt + goff + 12, 0); goff += 16;
-        wle32(gifpkt + goff, (30u << 4)); wle32(gifpkt + goff + 4, (30u << 4));
+        wle32(gifpkt + goff, (30u << 4) | ((30u << 4) << 16)); wle32(gifpkt + goff + 4, 0u);
         wle32(gifpkt + goff + 8, GS_REG_XYZ2); wle32(gifpkt + goff + 12, 0); goff += 16;
         uint32_t gif_qwc = (uint32_t)(goff / 16);
 

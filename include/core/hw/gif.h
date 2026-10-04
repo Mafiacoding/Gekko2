@@ -449,6 +449,7 @@
 #define GS_REG_BITBLTBUF  0x50
 #define GS_REG_TRXPOS     0x51
 #define GS_REG_TRXREG     0x52
+#define GS_REG_HWREG 0x54
 #define GS_REG_TRXDIR     0x53
 
 #define TRXDIR_HOST_TO_LOCAL  0u
@@ -586,13 +587,12 @@
 #define GS_ALPHA_AD 1u
 #define GS_ALPHA_AFIX 2u
 
-/* TEX0's TFX field (2 bits) - cross-checked against PCSX2's own
- * GS/GSRegs.h GS_TFX enum. HIGHLIGHT/HIGHLIGHT2 are simplified to
- * behave like MODULATE (an honest, noted simplification - real
- * hardware's highlight modes involve a second, specular-like term
- * this project does not model). */
+/* TEX0's four TFX modes; arithmetic follows the provided PCSX2
+ * GSDrawScanline.cpp AlphaTFX/ColorTFX reference. */
 #define TEX_TFX_MODULATE  0u
 #define TEX_TFX_DECAL     1u
+#define TEX_TFX_HIGHLIGHT 2u
+#define TEX_TFX_HIGHLIGHT2 3u
 
 /* TEX0's PSM field (6 bits, word0 bits 20-25) - real GS pixel storage
  * mode enum values (well-known, widely-published PS2 GS constants -
@@ -681,6 +681,10 @@ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc);
 int gif_mmio_read32(uint32_t addr, uint32_t *out_val);
 int gif_mmio_write32(uint32_t addr, uint32_t val);
 
+typedef struct {
+    uint32_t remaining,index,nreg,mode,regs_lo,regs_hi,eop;
+} gif_register_carry_t;
+
 /* Exposed for tests: current parser state. */
 typedef struct {
     uint32_t prim;         /* current PRIM register value (bits 0-2 = primitive type) */
@@ -688,12 +692,8 @@ typedef struct {
     uint32_t fbp, fbw;      /* current draw target, in OUR gs_mem bp/bw convention (see gs_mem.h) */
     uint32_t xyoffset_x, xyoffset_y; /* raw 12.4 fixed-point offset (real units) */
 
-    /* TEX0_1 (current texture source) - TBP0/TBW decoded into OUR
-     * gs_mem bp/bw convention exactly like FRAME_1's FBP/FBW (see
-     * gs_mem.h - this project uses simplified linear addressing, not
-     * real hardware's block-swizzled layout, for textures too). tfx
-     * is TEX0's 2-bit TFX field (see TEX_TFX_* above). PSM/TW/TH/CLUT
-     * fields are ignored (PSMCT32 always assumed, matching gs_mem). */
+    /* Current TEX0 texture: TBP0 in 256-byte blocks, TBW in pixels;
+     * native VRAM addressing and indexed palette sampling are modeled. */
     uint32_t tex_tbp0, tex_tbw;
     uint32_t tex_tfx;
     /* TEX0's TW/TH fields (log2 texture width/height, real hardware
@@ -741,27 +741,11 @@ typedef struct {
     uint32_t trx_xdir;
     int trx_active;
     uint32_t trx_cur_x, trx_cur_y;
+    uint32_t trx_partial_pixel, trx_partial_bytes;
 
-    /* Round 635 (task #536/#614): bounded, safe IMAGE-mode cross-call
-     * carry-over. Round 634 shipped a stateless fix for the stream-
-     * desync bug (garbage GIFtag parsed from a split transfer's
-     * continuation bytes) that DROPS the un-fit tail of an oversized
-     * IMAGE transfer rather than reconstructing it - safe, but means
-     * multi-call texture uploads (e.g. BIOS menu label glyphs) never
-     * fully land in GS memory. This field re-enables reconstruction,
-     * but bounded: process_one_packet() only sets it when the real
-     * shortfall is <= GIF_IMAGE_CARRY_MAX_QWORDS (see gif.c) AND
-     * trx_active is genuinely still set; gif_process_quadwords()
-     * immediately zeroes it (abandoning the carry, not endlessly
-     * consuming future calls' bytes) the moment trx_active reads
-     * false, whether because the transfer legitimately completed or
-     * was reset by something else. This directly patches the exact
-     * bug an earlier unbounded version of this carry-over had: once
-     * trx_active went false with a large/bogus owed_qwords still
-     * outstanding, every subsequent call's ENTIRE buffer got silently
-     * swallowed as phantom carry-over forever, freezing all further
-     * GS output (caught in host-native testing before shipping,
-     * documented in Round 634's writeup). 0 = no carry-over active. */
+    /* Diagnostic view of the current path's remaining IMAGE qwords.
+     * The three image_carry_path counters retain full 15-bit NLOOP spans,
+     * including padding after a target rectangle has completed. */
     uint32_t image_carry_remaining_qwords;
 
     /* Z-buffer / depth-test state (task #89). zbp is the Z buffer's
@@ -1084,26 +1068,7 @@ typedef struct {
      * rasterize_triangle() picks UV (affine) or ST+Q (perspective-
      * correct) interpolation based on PRIM's real FST bit. */
     float tri_s[3], tri_t[3], tri_q[3];
-    /* Per-vertex Z (task #89), from XYZ2's real Z word. IMPORTANT
-     * scope caveat: this project's existing A+D-mode XYZ2 handling
-     * (apply_ad_write's GS_REG_XYZ2 case - the ONLY path every
-     * existing test/demo in this codebase uses) packs X into the
-     * ENTIRE first 32-bit word and Y into the ENTIRE second 32-bit
-     * word - a convention already baked into every existing test
-     * file before this round, which leaves no room for Z (real
-     * hardware's actual GIFRegXYZ A+D layout is X:16,Y:16 packed
-     * together in ONE word, Z:32 alone in the other - cross-checked
-     * against PCSX2's GS/GSRegs.h - but changing this project's
-     * established A+D convention now would require touching every
-     * existing test file and main.c's demo, well outside this task's
-     * scope). Z therefore only flows through for the genuine PACKED-
-     * mode XYZ2 path (GIFPackedXYZ2: X in word0, Y in word1, Z in
-     * word2 - a real, correctly-cross-checked, and previously-
-     * completely-unused-by-any-test layout), which is what the new
-     * tests/test_z_buffer.c uses. A+D-mode XYZ2 draws get Z=0
-     * (harmless: Z-buffer reads/writes stay fully gated behind
-     * zbuf_configured, so pre-existing A+D-only tests are completely
-     * unaffected either way). */
+    /* Per-vertex Z from the real PACKED or 64-bit A+D/REGLIST XYZ value. */
     uint32_t tri_z[3];
     /* Per-vertex Fog coefficient (Round 97, task #254) - latched from
      * cur_fog at every vertex kick, same shape/rolling-window rules
@@ -1210,8 +1175,22 @@ typedef struct {
      * instrumentation, whether a given boot/run window ever issued a
      * real XGKICK - see tools/round577-tekken-discboot/driver.c. */
     uint64_t gif_path1_transfers;
+    uint32_t zpsm, ctx1_zpsm, ctx2_zpsm;
+    uint32_t image_carry_path[3];
+    uint32_t tex_tcc, ctx1_tex_tcc, ctx2_tex_tcc;
+    gif_register_carry_t register_carry_path[3];
+    uint32_t tex_csm, ctx1_tex_csm, ctx2_tex_csm;
+    uint32_t clut_cbp0, clut_cbp1, clut_cache[512];
+    /* FRAME write protection and framebuffer storage format. */
+    uint32_t fbmask, ctx1_fbmask, ctx2_fbmask;
+    uint32_t frame_psm, ctx1_frame_psm, ctx2_frame_psm;
+    /* R1297: first SPRITE vertex before fractional coordinate loss.
+     * Appended for backward-compatible checkpoint restoration. */
+    uint64_t sprite_pos16;
 } gif_state_t;
 
 gif_state_t *gif_get_state(void);
+/* Per-draw overlapping state reasons 0..9; cached sprites=10, fast rows=11. */
+uint64_t gif_get_render_work(unsigned index);
 
 #endif

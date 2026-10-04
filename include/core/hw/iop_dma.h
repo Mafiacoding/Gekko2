@@ -185,6 +185,19 @@ void iop_dma_signal_channel_done(int channel);
 int iop_dma_channel_write_bytes(int channel, const uint8_t *data, uint32_t nbytes);
 
 /*
+ * Round 1105 (task #1033 "virtual bridge" audit): dma_sink_fn-shaped
+ * (see core/hw/dma.h) adapter closing the SIF1 (EE->IOP direction) gap
+ * - the one SIF channel that, unlike SIF0/SIF2, had no dma_set_sink()
+ * registration anywhere and silently dropped its payload bytes.
+ * Combines the two already-existing primitives above
+ * (iop_dma_channel_write_bytes() + iop_dma_signal_channel_done()) for
+ * IOP DMA channel 10 (real SIF1, see s_ranges[] in iop_dma.c). Meant
+ * to be passed directly to dma_set_sink(DMA_CHANNEL_SIF1, ...) from
+ * ee_core.c, matching the existing GIF/VIF0/VIF1/TOIPU sink pattern.
+ */
+void iop_dma_sif1_ee_to_iop_sink(int channel, const uint8_t *data, uint32_t qwc);
+
+/*
  * Round 511 (task #470): counts real, completed IOP-RAM-to-EE-RAM SIF2
  * transfers (channel 2, real "GPU"/SIF2 dual-purpose channel per the
  * user's own uploaded real sifman.c/dmacman.h source - see

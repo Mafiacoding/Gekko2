@@ -31,6 +31,11 @@ static void wle32(uint8_t *p, uint32_t v) { p[0]=v&0xFF;p[1]=(v>>8)&0xFF;p[2]=(v
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo);
     wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr);
@@ -47,7 +52,7 @@ static void fill_texture_index(uint32_t bp, uint32_t bw, uint32_t w, uint32_t h,
 {
     for (uint32_t y = 0; y < h; y++)
         for (uint32_t x = 0; x < w; x++)
-            gs_mem_write_psmct32_blk(bp, bw, x, y, index);
+            gs_mem_write_index(bp * 64u, bw, x, y, TEX_PSM_PSMT4, index);
 }
 
 /* Writes an arbitrary TEXCLUT value in isolation, as its own A+D
@@ -86,7 +91,7 @@ static void draw_clut_triangle(uint32_t tex_bp, uint32_t tex_bw, uint32_t psm,
     append_ad(buf, &off, 0, 0, GS_REG_XYOFFSET_1);
 
     uint32_t tex0_lo = (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14) | ((psm & 0x3Fu) << 20);
-    uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | ((cbp & 0x3FFFu) << 5) | ((cpsm & 0xFu) << 19) | ((csa & 0x1Fu) << 24);
+    uint32_t tex0_hi = (1u << 29) | (TEX_TFX_DECAL << 3) | ((cbp & 0x3FFFu) << 5) | ((cpsm & 0xFu) << 19) | ((csa & 0x1Fu) << 24);
     append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
     append_ad(buf, &off, (uint32_t)PRIM_TYPE_TRIANGLE | PRIM_TME_MASK | PRIM_FST_MASK, 0, GS_REG_PRIM);
 

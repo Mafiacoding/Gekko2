@@ -44,6 +44,7 @@ int main(void) {
 
     g_dma.chan[DMA_CHANNEL_SIF0].madr = 0x2000;
     g_dma.chan[DMA_CHANNEL_SIF0].qwc = 5; /* pretend 5 quadwords were expected */
+    g_dma.chan[DMA_CHANNEL_SIF0].chcr = 0x184u; /* STR set, as observed live in R1199 */
 
     int rc = dma_channel_receive_quadwords(DMA_CHANNEL_SIF0, payload, 2); /* deliver 2 of them */
     CHECK(rc == 1, "SIF0 inbound write returns success");
@@ -52,6 +53,7 @@ int main(void) {
     CHECK(g_dma.chan[DMA_CHANNEL_SIF0].qwc == 3, "SIF0 inbound: QWC decremented (5 - 2 = 3)");
     CHECK(g_dma.chan[DMA_CHANNEL_SIF0].quadwords_transferred == 2, "SIF0 inbound: lifetime counter incremented");
     CHECK((dma_get_state()->d_stat & (1u << DMA_CHANNEL_SIF0)) != 0, "SIF0 inbound: real completion status (DMAC_STAT) signaled");
+    CHECK((g_dma.chan[DMA_CHANNEL_SIF0].chcr & 0x100u) == 0, "SIF0 inbound: completion clears CHCR.STR");
 
     /* --- Test 2: QWC doesn't underflow if more is delivered than was pending --- */
     g_dma.chan[DMA_CHANNEL_SIF0].qwc = 1;

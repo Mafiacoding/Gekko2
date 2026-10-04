@@ -1,0 +1,41 @@
+{
+  "name": "Gekko2",
+  "revision": "R1302",
+  "scope": "HBC icon and embedded launcher artwork; EE/IOP/GX behavior unchanged from R1301",
+  "hbc_icon": {
+    "width": 128,
+    "height": 48,
+    "format": "RGB PNG"
+  },
+  "embedded_menu_logo": {
+    "width": 256,
+    "height": 96,
+    "format": "RGBA words",
+    "runtime_sd_loading": false
+  },
+  "visual_validation": "Host render of native launcher/text/logo/XFB routines, inspected at 640x480; not physical Wii screenshot",
+  "builds": [
+    "JIT",
+    "Interpreter"
+  ],
+  "inherited_guest_validation": "R1301: 200 native tests, four PPC jobs, 66 matching VRAM signatures; not rerun for artwork-only change",
+  "physical_wii_verified": false,
+  "binaries": {
+    "Gekko2-R1302-Menu-Interpreter.dol": {
+      "bytes": 955584,
+      "sha256": "aee7f801f6cc4584fab6bee21df7afbb85a127f3b7bf4cc53a05824790356908"
+    },
+    "Gekko2-R1302-Menu-JIT.elf": {
+      "bytes": 5422940,
+      "sha256": "5d4d1abffaccd20475c09b6d8a07dad4821bd56d309295b7f8f1fa3a44aa7777"
+    },
+    "Gekko2-R1302-Menu-JIT.dol": {
+      "bytes": 1035168,
+      "sha256": "1c986ce8fdc1bfd4882f92782b8c9e17dd684978a606f244e1be189a035caa0e"
+    },
+    "Gekko2-R1302-Menu-Interpreter.elf": {
+      "bytes": 5291620,
+      "sha256": "ee03b80c766caee7b76f33e4174800e4900a02a7ae2c5885f3310fa01d8aca48"
+    }
+  }
+}

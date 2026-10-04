@@ -8,8 +8,16 @@
  */
 
 #include "core/hw/dma.h"
+#include "core/hw/ee_intc.h"
 #include <string.h>
+
+/* Local alias, matching the existing per-file-local-constant convention
+ * used by source/hw/sif.c and source/hw/iop_icfg.c for this same value. */
+#define EE_INTC_IRQ_SBUS 1
 #ifdef R933_DMA_KICK_TRACE
+#include <stdio.h>
+#endif
+#ifdef R1132_WRITE_WATCH
 #include <stdio.h>
 #endif
 
@@ -27,11 +35,18 @@ static uint32_t g_ee_ram_size = 0;
 static uint8_t *g_ee_scratch = NULL;
 static uint32_t g_ee_scratch_size = 0;
 static dma_sink_fn g_sinks[DMA_CHANNEL_COUNT];
+static dma_sink_fn g_tag_sinks[DMA_CHANNEL_COUNT];
+
+void dma_set_tag_sink(int channel, dma_sink_fn fn)
+{
+    if (channel >= 0 && channel < DMA_CHANNEL_COUNT) g_tag_sinks[channel] = fn;
+}
 
 void dma_init(void)
 {
     memset(&g_dma, 0, sizeof(g_dma));
     memset(g_sinks, 0, sizeof(g_sinks));
+    memset(g_tag_sinks, 0, sizeof(g_tag_sinks));
     /* Deliberately not clearing g_ee_ram/g_ee_ram_size here - dma_init()
      * resets register state on emulator (re)start, but the RAM binding
      * is a one-time wiring done by ee_core_init() at a different point
@@ -106,12 +121,12 @@ static int dma_resolve_ptr(uint32_t raw_addr, uint32_t len, uint8_t **out)
         if (!g_ee_scratch)
             return 0;
         uint32_t off = addr & (EE_SCRATCH_SIZE - 1u);
-        if (off + len > g_ee_scratch_size || off + len > EE_SCRATCH_SIZE)
+        if (off > g_ee_scratch_size || len > g_ee_scratch_size - off || len > EE_SCRATCH_SIZE - off)
             return 0;
         *out = g_ee_scratch + off;
         return 1;
     }
-    if (!g_ee_ram || addr + len > g_ee_ram_size)
+    if (!g_ee_ram || addr > g_ee_ram_size || len > g_ee_ram_size - addr)
         return 0;
     *out = g_ee_ram + addr;
     return 1;
@@ -139,13 +154,69 @@ static int ram_ptr(uint32_t raw_addr, uint32_t len, const uint8_t **out)
     return 1;
 }
 
+/* D_CTRL.MFD selects VIF1 (2) or GIF (3), per Dmac.h. A drain must
+ * not interpret unwritten ring bytes as a REFE completion. */
+static int mfifo_channel(void)
+{
+    unsigned mfd=(g_dma.d_ctrl>>2)&3u;
+    return mfd==2u?DMA_CHANNEL_VIF1:mfd==3u?DMA_CHANNEL_GIF:-1;
+}
+static int mfifo_valid(void)
+{
+    uint64_t size=(uint64_t)g_dma.d_rbsr+16u;
+    return mfifo_channel()>=0 && g_dma.d_rbsr && !(g_dma.d_rbor&15u) &&
+           !(g_dma.d_rbsr&15u) && !(size&(size-1u)) &&
+           (uint64_t)g_dma.d_rbor+size<=g_ee_ram_size;
+}
+static uint32_t mfifo_wrap(uint32_t addr)
+{
+    return g_dma.d_rbor+((addr-g_dma.d_rbor)&g_dma.d_rbsr);
+}
+static int mfifo_contains(uint32_t addr)
+{
+    return addr>=g_dma.d_rbor && (uint64_t)addr<(uint64_t)g_dma.d_rbor+g_dma.d_rbsr+16u;
+}
+static uint32_t mfifo_available(uint32_t addr)
+{
+    return ((mfifo_wrap(g_dma.chan[DMA_CHANNEL_FROMSPR].madr)-mfifo_wrap(addr))&g_dma.d_rbsr)/16u;
+}
+
 /* Transfers 'qwc' quadwords (16 bytes each) starting at physical
  * address 'addr' to the channel's registered sink (if any). Returns 1
  * on success, 0 if the range falls outside bound RAM. */
 static int transfer_quadwords(int channel, uint32_t addr, uint32_t qwc)
 {
+    /* SPR channels copy between EE RAM and the 16 KiB scratchpad,
+     * rather than sending bytes to a peripheral sink. SADR wraps. */
+    if (channel == DMA_CHANNEL_TOSPR || channel == DMA_CHANNEL_FROMSPR) {
+        dma_channel_t *ch = &g_dma.chan[channel];
+        uint32_t phys = addr & 0x1fffffffu;
+        uint64_t bytes = (uint64_t)qwc * 16u;
+        int ring=channel==DMA_CHANNEL_FROMSPR && mfifo_valid();
+        if (!g_ee_ram || !g_ee_scratch || g_ee_scratch_size < EE_SCRATCH_SIZE ||
+            (!ring && (uint64_t)phys + bytes > g_ee_ram_size)) return 0;
+        uint32_t spr = ch->sadr & (EE_SCRATCH_SIZE - 16u);
+        for (uint32_t i=0; i<qwc; i++) {
+            if (channel == DMA_CHANNEL_TOSPR)
+                memcpy(g_ee_scratch + spr, g_ee_ram + phys + i*16u, 16u);
+            else memcpy(g_ee_ram + (ring?mfifo_wrap(phys+i*16u):phys+i*16u), g_ee_scratch + spr, 16u);
+            spr = (spr + 16u) & (EE_SCRATCH_SIZE - 1u);
+        }
+        ch->sadr = spr;
+        ch->quadwords_transferred += qwc;
+        return 1;
+    }
     if (qwc == 0)
         return 1;
+    if(channel==mfifo_channel() && mfifo_valid() && mfifo_contains(addr)) {
+        for(uint32_t i=0;i<qwc;i++) {
+            const uint8_t *q;
+            if(!ram_ptr(mfifo_wrap(addr+i*16u),16u,&q))return 0;
+            if(g_sinks[channel])g_sinks[channel](channel,q,1u);
+        }
+        g_dma.chan[channel].quadwords_transferred+=qwc;
+        return 1;
+    }
     const uint8_t *p;
     if (!ram_ptr(addr, qwc * 16u, &p))
         return 0;
@@ -206,10 +277,14 @@ void dma_channel_kick(int channel)
             ch->last_error = DMA_ERR_OUT_OF_BOUNDS;
         } else {
             ch->madr += ch->qwc * 16u;
+            if(channel==DMA_CHANNEL_FROMSPR && mfifo_valid())ch->madr=mfifo_wrap(ch->madr);
             ch->qwc = 0;
         }
         ch->chcr &= ~0x100u; /* transfer complete - clear STR */
         dma_channel_signal_done(channel); /* task #176: real hwDmacIrq(n) equivalent */
+        /* Publishing actual producer bytes can restart a waiting drain. */
+        int drain=mfifo_channel();
+        if(channel==DMA_CHANNEL_FROMSPR && ch->last_error==DMA_ERR_NONE && mfifo_valid() && drain>=0 && (g_dma.chan[drain].chcr&0x100u))dma_channel_kick(drain);
         return;
     }
 
@@ -221,33 +296,53 @@ void dma_channel_kick(int channel)
         const int MAX_TAGS_PER_KICK = 4096; /* guards against a corrupt/cyclic chain hanging us forever */
         for (int guard = 0; guard < MAX_TAGS_PER_KICK; guard++) {
             uint32_t qwc, id, addr, irq;
+            int ring=channel==mfifo_channel() && mfifo_valid() && mfifo_contains(ch->tadr);
+            uint32_t available=ring?mfifo_available(ch->tadr):0;
+            if(ring && !available)return; /* STR stays set, no completion IRQ. */
             (void)irq;
             if (!read_chain_tag(ch->tadr, &qwc, &id, &addr, &irq)) {
                 ch->last_error = DMA_ERR_OUT_OF_BOUNDS;
                 break;
             }
 
+            if(ring && (id==DMA_TAG_CNT || id==DMA_TAG_NEXT || id==DMA_TAG_END || id==5u || id==6u) && available<qwc+1u)return;
+
+            /* CHCR.TTE sends the tag's upper two words to VIF before
+             * the associated data, including tags with QWC=0. */
+            if ((ch->chcr & 0x40u) && g_tag_sinks[channel]) {
+                const uint8_t *tag_data;
+                if (!ram_ptr(ch->tadr + 8u, 8u, &tag_data)) {
+                    ch->last_error = DMA_ERR_OUT_OF_BOUNDS;
+                    ch->chcr &= ~0x100u;
+                    return;
+                }
+                g_tag_sinks[channel](channel, tag_data, 2u);
+            }
+
             switch (id) {
             case DMA_TAG_REFE: /* 0: data at ADDR, then stop */
                 if (!transfer_quadwords(channel, addr, qwc)) { ch->last_error = DMA_ERR_OUT_OF_BOUNDS; }
                 ch->tadr += 16u;
+                if(ring)ch->tadr=mfifo_wrap(ch->tadr);
                 ch->chcr &= ~0x100u;
                 dma_channel_signal_done(channel); /* task #176 */
                 return;
 
             case DMA_TAG_CNT: /* 1: data follows the tag itself, keep going */
-                if (!transfer_quadwords(channel, ch->tadr + 16u, qwc)) { ch->last_error = DMA_ERR_OUT_OF_BOUNDS; return; }
+                if (!transfer_quadwords(channel, ring?mfifo_wrap(ch->tadr + 16u):ch->tadr + 16u, qwc)) { ch->last_error = DMA_ERR_OUT_OF_BOUNDS; return; }
                 ch->tadr = ch->tadr + 16u + qwc * 16u;
+                if(ring)ch->tadr=mfifo_wrap(ch->tadr);
                 continue;
 
             case DMA_TAG_NEXT: /* 2: data follows the tag, next tag is at ADDR */
-                if (!transfer_quadwords(channel, ch->tadr + 16u, qwc)) { ch->last_error = DMA_ERR_OUT_OF_BOUNDS; return; }
-                ch->tadr = addr;
+                if (!transfer_quadwords(channel, ring?mfifo_wrap(ch->tadr + 16u):ch->tadr + 16u, qwc)) { ch->last_error = DMA_ERR_OUT_OF_BOUNDS; return; }
+                ch->tadr = ring?mfifo_wrap(addr):addr;
                 continue;
 
             case DMA_TAG_END: /* 7: data follows the tag, then stop */
-                if (!transfer_quadwords(channel, ch->tadr + 16u, qwc)) { ch->last_error = DMA_ERR_OUT_OF_BOUNDS; }
+                if (!transfer_quadwords(channel, ring?mfifo_wrap(ch->tadr + 16u):ch->tadr + 16u, qwc)) { ch->last_error = DMA_ERR_OUT_OF_BOUNDS; }
                 ch->tadr += 16u + qwc * 16u;
+                if(ring)ch->tadr=mfifo_wrap(ch->tadr);
                 ch->chcr &= ~0x100u;
                 dma_channel_signal_done(channel); /* task #176 */
                 return;
@@ -283,6 +378,7 @@ void dma_channel_kick(int channel)
                  * semaphore it is WaitSema()-blocked on never fires. */
                 if (!transfer_quadwords(channel, addr, qwc)) { ch->last_error = DMA_ERR_OUT_OF_BOUNDS; return; }
                 ch->tadr += 16u;
+                if(ring)ch->tadr=mfifo_wrap(ch->tadr);
                 continue;
 
             default: /* CALL/RET - not implemented (no evidence yet this project's
@@ -349,12 +445,41 @@ int dma_channel_receive_quadwords(int channel, const uint8_t *data, uint32_t qwc
     if ((uint64_t)ch->madr + (uint64_t)len > (uint64_t)g_ee_ram_size)
         return 0;
 
+#ifdef R1132_WRITE_WATCH
+    {
+        uint32_t lo = 0x00023FC8u, hi = 0x00023FCCu + 4u;
+        if (ch->madr < hi && (ch->madr + len) > lo) {
+            fprintf(stderr, "[R1132_WRITE_WATCH] who=dma_channel_receive_quadwords channel=%d madr=0x%08x len=%u qwc=%u\n",
+                    channel, ch->madr, len, qwc);
+        }
+    }
+#endif
     memcpy(g_ee_ram + ch->madr, data, len);
     ch->madr += len;
     ch->qwc = (ch->qwc > qwc) ? (ch->qwc - qwc) : 0u;
     ch->quadwords_transferred += qwc;
 
-    dma_channel_signal_done(channel); /* real completion status, same as the outbound path */
+    /* R1200: an inbound DMA completion is still a DMA completion.
+     * The normal/chain outbound engine clears CHCR.STR (bit 8) before
+     * raising DMAC_STAT, but the inbound helper historically left STR
+     * set forever. R1199 caught SIF0 at CHCR=0x184 even after the 3-QWC
+     * REND had completed (MADR advanced 0x935c0 -> 0x935f0, QWC=0).
+     * That exposes the channel as permanently busy to the real BIOS.
+     * Clear STR before signaling completion, matching dma_channel_kick(). */
+    ch->chcr &= ~0x100u;
+    dma_channel_signal_done(channel); /* real DMAC_STAT completion status */
+
+    /* R1203: inbound SIF0 completion must also assert the EE SBUS INTC
+     * source.  dma_channel_signal_done() only sets DMAC_STAT; despite
+     * older comments claiming otherwise it does not call ee_intc_raise().
+     * The bookkeeping-only dma_channel_note_reply_delivered() path below
+     * already performs this exact SIF0 -> SBUS coupling, but the real
+     * receive-DMA helper introduced later never inherited it.  R1202
+     * proved three byte-correct REND DMAs completed with STR clear while
+     * none correlated with the BIOS SBUS handler.  Raise the hardware
+     * completion source here, generically for every real inbound SIF0 DMA. */
+    if (channel == DMA_CHANNEL_SIF0)
+        ee_intc_raise_sbus_event();
     return 1;
 }
 
@@ -380,6 +505,37 @@ void dma_channel_note_reply_delivered(int channel, uint32_t dest_addr, uint32_t 
     ch->quadwords_transferred += qwc;
 
     dma_channel_signal_done(channel);
+
+    /* Round 1096 (task #447/#536, GT3 disc-boot track): every genuine
+     * SIF0 completion is a real EE-side SBUS event on real hardware
+     * (see PCSX2 Sif.cpp / ps2sdk sifdma.c - the EE's SBUS IRQ is what
+     * lets BIOS/game code waiting via SIF_SMFLAG-poll or the EE INTC
+     * SBUS bit actually observe "a reply arrived"). Rounds 263/317/
+     * 1021/1076 each hard-coded this at one specific poll PC
+     * (0x8000CFCC, 0x8000FD74, 0x8000FE2C) as separate one-off
+     * shortcuts, because at the time only those exact addresses were
+     * known to matter. That doesn't scale - GT3 (Round 1075/1076)
+     * proved a single poll site can be visited more than once, and a
+     * fourth/fifth pinned address is not a real fix. This raises
+     * SBUS generically, from the one real place completions are
+     * actually delivered, exactly like real hardware does it.
+     * Verified (Round 1096, scratch tree only until this commit):
+     *  - fires correctly for all real SIF0 deliveries across a fresh
+     *    GT3 cold boot (sif0_replies=4, matching the real bind-reply
+     *    traffic already characterized in Rounds 1071-1075, with the
+     *    last one at ee_pc=0x80000358 - the exact SignalSema(5) site
+     *    Round 1075 already proved is the real CDVD_INIT completion);
+     *  - a 240M-instruction non-regression window shows byte-identical
+     *    final resting state to the unpatched tree (ee_pc=0x8000fe24) -
+     *    honestly, this alone does not push GT3 further, because no
+     *    5th SIF0 completion is ever produced in this window (the
+     *    remaining gap is upstream: nothing issues another outbound
+     *    SIF-RPC request), not because this raise is wrong or unused.
+     * Shipped anyway because it is a strictly more correct/general
+     * replacement for the 3 existing address-pinned shortcuts, with
+     * no observed regression. */
+    if (channel == DMA_CHANNEL_SIF0)
+        ee_intc_raise_sbus_event();
 }
 
 void dma_channel_set_irq_enable(int channel, int enabled)

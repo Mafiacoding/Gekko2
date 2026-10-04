@@ -1,8 +1,20 @@
 #ifndef PCSX2WII_EE_JIT_H
 #define PCSX2WII_EE_JIT_H
 
+/* R1281: native MFC0/MTC0 transfers; single-op CPU dispatch uses inline C.
+ * Full EE/IOP block JIT remains unfinished. */
 #include <stdint.h>
+#include "core/recompiler/ee_block_policy.h"
 #include "core/ee/ee_core.h"
+
+/* Current R1267 design: one-instruction PPC dispatch with instruction-keyed
+ * owning cache and PC+word-tagged L0. Both supported functions and known
+ * rejections are cached; allocation/finalization failures are retried.
+ * Loads, branches, COP1, VU0 macro operations and many MMI instructions are
+ * implemented. The interpreter's instruction epilogue remains mandatory.
+ * Full EE/IOP blocks remain unfinished; IOP single-op and VU pair backends
+ * are implemented with partial opcode/timing coverage.
+ * The older round-by-round design notes below describe historical scope. */
 
 /*
  * ee_jit - Round 887 (task #866/#868 continuation): the first real
@@ -97,10 +109,34 @@
  * should run its normal interpreter switch, exactly as before). */
 int ee_jit_try_execute_one(ee_state_t *st, uint32_t instr);
 
+/* R1162: PC-tagged hot trace front-end.  Same one-instruction semantics as
+ * ee_jit_try_execute_one(), but lets the JIT remember the already-resolved
+ * native function for a hot instruction address.  The raw instruction word
+ * is still supplied and compared on every hit, so self-modifying code or an
+ * overlay change invalidates the entry automatically. */
+int ee_jit_try_execute_one_at(ee_state_t *st, uint32_t pc, uint32_t instr);
+
 /* Diagnostics for verification/STATUS.md writeups and host-native
  * tests - not used by any control-flow decision. */
 uint64_t ee_jit_get_executed_count(void);
+/* R1267: negative L0 hits avoid repeated unsupported-opcode compilation. */
+uint64_t ee_jit_get_rejected_hit_count(void);
+uint64_t ee_jit_get_compile_attempt_count(void);
 uint32_t ee_jit_get_cache_size(void);
+uint64_t ee_jit_get_pc_l0_hit_count(void);
+uint64_t ee_jit_get_pc_l0_miss_count(void);
+/* R1175: runtime C-helper profiler. Diagnostic only. */
+extern volatile uint64_t g_r1175_jit_sqrt_calls;
+extern volatile uint64_t g_r1175_jit_cvt_calls;
+extern volatile uint64_t g_r1175_jit_mmi_muldiv_calls;
+extern volatile uint64_t g_r1175_jit_pmfhl_calls;
 void     ee_jit_reset_stats_for_test(void); /* test-only: zero counters + cache, so successive host-native tests don't see stale state from an earlier test in the same process */
+
+unsigned ee_jit_try_execute_block(ee_state_t *st,unsigned budget);
+uint64_t ee_jit_get_block_count(void);
+uint64_t ee_jit_get_block_retired(void);
+
+/* First encoding came from the real scalar fetch; later words stay live. */
+unsigned ee_jit_try_execute_block_fetched(ee_state_t *st,unsigned budget,uint32_t first_word);
 
 #endif

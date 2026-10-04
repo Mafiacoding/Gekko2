@@ -1,3 +1,4 @@
+#include "core/recompiler/iop_jit.h"
 /*
  * iop_core.c - R3000A (IOP) interpreter
  *
@@ -1400,6 +1401,25 @@ static int iop_step(void)
 #define BRANCH_TO(target) do { st->next_pc = (target); } while (0)
 #define LINK(reg) do { GPR(reg) = this_pc + 8; } while (0)
 
+#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
+    /* R1281: full-retirement PPC measurements show these simple scalar
+     * bodies are cheaper inline than a single native-cache dispatch.
+     * Native translators remain available for direct calls/future blocks. */
+    static const uint8_t cheap_special[64]={
+        [0]=1,[2]=1,[3]=1,[4]=1,[6]=1,[7]=1,[8]=1,[9]=1,
+        [0x21]=1,[0x23]=1,[0x24]=1,[0x25]=1,[0x26]=1,[0x27]=1,
+        [0x2a]=1,[0x2b]=1
+    };
+    int cheap=op==9u || (op>=12u && op<=15u) ||
+        (op==0u && (funct==0u || funct==0x21u || cheap_special[funct]));
+    /* R1283: short branch/COP0 transfer effects stay inline, including
+     * the existing IOP HLE JAL/JR checks. Native APIs remain available. */
+    int cheap_control=(op>=2u&&op<=7u)||(op==0x10u&&(rs==0u||rs==4u));
+    if(!cheap && !cheap_control && iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
+#else
+    if(iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
+#endif
+
     switch (op) {
     case 0x00: /* SPECIAL */
         switch (funct) {
@@ -1738,17 +1758,15 @@ static int iop_step(void)
             st->lo = (uint32_t)(res & 0xFFFFFFFFu);
             st->hi = (uint32_t)(res >> 32);
         } break;
-        case 0x1A: /* DIV */
-            if (rt32 != 0) {
-                st->lo = (uint32_t)((int32_t)rs32 / (int32_t)rt32);
-                st->hi = (uint32_t)((int32_t)rs32 % (int32_t)rt32);
-            }
+        case 0x1A: /* DIV: defined R3000A zero/overflow outcomes, primary
+                     * R3000AOpcodeTables.cpp psxDIV, no host C overflow. */
+            if (!rt32) { st->lo=(int32_t)rs32<0?1u:0xffffffffu;st->hi=rs32; }
+            else if(rs32==0x80000000u&&rt32==0xffffffffu){st->lo=0x80000000u;st->hi=0;}
+            else {st->lo=(uint32_t)((int32_t)rs32/(int32_t)rt32);st->hi=(uint32_t)((int32_t)rs32%(int32_t)rt32);}
             break;
         case 0x1B: /* DIVU */
-            if (rt32 != 0) {
-                st->lo = rs32 / rt32;
-                st->hi = rs32 % rt32;
-            }
+            if(!rt32){st->lo=0xffffffffu;st->hi=rs32;}
+            else {st->lo=rs32/rt32;st->hi=rs32%rt32;}
             break;
         case 0x20: /* ADD */
         case 0x21: /* ADDU */ if (rd) GPR(rd) = rs32 + rt32; break;
@@ -2041,6 +2059,7 @@ static int iop_step(void)
 #undef BRANCH_TO
 #undef LINK
 
+iop_jit_done:
     st->gpr[0] = 0;
 
     /* Round 22: real hardware-interrupt delivery, checked at the end

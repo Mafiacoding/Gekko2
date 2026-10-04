@@ -1,10 +1,16 @@
 #ifndef PCSX2WII_PPC_DYNAREC_H
 #define PCSX2WII_PPC_DYNAREC_H
 
+/* R1281: native MFC0/MTC0 transfers; single-op CPU dispatch uses inline C.
+ * Full EE/IOP block JIT remains unfinished. */
 #include <stdint.h>
 #include <stddef.h>
 
 /*
+ * Current scope: R1269 adds direct VU micro-array arithmetic and 54 IOP
+ * scalar/control/memory encodings. See docs/R1269-HANDOFF.md for tested
+ * coverage and remaining work. Older round notes below are historical.
+ *
  * ppc_dynarec - EXPERIMENTAL proof-of-concept recompiler.
  *
  * THIS IS NOT PCSX2'S RECOMPILER. PCSX2's real EE/VU JITs emit x86-64
@@ -1088,10 +1094,36 @@ void ppc_dynarec_free(ppc_codegen_ctx_t *ctx);
  * codegen buffer. Returns 0 on success, -1 if the opcode isn't
  * supported by this PoC (translation of the block should stop here). */
 int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr);
+/* R1268: direct R3000A gpr[32] layout, not the EE 128-bit context. */
+int ppc_dynarec_translate_iop_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr);
+
+/* R1269: direct VU array ABI (r3=vf, r4=vi, r5=acc). Upper flags and
+ * microprogram pair scheduling remain in vu_micro_step. -2 means transient
+ * allocation failure; -1 means unsupported encoding. */
+int ppc_dynarec_translate_vu_upper(ppc_codegen_ctx_t *ctx, uint32_t upper);
+int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx, uint32_t lower);
+/* Native pair ABI: vf, vi, acc, mem, mask, pc, delay, target (r3..r10).
+ * I-immediate writes VI[21] before upper; ordinary pairs execute upper then
+ * lower, preserving the current micro interpreter ordering. */
+int ppc_dynarec_translate_vu_pair(ppc_codegen_ctx_t *ctx, uint32_t upper, uint32_t lower);
+
+int ppc_dynarec_translate_vu_block(ppc_codegen_ctx_t *ctx,const uint32_t *upper,
+                                  const uint32_t *lower,unsigned count);
 
 /* Emits the trailing 'blr' and flushes d-cache / invalidates i-cache
  * over the generated range so the PPC core can safely execute it.
  * Returns a callable function pointer, or NULL on failure. */
 ppc_block_fn ppc_dynarec_finalize(ppc_codegen_ctx_t *ctx);
+
+/* Pure ALU state transform only: no CPU/device retirement. Atomic decline,
+ * 2..8 instructions, bounded resident GPR words; not enabled in CPU loop. */
+int ppc_dynarec_translate_ee_alu_block(ppc_codegen_ctx_t *ctx,
+                                      const uint32_t *words,unsigned count);
+
+/* Prepared variant returns unsigned(st,first_prepared). */
+int ppc_dynarec_translate_ee_prepared_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit);
+int ppc_dynarec_translate_ee_precise_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit);
 
 #endif

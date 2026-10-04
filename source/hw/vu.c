@@ -5,8 +5,11 @@
  */
 
 #include "core/hw/vu.h"
+#include "core/hw/vu_math.h"
 #include "core/hw/gif.h"
+#include "core/hw/vif.h"
 #include "vu_opcodes.h"
+#include "core/recompiler/vu_jit.h"
 #include <string.h>
 #include <math.h>
 
@@ -139,6 +142,19 @@ static int vu_exec_upper(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4], uint
     uint32_t ft   = VU_U_FT(w);
     uint32_t fs   = VU_U_FS(w);
     uint32_t fd   = VU_U_FD(w);
+    uint32_t fn=w&63u;
+    if((fn>=16u&&fn<=23u)||fn==29u||fn==31u||fn==43u||fn==47u) {
+        int full=fn==43u||fn==47u;
+        int minimum=(fn>=20u&&fn<=23u)||fn==31u||fn==47u;
+        uint32_t broadcast=(fn==29u||fn==31u)?vi[21]:vf[ft][fn&3u];
+        if(!ft && !(fn==29u||fn==31u))broadcast=(fn&3u)==3u?0x3f800000u:0;
+        for(unsigned l=0;l<4;l++)if(fd && (dest&(8u>>l))) {
+            uint32_t a=fs?vf[fs][l]:(l==3u?0x3f800000u:0);
+            uint32_t b=full?(ft?vf[ft][l]:(l==3u?0x3f800000u:0)):broadcast;
+            vf[fd][l]=vu_minmax_bits(a,b,minimum);
+        }
+        return 1;
+    }
     float Q = vu_f(vi[22]);
     float I = vu_f(vi[21]);
     float r[4];
@@ -214,6 +230,12 @@ static int vu_exec_upper(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4], uint
         }
         if (sub == VUS_FD_ADDA_GROUP && bc == 1) { /* MADDA: ACC = ACC + Fs*Ft */
             for (int l = 0; l < 4; l++) r[l] = vu_f(acc[l]) + vu_f(vf[fs][l]) * vu_f(vf[ft][l]);
+            for (int l = 0; l < 4; l++) if ((dest >> (3 - l)) & 1) acc[l] = vu_u(r[l]);
+            return 1;
+        }
+        /* Real _UPPER_FD_10_TABLE[10] selects MULA. */
+        if (sub == VUS_FD_ADDA_GROUP && bc == 2) {
+            for (int l = 0; l < 4; l++) r[l] = vu_f(vf[fs][l]) * vu_f(vf[ft][l]);
             for (int l = 0; l < 4; l++) if ((dest >> (3 - l)) & 1) acc[l] = vu_u(r[l]);
             return 1;
         }
@@ -309,7 +331,10 @@ static int vu_exec_upper(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4], uint
         if (sub == VUS_FD_FTOI) { /* FTOI0/4/12/15: Fd(=ft slot) = (int32)(Fs * 2^scale), bits stored raw */
             static const int shift[4] = {0, 4, 12, 15};
             for (int l = 0; l < 4; l++) {
-                int32_t iv = (int32_t)(vu_f(vf[fs][l]) * (float)(1u << shift[bc]));
+                float scaled = vu_f(vf[fs][l]) * (float)(1u << shift[bc]);
+                uint32_t sb = vu_u(scaled);
+                int32_t iv = (sb&0x7fffffffu)>=0x4f000000u
+                    ? ((sb&0x80000000u)?INT32_MIN:INT32_MAX) : (int32_t)scaled;
                 r[l] = vu_f((uint32_t)iv);
             }
             vu_write_dest(vf, ft, dest, r);
@@ -329,8 +354,8 @@ static int vu_exec_upper(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4], uint
                 case VUB_ADDBC:  for (int l = 0; l < 4; l++) r[l] = vu_f(vf[fs][l]) + ftbc; break;
                 case VUB_SUBBC:  for (int l = 0; l < 4; l++) r[l] = vu_f(vf[fs][l]) - ftbc; break;
                 case VUB_MULBC:  for (int l = 0; l < 4; l++) r[l] = vu_f(vf[fs][l]) * ftbc; break;
-                case VUB_MAXBC:  for (int l = 0; l < 4; l++) r[l] = fmaxf(vu_f(vf[fs][l]), ftbc); break;
-                case VUB_MINIBC: for (int l = 0; l < 4; l++) r[l] = fminf(vu_f(vf[fs][l]), ftbc); break;
+                case VUB_MAXBC:  for (int l = 0; l < 4; l++) r[l] = vu_f(vu_minmax_bits(vf[fs][l],vf[ft][bc],0)); break;
+                case VUB_MINIBC: for (int l = 0; l < 4; l++) r[l] = vu_f(vu_minmax_bits(vf[fs][l],vf[ft][bc],1)); break;
                 case VUB_MADDBC: for (int l = 0; l < 4; l++) r[l] = vu_f(acc[l]) + vu_f(vf[fs][l]) * ftbc; break;
                 case VUB_MSUBBC: for (int l = 0; l < 4; l++) r[l] = vu_f(acc[l]) - vu_f(vf[fs][l]) * ftbc; break;
                 default: matched = 0; break;
@@ -343,11 +368,19 @@ static int vu_exec_upper(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4], uint
     {
         uint32_t funct = VU_U_FUNCT6(w);
         switch (funct) {
+            /* PCSX2 VUops.cpp: _UPPER table opcode 0x2e, _vuOPMSUB.
+             * Capture all source components before aliased writes; xyz
+             * always update and w is preserved, independent of dest. */
+            case VUA_OPMSUB:
+                for (int l = 0; l < 3; l++)
+                    r[l] = vu_f(acc[l]) - vu_f(vf[fs][(l+1)%3]) * vu_f(vf[ft][(l+2)%3]);
+                if (fd) for (int l = 0; l < 3; l++) vf[fd][l] = vu_u(r[l]);
+                return 1;
             case VUA_ADD:  for (int l = 0; l < 4; l++) r[l] = vu_f(vf[fs][l]) + vu_f(vf[ft][l]); break;
             case VUA_SUB:  for (int l = 0; l < 4; l++) r[l] = vu_f(vf[fs][l]) - vu_f(vf[ft][l]); break;
             case VUA_MUL:  for (int l = 0; l < 4; l++) r[l] = vu_f(vf[fs][l]) * vu_f(vf[ft][l]); break;
-            case VUA_MAX:  for (int l = 0; l < 4; l++) r[l] = fmaxf(vu_f(vf[fs][l]), vu_f(vf[ft][l])); break;
-            case VUA_MINI: for (int l = 0; l < 4; l++) r[l] = fminf(vu_f(vf[fs][l]), vu_f(vf[ft][l])); break;
+            case VUA_MAX:  for (int l = 0; l < 4; l++) r[l] = vu_f(vu_minmax_bits(vf[fs][l],vf[ft][l],0)); break;
+            case VUA_MINI: for (int l = 0; l < 4; l++) r[l] = vu_f(vu_minmax_bits(vf[fs][l],vf[ft][l],1)); break;
             case VUA_MADD: for (int l = 0; l < 4; l++) r[l] = vu_f(acc[l]) + vu_f(vf[fs][l]) * vu_f(vf[ft][l]); break;
             case VUA_MSUB: for (int l = 0; l < 4; l++) r[l] = vu_f(acc[l]) - vu_f(vf[fs][l]) * vu_f(vf[ft][l]); break;
 
@@ -362,8 +395,8 @@ static int vu_exec_upper(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4], uint
             case VUA_MULI:  for (int l = 0; l < 4; l++) r[l] = vu_f(vf[fs][l]) * I; break;
             case VUA_MADDI: for (int l = 0; l < 4; l++) r[l] = vu_f(acc[l]) + vu_f(vf[fs][l]) * I; break;
             case VUA_MSUBI: for (int l = 0; l < 4; l++) r[l] = vu_f(acc[l]) - vu_f(vf[fs][l]) * I; break;
-            case VUA_MAXI:  for (int l = 0; l < 4; l++) r[l] = fmaxf(vu_f(vf[fs][l]), I); break;
-            case VUA_MINII: for (int l = 0; l < 4; l++) r[l] = fminf(vu_f(vf[fs][l]), I); break;
+            case VUA_MAXI:  for (int l = 0; l < 4; l++) r[l] = vu_f(vu_minmax_bits(vf[fs][l],vi[21],0)); break;
+            case VUA_MINII: for (int l = 0; l < 4; l++) r[l] = vu_f(vu_minmax_bits(vf[fs][l],vi[21],1)); break;
 
             default: return 0; /* includes the 0x1B collision case - see vu_opcodes.h */
         }
@@ -403,10 +436,14 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
         case VUL_JR:
             *branch_delay = 2u; *branch_target = vu_read_vi16(vi, rs) * 8u; /* Is holds an instruction-pair index, matching MSCAL's own *8 convention (vu.h) */
             return 1;
-        case VUL_JALR:
+        case VUL_JALR: {
+            /* Capture target before a potentially aliased link write,
+             * matching primary VUops.cpp _vuJALR. */
+            uint32_t target = vu_read_vi16(vi, rs) * 8u;
             vu_write_vi(vi, rt, (pc + 16) >> 3);
-            *branch_delay = 2u; *branch_target = vu_read_vi16(vi, rs) * 8u;
+            *branch_delay = 2u; *branch_target = target;
             return 1;
+        }
         case VUL_IBEQ:
             if (vu_read_vi16(vi, rs) == vu_read_vi16(vi, rt)) { *branch_delay = 2u; *branch_target = (uint32_t)((int32_t)pc + 8 + off11 * 8); }
             return 1;
@@ -550,6 +587,12 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
                     if (bc2 == 3) { return 1; } /* WAITQ - non-pipelined interpreter, Q is always ready: true no-op */
                 }
                 if (fdslot == VULS_FD_WAITP && bc2 == 3) return 1; /* WAITP - same as WAITQ, no-op here */
+                if (fdslot == VULS_FD_XTOP_GROUP && bc2 <= 1) {
+                    vif_state_t *vif = mem_mask == VU1_MEM_SIZE - 1u
+                        ? vif1_get_state() : vif0_get_state();
+                    vu_write_vi(vi, rt, bc2 == 0 ? vif->top : vif->itop);
+                    return 1;
+                }
                 if (fdslot == VULS_FD_XGKICK_GROUP && bc2 == 0) {
                     /* XGKICK Is: kicks off a real PATH1 GIF transfer starting
                      * at VU1 local mem address (Is register, masked to 0x3FF
@@ -648,13 +691,16 @@ int vu_micro_step(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
     /* I flag (bit 31 of the upper word): only the upper instruction
      * executes this pair; the lower word's raw bits become the real
      * $I$ register (VI[21], REG_I per PCSX2's VU.h VURegFlags enum). */
-    if (upper & 0x80000000u) {
+    if (vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
+        upper_ok=lower_ok=1;
+    } else if (upper & 0x80000000u) {
         vi[21] = lower;
-        upper_ok = vu_exec_upper(vf, vi, acc, upper);
+        upper_ok = vu_jit_try_upper(vf, vi, acc, upper) || vu_exec_upper(vf, vi, acc, upper);
         lower_ok = 1; /* the lower word was consumed as data (the I-immediate), not an instruction - correctly decoded, not "unimplemented" */
     } else {
-        upper_ok = vu_exec_upper(vf, vi, acc, upper);
-        lower_ok = vu_exec_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target);
+        upper_ok = vu_jit_try_upper(vf, vi, acc, upper) || vu_exec_upper(vf, vi, acc, upper);
+        lower_ok = vu_jit_try_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target) ||
+                   vu_exec_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target);
     }
 
     if (!upper_ok || !lower_ok)
@@ -684,11 +730,25 @@ int vu_micro_step(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
  * micro memory with no E-bit ever set), not a real hardware behavior. */
 #define VU_EXEC_STEP_CAP 65536u
 
-void vu1_exec_micro(uint32_t start_addr)
+/* Avoid constructing the large block ABI on an obvious single-pair or
+ * delay-slot path. Classification does not execute or alter micro state. */
+static inline int vu1_block_candidate(void)
 {
-    g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
-    g_vu1.running = 1;
+    if(g_vu1.branch_delay||g_vu1.ebit_delay)return 0;
+    for(unsigned n=0;n<2;n++) {
+        uint32_t off=(g_vu1.tpc+n*8u)&(VU1_MICRO_SIZE-1u);
+        uint32_t up=vu_rd_le32(g_vu1.micro+off+4u);
+        if(up&0x7e000000u)return 0;
+        if(!(up&0x80000000u)) {
+            unsigned op=vu_rd_le32(g_vu1.micro+off)>>25;
+            if(op>=0x20u&&op<=0x2fu)return 0;
+        }
+    }
+    return 1;
+}
 
+static void vu1_run_pairs(void)
+{
     for (uint32_t i = 0; i < VU_EXEC_STEP_CAP; i++) {
         int stopped = vu_micro_step(g_vu1.vf, g_vu1.vi, g_vu1.acc,
                                      g_vu1.mem, VU1_MEM_SIZE - 1u,
@@ -699,6 +759,35 @@ void vu1_exec_micro(uint32_t start_addr)
         if (stopped)
             break;
     }
+
+}
+
+static void vu1_run_blocks(void)
+{
+    for (uint32_t i = 0; i < VU_EXEC_STEP_CAP; i++) {
+        unsigned ran=0;
+        if(vu1_block_candidate())ran=vu_jit_try_block(g_vu1.vf,g_vu1.vi,g_vu1.acc,g_vu1.mem,VU1_MEM_SIZE-1u,
+            g_vu1.micro,VU1_MICRO_SIZE-1u,&g_vu1.tpc,&g_vu1.branch_delay,&g_vu1.branch_target,
+            &g_vu1.ebit_delay,&g_vu1.instructions_executed,VU_EXEC_STEP_CAP-i);
+        if(ran){i+=ran-1u;continue;}
+        int stopped = vu_micro_step(g_vu1.vf, g_vu1.vi, g_vu1.acc,
+                                     g_vu1.mem, VU1_MEM_SIZE - 1u,
+                                     g_vu1.micro, VU1_MICRO_SIZE - 1u,
+                                     &g_vu1.tpc, &g_vu1.branch_delay, &g_vu1.branch_target,
+                                     &g_vu1.ebit_delay,
+                                     &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen);
+        if (stopped)
+            break;
+    }
+
+}
+
+void vu1_exec_micro(uint32_t start_addr)
+{
+    g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
+    g_vu1.running = 1;
+
+    if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
     g_vu1.running = 0;
 }
@@ -725,16 +814,7 @@ void vu1_exec_micro_continue(void)
 {
     g_vu1.running = 1;
 
-    for (uint32_t i = 0; i < VU_EXEC_STEP_CAP; i++) {
-        int stopped = vu_micro_step(g_vu1.vf, g_vu1.vi, g_vu1.acc,
-                                     g_vu1.mem, VU1_MEM_SIZE - 1u,
-                                     g_vu1.micro, VU1_MICRO_SIZE - 1u,
-                                     &g_vu1.tpc, &g_vu1.branch_delay, &g_vu1.branch_target,
-                                     &g_vu1.ebit_delay,
-                                     &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen);
-        if (stopped)
-            break;
-    }
+    if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
     g_vu1.running = 0;
 }

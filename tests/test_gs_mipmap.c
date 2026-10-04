@@ -29,6 +29,11 @@ static void wle32(uint8_t *p, uint32_t v) { p[0]=v&0xFF;p[1]=(v>>8)&0xFF;p[2]=(v
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo);
     wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr);
@@ -56,9 +61,9 @@ int main(void)
         wle32(buf + off + 12, 0);
         off += 16;
         /* LCM=1, MXL=5, MMAG=1, MMIN=3, MTBA=1, L=2, K=-16 (=-1.0 in 1/16 units) */
-        uint32_t word0 = 1u /* LCM */ | (5u << 2) /* MXL */ | (1u << 9) /* MMAG */ | (3u << 10) /* MMIN */ | (1u << 14) /* MTBA */;
+        uint32_t word0 = 1u /* LCM */ | (5u << 2) /* MXL */ | (1u << 5) /* MMAG */ | (3u << 6) /* MMIN */ | (1u << 9) /* MTBA */ | (2u << 19) /* L */;
         int32_t k_val = -16;
-        uint32_t word1 = (2u & 0x3u) /* L */ | (((uint32_t)k_val & 0xFFFu) << 2) /* K, 12-bit field */;
+        uint32_t word1 = ((uint32_t)k_val & 0xFFFu) /* K, 12-bit field */;
         append_ad(buf, &off, word0, word1, GS_REG_TEX1_1);
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
@@ -149,7 +154,7 @@ int main(void)
         tex0_hi = (TEX_TFX_DECAL << 3) | 1u; /* TH high 2 bits = 1 (word1 bits0-1) */
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
         /* TEX1: LCM=0 (computed), MXL=3, MMIN=2 (mipmap engaged), MTBA=0 */
-        append_ad(buf, &off, (3u << 2) | (2u << 10), 0, GS_REG_TEX1_1);
+        append_ad(buf, &off, (3u << 2) | (2u << 6), 0, GS_REG_TEX1_1);
         /* MIPTBP1: level3 (3rd slot) = mip3_bp/mip3_bw; levels1/2 unused (0) */
         uint32_t tbw3_field = mip3_bw / 64u;
         append_ad(buf, &off, 0u, ((mip3_bp & 0x3FFFu) << 8) | ((tbw3_field & 0x3Fu) << 22), GS_REG_MIPTBP1_1);
@@ -192,7 +197,7 @@ int main(void)
         uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
         /* TEX1: MXL=1 this time (clamp target) */
-        append_ad(buf, &off, (1u << 2) | (2u << 10), 0, GS_REG_TEX1_1);
+        append_ad(buf, &off, (1u << 2) | (2u << 6), 0, GS_REG_TEX1_1);
         uint32_t tbw1_field = mip1_bw / 64u;
         append_ad(buf, &off, (mip1_bp & 0x3FFFu) | ((tbw1_field & 0x3Fu) << 14), 0, GS_REG_MIPTBP1_1);
 
@@ -233,7 +238,7 @@ int main(void)
         uint32_t tex0_lo = (base_bp & 0x3FFFu) | (((base_bw / 64u) & 0x3Fu) << 14) | (3u << 26) | (0u << 30);
         uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 0u;
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
-        append_ad(buf, &off, (3u << 2) | (2u << 10), 0, GS_REG_TEX1_1); /* MXL=3, MMIN=2 */
+        append_ad(buf, &off, (3u << 2) | (2u << 6), 0, GS_REG_TEX1_1); /* MXL=3, MMIN=2 */
         uint32_t tbw1_field = mip1_bw / 64u;
         append_ad(buf, &off, (mip1_bp & 0x3FFFu) | ((tbw1_field & 0x3Fu) << 14), 0, GS_REG_MIPTBP1_1);
 
@@ -275,7 +280,7 @@ int main(void)
         uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
         /* MXL=3 but MMIN=1 (LINEAR, below GS_MMIN_MIPMAP_THRESHOLD - mipmapping OFF) */
-        append_ad(buf, &off, (3u << 2) | (1u << 10), 0, GS_REG_TEX1_1);
+        append_ad(buf, &off, (3u << 2) | (1u << 6), 0, GS_REG_TEX1_1);
         uint32_t tbw3_field = mip3_bw / 64u;
         append_ad(buf, &off, 0u, ((mip3_bp & 0x3FFFu) << 8) | ((tbw3_field & 0x3Fu) << 22), GS_REG_MIPTBP1_1);
 
@@ -318,8 +323,8 @@ int main(void)
         uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
         /* LCM=1, MXL=3, MMIN=2, K=32 (2.0 in 1/16 units) */
-        uint32_t tex1_word0 = 1u /* LCM */ | (3u << 2) /* MXL */ | (2u << 10) /* MMIN */;
-        uint32_t tex1_word1 = (32u & 0xFFFu) << 2; /* K=32 */
+        uint32_t tex1_word0 = 1u /* LCM */ | (3u << 2) /* MXL */ | (2u << 6) /* MMIN */;
+        uint32_t tex1_word1 = (32u & 0xFFFu); /* K=32 */
         append_ad(buf, &off, tex1_word0, tex1_word1, GS_REG_TEX1_1);
         uint32_t tbw2_field = mip2_bw / 64u;
         append_ad(buf, &off, ((mip2_bp & 0xFFFu) << 20), ((mip2_bp >> 12) & 0x3u) | ((tbw2_field & 0x3Fu) << 2), GS_REG_MIPTBP1_1);
@@ -365,7 +370,7 @@ int main(void)
         uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
         /* MXL=3, MMIN=2, MTBA=1 (auto - unimplemented) */
-        append_ad(buf, &off, (3u << 2) | (2u << 10) | (1u << 14), 0, GS_REG_TEX1_1);
+        append_ad(buf, &off, (3u << 2) | (2u << 6) | (1u << 9), 0, GS_REG_TEX1_1);
         uint32_t tbw3_field = mip3_bw / 64u;
         append_ad(buf, &off, 0u, ((mip3_bp & 0x3FFFu) << 8) | ((tbw3_field & 0x3Fu) << 22), GS_REG_MIPTBP1_1);
 

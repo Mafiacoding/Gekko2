@@ -26,6 +26,11 @@ static void wle32(uint8_t *p, uint32_t v) { p[0]=v&0xFF;p[1]=(v>>8)&0xFF;p[2]=(v
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo);
     wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr);
@@ -50,26 +55,10 @@ static void fill_texture_gradient_red(uint32_t bp, uint32_t bw, uint32_t w)
 
 int main(void)
 {
-    /* --- ST+Q perspective-correct triangle: differing Q per vertex
-     * must produce a genuinely different result than plain affine
-     * interpolation would. Uses the exact-centroid trick: for ANY
-     * triangle, the centroid (average of the 3 vertices) has
-     * barycentric weights of exactly (1/3, 1/3, 1/3) - a well-known,
-     * hand-verifiable geometric fact, independent of the rasterizer's
-     * own edge-function internals. Vertices A=(0,0), B=(9,0), C=(0,9)
-     * give an exact integer centroid (3,3). TEX0's TW/TH are both set
-     * to 0 (scale factor 1<<0=1) so the chosen S values map directly
-     * to texel-space units, keeping the by-hand arithmetic exact:
-     *   A: s=0, q=1   B: s=9, q=1   C: s=0, q=4
-     *   naive affine (ignoring Q) at centroid: (0+9+0)/3 = 3.0
-     *   perspective-correct: inv_q_avg = (1+1+0.25)/3 = 0.75
-     *                        s_over_q_avg = (0+9+0)/3 = 3.0
-     *                        q_at_pixel = 1/0.75 = 1.3333...
-     *                        s_norm = 3.0 * 1.3333... = 4.0 (exact)
-     * So the correct, perspective-corrected sample is texel 4, NOT
-     * texel 3 (which a plain-affine implementation would wrongly
-     * produce) - this specifically distinguishes genuine 1/Q
-     * perspective correction from an affine fallback. --- */
+    /* At centroid (3,3), weights are 1/3. GS interpolates S,T,Q
+     * before division: S=3, Q=2, so S/Q=1.5. The existing nearest
+     * sampler rounds this to texel 2. Reciprocal-Q interpolation
+     * incorrectly produces texel 4. */
     gs_mem_init();
     gif_init();
     {
@@ -108,14 +97,12 @@ int main(void)
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 3, 3); /* the exact centroid */
-        CHECK(chan(px, 0) == 4u * 20u,
-              "ST+Q perspective-correct: centroid samples texel 4 (genuine 1/Q divide), not texel 3 (plain affine would be wrong here)");
+        CHECK(chan(px, 0) == 2u * 20u,
+              "STQ varying Q: interpolated S=3 divided by Q=2 samples texel 2");
     }
 
-    /* --- ST+Q with EQUAL Q at every vertex: perspective-correct math
-     * must reduce to the same answer plain affine would give (a
-     * sanity check that the divide/multiply round-trip is exact when
-     * there's nothing to correct for). --- */
+    /* Constant Q=2 must still divide coordinates: centroid S=3,
+     * S/Q=1.5, nearest texel 2. This catches accidental Q cancellation. */
     gs_mem_init();
     gif_init();
     {
@@ -141,7 +128,7 @@ int main(void)
         int32_t verts[3][2] = { { 0, 0 }, { 9, 0 }, { 0, 9 } };
         float ss[3] = { 0.0f, 9.0f, 0.0f };
         for (int i = 0; i < 3; i++) {
-            append_ad(buf, &off, dummy_color, float_bits(1.0f), GS_REG_RGBAQ); /* Q=1.0 everywhere */
+            append_ad(buf, &off, dummy_color, float_bits(2.0f), GS_REG_RGBAQ); /* Q=2.0 everywhere */
             append_ad(buf, &off, float_bits(ss[i]), float_bits(0.0f), GS_REG_ST);
             append_ad(buf, &off, (uint32_t)(verts[i][0] << 4), (uint32_t)(verts[i][1] << 4), GS_REG_XYZ2);
         }
@@ -149,8 +136,8 @@ int main(void)
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 3, 3);
-        CHECK(chan(px, 0) == 3u * 20u,
-              "ST+Q with equal Q at every vertex: centroid samples texel 3, matching plain affine (0+9+0)/3");
+        CHECK(chan(px, 0) == 2u * 20u,
+              "STQ constant Q=2: centroid S=3 remains divided by Q");
     }
 
     /* --- SPRITE texturing, FST=1 (UV): axis-aligned bilinear

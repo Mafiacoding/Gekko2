@@ -394,4 +394,7 @@ extern int g_r814_iop_post_trace_remaining;
 #define R814_IOP_POST_TRACE_STEPS 48
 #endif
 
+/* Eight-byte BCD RTC reply, in the console clock's JST time zone. */
+int iop_cdvd_read_clock(uint8_t out[8]);
+
 #endif

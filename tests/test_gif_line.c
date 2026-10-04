@@ -204,7 +204,7 @@ int main(void)
         append_xyz2_packed(buf, &off, (uint32_t)(30 << 4), (uint32_t)(30 << 4), 100u);
         append_xyz2_packed(buf, &off, (uint32_t)(40 << 4), (uint32_t)(30 << 4), 100u);
 
-        gs_mem_write_psmct32(200u * 2048u, 640, 35, 30, 200u);
+        gs_mem_write_z(200u * 2048u, 640, 35, 30, 0, 200u);
         uint32_t before = gs_mem_read_psmct32(0, 640, 35, 30);
 
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
@@ -212,7 +212,7 @@ int main(void)
         gif_state_t *st = gif_get_state();
         CHECK(st->pixels_ztest_failed >= 1, "LINE + Z-test: at least one fragment counted as Z-test-failed");
         CHECK(gs_mem_read_psmct32(0, 640, 35, 30) == before, "LINE + Z-test: color buffer at the failing pixel is untouched");
-        CHECK(gs_mem_read_psmct32(200u * 2048u, 640, 35, 30) == 200u, "LINE + Z-test: Z-buffer at the failing pixel keeps its old value");
+        CHECK(gs_mem_read_z(200u * 2048u, 640, 35, 30, 0) == 200u, "LINE + Z-test: Z-buffer at the failing pixel keeps its old value");
     }
 
     printf("\n%d check(s) failed\n", failures);

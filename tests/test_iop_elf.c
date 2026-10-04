@@ -233,6 +233,44 @@ int main(void)
         CHECK(rc2 == -1 && err2 != NULL, "a bad ELF magic is rejected with a clear error, not silently accepted");
     }
 
+    /* Reject overflowed file offsets/table offsets before dereferencing. */
+    {
+        uint8_t bad[sizeof(image)];
+        const uint32_t values[] = {0xfffffff0u, 0xffffffffu};
+        for (unsigned j = 0; j < 2; ++j) {
+            memcpy(bad, image, sizeof(bad));
+            wle32(bad + 28, values[j]);
+            iop_elf_load_result_t r; const char *e = NULL;
+            CHECK(iop_elf_load(st, bad, image_size, load_addr, &r, &e) == -1,
+                  "wrapped program table offset rejected");
+            memcpy(bad, image, sizeof(bad));
+            uint32_t ph = 52; /* fixture program header */
+            wle32(bad + ph + 4, values[j]);
+            CHECK(iop_elf_load(st, bad, image_size, load_addr, &r, &e) == -1,
+                  "wrapped segment file offset rejected");
+        }
+    }
+
+    {
+        uint8_t bad[sizeof(image)]; iop_elf_load_result_t r; const char *e;
+        memcpy(bad, image, sizeof(bad)); wle16(bad + 42, 0);
+        CHECK(iop_elf_load(st,bad,image_size,load_addr,&r,&e)==-1,"zero program stride rejected");
+        memcpy(bad, image, sizeof(bad)); wle32(bad + 32, 0xfffffff0u);
+        CHECK(iop_elf_load(st,bad,image_size,load_addr,&r,&e)==-1,"wrapped section table rejected");
+        memcpy(bad, image, sizeof(bad)); wle32(bad + 52 + 20, 1);
+        CHECK(iop_elf_load(st,bad,image_size,load_addr,&r,&e)==-1,"filesz beyond memsz rejected");
+        memcpy(bad, image, sizeof(bad)); wle32(bad + 212 + 40 + 16, 0xfffffff0u);
+        CHECK(iop_elf_load(st,bad,image_size,load_addr,&r,&e)==-1,"wrapped relocation section rejected");
+    }
+
+    {
+        uint8_t bad[sizeof(image)]; iop_elf_load_result_t r; const char *e;
+        memcpy(bad,image,sizeof(bad)); wle32(bad+180,0xfffff000u);
+        CHECK(iop_elf_load(st,bad,image_size,load_addr,&r,&e)==-1,"wrapped relocation target rejected");
+        memcpy(bad,image,sizeof(bad)); wle32(bad+180+24,0xfffff000u);
+        CHECK(iop_elf_load(st,bad,image_size,load_addr,&r,&e)==-1,"wrapped paired relocation target rejected");
+    }
+
     printf("\n%d check(s) failed\n", failures);
     return failures ? 1 : 0;
 }

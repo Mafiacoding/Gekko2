@@ -129,8 +129,9 @@ int main(void)
         uint32_t bw = 64;
         gs_mem_write_psmct32_swizzled(0, bw, 5, 3, 0xAABBCCDDu);
         uint32_t via_linear = gs_mem_read_psmct32(0, bw, 5, 3);
-        CHECK(via_linear != 0xAABBCCDDu,
-              "swizzle: a swizzled write at (5,3) does NOT show up at the same (bp,bw,x,y) under the pre-existing linear API - genuinely different addressing, not aliased");
+        CHECK(gs_mem_swizzle_addr32(0, bw, 5, 3)==108u, "native column: pixel (5,3) is word 27, not row-major word 29");
+        CHECK(via_linear == 0xAABBCCDDu,
+              "swizzle: the renderer API now uses the same native GS addressing");
     }
 
     printf("\n%d check(s) failed\n", failures);

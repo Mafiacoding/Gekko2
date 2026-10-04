@@ -104,7 +104,7 @@ static void setup_frame(void)
     memset(buf, 0, sizeof(buf));
     int off = 0;
     write_tag(buf, &off, /*nloop=*/2, GIF_REG_AD);
-    append_ad(buf, &off, (1u << 9), 0, GS_REG_FRAME_1); /* FBW field=1 -> fbw=64 */
+    append_ad(buf, &off, (1u << 16), 0, GS_REG_FRAME_1); /* FBW field=1 -> fbw=64 */
     append_ad(buf, &off, 0, 0, GS_REG_XYOFFSET_1);
     gif_process_quadwords(0, buf, (uint32_t)(off / 16));
 }
@@ -189,7 +189,7 @@ int main(void)
         draw_triangle(PRIM_TYPE_TRIANGLE, 0xFF0000FFu,
                        0, 0, 0u, 9, 0, 300u, 0, 9, 600u);
 
-        uint32_t stored_z = gs_mem_read_psmct32(32u * 2048u, 64u, 3u, 3u);
+        uint32_t stored_z = gs_mem_read_z(32u * 2048u, 64u, 3u, 3u, 0);
         CHECK(stored_z == 300u, "Z buffer: centroid Z is the true barycentric average (0+300+600)/3 = 300, not a guess");
     }
 
@@ -218,7 +218,7 @@ int main(void)
         draw_triangle(PRIM_TYPE_TRIANGLE, 0x00FF0000u, 0, 0, 150u, 20, 0, 150u, 0, 20, 150u);
         uint32_t after_c = gs_mem_read_psmct32(0u, 64u, 5u, 5u);
         CHECK(after_c == 0x00FF0000u, "Depth test: a nearer-or-equal fragment (Z=150 >= stored 100) under GEQUAL DOES overwrite color");
-        CHECK(gs_mem_read_psmct32(32u * 2048u, 64u, 5u, 5u) == 150u, "Depth test: Z buffer updated to the passing fragment's Z (150)");
+        CHECK(gs_mem_read_z(32u * 2048u, 64u, 5u, 5u, 0) == 150u, "Depth test: Z buffer updated to the passing fragment's Z (150)");
     }
 
     /* --- ZTST_NEVER: every fragment rejected regardless of Z --- */
@@ -245,12 +245,12 @@ int main(void)
         setup_zbuf(32u, 0u);
         setup_test(1u, GS_ZTST_ALWAYS);
         draw_triangle(PRIM_TYPE_TRIANGLE, 0x000000FFu, 0, 0, 10u, 20, 0, 10u, 0, 20, 10u);
-        CHECK(gs_mem_read_psmct32(32u * 2048u, 64u, 5u, 5u) == 10u, "ZMSK=0: Z buffer written normally");
+        CHECK(gs_mem_read_z(32u * 2048u, 64u, 5u, 5u, 0) == 10u, "ZMSK=0: Z buffer written normally");
 
         setup_zbuf(32u, 1u); /* now ZMSK=1 */
         draw_triangle(PRIM_TYPE_TRIANGLE, 0x0000FF00u, 0, 0, 999u, 20, 0, 999u, 0, 20, 999u);
         CHECK(gs_mem_read_psmct32(0u, 64u, 5u, 5u) == 0x0000FF00u, "ZMSK=1: color is still written normally (ALWAYS test)");
-        CHECK(gs_mem_read_psmct32(32u * 2048u, 64u, 5u, 5u) == 10u, "ZMSK=1: Z buffer was NOT updated (still the old value, 10, not 999)");
+        CHECK(gs_mem_read_z(32u * 2048u, 64u, 5u, 5u, 0) == 10u, "ZMSK=1: Z buffer was NOT updated (still the old value, 10, not 999)");
 
         /* Prove the stale Z is really what's being compared against:
          * switch back to GEQUAL with ZMSK=0, draw at Z=15 (>= stale
@@ -287,7 +287,7 @@ int main(void)
         /* v0 Z=5 (should be ignored), v1(completing) Z=200 (flat Z for the whole sprite). */
         draw_sprite(0x000000FFu, 0, 0, 5u, 10, 10, 200u);
         CHECK(gs_mem_read_psmct32(0u, 64u, 5u, 5u) == 0x000000FFu, "SPRITE: first draw establishes color/Z=200 (flat, from the completing vertex)");
-        CHECK(gs_mem_read_psmct32(32u * 2048u, 64u, 5u, 5u) == 200u, "SPRITE: Z buffer holds the completing vertex's Z (200), not the first vertex's (5)");
+        CHECK(gs_mem_read_z(32u * 2048u, 64u, 5u, 5u, 0) == 200u, "SPRITE: Z buffer holds the completing vertex's Z (200), not the first vertex's (5)");
 
         /* Completing Z=100 (not > stored 200) - GREATER must reject. */
         draw_sprite(0x0000FF00u, 0, 0, 999u, 10, 10, 100u);

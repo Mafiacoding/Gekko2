@@ -33,6 +33,11 @@ static void wle32(uint8_t *p, uint32_t v) { p[0]=v&0xFF;p[1]=(v>>8)&0xFF;p[2]=(v
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo);
     wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr);
@@ -49,7 +54,7 @@ static void fill_texture_index(uint32_t bp, uint32_t bw, uint32_t w, uint32_t h,
 {
     for (uint32_t y = 0; y < h; y++)
         for (uint32_t x = 0; x < w; x++)
-            gs_mem_write_psmct32_blk(bp, bw, x, y, index);
+            gs_mem_write_index(bp * 64u, bw, x, y, TEX_PSM_PSMT4, index);
 }
 
 /* Draws a single flat, DECAL-textured triangle sampling exactly one
@@ -75,7 +80,7 @@ static void draw_clut_triangle_tex2(uint32_t tex_bp, uint32_t tex_bw, uint32_t p
     append_ad(buf, &off, 0, 0, GS_REG_XYOFFSET_1);
 
     uint32_t tex0_lo = (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14) | ((psm & 0x3Fu) << 20);
-    uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | ((cbp & 0x3FFFu) << 5) | ((cpsm & 0xFu) << 19) | ((csa & 0x1Fu) << 24);
+    uint32_t tex0_hi = (1u << 29) | (TEX_TFX_DECAL << 3) | ((cbp & 0x3FFFu) << 5) | ((cpsm & 0xFu) << 19) | ((csa & 0x1Fu) << 24);
     append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
 
     if (use_tex2) {
@@ -87,7 +92,7 @@ static void draw_clut_triangle_tex2(uint32_t tex_bp, uint32_t tex_bw, uint32_t p
          * sample would come back wrong/black instead of the new
          * CLUT's color. */
         uint32_t tex2_lo = (psm & 0x3Fu) << 20;
-        uint32_t tex2_hi = (new_cbp & 0x3FFFu) << 5 | ((new_cpsm & 0xFu) << 19) | ((new_csa & 0x1Fu) << 24);
+        uint32_t tex2_hi = (1u << 29) | (new_cbp & 0x3FFFu) << 5 | ((new_cpsm & 0xFu) << 19) | ((new_csa & 0x1Fu) << 24);
         append_ad(buf, &off, tex2_lo, tex2_hi, GS_REG_TEX2_1);
     }
 
@@ -146,7 +151,7 @@ int main(void)
         uint32_t bank0_color = 0xFF010101u;
         uint32_t bank2_color = 0xFF020202u;
         fill_clut_entry(cbp, 5, bank0_color);
-        fill_clut_entry(cbp, 2 * 16 + 5, bank2_color);
+        fill_clut_entry(cbp, 5, bank2_color); /* CSA selects cache destination, not source VRAM. */
         fill_texture_index(tex_bp, tex_bw, 8, 8, 5);
         draw_clut_triangle_tex2(tex_bp, tex_bw, TEX_PSM_PSMT4, cbp, TEX_PSM_PSMCT32, 0,
                                  1, cbp, TEX_PSM_PSMCT32, 2);

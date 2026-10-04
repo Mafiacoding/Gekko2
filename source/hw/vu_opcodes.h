@@ -69,21 +69,12 @@
 
 /* Class A: full 6-bit funct (bits 5-0), fd (bits 10-6) is a real
  * vector register. Solid - each value directly quoted from the
- * manual's per-instruction diagram. NOTE: this project's extraction
- * also found a value for "OPMSUB" (0x1B) placed in this same table -
- * but 0x1B's low 4 bits (bits5-2=0110, bc=11) are bit-for-bit
- * IDENTICAL to Class B's MULbc with bc=w (see VUB_MULBC below), an
- * irreconcilable collision the source document does not explain (real
- * hardware cannot have two different instructions share one
- * encoding). Per the no-fabrication policy, this project does NOT
- * special-case 0x1B as OPMSUB (which would risk silently misdecoding
- * the far more common MULbc.w as the rare outer-product-subtract
- * instead) - 0x1B is treated uniformly as MULbc via the Class B path
- * below, and OPMSUB itself is left unimplemented (falls through to
- * unimplemented_opcodes_seen). */
+ * manual's per-instruction diagram. R1269 resolves the old OPMSUB
+ * ambiguity using the bundled primary VUops.cpp _UPPER table: OPMSUB
+ * is 0x2e; 0x1b is MULw. */
 enum {
     VUA_ADD    = 0x28, VUA_SUB    = 0x2C, VUA_MUL   = 0x2A,
-    VUA_MADD   = 0x29, VUA_MSUB   = 0x2D,
+    VUA_MADD   = 0x29, VUA_MSUB   = 0x2D, VUA_OPMSUB = 0x2E,
     VUA_MAX    = 0x2B, VUA_MINI   = 0x2F,
     VUA_ADDQ   = 0x20, VUA_SUBQ   = 0x24, VUA_MULQ  = 0x1C,
     VUA_MADDQ  = 0x21, VUA_MSUBQ  = 0x25,
@@ -187,7 +178,7 @@ enum {
     VULS_FD_DIVQ_GROUP  = 0x0E, /* bc: 00=DIV 01=SQRT 10=RSQRT 11=WAITQ */
     VULS_FD_MTIR_GROUP  = 0x0F, /* bc: 00=MTIR 01=MFIR 10=ILWR 11=ISWR */
     VULS_FD_R_GROUP     = 0x10, /* bc: 00=RNEXT 01=RGET 10=RINIT 11=RXOR - NOT implemented (needs a real LFSR model) */
-    VULS_FD_XTOP_GROUP   = 0x1A, /* bc: 00=XTOP 01=XITOP (10/11 not in source) - NOT implemented (needs real VIF1 TOP register plumbing) */
+    VULS_FD_XTOP_GROUP   = 0x1A, /* bc: 00=XTOP 01=XITOP; latched VIF registers */
     VULS_FD_XGKICK_GROUP = 0x1B, /* bc: 00=XGKICK only (single value, no bc-variant family per source) - round 571, task #536/#545 */
     VULS_FD_WAITP       = 0x1E  /* bc==11 only value found */
 };

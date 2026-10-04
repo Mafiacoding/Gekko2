@@ -69,8 +69,8 @@ static void run_enable_disable_test(int32_t sysnum, uint32_t cause, const char *
         CHECK((intc->mask & (1u << cause)) == 0, msg);
     }
 
-    snprintf(msg, sizeof(msg), "%s: return value (v0) is 0", label);
-    CHECK(st->gpr[2].ud0 == 0, msg);
+    snprintf(msg, sizeof(msg), "%s: return value reports changed mask", label);
+    CHECK(st->gpr[2].ud0 == (sysnum == 20 ? 1u : 0u), msg);
 }
 
 int main(void) {
@@ -108,7 +108,7 @@ int main(void) {
         CHECK(st->halted == 0, "sequence: not halted throughout");
     }
 
-    /* Regression check: 22/23 (_EnableDmac/_DisableDmac) unaffected. */
+    /* Regression check: 22/23 (_EnableDmac/_DisableDmac) also report transitions. */
     {
         bios_image_t bios = make_bios();
         uint8_t *p = bios.data;
@@ -121,7 +121,31 @@ int main(void) {
         ee_state_t *st = ee_core_get_state();
         ee_core_step(); ee_core_step(); ee_core_step();
         CHECK(st->halted == 0, "_EnableDmac(22) regression: not halted");
-        CHECK(st->gpr[2].ud0 == 0, "_EnableDmac(22) regression: returns 0");
+        CHECK(st->gpr[2].ud0 == 1, "_EnableDmac(22): first enable returns 1");
+    }
+
+    /* Repeat transitions, including BIOS low-five-bit shift semantics.
+     * Pending status must survive mask changes. */
+    for (unsigned controller = 0; controller < 2; controller++) {
+        bios_image_t bios = make_bios();
+        wle32(bios.data, enc_syscall());
+        ee_core_init(&bios);
+        ee_state_t *st = ee_core_get_state();
+        uint32_t bit = controller ? (1u << 21) : (1u << 5);
+        for (unsigned k = 0; k < 4; k++) {
+            st->pc = 0xBFC00000u; st->next_pc = st->pc + 4;
+            st->gpr[3].ud0 = (controller ? 22u : 20u) + (k >= 2);
+            st->gpr[4].ud0 = 37u; /* same shift as cause/channel 5 */
+            ee_intc_get_state()->stat = 8u;
+            dma_get_state()->d_stat |= 8u;
+            ee_core_step();
+            CHECK(st->gpr[2].ud0 == ((k & 1u) ? 0u : 1u),
+                  "mask syscall: changed/unchanged return");
+            uint32_t mask = controller ? dma_get_state()->d_stat : ee_intc_get_state()->mask;
+            CHECK(!!(mask & bit) == (k < 2), "mask syscall: exact state");
+            CHECK(ee_intc_get_state()->stat == 8u && (dma_get_state()->d_stat & 8u),
+                  "mask syscall: pending status retained");
+        }
     }
 
     if (failures == 0)

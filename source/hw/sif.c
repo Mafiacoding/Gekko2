@@ -23,6 +23,13 @@
  * is a second, independent real trigger site for the same source. */
 #define EE_INTC_IRQ_SBUS 1
 
+/* Round 1101 (task #1008/#887 continuation): moved up from its
+ * original declaration site further down this file (just above
+ * sif_cmd_iop_track_bind_sid()) so sif_extra_state_t below can embed
+ * a same-size array field - see that struct's own citation for the
+ * full bug this enables fixing. */
+#define SIF_CMD_BIND_SID_TABLE_SIZE 16
+
 static sif_state_t g_sif;
 
 /* Round 771 (task #764 continuation): task #212's boot-completion
@@ -56,11 +63,61 @@ static sif_state_t g_sif;
  * already-cited protocol/timing behavior documented at each field's
  * original declaration site (preserved verbatim below), only that the
  * values now survive a checkpoint round-trip. */
+/* Round 1101 (task #1008/#887 continuation, per user's explicit
+ * request to trace the WaitSema park at 0x00257964 back to its exact
+ * kernel-object/RAM-state chain): found the SAME bug class ONE MORE
+ * TIME, in a fifth subsystem - the IOP-side SIFCMD RPC-BIND/RPC-CALL
+ * consumer model's own cd_ptr->sid bind-tracking table
+ * (g_bind_sid_table_cd/sid/next, task #202's 79th finding) and its
+ * three sibling counters (g_iop_cmd_ee_recvbuf, g_iop_cmd_init_cmd_
+ * count, g_iop_cmd_rpc_bind_cd/count, task #186/#192) were declared as
+ * plain file-statics further down this file, entirely outside
+ * sif_extra_state_t, and so were NEVER covered by checkpoint.c's
+ * "SIFX" block (or any other block) - silently resetting to all-zero
+ * at the start of every checkpoint-chained "continue" resume, exactly
+ * like the four prior fixes this same comment block already lists
+ * (Round 649 GSM0, Round 659 ITHR, Round 750 ICDV, Round 770 IMLD),
+ * plus this file's OWN Round 771 fix for the four fields already
+ * above. Confirmed empirically via a Round 1100 correlated
+ * R1036_REG_TRACE/R933_RPCCALL_TRACE survey (docs/STATUS.md): a real
+ * RPC client's cd_ptr (0x004112a0) correctly resolved to its real,
+ * already-bound sid (SIF_SID_CDVD_SCMD, 0x80000593) on the LAST
+ * RPC_CALL before a checkpoint save, then resolved to sid=0x00000000
+ * ("not found", sif_cmd_iop_lookup_bind_sid()'s documented miss
+ * return) on the FIRST RPC_CALL against that exact same cd_ptr after
+ * the very next checkpoint load - even though the real client had
+ * never re-bound and the real IOP-side service was never actually
+ * torn down. Every such post-reload RPC_CALL then silently fell
+ * through to Round 1097's generic call_sid==0 fallback path instead
+ * of whatever real, correctly-shaped reply logic its true sid would
+ * have dispatched to - a genuine, evidenced FALSE blocker manufactured
+ * by this project's OWN checkpoint-chaining test harness, not a real
+ * BIOS/kernel architecture gap. Given this project's checkpoint-chained
+ * methodology has been the primary tool for nearly every deep-boot
+ * survey since Round 382 (multiple checkpoint saves/loads per survey,
+ * hundreds of rounds), this bug could have caused prior rounds to
+ * misclassify an already-answered real RPC client as "unknown service,
+ * needs a new sid handler" purely because its bind had crossed a
+ * checkpoint boundary - see docs/STATUS.md Round 1101 entry for the
+ * full analysis and re-verification against the 0x00257964 park
+ * specifically. Fixed the same way as all five prior fixes: fold the
+ * previously-uncovered statics into this struct so the existing single
+ * sif_get_checkpoint_extra_blob() raw-pointer accessor (unchanged
+ * signature, unchanged "SIFX" block tag) covers them for free - no
+ * checkpoint.c change needed, since checkpoint.c already round-trips
+ * this struct's raw bytes generically via sizeof(g_sif_extra). */
 typedef struct {
     int32_t iop_boot_completed_once;   /* task #212 (82nd/83rd findings) */
     int32_t ee_loadexecps2_seen;       /* Round 251 (task #411, 291st finding) */
     int32_t bootend_reassert_pending;  /* Round 441 (task #212) */
     int32_t bootend_reassert_ticks_left;
+    uint32_t iop_cmd_ee_recvbuf;       /* Round 1101: was g_iop_cmd_ee_recvbuf (task #186) */
+    uint32_t iop_cmd_init_cmd_count;   /* Round 1101: was g_iop_cmd_init_cmd_count (task #186) */
+    uint32_t iop_cmd_rpc_bind_cd;      /* Round 1101: was g_iop_cmd_rpc_bind_cd (task #192, 68th finding) */
+    uint32_t iop_cmd_rpc_bind_count;   /* Round 1101: was g_iop_cmd_rpc_bind_count (task #192) */
+    uint32_t bind_sid_table_cd[SIF_CMD_BIND_SID_TABLE_SIZE];  /* Round 1101: was g_bind_sid_table_cd (task #202, 79th finding) */
+    uint32_t bind_sid_table_sid[SIF_CMD_BIND_SID_TABLE_SIZE]; /* Round 1101: was g_bind_sid_table_sid */
+    uint32_t bind_sid_table_next;      /* Round 1101: was g_bind_sid_table_next */
 } sif_extra_state_t;
 
 static sif_extra_state_t g_sif_extra;
@@ -447,16 +504,11 @@ int sif_iop_mmio_write32(uint32_t addr, uint32_t value)
 
 /* --- task #186: minimal IOP-side SIFCMD consumer model - see the
  * comment block in sif.h above sif_cmd_iop_handle_init_cmd() for full
- * grounding, scope and honest caveats. */
-
-static uint32_t g_iop_cmd_ee_recvbuf;
-static uint32_t g_iop_cmd_init_cmd_count;
-
-/* task #192 (68th finding): tracks the "cd" (SifRpcClientData_t*)
- * pointer from the real, observed SIF_CMD_RPC_BIND packet, so a
- * synthetic REND reply can echo it back exactly - see sif.h. */
-static uint32_t g_iop_cmd_rpc_bind_cd;
-static uint32_t g_iop_cmd_rpc_bind_count;
+ * grounding, scope and honest caveats.
+ *
+ * Round 1101: these two, and the two below, now live inside
+ * g_sif_extra (see that struct's citation above) instead of as
+ * separate file-statics, so they survive a checkpoint round-trip. */
 
 /* task #202 (79th finding): small fixed-size cd_ptr->sid table - see
  * the citation in sif.h above sif_cmd_iop_track_bind_sid()'s
@@ -484,11 +536,12 @@ static uint32_t g_iop_cmd_rpc_bind_count;
  * past the table's capacity), not a hypothetical one - raised to 16
  * to hold comfortably more than the empirically observed real-boot
  * peak of 9 with headroom for further real growth as later rounds
- * unlock deeper boot stages and more real RPC clients bind. */
-#define SIF_CMD_BIND_SID_TABLE_SIZE 16
-static uint32_t g_bind_sid_table_cd[SIF_CMD_BIND_SID_TABLE_SIZE];
-static uint32_t g_bind_sid_table_sid[SIF_CMD_BIND_SID_TABLE_SIZE];
-static uint32_t g_bind_sid_table_next;
+ * unlock deeper boot stages and more real RPC clients bind.
+ *
+ * Round 1101: SIF_CMD_BIND_SID_TABLE_SIZE itself moved up near this
+ * file's top (see that #define's own citation); the three arrays it
+ * used to size here now live inside g_sif_extra instead of as
+ * separate file-statics, so they survive a checkpoint round-trip. */
 
 /* task #212 continuation (82nd/83rd findings) - see the full
  * grounding/citation in sif.h above sif_note_iop_boot_completed_once()'s
@@ -544,15 +597,15 @@ void sif_ee_tick(void)
 void sif_cmd_iop_init(void)
 {
     uint32_t i;
-    g_iop_cmd_ee_recvbuf = 0;
-    g_iop_cmd_init_cmd_count = 0;
-    g_iop_cmd_rpc_bind_cd = 0;
-    g_iop_cmd_rpc_bind_count = 0;
+    g_sif_extra.iop_cmd_ee_recvbuf = 0;
+    g_sif_extra.iop_cmd_init_cmd_count = 0;
+    g_sif_extra.iop_cmd_rpc_bind_cd = 0;
+    g_sif_extra.iop_cmd_rpc_bind_count = 0;
     for (i = 0; i < SIF_CMD_BIND_SID_TABLE_SIZE; i++) {
-        g_bind_sid_table_cd[i] = 0;
-        g_bind_sid_table_sid[i] = 0;
+        g_sif_extra.bind_sid_table_cd[i] = 0;
+        g_sif_extra.bind_sid_table_sid[i] = 0;
     }
-    g_bind_sid_table_next = 0;
+    g_sif_extra.bind_sid_table_next = 0;
     g_sif_extra.iop_boot_completed_once = 0;
     g_sif_extra.ee_loadexecps2_seen = 0;
     g_sif_extra.bootend_reassert_pending = 0;
@@ -561,56 +614,56 @@ void sif_cmd_iop_init(void)
 
 void sif_cmd_iop_handle_init_cmd(uint32_t ee_recvbuf_addr)
 {
-    g_iop_cmd_ee_recvbuf = ee_recvbuf_addr;
-    g_iop_cmd_init_cmd_count++;
+    g_sif_extra.iop_cmd_ee_recvbuf = ee_recvbuf_addr;
+    g_sif_extra.iop_cmd_init_cmd_count++;
 }
 
 uint32_t sif_cmd_iop_get_ee_recvbuf(void)
 {
-    return g_iop_cmd_ee_recvbuf;
+    return g_sif_extra.iop_cmd_ee_recvbuf;
 }
 
 uint32_t sif_cmd_iop_get_init_cmd_count(void)
 {
-    return g_iop_cmd_init_cmd_count;
+    return g_sif_extra.iop_cmd_init_cmd_count;
 }
 
 void sif_cmd_iop_handle_rpc_bind(uint32_t cd_ptr)
 {
-    g_iop_cmd_rpc_bind_cd = cd_ptr;
-    g_iop_cmd_rpc_bind_count++;
+    g_sif_extra.iop_cmd_rpc_bind_cd = cd_ptr;
+    g_sif_extra.iop_cmd_rpc_bind_count++;
 }
 
 uint32_t sif_cmd_iop_get_rpc_bind_cd(void)
 {
-    return g_iop_cmd_rpc_bind_cd;
+    return g_sif_extra.iop_cmd_rpc_bind_cd;
 }
 
 uint32_t sif_cmd_iop_get_rpc_bind_count(void)
 {
-    return g_iop_cmd_rpc_bind_count;
+    return g_sif_extra.iop_cmd_rpc_bind_count;
 }
 
 void sif_cmd_iop_track_bind_sid(uint32_t cd_ptr, uint32_t sid)
 {
     uint32_t i;
     for (i = 0; i < SIF_CMD_BIND_SID_TABLE_SIZE; i++) {
-        if (g_bind_sid_table_cd[i] == cd_ptr) {
-            g_bind_sid_table_sid[i] = sid;
+        if (g_sif_extra.bind_sid_table_cd[i] == cd_ptr) {
+            g_sif_extra.bind_sid_table_sid[i] = sid;
             return;
         }
     }
-    g_bind_sid_table_cd[g_bind_sid_table_next] = cd_ptr;
-    g_bind_sid_table_sid[g_bind_sid_table_next] = sid;
-    g_bind_sid_table_next = (g_bind_sid_table_next + 1u) % SIF_CMD_BIND_SID_TABLE_SIZE;
+    g_sif_extra.bind_sid_table_cd[g_sif_extra.bind_sid_table_next] = cd_ptr;
+    g_sif_extra.bind_sid_table_sid[g_sif_extra.bind_sid_table_next] = sid;
+    g_sif_extra.bind_sid_table_next = (g_sif_extra.bind_sid_table_next + 1u) % SIF_CMD_BIND_SID_TABLE_SIZE;
 }
 
 uint32_t sif_cmd_iop_lookup_bind_sid(uint32_t cd_ptr)
 {
     uint32_t i;
     for (i = 0; i < SIF_CMD_BIND_SID_TABLE_SIZE; i++) {
-        if (g_bind_sid_table_cd[i] == cd_ptr)
-            return g_bind_sid_table_sid[i];
+        if (g_sif_extra.bind_sid_table_cd[i] == cd_ptr)
+            return g_sif_extra.bind_sid_table_sid[i];
     }
     return 0u;
 }
@@ -626,8 +679,8 @@ uint32_t sif_cmd_iop_dump_bind_table(uint32_t *out_cd, uint32_t *out_sid, uint32
 {
     uint32_t i, n = (max < SIF_CMD_BIND_SID_TABLE_SIZE) ? max : SIF_CMD_BIND_SID_TABLE_SIZE;
     for (i = 0; i < n; i++) {
-        out_cd[i]  = g_bind_sid_table_cd[i];
-        out_sid[i] = g_bind_sid_table_sid[i];
+        out_cd[i]  = g_sif_extra.bind_sid_table_cd[i];
+        out_sid[i] = g_sif_extra.bind_sid_table_sid[i];
     }
     return SIF_CMD_BIND_SID_TABLE_SIZE;
 }

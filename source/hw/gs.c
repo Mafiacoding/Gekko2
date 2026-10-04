@@ -10,40 +10,10 @@
 
 static gs_state_t g_gs;
 
-/* Round 126 (task #172/#247, 166th finding): GS_IMR real reset value.
- * Real PS2 hardware resets GS_IMR with ALL interrupt-source mask bits
- * SET (masked/disabled) - well-established real hardware behavior
- * (every real GS driver/BIOS must explicitly unmask a source before
- * using it; this is the same "start masked, software opts in" pattern
- * this project already fixed on the IOP side for I_MASK/EnableIntr,
- * see docs/STATUS.md 88th/89th findings). This project models GS_CSR/
- * GS_IMR's five real interrupt sources (SIGNAL/FINISH/HSYNC/VSYNC/
- * EDWRITE) at bit positions 0-4 (this project's own established
- * simplified convention - see ee_core.c's GS_CSR_VSYNC_BIT/
- * GS_IMR_VSMSK_BIT comment, Round 87/127th finding), rather than real
- * hardware's actual bit 8-12 positions, for internal consistency with
- * the rest of this codebase's GS_CSR/GS_IMR handling.
- *
- * Found via task #247's own deep live-hardware-comparison investigation
- * (163rd-166th findings): gs_init()'s previous plain memset-to-zero
- * left GS_IMR fully UNMASKED from the very first instruction of boot,
- * causing ee_check_gs_vsync() (Round 87) to raise the real EE_INTC
- * GS interrupt (cause 0) on the very first frame - before any real
- * kernel software has registered a handler for it. The resulting
- * jalr through that still-unregistered (legitimately empty at this
- * point, confirmed identical on real hardware via live memory read)
- * per-cause dispatch table slot dereferences a null function pointer,
- * causing the null-pointer/PC-escapes-to-zero cascade that is task
- * #247's whole Status.EXL=1 lockup (163rd/164th/165th findings) -
- * traced end-to-end this round via live disassembly of the real
- * kernel's interrupt dispatch trampoline (0x80002840-0x80002878,
- * 0x00081FE0 thread-entry trampoline) plus this project's own
- * instrumented boot trace, cross-referenced against a live real GT3
- * session's memory (confirming the dispatch table's cause-0 slot is
- * legitimately empty on real hardware too - the bug isn't the empty
- * slot, it's firing the interrupt before anything could have
- * registered a handler for it). */
-#define GS_IMR_RESET_ALL_MASKED 0x1Full /* bits 0-4: SIGNAL/FINISH/HSYNC/VSYNC/EDWRITE, all masked */
+/* Hardware IMR masks are bits 8..12, distinct from CSR status bits
+ * 0..4. Source: PCSX2 GSRegs.h::GSRegIMR. Keep all sources masked
+ * at reset; software unmasking uses the real MMIO bit positions. */
+#define GS_IMR_RESET_ALL_MASKED 0x1F00ull
 
 void gs_init(void)
 {
@@ -107,7 +77,7 @@ int gs_mmio_write64(uint32_t addr, uint64_t val)
              * interrupts yet, but recorded faithfully so debug reads
              * of CSR aren't nonsensical. GS_IMR (0x12001010) and
              * everything else are plain read/write registers. */
-            g_gs.csr &= ~val;
+            g_gs.csr &= ~(val & 0x1full); /* Only interrupt status is W1C; FIELD is read-only. */
         } else {
             *reg = val;
         }

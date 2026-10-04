@@ -226,6 +226,15 @@ typedef struct {
     uint32_t unpack_needed_bytes;
     uint32_t unpack_have_bytes;
     uint8_t  unpack_buffer[4096];
+
+    /* DIRECT may span DMA links and 64-bit tag transfers. Keep every
+     * payload word until the complete GIF span is available. IMM=0
+     * represents 65536 quadwords, hence the hardware maximum below. */
+    uint32_t register_pending_cmd, register_pending_have;
+    uint32_t top, dbf; /* latched TOP and double-buffer flag */
+    uint32_t direct_needed_words;
+    uint32_t direct_have_words;
+    uint8_t direct_buffer[65536u * 16u];
 } vif_state_t;
 
 void vif_init(void);
@@ -237,5 +246,8 @@ vif_state_t *vif1_get_state(void);
  * dma_set_sink(DMA_CHANNEL_VIF1, vif1_process_quadwords). */
 void vif0_process_quadwords(int channel, const uint8_t *data, uint32_t qwc);
 void vif1_process_quadwords(int channel, const uint8_t *data, uint32_t qwc);
+
+void vif0_process_tag_words(int channel, const uint8_t *data, uint32_t words);
+void vif1_process_tag_words(int channel, const uint8_t *data, uint32_t words);
 
 #endif

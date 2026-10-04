@@ -1,5 +1,5 @@
 #---------------------------------------------------------------------------------
-# PCSX2-Wii - experimental PS2 emulator port skeleton for Nintendo Wii
+# Gekko2 - experimental PS2 emulator for Nintendo Wii
 # Requires devkitPPC + libogc (DEVKITPRO / DEVKITPPC env vars must be set)
 #---------------------------------------------------------------------------------
 ifeq ($(strip $(DEVKITPPC)),)
@@ -9,18 +9,18 @@ endif
 include $(DEVKITPPC)/wii_rules
 
 #---------------------------------------------------------------------------------
-TARGET		:=	$(notdir $(CURDIR))
+TARGET		:=	Gekko2
 BUILD		:=	build
 SOURCES		:=	source source/core source/core/ee source/core/iop source/core/vu \
 			source/core/gs source/core/recompiler source/hw
 INCLUDES	:=	include
 
 #---------------------------------------------------------------------------------
-CFLAGS	= -g -O2 -Wall $(MACHDEP) $(INCLUDE) -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float
+CFLAGS	= -g -O3 -Wall $(MACHDEP) $(INCLUDE) -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float $(EXTRA_CFLAGS)
 CXXFLAGS = $(CFLAGS) -std=gnu++17
-LDFLAGS	=	-g $(MACHDEP) -Wl,-Map,$(notdir $@).map
+LDFLAGS	=	-g $(MACHDEP) -Wl,-Map,$(notdir $@).map -Wl,-u,gs_gx_capture_vram_psmct32 -Wl,-u,gs_mem_gpu_pending -Wl,-u,gs_gx_draw_flat -Wl,-u,gs_mem_get -Wl,-u,ee_jit_try_execute_block -Wl,-u,ee_jit_reset_stats_for_test
 
-LIBS	:= -lfat -logc -lm
+LIBS	:= -lfat -lwiiuse -lbte -logc -lm
 
 LIBDIRS	:= $(PORTLIBS) $(DEVKITPRO)/libogc
 

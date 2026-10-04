@@ -28,6 +28,11 @@ static void wle32(uint8_t *p, uint32_t v) { p[0]=v&0xFF;p[1]=(v>>8)&0xFF;p[2]=(v
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo);
     wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr);
@@ -72,7 +77,7 @@ int main(void)
         append_ad(buf, &off, (10u << 9), 0, GS_REG_FRAME_1);
         append_ad(buf, &off, 0, 0, GS_REG_XYOFFSET_1);
         /* TEX0_1: TBP0=tex_bp, TBW field = tex_bw/64, TFX = DECAL (bits 3-4 of word1) */
-        append_ad(buf, &off, (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14), (TEX_TFX_DECAL << 3), GS_REG_TEX0_1);
+        append_ad(buf, &off, (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14), ((1u << 2) | (TEX_TFX_DECAL << 3)), GS_REG_TEX0_1);
         append_ad(buf, &off, (uint32_t)PRIM_TYPE_TRIANGLE | PRIM_IIP_MASK | PRIM_TME_MASK | PRIM_FST_MASK, 0, GS_REG_PRIM); /* FST=1: UV mode (task #88 added FST=0/ST+Q as an alternative) */
 
         uint32_t red = 0xFF0000FFu; /* vertex color - should be IGNORED under DECAL */
@@ -112,7 +117,7 @@ int main(void)
 
         append_ad(buf, &off, (10u << 9), 0, GS_REG_FRAME_1);
         append_ad(buf, &off, 0, 0, GS_REG_XYOFFSET_1);
-        append_ad(buf, &off, (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14), (TEX_TFX_MODULATE << 3), GS_REG_TEX0_1);
+        append_ad(buf, &off, (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14), ((1u << 2) | (TEX_TFX_MODULATE << 3)), GS_REG_TEX0_1);
         /* IIP not set (flat shading) - proves MODULATE works with flat color too, not just Gouraud. */
         append_ad(buf, &off, (uint32_t)PRIM_TYPE_TRIANGLE | PRIM_TME_MASK | PRIM_FST_MASK, 0, GS_REG_PRIM); /* FST=1: UV mode */
 
@@ -163,7 +168,7 @@ int main(void)
 
         append_ad(buf, &off, (10u << 9), 0, GS_REG_FRAME_1);
         append_ad(buf, &off, 0, 0, GS_REG_XYOFFSET_1);
-        append_ad(buf, &off, (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14), (TEX_TFX_DECAL << 3), GS_REG_TEX0_1);
+        append_ad(buf, &off, (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14), ((1u << 2) | (TEX_TFX_DECAL << 3)), GS_REG_TEX0_1);
         append_ad(buf, &off, (uint32_t)PRIM_TYPE_TRIANGLE | PRIM_TME_MASK | PRIM_FST_MASK, 0, GS_REG_PRIM); /* FST=1: UV mode */
 
         /* Right triangle (0,0)-(60,0)-(0,60), same closed-form

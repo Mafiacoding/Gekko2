@@ -43,6 +43,11 @@ static void write_tag(uint8_t *buf, int *off, uint32_t nloop, uint32_t regs_nibb
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo); wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr); wle32(buf + *off + 12, 0);
     *off += 16;
@@ -164,9 +169,9 @@ int main(void)
        * pre-filled blue background. ALPHA_1: A=Cs, B=Cd, C=Af(FIX),
        * D=Cd, FIX=64 (64/128 = 0.5) - real equation Color=((Cs-Cd)*
        * FIX)/128+Cd. Hand-computed expected result: R=127 (not 127.5 -
-       * plain truncating >>7-equivalent divide, no rounding bias, per
-       * gs_finish_pixel()'s citation), G=0, B=128 (not 127, since
-       * (0-255)*64/128 truncates toward zero as -127, then +255). */
+       * signed arithmetic >>7, no rounding bias, per
+       * gs_finish_pixel()'s citation), G=0, B=127 (since
+       * the signed product uses arithmetic >>7: -128, then +255). */
         gs_mem_init(); gif_init();
         gs_mem_write_psmct32(0, 640, 5, 5, (0xFFu << 24) | (0xFFu << 16) | 0x0000u); /* pre-fill: opaque blue */
         uint32_t alpha_lo = make_alpha_lo(GS_ALPHA_CS, GS_ALPHA_CD, GS_ALPHA_AFIX, GS_ALPHA_CD);
@@ -176,7 +181,7 @@ int main(void)
         uint32_t r = px & 0xFFu, g = (px >> 8) & 0xFFu, b = (px >> 16) & 0xFFu, a = (px >> 24) & 0xFFu;
         CHECK(r == 127u, "alpha blend (FIX=64, 50%): red channel == 127 (hand-computed, truncating divide)");
         CHECK(g == 0u,   "alpha blend: green channel == 0 (both inputs were 0)");
-        CHECK(b == 128u, "alpha blend (FIX=64, 50%): blue channel == 128 (hand-computed, truncating divide)");
+        CHECK(b == 127u, "alpha blend (FIX=64, 50%): blue channel == 127 (signed arithmetic shift)");
         CHECK(a == 0xFFu, "alpha blend: written alpha is always the fragment's OWN source alpha (0xFF), never blended");
     }
 

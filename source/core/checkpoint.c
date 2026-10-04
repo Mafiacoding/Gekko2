@@ -30,6 +30,7 @@
 #include "core/hw/vif.h"
 #include "core/hw/vu.h"
 #include "core/system.h"
+#include "core/hw/cdvd_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,6 +54,7 @@ static int write_block(FILE *f, const char tag[4], const void *data, uint32_t si
 
 int checkpoint_save(const char *path)
 {
+    if(!gs_mem_sync())return -1;
     FILE *f = fopen(path, "wb");
     if (!f) return -1;
 
@@ -189,6 +191,28 @@ int checkpoint_save(const char *path)
         if (rc < 0) goto fail;
     }
 
+    {
+        uint8_t config[CDVD_CONFIG_SNAPSHOT_SIZE];cdvd_config_snapshot_save(config);
+        if(write_block(f,"CNFG",config,sizeof config)<0)goto fail;
+    }
+    /* Optional trailing block preserves old version-1 checkpoints. */
+    {
+        ee_pad_checkpoint_t pad;
+        ee_core_pad_checkpoint_save(&pad);
+        if (write_block(f, "EEPD", &pad, sizeof(pad)) < 0) goto fail;
+    }
+
+    {
+        ee_irq_checkpoint_t irq;
+        ee_core_irq_checkpoint_save(&irq);
+        if (write_block(f, "EIRQ", &irq, sizeof(irq)) < 0) goto fail;
+    }
+    {
+        uint64_t ticks = ee_core_display_clock_save();
+        unsigned char clock[8];
+        for (unsigned n = 0; n < 8; n++) clock[n] = (unsigned char)(ticks >> (8u * n));
+        if (write_block(f, "ECLK", clock, sizeof(clock)) < 0) goto fail;
+    }
     if (write_block(f, "END0", NULL, 0) < 0) goto fail;
 
     fclose(f);
@@ -219,6 +243,7 @@ static int read_block(FILE *f, char tag_out[4], void *buf, uint32_t cap, uint32_
 int checkpoint_load(const char *path, const bios_image_t *ee_bios,
                      const bios_image_t *iop_bios, const char *iso_path)
 {
+    if(!gs_mem_sync())return -1;
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
 
@@ -240,7 +265,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
      * rejects any on-disk block that doesn't fit, so a mismatched
      * struct layout across builds fails safely instead of
      * overflowing. */
-    uint8_t generic[65536];
+    static uint8_t generic[sizeof(vif_state_t) + 65536u];
     uint8_t eeth_blob[65536];
     uint8_t heap_blob[1 << 20];
     uint32_t era_size = 0, ira_size = 0, eeth_size = 0, heap_size = 0, gsm_size = 0;
@@ -264,7 +289,14 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     EXPECT("EINT", generic, sizeof(generic), &size); memcpy(ee_intc_get_state(), generic, size);
     EXPECT("ESIO", generic, sizeof(generic), &size); memcpy(ee_sio_get_state(), generic, size);
     EXPECT("ETMR", generic, sizeof(generic), &size); memcpy(ee_timers_get_state(), generic, size);
-    EXPECT("GIF0", generic, sizeof(generic), &size); memcpy(gif_get_state(), generic, size);
+    EXPECT("GIF0", generic, sizeof(generic), &size);
+    if(size!=sizeof(*gif_get_state()) && size!=sizeof(*gif_get_state())-sizeof(uint64_t))goto fail_close;
+    memcpy(gif_get_state(),generic,size);
+    if(size!=sizeof(*gif_get_state())) {
+        gif_state_t *gif=gif_get_state();
+        gif->sprite_pos16=(uint64_t)(uint32_t)(gif->v0x*16)
+            |((uint64_t)(uint32_t)(gif->v0y*16)<<32);
+    }
     EXPECT("GS00", generic, sizeof(generic), &size); memcpy(gs_get_state(), generic, size);
     EXPECT("GSM0", gsm_scratch, GS_MEM_SIZE, &gsm_size);
     EXPECT("IDMA", generic, sizeof(generic), &size); memcpy(iop_dma_get_state(), generic, size);
@@ -310,15 +342,38 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
         if (size != sifx_cap) goto fail_close; /* struct-layout mismatch - fail safely, per this file's own documented contract */
         memcpy(sifx_dest, generic, size);
     }
-    EXPECT("VIF0", generic, sizeof(generic), &size); memcpy(vif0_get_state(), generic, size);
-    EXPECT("VIF1", generic, sizeof(generic), &size); memcpy(vif1_get_state(), generic, size);
+    EXPECT("VIF0", generic, sizeof(generic), &size); if (size != sizeof(*vif0_get_state())) goto fail_close; memcpy(vif0_get_state(), generic, size);
+    EXPECT("VIF1", generic, sizeof(generic), &size); if (size != sizeof(*vif1_get_state())) goto fail_close; memcpy(vif1_get_state(), generic, size);
     EXPECT("VU10", generic, sizeof(generic), &size); memcpy(vu1_get_state(), generic, size);
     EXPECT("EETH", eeth_blob, sizeof(eeth_blob), &eeth_size);
     EXPECT("IHP1", heap_blob, sizeof(heap_blob), &heap_size);
 
-    /* Final terminator. */
-    rc = read_block(f, tag, NULL, 0, &size);
-    if (rc != 0 || memcmp(tag, "END0", 4) != 0) goto fail_close;
+    /* Old snapshots terminate here. Missing bindings stay disconnected
+     * rather than inheriting host state from an unrelated running game. */
+    ee_pad_checkpoint_t pad = {{0}, {{0}}, 0};
+    ee_irq_checkpoint_t irq = {0, 0};
+    uint64_t display_ticks = 0; /* Old snapshots have no recoverable independent phase. */
+    uint8_t config[CDVD_CONFIG_SNAPSHOT_SIZE]={0};
+    unsigned seen = 0;
+    for (;;) {
+        unsigned char extra[CDVD_CONFIG_SNAPSHOT_SIZE];
+        rc = read_block(f, tag, extra, sizeof(extra), &size);
+        if (rc <= 0) break;
+        if (memcmp(tag, "EEPD", 4) == 0 && !(seen & 1u) && size == sizeof(pad)) {
+            memcpy(&pad, extra, sizeof(pad)); seen |= 1u;
+        } else if (memcmp(tag, "EIRQ", 4) == 0 && !(seen & 2u) && size == sizeof(irq)) {
+            memcpy(&irq, extra, sizeof(irq)); seen |= 2u;
+            if (irq.intc_delay > 4u || irq.intc_armed > 1u ||
+                (!irq.intc_armed && irq.intc_delay)) goto fail_close;
+        } else if (memcmp(tag, "ECLK", 4) == 0 && !(seen & 4u) && size == 8u) {
+            for (unsigned n = 0; n < 8; n++) display_ticks |= (uint64_t)extra[n] << (8u * n);
+            seen |= 4u;
+        } else if (memcmp(tag,"CNFG",4)==0 && !(seen&8u) && size==sizeof config) {
+            if(!cdvd_config_snapshot_valid(extra))goto fail_close;
+            memcpy(config,extra,sizeof config);seen|=8u;
+        } else goto fail_close;
+    }
+    if (rc != 0 || memcmp(tag, "END0", 4) != 0 || size != 0u) goto fail_close;
 
     fclose(f);
 
@@ -347,6 +402,10 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     dma_bind_scratchpad(ee->scratch, sizeof(ee->scratch));
     iop_dma_bind_iop_ram(iop->ram, iop->ram_size);
     ee_core_rebind_dma_sinks();
+    ee_core_pad_checkpoint_load(&pad);
+    ee_core_irq_checkpoint_load(&irq);
+    ee_core_display_clock_load(display_ticks);
+    cdvd_config_snapshot_load(config);
     system_rebind_iop_bridge();
     if (iso_path) {
         iop_cdrom_legacy_rebind_iso(iso_path);

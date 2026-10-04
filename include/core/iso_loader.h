@@ -134,4 +134,8 @@ int iso_read_sector(iso_image_t *img, uint32_t lba, uint8_t *buf);
  * Returns 0 and fills *out on success, -1 if not found or on error. */
 int iso_find_in_root(iso_image_t *img, const char *name, iso_dirent_t *out);
 
+/* Walk slash/backslash separated ISO9660 directories. Optional cdrom,
+ * cdrom0 or cdrom1 device prefix. Exact component names; leaf ;1 fallback. */
+int iso_find_path(iso_image_t *img, const char *path, iso_dirent_t *out);
+
 #endif

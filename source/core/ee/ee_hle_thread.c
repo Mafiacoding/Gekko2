@@ -4,6 +4,13 @@
  * experiment negative result that motivated this file.
  */
 #include <string.h>
+#include <stdio.h>
+/* Round 1103 (task #1032): added <stdio.h> here because this file uses
+ * fprintf(stderr, ...) in several #ifdef-gated diagnostic trace blocks
+ * (R818_SEMA_TRACE, R1103_SEMA11_TRACE) but never included it directly;
+ * it was apparently only compiling before because some other translation
+ * unit in the same build pulled it in transitively, or because those
+ * gated blocks had never actually been compiled together until now. */
 /* Round 818 (task #823/#824, per user's next-step trace-back request):
  * a lightweight, always-independent-of-R812_EVENTLOG diagnostic that
  * logs only CreateSema and SignalSema/iSignalSema calls (never
@@ -66,6 +73,9 @@ typedef struct {
     uint32_t pc, next_pc;
     ee_reg128_t hi, lo;
     uint32_t sa_reg;
+    /* SCPH-50004 kernel context save at RAM 0x80003718 stores F0..F31,
+     * FCR31 and ACC in addition to GPR/HI/LO/SA. */
+    uint32_t fpr[32], fcr31, acc;
 } ee_tcb_t;
 
 typedef struct {
@@ -100,6 +110,37 @@ static struct {
  * a save/resume cycle. */
 static uint64_t g_wakeup_call_count[EE_HLE_THREAD_MAX_THREADS + 1];
 static uint64_t g_signal_call_count[EE_HLE_THREAD_MAX_SEMAS + 1];
+/* R1225: ground-truth sema2 producer probe in the ACTIVE HLE scheduler.
+ * Earlier R1223 accidentally instrumented ee_core.c's superseded fallback
+ * semaphore table; ee_hle_thread_try_handle() consumes these syscalls first. */
+static uint32_t g_r1225_s2_pc, g_r1225_s2_ra;
+static int32_t g_r1225_s2_sys, g_r1225_s2_tid, g_r1225_s2_before, g_r1225_s2_after;
+/* R1193: capture the first two real SignalSema/iSignalSema syscalls. */
+typedef struct { uint32_t pc, ra; int32_t sysnum, semid, before, after, wait_before, wait_after, ret; } r1193_sig_t;
+static r1193_sig_t g_r1193_sig[2];
+static uint32_t g_r1193_sig_count;
+
+/* R1226: first active-HLE syscalls after the second real SignalSema(2).
+ * This compares the post-Sema5/Sema2 execution point against Claude's
+ * proven scheduler without touching behavior. */
+typedef struct { uint32_t pc, ra, a0; int32_t sys, tid; } r1226_evt_t;
+static r1226_evt_t g_r1226_evt[16];
+static uint32_t g_r1226_n;
+/* R1227: scheduler truth after the common second SignalSema(2) point. */
+typedef struct { int32_t old_tid,next_tid; uint32_t pc; int32_t old_st,next_st,old_wt,next_wt; } r1227_sw_t;
+static r1227_sw_t g_r1227_sw[12];
+static uint32_t g_r1227_sw_n;
+/* R1228: exact SleepThread(50) -> reschedule truth after Sema2 producer. */
+typedef struct { uint32_t pc,ra,adv_pc,saved_pc,after_pc; int32_t tid,wakeup,before_st,after_st,before_wt,after_wt,picked,cur_after,picked_st,picked_wt; } r1228_sleep_t;
+static r1228_sleep_t g_r1228_sleep; static uint32_t g_r1228_hits;
+typedef struct { uint32_t pc,ra,a0,a1; int32_t sys,tid; } r1229_evt_t;
+static r1229_evt_t g_r1229_evt[16]; static uint32_t g_r1229_n;
+
+/* Round 1117 (task #929/#536): per-semaphore re-park tick counter for
+ * the orphan-producer-unblock shortcut above; see its citation for
+ * full rationale. Reset to 0 on module init alongside g_signal_call_count. */
+static int g_orphan_sema_repark_count[EE_HLE_THREAD_MAX_SEMAS + 1];
+#define EE_ORPHAN_SEMA_REPARK_THRESHOLD 8
 
 /* Round 733 continuation (task #447): the force-wake diagnostic proved
  * threads 3/5 stay READY-but-never-scheduled forever even once woken,
@@ -164,6 +205,11 @@ void ee_hle_thread_init(void)
     memset(&g, 0, sizeof(g));
     memset(g_wakeup_call_count, 0, sizeof(g_wakeup_call_count));
     memset(g_signal_call_count, 0, sizeof(g_signal_call_count));
+    g_r1225_s2_pc=g_r1225_s2_ra=0; g_r1225_s2_sys=g_r1225_s2_tid=0; g_r1225_s2_before=g_r1225_s2_after=-1;
+    memset(g_r1193_sig, 0, sizeof(g_r1193_sig)); g_r1193_sig_count = 0;
+    memset(g_r1226_evt,0,sizeof(g_r1226_evt)); g_r1226_n=0; memset(g_r1227_sw,0,sizeof(g_r1227_sw)); g_r1227_sw_n=0;
+    memset(&g_r1228_sleep,0,sizeof(g_r1228_sleep)); g_r1228_hits=0; memset(g_r1229_evt,0,sizeof(g_r1229_evt)); g_r1229_n=0;
+    memset(g_orphan_sema_repark_count, 0, sizeof(g_orphan_sema_repark_count)); /* Round 1117 */
     g_rotate_call_count = 0;
 }
 
@@ -178,6 +224,27 @@ uint64_t ee_hle_thread_get_signal_calls(int semid)
     if (semid < 0 || semid > EE_HLE_THREAD_MAX_SEMAS) return 0;
     return g_signal_call_count[semid];
 }
+
+void ee_hle_thread_get_r1225_sema2(uint32_t *pc,uint32_t *ra,int32_t *sys,int32_t *tid,int32_t *before,int32_t *after)
+{ if(pc)*pc=g_r1225_s2_pc; if(ra)*ra=g_r1225_s2_ra; if(sys)*sys=g_r1225_s2_sys; if(tid)*tid=g_r1225_s2_tid; if(before)*before=g_r1225_s2_before; if(after)*after=g_r1225_s2_after; }
+
+void ee_hle_thread_get_r1193_signal_diag(uint32_t idx, uint32_t *pc, uint32_t *ra, int32_t *sysnum, int32_t *semid, int32_t *before, int32_t *after, int32_t *wb, int32_t *wa, int32_t *ret)
+{
+    r1193_sig_t z = {0}; r1193_sig_t *d = idx < g_r1193_sig_count && idx < 2 ? &g_r1193_sig[idx] : &z;
+    if (pc) *pc=d->pc; if (ra) *ra=d->ra; if (sysnum) *sysnum=d->sysnum; if (semid) *semid=d->semid;
+    if (before) *before=d->before; if (after) *after=d->after; if (wb) *wb=d->wait_before; if (wa) *wa=d->wait_after; if (ret) *ret=d->ret;
+}
+uint32_t ee_hle_thread_get_r1193_signal_diag_count(void) { return g_r1193_sig_count; }
+uint32_t ee_hle_thread_get_r1226_count(void) { return g_r1226_n; }
+void ee_hle_thread_get_r1226(uint32_t i,uint32_t *pc,uint32_t *ra,int32_t *sys,int32_t *tid,uint32_t *a0)
+{ r1226_evt_t z={0}, *e=(i<g_r1226_n&&i<16)?&g_r1226_evt[i]:&z; if(pc)*pc=e->pc;if(ra)*ra=e->ra;if(sys)*sys=e->sys;if(tid)*tid=e->tid;if(a0)*a0=e->a0; }
+uint32_t ee_hle_thread_get_r1227_count(void){return g_r1227_sw_n;}
+void ee_hle_thread_get_r1227(uint32_t i,int32_t *old_tid,int32_t *next_tid,uint32_t *pc,int32_t *old_st,int32_t *next_st,int32_t *old_wt,int32_t *next_wt)
+{ r1227_sw_t z={0},*e=(i<g_r1227_sw_n&&i<12)?&g_r1227_sw[i]:&z; if(old_tid)*old_tid=e->old_tid;if(next_tid)*next_tid=e->next_tid;if(pc)*pc=e->pc;if(old_st)*old_st=e->old_st;if(next_st)*next_st=e->next_st;if(old_wt)*old_wt=e->old_wt;if(next_wt)*next_wt=e->next_wt; }
+uint32_t ee_hle_thread_get_r1228(uint32_t *pc,uint32_t *ra,uint32_t *adv,uint32_t *saved,uint32_t *after,int32_t *tid,int32_t *wake,int32_t *bst,int32_t *ast,int32_t *bwt,int32_t *awt,int32_t *picked,int32_t *cur_after,int32_t *pst,int32_t *pwt)
+{ r1228_sleep_t *e=&g_r1228_sleep; if(pc)*pc=e->pc;if(ra)*ra=e->ra;if(adv)*adv=e->adv_pc;if(saved)*saved=e->saved_pc;if(after)*after=e->after_pc;if(tid)*tid=e->tid;if(wake)*wake=e->wakeup;if(bst)*bst=e->before_st;if(ast)*ast=e->after_st;if(bwt)*bwt=e->before_wt;if(awt)*awt=e->after_wt;if(picked)*picked=e->picked;if(cur_after)*cur_after=e->cur_after;if(pst)*pst=e->picked_st;if(pwt)*pwt=e->picked_wt; return g_r1228_hits; }
+uint32_t ee_hle_thread_get_r1229_count(void){return g_r1229_n;}
+void ee_hle_thread_get_r1229(uint32_t i,uint32_t *pc,uint32_t *ra,int32_t *sys,int32_t *tid,uint32_t *a0,uint32_t *a1){r1229_evt_t z={0},*e=(i<g_r1229_n&&i<16)?&g_r1229_evt[i]:&z;if(pc)*pc=e->pc;if(ra)*ra=e->ra;if(sys)*sys=e->sys;if(tid)*tid=e->tid;if(a0)*a0=e->a0;if(a1)*a1=e->a1;}
 
 /* Round 1035 (task #536/#447 continuation): pure read-only diagnostic
  * accessor into the semaphore table - same "project-internal accessor"
@@ -271,6 +338,28 @@ static ee_sema_internal_t *sema(int semid)
     return &g.semas[semid];
 }
 
+/* Mirror ExecPS2's kernel-object teardown in the separate HLE model.
+ * PS2SDK ee/kernel/src/osdsrc/src/ExecPS2.c: delete other threads,
+ * InitSemaphores, current priority=0 and cleared wait/wakeup state. */
+void ee_hle_thread_on_exec(ee_state_t *st)
+{
+    int id=g.current_thread_id;
+    ee_tcb_t *old=tcb(id), keep;
+    int valid=old && old->in_use;
+    if(valid)keep=*old;
+    memset(&g,0,sizeof(g));
+    memset(g_orphan_sema_repark_count,0,sizeof(g_orphan_sema_repark_count));
+    if(valid){
+        keep.status=EE_THS_RUN; keep.priority=keep.init_priority=0;
+        keep.wait_type=EE_TSW_NONE; keep.wait_id=0; keep.wakeup_count=0;
+        keep.entry=(uint32_t)st->gpr[4].ud0;
+        keep.ready_seq=0;
+        g.threads[id-1]=keep;g.thread_count=1;g.current_thread_id=id;
+        g.ready_seq_counter=1;
+    }
+    st->idle=0;
+}
+
 static void ensure_root_thread(ee_state_t *st)
 {
     if (g.thread_count > 0) return;
@@ -278,8 +367,41 @@ static void ensure_root_thread(ee_state_t *st)
     memset(t, 0, sizeof(*t));
     t->in_use = 1;
     t->status = EE_THS_RUN;
-    t->priority = 64;
-    t->init_priority = 64;
+    /* Round 1090 fix (task: Rounds 1080-1089 priority-inversion arc,
+     * user-decided Variante B). The prior default here was 64 - a
+     * mid-range, explicitly-uncited placeholder (see the IOP-side
+     * sibling's own comment in iop_hle_thread.c, ensure_root_thread()).
+     * Rounds 1080-1082 proved live, via BIOS disassembly and an A/B
+     * causal test, that 64 causes a real priority-inversion livelock:
+     * it numerically outranks (is less urgent than) tid 9's genuine
+     * firmware-assigned priority 32, so this implicit root thread can
+     * lose scheduling to tid 9 in pick_next_ready()'s real, correct
+     * "lower number = more urgent" comparison. Rounds 1083-1089
+     * exhaustively searched for the real hardware value real firmware
+     * would use here and found none exists to cite: real PS2 hardware's
+     * own pre-THREADMAN bootstrap glue is not itself a THREADMAN-
+     * scheduled thread at all (same conclusion the IOP-side comment
+     * already reached independently), so there is no real priority
+     * byte to reconstruct - Variante A (a documented/reconstructed
+     * real firmware value) is not available. Per the user's explicit
+     * decision, this project instead takes Variante B: an emulator-
+     * internal modeling choice, not a claimed Sony hardware value.
+     * 0 (THREADMAN's highest-urgency priority number) is chosen
+     * because it is the closest correct approximation of what real
+     * hardware actually does - the sequential pre-THREADMAN loader is
+     * never preempted by anything, so representing it as unconditionally
+     * more urgent than every real, positive-priority thread mirrors
+     * that invariant until this implicit thread itself creates real
+     * THREADMAN threads and participates in normal priority semantics.
+     * Verified via two independent, twice-reproduced instrumentation
+     * methods (Round 1089: full syscall trace + ReferThreadStatus
+     * call-cadence trace) that priority 0 produces a byte-for-byte
+     * identical boot trace to priority 1 - i.e. it reliably lands in
+     * the same "correctly unblocks past tid 9" class as every other
+     * tested value in [0,31], and does NOT reproduce the original
+     * 64-class livelock. */
+    t->priority = 0;
+    t->init_priority = 0;
     t->ready_seq = g.ready_seq_counter++;
     memcpy(t->gpr, st->gpr, sizeof(t->gpr));
     t->pc = st->pc;
@@ -287,6 +409,9 @@ static void ensure_root_thread(ee_state_t *st)
     t->hi = st->hi;
     t->lo = st->lo;
     t->sa_reg = st->sa_reg;
+    memcpy(t->fpr, st->fpr, sizeof(t->fpr));
+    t->fcr31 = st->fcr31;
+    t->acc = st->acc;
     g.thread_count = 1;
     EVT(1, "event=current_thread_id-write old=0 new=1 reason=ensure_root_thread pc=0x%08x", st->pc);
     g.current_thread_id = 1;
@@ -302,6 +427,9 @@ static void save_context(ee_state_t *st, int thid)
     t->hi = st->hi;
     t->lo = st->lo;
     t->sa_reg = st->sa_reg;
+    memcpy(t->fpr, st->fpr, sizeof(t->fpr));
+    t->fcr31 = st->fcr31;
+    t->acc = st->acc;
 }
 
 static void load_context(ee_state_t *st, int thid)
@@ -314,6 +442,9 @@ static void load_context(ee_state_t *st, int thid)
     st->hi = t->hi;
     st->lo = t->lo;
     st->sa_reg = t->sa_reg;
+    memcpy(st->fpr, t->fpr, sizeof(st->fpr));
+    st->fcr31 = t->fcr31;
+    st->acc = t->acc;
 }
 
 /* Real priority-based pick, identical algorithm to the IOP side's own
@@ -347,8 +478,15 @@ static void reschedule(ee_state_t *st)
     int old_current = g.current_thread_id;
     (void)old_current; /* only referenced by EVT(), a no-op unless R812_EVENTLOG is defined */
     int next = pick_next_ready();
-    EVT(old_current, "event=reschedule old_current=%d next=%d pc=0x%08x",
-        old_current, next, st->pc);
+    if (g_signal_call_count[2] >= 2 && g_r1227_sw_n < 12) {
+        r1227_sw_t *e=&g_r1227_sw[g_r1227_sw_n++];
+        e->old_tid=old_current; e->next_tid=next; e->pc=st->pc;
+        ee_tcb_t *ot=tcb(old_current), *nt=tcb(next);
+        e->old_st=ot?ot->status:0; e->next_st=nt?nt->status:0;
+        e->old_wt=ot?ot->wait_type:0; e->next_wt=nt?nt->wait_type:0;
+    }
+    EVT(old_current, "event=reschedule old_current=%d next=%d pc=0x%08x next_priority=%d",
+        old_current, next, st->pc, next ? (int)tcb(next)->priority : -1);
     /* Round 812 fix (task #811/#813, GT3 semaphore-5 anomaly - user-
      * relayed external-review plan's event-log instrumentation
      * request). Live evidence (R812EVT capture, GT3 disc-boot chain):
@@ -554,10 +692,22 @@ static int wake_one_sema_waiter(int semid)
             best_seq = t->ready_seq;
         }
     }
+#ifdef R1103_SEMA11_TRACE
+    /* Round 1103 (task #1032, per user's precise follow-up spec):
+     * narrow, sema-11-only trace of which waiter (if any) is picked
+     * here, to distinguish Fall B/C (signal correctly finds/marks
+     * tid9 READY, vs. finds no waiter at all / picks someone else)
+     * from Fall A (tid2 never needs a woken waiter because it steals
+     * its own produced count via an immediate WaitSema first). */
+    if (semid == 11) {
+        fprintf(stderr, "[R1103] event=wake_one_sema_waiter sem=11 found_tid=%d best_seq=%u\n",
+                best, best == 0 ? 0u : best_seq);
+    }
+#endif
     if (best == 0) return 0;
     ee_tcb_t *t = tcb(best);
-    EVT(best, "event=wake_one_sema_waiter sem=%d old_status=0x%x old_wait_type=%d old_wait_id=%d pc=0x%08x",
-        semid, t->status, t->wait_type, t->wait_id, t->pc);
+    EVT(best, "event=wake_one_sema_waiter sem=%d old_status=0x%x old_wait_type=%d old_wait_id=%d pc=0x%08x waiter_priority=%d signaler_tid=%d",
+        semid, t->status, t->wait_type, t->wait_id, t->pc, t->priority, g.current_thread_id);
     t->status = EE_THS_READY;
     t->wait_type = EE_TSW_NONE;
     t->wait_id = 0;
@@ -611,7 +761,7 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
     static const int32_t handled[] = {
         32, 33, 34, 35, 36, 37, -38, 39, 40, 41, -42, 43, -44,
         47, -47, 48, -49, 50, 51, -52, 53, -54,
-        64, 65, 66, -67, 68, 69
+        64, 65, 66, -67, 68, 69, -70, 71, -72, -73
     };
     int recognized = 0;
     for (size_t i = 0; i < sizeof(handled) / sizeof(handled[0]); i++) {
@@ -622,6 +772,10 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
     ensure_root_thread(st);
     int cur = g.current_thread_id;
     uint32_t ra = (uint32_t)st->gpr[31].ud0;
+    if (g_signal_call_count[2] >= 2 && g_r1226_n < 16) {
+        r1226_evt_t *e=&g_r1226_evt[g_r1226_n++]; e->pc=this_pc; e->ra=ra; e->sys=sysnum; e->tid=cur; e->a0=(uint32_t)st->gpr[4].ud0;
+    }
+    if (g_r1228_hits > 0 && cur == 1 && g_r1229_n < 16) { r1229_evt_t *e=&g_r1229_evt[g_r1229_n++]; e->pc=this_pc;e->ra=ra;e->sys=sysnum;e->tid=cur;e->a0=(uint32_t)st->gpr[4].ud0;e->a1=(uint32_t)st->gpr[5].ud0; }
 #define EE_RET(v) do { st->gpr[2].ud0 = (uint64_t)(int64_t)(int32_t)(v); } while (0)
     /* Round 569 fix: every syscall completion (blocking or not) must
      * advance PC to the instruction AFTER the syscall, exactly like
@@ -847,6 +1001,10 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
     if (sysnum == 50) {
         /* SleepThread() - no args. */
         ee_tcb_t *t = tcb(cur);
+        if (t && g_signal_call_count[2] >= 2) {
+            g_r1228_hits++; g_r1228_sleep.pc=this_pc; g_r1228_sleep.ra=(uint32_t)st->gpr[31].ud0; g_r1228_sleep.tid=cur;
+            g_r1228_sleep.wakeup=t->wakeup_count; g_r1228_sleep.before_st=t->status; g_r1228_sleep.before_wt=t->wait_type;
+        }
         if (t) {
             if (t->wakeup_count > 0) {
                 t->wakeup_count--;
@@ -855,6 +1013,7 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
             } else {
                 EE_RET(0); /* pre-set: the real return value once woken */
                 EE_ADVANCE();
+                if (g_signal_call_count[2] >= 2) g_r1228_sleep.adv_pc=st->pc;
                 EVT(cur, "event=status old=0x%x new=0x4 wait_type=SLEEP reason=SleepThread pc=0x%08x", t->status, this_pc);
                 /* Round 826 fix (task #811): same stale-saved-pc gap as
                  * WaitSema-block above (see that comment for the full
@@ -865,10 +1024,13 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
                  * (this_pc+4, the real post-syscall resume point). Save
                  * directly here while status is still RUN. */
                 save_context(st, cur);
+                if (g_signal_call_count[2] >= 2) g_r1228_sleep.saved_pc=t->pc;
                 t->status = EE_THS_WAIT;
                 t->wait_type = EE_TSW_SLEEP;
                 t->wait_id = 0;
+                if (g_signal_call_count[2] >= 2) { int pn=pick_next_ready(); ee_tcb_t *pt=tcb(pn); g_r1228_sleep.picked=pn; g_r1228_sleep.picked_st=pt?pt->status:0; g_r1228_sleep.picked_wt=pt?pt->wait_type:0; }
                 reschedule(st);
+                if (g_signal_call_count[2] >= 2) { g_r1228_sleep.after_st=t->status; g_r1228_sleep.after_wt=t->wait_type; g_r1228_sleep.cur_after=g.current_thread_id; g_r1228_sleep.after_pc=st->pc; }
             }
         } else {
             EE_ADVANCE();
@@ -955,6 +1117,10 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
             } else {
                 s->in_use = 0;
                 EE_RET(0);
+#ifdef R818_SEMA_TRACE
+                fprintf(stderr, "[R818SEMA] event=DeleteSema tid=%d sem=%d ra=0x%08x pc=0x%08x\n",
+                        cur, semid, (uint32_t)st->gpr[31].ud0, this_pc);
+#endif
             }
         } else {
             EE_RET(-1);
@@ -988,22 +1154,71 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
         int semid = (int)(int32_t)st->gpr[4].ud0;
         if (semid >= 0 && semid <= EE_HLE_THREAD_MAX_SEMAS) g_signal_call_count[semid]++; /* Round 733 - see field comment */
         ee_sema_internal_t *s = sema(semid);
+        if (semid == 2) {
+            g_r1225_s2_pc=this_pc; g_r1225_s2_ra=(uint32_t)st->gpr[31].ud0;
+            g_r1225_s2_sys=sysnum; g_r1225_s2_tid=cur;
+            g_r1225_s2_before=(s&&s->in_use)?s->count:-1;
+        }
+        r1193_sig_t *r1193d = NULL;
+        if (g_r1193_sig_count < 2) {
+            r1193d = &g_r1193_sig[g_r1193_sig_count++];
+            r1193d->pc=this_pc; r1193d->ra=(uint32_t)st->gpr[31].ud0; r1193d->sysnum=sysnum; r1193d->semid=semid;
+            r1193d->before=s&&s->in_use?s->count:-1; r1193d->wait_before=s&&s->in_use?s->wait_threads:-1; r1193d->after=r1193d->before; r1193d->wait_after=r1193d->wait_before; r1193d->ret=-9999;
+        }
+#ifdef R1103_SEMA11_TRACE
+        /* Round 1103 (task #1032): narrow sema-11-only SIGNAL trace
+         * per the user's exact spec - tid, pc/ra, count BEFORE, and
+         * (below, after the increment) count AFTER, so a signal by
+         * tid2 can be lined up instruction-for-instruction against
+         * any immediately-following WAIT trace from the SAME tid
+         * (Fall A) vs. tid9 (Fall B/C). */
+        int32_t r1103_count_before = s ? s->count : -1;
+#endif
+#ifdef R1127_SEMA7_TRACE
+        int32_t r1127_count_before = s ? s->count : -1;
+#endif
         if (s && s->in_use) {
             if (s->count < s->max_count) {
                 s->count++;
-                EVT(cur, "event=SignalSema sem=%d count=%d pc=0x%08x", semid, s->count, this_pc);
+                EVT(cur, "event=SignalSema sem=%d count=%d pc=0x%08x ra=0x%08x", semid, s->count, this_pc, (uint32_t)st->gpr[31].ud0);
 #ifdef R818_SEMA_TRACE
                 fprintf(stderr, "[R818SEMA] event=SignalSema tid=%d sem=%d count=%d ra=0x%08x pc=0x%08x sysnum=%d\n",
                         cur, semid, s->count, (uint32_t)st->gpr[31].ud0, this_pc, sysnum);
 #endif
+#ifdef R1103_SEMA11_TRACE
+                if (semid == 11) {
+                    fprintf(stderr, "[R1103] event=SIGNAL sem=11 tid=%d ra=0x%08x pc=0x%08x count_before=%d count_after=%d sysnum=%d\n",
+                            cur, (uint32_t)st->gpr[31].ud0, this_pc, r1103_count_before, s->count, sysnum);
+                }
+#endif
+#ifdef R1127_SEMA7_TRACE
+                if (semid == 7) {
+                    fprintf(stderr, "[R1127SIGNAL7] tid=%d caller_ra=0x%08x pc=0x%08x count_before=%d count_after=%d sysnum=%d\n",
+                            cur, (uint32_t)st->gpr[31].ud0, this_pc, s->count - 1, s->count, sysnum);
+                }
+#endif
                 wake_one_sema_waiter(semid); /* bookkeeping only - does not gate the increment above */
                 EE_RET(0);
             } else {
+#ifdef R1103_SEMA11_TRACE
+                if (semid == 11) {
+                    fprintf(stderr, "[R1103] event=SIGNAL sem=11 tid=%d ra=0x%08x pc=0x%08x count_before=%d RESULT=OVERFLOW(-419)\n",
+                            cur, (uint32_t)st->gpr[31].ud0, this_pc, r1103_count_before);
+                }
+#endif
+#ifdef R1127_SEMA7_TRACE
+                if (semid == 7) {
+                    fprintf(stderr, "[R1127SIGNAL7] tid=%d caller_ra=0x%08x pc=0x%08x count_before=%d RESULT=OVERFLOW(-419)\n",
+                            cur, (uint32_t)st->gpr[31].ud0, this_pc, r1127_count_before);
+                }
+#endif
                 EE_RET(-419); /* real E_KERNEL_SEMA_OVF-style error, matches original - EE_RET already sign-extends */
             }
         } else {
             EE_RET(-1);
         }
+        if (semid == 2) g_r1225_s2_after=(s&&s->in_use)?s->count:-1;
+        if (r1193d) { r1193d->after=s&&s->in_use?s->count:-1; r1193d->wait_after=s&&s->in_use?s->wait_threads:-1; r1193d->ret=(int32_t)st->gpr[2].ud0; }
         EE_ADVANCE();
         if (sysnum == 66) reschedule(st); /* iSignalSema: interrupt context, defer any switch */
         return 1;
@@ -1014,7 +1229,77 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
          * architectural gap. */
         int semid = (int)(int32_t)st->gpr[4].ud0;
         ee_sema_internal_t *s = sema(semid);
-        EVT(cur, "event=WaitSema-entry sem=%d count=%d pc=0x%08x", semid, s ? s->count : -1, this_pc);
+        EVT(cur, "event=WaitSema-entry sem=%d count=%d pc=0x%08x ra=0x%08x", semid, s ? s->count : -1, this_pc, (uint32_t)st->gpr[31].ud0);
+        /* Round 1117 (task #929/#536, per user's explicit instruction:
+         * "Patch the Producer and Patch the scheduler see how it goes
+         * if it goes wrong patch it back and after that keep using the
+         * decompressor") - pragmatic, NOT proven-authentic producer-
+         * unblock shortcut, mirroring ee_core.c's established
+         * ee_check_boot_unblock_sbus_wait() honesty convention (Round
+         * 177/178/262-264 citations there).
+         *
+         * Evidence: a direct experiment (scratch driver
+         * /tmp/r1117_force_signal.c, checkpoints r1103_seq.ckpt persisted
+         * at 267,354,194 instructions with tid1/5/6/7/9 all genuinely
+         * WAIT-parked on sema 4/7/9/10/11, each confirmed via
+         * g_signal_call_count[]==0 to have NEVER been signaled by any
+         * real SignalSema/iSignalSema call across the entire organic
+         * boot) force-signaling exactly those 5 semaphore IDs once, via
+         * the pre-existing ee_hle_thread_debug_signal_sema() hook,
+         * produced sustained, crash-free forward progress from
+         * 267,354,194 to 564,067,707+ instructions across multiple
+         * distinct, legitimate kernel/OSDSYS code regions (the real
+         * 0x00257964 kernel WaitSema-resume dispatcher, then genuine
+         * OSDSYS module code at 0x0021xxxx/0x0026xxxx), and the
+         * previously 100%-zero OSDSYS module region (0x00200000-
+         * 0x00260000, confirmed all-zero at two checkpoints 3.5B+
+         * instructions apart via full 64KB-bucketed RAM sweep) went
+         * from fully empty to ~96% populated with real code/data. This
+         * satisfies the user's own pre-committed Fix-Kandidat-1
+         * criterion (a real, never-signaled semaphore with an
+         * identifiable missing producer) rather than Fix-Kandidat-2
+         * (scheduler losing a real wake) - g_signal_call_count[]
+         * staying at 0 the entire time directly rules out the latter
+         * for these specific semaphore IDs.
+         *
+         * Scope/safety, matching the SBUS shortcut's own discipline:
+         * (a) restricted to the exact 5 semaphore IDs this experiment
+         * evidenced, not semaphores in general; (b) only ever fires
+         * once g_signal_call_count[semid]==0 (no real producer has
+         * EVER signaled this semaphore) AND the SAME thread has
+         * already been confirmed re-parked here
+         * EE_ORPHAN_SEMA_REPARK_THRESHOLD additional busy-park ticks in
+         * a row - i.e. it never fires on a thread's first visit,
+         * giving any real producer this project does implement a full
+         * chance to fire first; (c) it only ever increments s->count
+         * (bounded by max_count), the exact same primitive
+         * SignalSema/ee_hle_thread_debug_signal_sema use - it can never
+         * fight, duplicate, or race a real signal, and a real producer
+         * firing at any point makes this permanently dead code for
+         * that semaphore/thread (count already >0, or
+         * g_signal_call_count[] no longer 0). Per the user's own
+         * fallback instruction ("if it goes wrong patch it back"): if
+         * future evidence shows this causes an incoherent boot state,
+         * this whole block should be reverted first before any other
+         * change. */
+        if (s && s->in_use && s->count == 0 &&
+            (semid == 4 || semid == 7 || semid == 9 || semid == 10 || semid == 11) &&
+            semid >= 0 && semid <= EE_HLE_THREAD_MAX_SEMAS &&
+            g_signal_call_count[semid] == 0) {
+            ee_tcb_t *r1117_t = tcb(cur);
+            int r1117_already_waiting = (r1117_t && r1117_t->status == EE_THS_WAIT &&
+                                          r1117_t->wait_type == EE_TSW_SEMA &&
+                                          r1117_t->wait_id == (uint32_t)semid);
+            if (r1117_already_waiting) {
+                if (++g_orphan_sema_repark_count[semid] >= EE_ORPHAN_SEMA_REPARK_THRESHOLD) {
+                    if (s->count < s->max_count) {
+                        s->count++;
+                        EVT(cur, "event=OrphanSemaUnblock sem=%d count=%d pc=0x%08x", semid, s->count, this_pc);
+                    }
+                    g_orphan_sema_repark_count[semid] = 0;
+                }
+            }
+        }
         if (!s || !s->in_use) {
             EVT(cur, "event=WaitSema-invalid sem=%d pc=0x%08x", semid, this_pc);
             EE_RET(-1);
@@ -1022,11 +1307,37 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
             return 1;
         }
         if (s->count > 0) {
+#ifdef R1103_SEMA11_TRACE
+            /* Round 1103 (task #1032): narrow sema-11-only WAIT-
+             * success trace per the user's exact spec - tid, pc/ra,
+             * count BEFORE/AFTER, and whether this thread was already
+             * parked here (a busy-park re-poll finally succeeding) or
+             * this is a fresh, never-blocked WaitSema that happened to
+             * find count>0 immediately (the Fall-A signature: the
+             * SAME tid that just signaled, consuming its own count
+             * before the real older waiter ever gets a turn). */
+            if (semid == 11) {
+                ee_tcb_t *r1103_t = tcb(cur);
+                int r1103_was_waiting = (r1103_t && r1103_t->status == EE_THS_WAIT &&
+                                          r1103_t->wait_type == EE_TSW_SEMA && r1103_t->wait_id == 11);
+                fprintf(stderr, "[R1103] event=WAIT sem=11 tid=%d ra=0x%08x pc=0x%08x count_before=%d count_after=%d RESULT=SUCCESS was_already_waiting=%d\n",
+                        cur, (uint32_t)st->gpr[31].ud0, this_pc, s->count, s->count - 1, r1103_was_waiting);
+            }
+#endif
             s->count--;
-            EVT(cur, "event=WaitSema-success sem=%d count=%d pc=0x%08x", semid, s->count, this_pc);
+            EVT(cur, "event=WaitSema-success sem=%d count=%d pc=0x%08x ra=0x%08x", semid, s->count, this_pc, (uint32_t)st->gpr[31].ud0);
             EE_RET(0);
             EE_ADVANCE();
         } else {
+#ifdef R1103_SEMA11_TRACE
+            if (semid == 11) {
+                ee_tcb_t *r1103_t = tcb(cur);
+                int r1103_was_waiting = (r1103_t && r1103_t->status == EE_THS_WAIT &&
+                                          r1103_t->wait_type == EE_TSW_SEMA && r1103_t->wait_id == 11);
+                fprintf(stderr, "[R1103] event=WAIT sem=11 tid=%d ra=0x%08x pc=0x%08x count_before=0 RESULT=BLOCK was_already_waiting=%d\n",
+                        cur, (uint32_t)st->gpr[31].ud0, this_pc, r1103_was_waiting);
+            }
+#endif
             /* Round 569 fix: must NOT call EE_ADVANCE() here.
              * This project's established park idiom (see ee_core.c's
              * original sysnum==68 handler, ~line 3179) is to leave
@@ -1043,7 +1354,85 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
             EE_RET(0); /* pre-set: the real return value once actually woken and re-dispatched */
             st->pc = this_pc;
             st->next_pc = this_pc + 4u;
-            if (t) {
+            /* Round 1102 fix (task #1031, per user's follow-up request
+             * after Round 1101: "in welchem Sema stecken wir fest?"):
+             * this project's own busy-park idiom (Round 569/781 comments
+             * above) re-executes this SAME WaitSema syscall every time
+             * the blocked thread is rescheduled back onto the CPU while
+             * count stays 0 - by design, since there is no other wakeup
+             * channel. But the block below (save_context/status=WAIT/
+             * wait_type/wait_id) and the s->wait_threads++ that used to
+             * follow it were BOTH unconditional on every such re-entry,
+             * not just the first time this thread transitions from
+             * RUN/READY into WAIT. Evidence: a fresh, cleanly-booted
+             * SCPH-50004 diskless survey (docs/STATUS.md Round 1100/
+             * 1101 entry's park, re-verified this round) showed
+             * sema(wait_id=11)'s reported waiters climbing from 40 at
+             * 40,000,000 cumulative instructions to 105 at 80,000,000 -
+             * i.e. scaling with elapsed re-dispatch ticks of the SAME
+             * single real thread (tid=9), not with any real number of
+             * distinct blocked threads (this boot has nowhere near 40-
+             * 105 EE threads total). Root cause: nothing here checked
+             * whether the thread was ALREADY parked on this exact
+             * semaphore before repeating the state-transition side
+             * effects. Fixed by computing `already_waiting` from the
+             * tcb's pre-mutation state and gating both the
+             * status/wait_type/wait_id/ready_seq assignment AND the
+             * s->wait_threads++ below on it being false - so a thread
+             * that is merely being re-confirmed as still blocked (the
+             * normal busy-park tick) no longer inflates the waiter
+             * count or churns g.ready_seq_counter on every single
+             * re-entry. This does not change WaitSema's real blocking
+             * semantics (EE_RET/pc/next_pc above are unaffected and
+             * still re-arm the syscall every tick as before) - it only
+             * corrects the wait_threads/ready_seq bookkeeping to match
+             * what a real kernel's per-thread state transition would
+             * actually count. */
+            int already_waiting = (t && t->status == EE_THS_WAIT &&
+                                    t->wait_type == EE_TSW_SEMA &&
+                                    t->wait_id == (uint32_t)semid);
+#ifdef R1124_WAIT_TRACE
+            /* Round 1124 (task #929/#1123 follow-up, per user's exact
+             * spec): ONE-SHOT capture of the specific WaitSema(X) call
+             * that genuinely blocks at the new real frontier
+             * pc=0x00257964 (Round 1005/task #983, re-confirmed via
+             * Round 1123's fresh cold-boot LOADFILE trace). Fires
+             * exactly once, at the FIRST real RUN-to-WAIT transition
+             * at this exact pc (guarded by !already_waiting so a busy-
+             * park re-poll never re-fires it), and prints the exact
+             * register/sema state the user asked for - pc/tid/ra/v1/
+             * a0-a3 plus the target semaphore's own count/wait_threads/
+             * max_count/attr - establishing X's identity directly from
+             * live state. Also flags whether this specific semid is
+             * one of the 5 IDs (4/7/9/10/11) Round 1117's orphan-sema-
+             * producer-unblock shortcut targets, since that shortcut is
+             * unconditionally compiled into this same file and could
+             * be why this pc is reached at all - the user must know if
+             * X falls in that set before treating this frontier as a
+             * fully organic result. */
+            if (this_pc == 0x00257964u) {
+                static int r1124_fired = 0;
+                if (!r1124_fired) {
+                    r1124_fired = 1;
+                    fprintf(stderr,
+                        "[R1124_WAIT] FIRST GENUINE BLOCK pc=0x%08x tid=%d ra=0x%08x "
+                        "v1=0x%08x a0=%d a1=0x%08x a2=0x%08x a3=0x%08x\n",
+                        this_pc, cur, (uint32_t)st->gpr[31].ud0,
+                        (uint32_t)st->gpr[3].ud0, semid,
+                        (uint32_t)st->gpr[5].ud0, (uint32_t)st->gpr[6].ud0,
+                        (uint32_t)st->gpr[7].ud0);
+                    fprintf(stderr,
+                        "[R1124_WAIT] sema[%d] in_use=%d count=%d max_count=%d "
+                        "wait_threads=%d attr=0x%08x option=0x%08x signal_call_count=%d "
+                        "is_round1117_target=%d\n",
+                        semid, s->in_use, s->count, s->max_count, s->wait_threads,
+                        s->attr, s->option,
+                        (semid >= 0 && semid <= EE_HLE_THREAD_MAX_SEMAS) ? g_signal_call_count[semid] : -1,
+                        (semid == 4 || semid == 7 || semid == 9 || semid == 10 || semid == 11) ? 1 : 0);
+                }
+            }
+#endif
+            if (t && !already_waiting) {
                 EVT(cur, "event=status old=0x%x new=0x4 wait_type=SEMA wait_id=%d reason=WaitSema-block pc=0x%08x",
                     t->status, semid, this_pc);
                 /* Round 826 fix (task #811, GT3 thread-1 saved-pc stale-
@@ -1082,8 +1471,8 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
                 t->wait_type = EE_TSW_SEMA;
                 t->wait_id = semid;
                 t->ready_seq = g.ready_seq_counter++;
+                s->wait_threads++; /* Round 1102: gated - see citation above; only counts a genuine RUN/READY-to-WAIT transition, not a busy-park re-poll tick */
             }
-            s->wait_threads++;
             reschedule(st);
             /* Round 781 (task #803, GT3 0x0101bc24 permanent-park
              * fix): this park re-executes the SAME WaitSema syscall
@@ -1130,6 +1519,166 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
             s->count--;
             EE_RET(semid); /* real, live-traced: success returns the semaphore ID itself, not 0 */
         } else {
+            EE_RET(-1);
+        }
+        EE_ADVANCE();
+        return 1;
+    }
+    if (sysnum == -70) {
+        /* iPollSema(int semid) - non-blocking WaitSema, interrupt-safe
+         * variant. Byte-for-byte mirror of the sysnum==69 (PollSema)
+         * block directly above: same sema()/g.semas[] state, same
+         * "success returns the semaphore ID itself" convention.
+         *
+         * Round 1094 fix (task pending - see STATUS.md Round 1094):
+         * before this, -70 was NOT in this function's handled[]
+         * table, so every iPollSema call fell through this whole
+         * dispatcher (returning 0) and was picked up instead by
+         * ee_core.c's OWN old, separate g_ee_sema[]-based fallback
+         * handler (the one Round 1093 patched). That fallback array
+         * is genuine dead code for every OTHER semaphore syscall
+         * (64/65/66/-67/68/69 are all claimed here, upstream, first)
+         * because CreateSema (sysnum==64, handled above) allocates
+         * and populates a slot in THIS file's g.semas[] array via
+         * sema(), never in ee_core.c's g_ee_sema[]. So Round 1093's
+         * iPollSema(-70) fix, while logically correct in isolation,
+         * was checking a semaphore slot that real CreateSema never
+         * writes to - explaining the Round 1093/1094-investigated
+         * "g_ee_sema[5].in_use == 0 despite confirmed CreateSema for
+         * ID 5" mystery: two separate semaphore state arrays, and
+         * -70 was the one syscall number reading the wrong one.
+         * Live-verified in a scratch tree against the real
+         * SCPH-50004 BIOS: with -70 claimed here instead, signal_calls
+         * for wid7/wid8 (previously permanently 0) become nonzero and
+         * climb, and the EE program counter advances well past the
+         * previously-permanent 0x00257964 resting point. */
+        int semid = (int)(int32_t)st->gpr[4].ud0;
+        ee_sema_internal_t *s = sema(semid);
+#ifdef R1127_SEMA7_TRACE
+        {
+            int32_t r1127_before = s ? s->count : -999;
+            int32_t r1127_ret;
+            if (s && s->in_use && s->count > 0) {
+                s->count--;
+                EE_RET(semid);
+                r1127_ret = semid;
+            } else {
+                EE_RET(-1);
+                r1127_ret = -1;
+            }
+            fprintf(stderr, "[R1127POLL] tid=%d caller_ra=0x%08x semid=%d count_before=%d ret=%d count_after=%d\n",
+                    g.current_thread_id, (uint32_t)st->gpr[31].ud0, semid, r1127_before, r1127_ret,
+                    s ? s->count : -999);
+            EE_ADVANCE();
+            return 1;
+        }
+#endif
+        if (s && s->in_use && s->count > 0) {
+            s->count--;
+            EE_RET(semid); /* same real convention as PollSema(69) above */
+        } else {
+            EE_RET(-1);
+        }
+        EE_ADVANCE();
+        return 1;
+    }
+
+    if (sysnum == -73) {
+        /* iDeleteSema(int semid) - interrupt-context fast form of the
+         * already-real DeleteSema(65) above. Byte-for-byte mirror of
+         * that block's semantics (real E_KERNEL_SEMA_STAT-style
+         * refusal while threads still wait), operating on the SAME
+         * sema()/g.semas[] state DeleteSema(65) already uses.
+         *
+         * Round 1097b (per user's explicit architectural-review
+         * request, following Round 1093/1094's iPollSema(-70) fix):
+         * before this, -73 raised a real MIPS Syscall exception (see
+         * ee_core.c's sysnum==-72/-73 block) because this file's
+         * handled[] table never claimed it - the exact same
+         * "disconnected array" class of bug already found and fixed
+         * for iPollSema(-70). Any real caller of -73 previously had
+         * no citable real kernel handler this project could safely
+         * reimplement (see ee_core.c's own long-standing rationale
+         * for that exception-raising family) and was guaranteed to
+         * either crash or take an unmodeled kernel path. Claiming it
+         * here, using the same real g.semas[] state every other sema
+         * syscall already shares, closes that gap with the same,
+         * already-proven convention - not a new guess. */
+        int semid = (int)(int32_t)st->gpr[4].ud0;
+        ee_sema_internal_t *s = sema(semid);
+        if (s && s->in_use) {
+            if (s->wait_threads > 0) {
+                EE_RET(-419);
+            } else {
+                s->in_use = 0;
+                EE_RET(0);
+            }
+        } else {
+            EE_RET(-1);
+        }
+        EE_ADVANCE();
+        return 1;
+    }
+    if (sysnum == 71 || sysnum == -72) {
+        /* ReferSemaStatus(int semid, ee_sema_t *status) /
+         * iReferSemaStatus(int semid, ee_sema_t *status) - real
+         * ps2sdk signature (kernel.h). Writes the semaphore's live
+         * kernel-resident status struct to the caller-supplied
+         * buffer, byte-for-byte the same accessor pattern as
+         * ReferThreadStatus (sysnum 48/-49) directly above. Real
+         * ee_sema_t layout (matches this file's own CreateSema
+         * input-struct offsets above): count@0, max_count@4,
+         * init_count@8, wait_threads@0xC, attr@0x10, option@0x14.
+         *
+         * Round 1097b: same rationale as the -73 block above - closes
+         * the last remaining semaphore-family syscall that previously
+         * raised a real, unimplemented-kernel-state exception instead
+         * of using this file's own real g.semas[] state (see
+         * ee_core.c's sysnum==59/62/71/84/89/90/91/105 block, which
+         * this syscall was bundled into before this fix).
+         *
+         * Known, deliberate fidelity gap (documented, not silently
+         * guessed): ee_sema_internal_t does not separately retain a
+         * semaphore's ORIGINAL init_count once count starts changing
+         * (only max_count/count/wait_threads/attr/option are tracked -
+         * see the struct definition above). Adding a new field would
+         * grow sizeof(g) - the exact blob checkpoint.c compares
+         * byte-for-byte against a persisted checkpoint's recorded
+         * size before restoring EE-thread/sema state (see
+         * checkpoint.c's `if (blob_cap == eeth_size)` load guard) -
+         * silently zeroing the user's already-persisted GT3
+         * checkpoint's sema/thread state on next load (a size
+         * mismatch skips the restore entirely rather than erroring).
+         * To preserve that checkpoint's integrity, this reports
+         * init_count == max_count, matching every real CreateSema
+         * call site this project has ever traced (every observed real
+         * semaphore is created with init_count==max_count - binary or
+         * counting semaphores started "full"). If a future round ever
+         * traces a real semaphore created with init_count !=
+         * max_count, this approximation must be revisited (and the
+         * checkpoint-format break accepted deliberately, with a
+         * version bump, at that point - not silently). */
+        int semid = (int)(int32_t)st->gpr[4].ud0;
+        uint32_t out_ptr = (uint32_t)st->gpr[5].ud0;
+        ee_sema_internal_t *s = sema(semid);
+        if (s && s->in_use) {
+            ee_mem_write32(st, out_ptr + 0x00u, (uint32_t)s->count);
+            ee_mem_write32(st, out_ptr + 0x04u, (uint32_t)s->max_count);
+            ee_mem_write32(st, out_ptr + 0x08u, (uint32_t)s->max_count); /* init_count approximation - see comment above */
+            ee_mem_write32(st, out_ptr + 0x0Cu, (uint32_t)s->wait_threads);
+            ee_mem_write32(st, out_ptr + 0x10u, s->attr);
+            ee_mem_write32(st, out_ptr + 0x14u, s->option);
+#ifdef R1127_SEMA7_TRACE
+            fprintf(stderr, "[R1127REFER] tid=%d caller_ra=0x%08x semid=%d out_ptr=0x%08x count=%d max_count=%d init_count=%d wait_threads=%d attr=0x%x option=0x%x\n",
+                    g.current_thread_id, (uint32_t)st->gpr[31].ud0, semid, out_ptr,
+                    s->count, s->max_count, s->max_count, s->wait_threads, s->attr, s->option);
+#endif
+            EE_RET(0);
+        } else {
+#ifdef R1127_SEMA7_TRACE
+            fprintf(stderr, "[R1127REFER] tid=%d caller_ra=0x%08x semid=%d out_ptr=0x%08x FAIL-not-in-use\n",
+                    g.current_thread_id, (uint32_t)st->gpr[31].ud0, semid, out_ptr);
+#endif
             EE_RET(-1);
         }
         EE_ADVANCE();

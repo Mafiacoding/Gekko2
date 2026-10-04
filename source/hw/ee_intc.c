@@ -24,6 +24,12 @@ static ee_intc_state_t g_intc;
  * handler every time (raise count high, guard hits low/attributable
  * elsewhere). Purely additive, does not affect emulated behavior. */
 static uint32_t g_raise_count[32];
+/* R1186: diagnostic count of W1C acknowledgements that include SBUS bit 1. */
+static uint32_t g_sbus_ack_count;
+/* R1232: distinct inbound SIF0 completions can arrive while SBUS STAT is
+ * already asserted. Preserve those completion events until BIOS W1C acks
+ * them one-by-one instead of collapsing N completions into one level bit. */
+static uint32_t g_sbus_event_pending;
 
 uint32_t ee_intc_get_raise_count(int irq)
 {
@@ -36,9 +42,12 @@ void ee_intc_init(void)
 {
     memset(&g_intc, 0, sizeof(g_intc));
     memset(&g_raise_count, 0, sizeof(g_raise_count));
+    g_sbus_ack_count = 0;
+    g_sbus_event_pending = 0;
 }
 
 ee_intc_state_t *ee_intc_get_state(void) { return &g_intc; }
+uint32_t ee_intc_get_sbus_ack_count(void) { return g_sbus_ack_count; }
 
 void ee_intc_raise(int irq)
 {
@@ -47,6 +56,15 @@ void ee_intc_raise(int irq)
     g_intc.stat |= (1u << irq);
     g_raise_count[irq]++;
 }
+
+
+void ee_intc_raise_sbus_event(void)
+{
+    if (g_sbus_event_pending != 0xffffffffu) g_sbus_event_pending++;
+    g_intc.stat |= (1u << 1);
+    g_raise_count[1]++;
+}
+uint32_t ee_intc_get_sbus_event_pending(void) { return g_sbus_event_pending; }
 
 int ee_intc_pending(void)
 {
@@ -71,10 +89,14 @@ int ee_intc_mmio_write32(uint32_t addr, uint32_t value)
 {
     switch (addr) {
         case EE_INTC_STAT:
-            /* Real PCSX2 (HwWrite.cpp mcase(INTC_STAT)):
-             * psHu32(INTC_STAT) &= ~value - write 1 to a bit to clear
-             * (acknowledge) it. */
+            if (value & (1u << 1)) {
+                g_sbus_ack_count++;
+                if (g_sbus_event_pending) g_sbus_event_pending--;
+            }
+            /* W1C all requested bits first. For queued SIF0 completion events,
+             * immediately reassert SBUS if another distinct completion remains. */
             g_intc.stat &= ~value;
+            if (g_sbus_event_pending) g_intc.stat |= (1u << 1);
             return 1;
         case EE_INTC_MASK:
             /* Real PCSX2 (HwWrite.cpp mcase(INTC_MASK)):

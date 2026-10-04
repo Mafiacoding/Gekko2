@@ -251,6 +251,14 @@ void ee_hle_thread_eventlog_set_enabled(int enabled);
  * which only needs to be true within one continuous observation window. */
 uint64_t ee_hle_thread_get_wakeup_calls(int thid);
 uint64_t ee_hle_thread_get_signal_calls(int semid);
+void ee_hle_thread_get_r1225_sema2(uint32_t *pc,uint32_t *ra,int32_t *sys,int32_t *tid,int32_t *before,int32_t *after);
+
+uint32_t ee_hle_thread_get_r1227_count(void);
+void ee_hle_thread_get_r1227(uint32_t i,int32_t *old_tid,int32_t *next_tid,uint32_t *pc,int32_t *old_st,int32_t *next_st,int32_t *old_wt,int32_t *next_wt);
+uint32_t ee_hle_thread_get_r1226_count(void);
+void ee_hle_thread_get_r1226(uint32_t i,uint32_t *pc,uint32_t *ra,int32_t *sys,int32_t *tid,uint32_t *a0);
+void ee_hle_thread_get_r1193_signal_diag(uint32_t idx, uint32_t *pc, uint32_t *ra, int32_t *sysnum, int32_t *semid, int32_t *before, int32_t *after, int32_t *wb, int32_t *wa, int32_t *ret);
+uint32_t ee_hle_thread_get_r1193_signal_diag_count(void);
 int ee_hle_thread_get_sema_state(int semid, int *out_in_use, int32_t *out_max_count, int32_t *out_count, int32_t *out_wait_threads);
 
 /* Round 733 diagnostic-only (task #447): forces a WAIT/SLEEP thread to
@@ -325,4 +333,9 @@ void ee_hle_thread_check_preempt(ee_state_t *st);
  * unlike iop_heap.c's g_alloclist, see that file's citation). */
 void ee_hle_thread_get_checkpoint_blob(void **ptr, uint32_t *size);
 
+void ee_hle_thread_on_exec(ee_state_t *st);
 #endif
+
+uint32_t ee_hle_thread_get_r1228(uint32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*,int32_t*,int32_t*,int32_t*,int32_t*,int32_t*,int32_t*,int32_t*,int32_t*,int32_t*,int32_t*);
+uint32_t ee_hle_thread_get_r1229_count(void);
+void ee_hle_thread_get_r1229(uint32_t,uint32_t*,uint32_t*,int32_t*,int32_t*,uint32_t*,uint32_t*);

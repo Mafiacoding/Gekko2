@@ -27,12 +27,12 @@ static inline uint16_t rd_le16(const uint8_t *p)
  * of range. */
 static uint32_t img_u32(const uint8_t *image, uint32_t image_size, uint32_t off, int *ok)
 {
-    if (off + 4 > image_size) { *ok = 0; return 0; }
+    if (off > image_size || image_size - off < 4) { *ok = 0; return 0; }
     return rd_le32(image + off);
 }
 static uint16_t img_u16(const uint8_t *image, uint32_t image_size, uint32_t off, int *ok)
 {
-    if (off + 2 > image_size) { *ok = 0; return 0; }
+    if (off > image_size || image_size - off < 2) { *ok = 0; return 0; }
     return rd_le16(image + off);
 }
 
@@ -65,6 +65,17 @@ int iop_elf_load(iop_state_t *st, const uint8_t *image, uint32_t image_size,
     if (!ok) { *err_out = "truncated ELF header"; return -1; }
     if (e_machine != 8 /* EM_MIPS */) { *err_out = "not a MIPS ELF"; return -1; }
 
+    if (e_phnum && (e_phentsize < 32 || e_phoff > image_size ||
+        (uint64_t)e_phnum * e_phentsize > image_size - e_phoff)) {
+        *err_out = "invalid program header table"; return -1;
+    }
+    /* Optional metadata must never turn wrapped offsets into valid headers. */
+    if (e_shnum && (e_shentsize < 40 || e_shoff > image_size ||
+        (uint64_t)e_shnum * e_shentsize > image_size - e_shoff ||
+        e_shstrndx >= e_shnum)) {
+        *err_out = "invalid section header table"; return -1;
+    }
+
     /* --- Load every PT_LOAD (type 1) segment into IOP RAM --- */
     uint32_t max_extent = 0;   /* highest (vaddr+memsz) seen - drives load_end */
     uint32_t max_filesz_extent = 0; /* highest (vaddr+filesz) - table-scan upper bound */
@@ -78,7 +89,8 @@ int iop_elf_load(iop_state_t *st, const uint8_t *image, uint32_t image_size,
         if (!ok) { *err_out = "truncated program header"; return -1; }
         if (p_type != 1u /* PT_LOAD */) continue; /* PT_MIPS_IOPMOD (0x70000080) etc. carry no loadable bytes here */
 
-        if (p_offset + p_filesz > image_size) { *err_out = "PT_LOAD segment exceeds image size"; return -1; }
+        if (p_offset > image_size || p_filesz > image_size - p_offset) { *err_out = "PT_LOAD segment exceeds image size"; return -1; }
+        if (p_filesz > p_memsz) { *err_out = "PT_LOAD file size exceeds memory size"; return -1; }
         if ((uint64_t)load_addr + p_vaddr + p_memsz > st->ram_size) { *err_out = "PT_LOAD segment exceeds IOP RAM"; return -1; }
 
         for (uint32_t b = 0; b < p_filesz; b++)
@@ -116,6 +128,10 @@ int iop_elf_load(iop_state_t *st, const uint8_t *image, uint32_t image_size,
             uint32_t sh_size   = img_u32(image, image_size, sh + 20, &sok);
             if (!sok) break;
 
+            if ((sh_type == 0x70000080u || sh_type == 9u) &&
+                (sh_offset > image_size || sh_size > image_size - sh_offset)) {
+                *err_out = "section exceeds image size"; return -1;
+            }
             if (sh_type == 0x70000080u /* SHT_MIPS_IOPMOD */ && sh_size >= 26) {
                 uint32_t name_off = shstr_off + sh_name;
                 if (name_off < image_size) {
@@ -125,7 +141,7 @@ int iop_elf_load(iop_state_t *st, const uint8_t *image, uint32_t image_size,
                 }
                 uint32_t nm_off = sh_offset + 26; /* see header comment: module,start,heap,text_size,data_size,bss_size (6*u32) + version (u16) */
                 uint32_t k = 0;
-                while (k < IOP_ELF_MODNAME_MAX - 1 && nm_off + k < image_size && image[nm_off + k] != 0) {
+                while (k < IOP_ELF_MODNAME_MAX - 1 && k < sh_size - 26 && image[nm_off + k] != 0) {
                     out->iopmod_name[k] = (char)image[nm_off + k];
                     k++;
                 }
@@ -141,6 +157,9 @@ int iop_elf_load(iop_state_t *st, const uint8_t *image, uint32_t image_size,
                     uint32_t r_info   = img_u32(image, image_size, re + 4, &rok);
                     if (!rok) { *err_out = "truncated relocation entry"; return -1; }
                     uint32_t r_type = r_info & 0xffu;
+                    if ((uint64_t)load_addr + r_offset + 4u > st->ram_size) {
+                        *err_out = "relocation exceeds IOP RAM"; return -1;
+                    }
                     uint32_t patch_addr = load_addr + r_offset;
 
                     if (r_type == R_MIPS_32) {
@@ -164,6 +183,9 @@ int iop_elf_load(iop_state_t *st, const uint8_t *image, uint32_t image_size,
                         if (!rok || (r_info2 & 0xffu) != R_MIPS_LO16) {
                             *err_out = "R_MIPS_HI16 not followed by R_MIPS_LO16";
                             return -1;
+                        }
+                        if ((uint64_t)load_addr + r_offset2 + 4u > st->ram_size) {
+                            *err_out = "paired relocation exceeds IOP RAM"; return -1;
                         }
                         uint32_t hi_addr = patch_addr;
                         uint32_t lo_addr = load_addr + r_offset2;

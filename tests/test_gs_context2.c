@@ -25,6 +25,11 @@ static void wle32(uint8_t *p, uint32_t v) { p[0]=v&0xFF;p[1]=(v>>8)&0xFF;p[2]=(v
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo);
     wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr);
@@ -123,7 +128,7 @@ int main(void)
         uint8_t buf[16 * 14];
         memset(buf, 0, sizeof(buf));
         int off = 0;
-        wle32(buf + off, (uint32_t)10 | (1u << 15));
+        wle32(buf + off, (uint32_t)8 | (1u << 15)); /* Four setup registers plus four draw registers. */
         wle32(buf + off + 4, (0u << 26) | (1u << 28));
         wle32(buf + off + 8, GIF_REG_AD);
         wle32(buf + off + 12, 0);

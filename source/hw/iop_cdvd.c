@@ -5,6 +5,8 @@
 #include "core/hw/iop_dma.h"   /* Round 206: iop_dma_channel_write_bytes() */
 #include "core/hw/iop_intc.h"  /* Round 206: real IRQ2 raise (shared with legacy CD-ROM, iop_cdrom_legacy.c) */
 #include <string.h>
+#include "core/hw/cdvd_config.h"
+#include <time.h>
 #ifdef R814_CLOSECONFIG_TRACE
 #include <stdio.h>
 #include "core/iop/iop_core.h"
@@ -89,6 +91,7 @@ static int         g_disc_mounted;
 
 void iop_cdvd_init(void)
 {
+    cdvd_config_reset_session();
     memset(g_regs, 0, sizeof(g_regs));
     g_param_count = 0;
     /* Round 261 (task #422): idle S-command state - no result bytes
@@ -189,7 +192,7 @@ int iop_cdvd_disc_find_file(const char *name, uint32_t *out_lba, uint32_t *out_s
 {
     iso_dirent_t dirent;
     if (!g_disc_mounted) return 0;
-    if (iso_find_in_root(&g_disc, name, &dirent) != 0) return 0; /* iso_find_in_root() returns 0 on success, -1 on failure - matches iso_open()'s own documented convention */
+    if (iso_find_path(&g_disc, name, &dirent) != 0) return 0; /* iso_find_in_root() returns 0 on success, -1 on failure - matches iso_open()'s own documented convention */
     if (dirent.is_directory) return 0; /* FIO_F_OPEN is for files - matches real fioOpen()'s own directory rejection */
     *out_lba = dirent.lba;
     *out_size = dirent.size;
@@ -211,6 +214,7 @@ int iop_cdvd_disc_read_sector(uint32_t lba, uint8_t *buf)
  * that function's own Round 449 citation). */
 void iop_cdvd_checkpoint_save(iop_cdvd_checkpoint_t *out)
 {
+    memset(out,0,sizeof(*out));
     memcpy(out->regs, g_regs, sizeof(g_regs));
     memcpy(out->param_buf, g_param_buf, sizeof(g_param_buf));
     out->param_count = g_param_count;
@@ -311,6 +315,27 @@ static void dispatch_ncmd(uint8_t cmd)
  * per-command result-size citations. Mirrors dispatch_ncmd()'s own
  * "immediate synthetic completion, no fabricated command-specific
  * data" philosophy exactly. */
+static uint8_t clock_bcd(unsigned n) { return (uint8_t)(((n / 10) << 4) | (n % 10)); }
+int iop_cdvd_read_clock(uint8_t out[8])
+{
+    /* The emulated battery-backed RTC follows the host RTC, converted to JST.
+     * sceCdCLOCK order: status, second, minute, hour, pad, day, month, year. */
+    time_t now = time(NULL);
+    struct tm *clock;
+    memset(out, 0, 8);
+    if (now == (time_t)-1) { out[0] = 0x80; return 0; }
+    now += 9 * 60 * 60;
+    clock = gmtime(&now);
+    if (!clock) { out[0] = 0x80; return 0; }
+    out[1] = clock_bcd(clock->tm_sec);
+    out[2] = clock_bcd(clock->tm_min);
+    out[3] = clock_bcd(clock->tm_hour);
+    out[5] = clock_bcd(clock->tm_mday);
+    out[6] = clock_bcd(clock->tm_mon + 1);
+    out[7] = clock_bcd((clock->tm_year + 1900) % 100);
+    return 1;
+}
+
 static void dispatch_scmd(uint8_t cmd)
 {
     g_scmd_call_count++; /* Round 732 - see field comment */
@@ -357,30 +382,22 @@ static void dispatch_scmd(uint8_t cmd)
     g_sresult_pos = 0;
 
     switch (cmd) {
+    case 0x08: /* Mechacon ReadClock: eight-byte sceCdCLOCK result. */
+        iop_cdvd_read_clock(g_sresult_buf);
+        g_sresult_count = 8;
+        break;
     case SCMD_OPENCONFIG:
-        /* Real, cited: ps2tek "Dobiestation returns zero" - one
-         * result byte, value 0. */
-        g_sresult_buf[0] = 0x00u;
-        g_sresult_count = 1;
-        break;
+        g_sresult_buf[0]=g_sparam_count==3?cdvd_config_open(g_sparam_buf[0],g_sparam_buf[1],g_sparam_buf[2]):0x80;
+        g_sresult_count=1;break;
     case SCMD_READCONFIG:
-        /* Real, cited: ps2tek "Output is four 32bit words" (16
-         * bytes). Honestly zero-filled - no real config block is
-         * modeled, this only supplies the real byte COUNT so the
-         * real result-read loop drains exactly as many bytes as real
-         * hardware would present, then stops. */
-        memset(g_sresult_buf, 0, 16);
-        g_sresult_count = 16;
-        break;
+        cdvd_config_read(g_sresult_buf);g_sresult_count=16;break;
+    case SCMD_WRITECONFIG:
+        g_sresult_buf[0]=g_sparam_count==16?cdvd_config_write(g_sparam_buf):0x80;
+        g_sresult_count=1;break;
     case SCMD_CLOSECONFIG:
-        /* ps2tek documents this command but not its result size;
-         * same single-zero-byte minimal ack as OpenConfig for
-         * consistency (honest default, not a specific cited value). */
-        g_sresult_buf[0] = 0x00u;
-        g_sresult_count = 1;
-        break;
+        g_sresult_buf[0]=cdvd_config_close();g_sresult_count=1;break;
     default:
-        /* SCMD_WRITECONFIG and any other/unimplemented S-command:
+        /* Any other/unimplemented S-command:
          * acknowledged, no further modeled side effect - same honest
          * scope limit dispatch_ncmd() already uses for its own
          * unimplemented commands. */

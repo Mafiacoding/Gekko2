@@ -56,6 +56,7 @@ void iop_dma_bind_iop_ram(uint8_t *ram, uint32_t ram_size)
 
 #define IOP_DMA_SIF0_CHANNEL 9
 #define IOP_DMA_SIF2_CHANNEL 2
+#define IOP_DMA_SIF1_CHANNEL 10
 
 /*
  * Round 199 (task #367): SIF0 (channel 9, real "fromIOP" direction -
@@ -307,6 +308,37 @@ int iop_dma_channel_write_bytes(int channel, const uint8_t *data, uint32_t nbyte
     memcpy(g_iop_ram + ch->madr, data, nbytes);
     ch->madr += nbytes;
     return 1;
+}
+
+/* Round 1105 (task #1033 "virtual bridge" audit, direct follow-up to
+ * the user's request to close a real architectural gap without
+ * writing a new HLE): SIF1 is the EE-to-IOP DMA direction. Until this
+ * round, SIF0 (IOP->EE, Round 114) and SIF2 ("GPU"-repurposed,
+ * IOP->EE, Round 511) both had real dma_channel_receive_quadwords()
+ * byte transfers into g_ee_ram, but SIF1 had no dma_set_sink()
+ * registration anywhere in ee_core.c - an EE-side SIF1 DMA kick did
+ * MADR bookkeeping and raised the completion IRQ, but the actual
+ * payload bytes were silently dropped and never reached g_iop_ram.
+ * This is the "IOP doesn't reach the EE (and vice versa)" gap the
+ * user's own intuition pointed at.
+ *
+ * The fix needs no new HLE: this project already has both halves of
+ * a real bridge - iop_dma_channel_write_bytes() (bounds-checked
+ * memcpy into g_iop_ram, same primitive SIF0/SIF2's *_try_transfer()
+ * paths use in the other direction) and iop_dma_signal_channel_done()
+ * for the completion IRQ. This function is only the missing
+ * dma_sink_fn-shaped adapter that lets dma.c's EE-side outbound-DMA
+ * dispatch (transfer_quadwords() -> g_sinks[DMA_CHANNEL_SIF1]) reach
+ * those two already-tested primitives, exactly like
+ * gif_process_quadwords()/vif0_process_quadwords()/etc. already do
+ * for their own channels. See ee_core.c's two dma_set_sink()
+ * registration sites (initial init + post-checkpoint-restore
+ * rebind) for where this gets wired in. */
+void iop_dma_sif1_ee_to_iop_sink(int channel, const uint8_t *data, uint32_t qwc)
+{
+    (void)channel; /* dma.c always calls this only for DMA_CHANNEL_SIF1 - see dma_set_sink() call sites */
+    iop_dma_channel_write_bytes(IOP_DMA_SIF1_CHANNEL, data, qwc * 16u); /* 1 quadword = 16 bytes */
+    iop_dma_signal_channel_done(IOP_DMA_SIF1_CHANNEL); /* real per-channel completion IRQ, same path as SIF0/SIF2 */
 }
 
 iop_dma_state_t *iop_dma_get_state(void) { return &g_dma; }

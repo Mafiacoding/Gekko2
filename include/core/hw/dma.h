@@ -176,6 +176,9 @@ void dma_bind_scratchpad(uint8_t *scratch, uint32_t scratch_size); /* Round 572 
  * real GIF/VIF consumer exists.
  */
 typedef void (*dma_sink_fn)(int channel, const uint8_t *data, uint32_t qwc);
+/* Upper 64 bits of a chain tag, transferred before payload when TTE=1. */
+void dma_set_tag_sink(int channel, void (*fn)(int, const uint8_t *, uint32_t));
+
 void dma_set_sink(int channel, dma_sink_fn fn);
 
 /*

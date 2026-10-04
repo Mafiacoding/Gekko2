@@ -83,7 +83,7 @@ static void run_syscall_test(int32_t sysnum, const char *label) {
 int main(void) {
     int nums[] = {
         10, 11, 12, 13, 14, 15,
-        59, 62, 71, 84, 89, 90, 91, 105,
+        59, 62, 84, 89, 90, 91, 105,
         74, 75, 76, 77, 78, 79, 110, 111, 112, 113, -112, -113,
         92, 93, 94, 95, -92, -93, -94, -95,
         96, 97, 98, 99, 102, 130, -103, -104, -106,
@@ -91,7 +91,6 @@ int main(void) {
         125, 126, 127, 128, 131, 133, 134, 135,
         -26, -27, -28, -29,
         -46, -56, -58,
-        -70, -72, -73
     };
     int n = sizeof(nums)/sizeof(nums[0]);
     for (int i = 0; i < n; i++) {
@@ -117,7 +116,10 @@ int main(void) {
         CHECK(st->halted == 0, "CreateSema(64) regression: not halted");
     }
 
-    /* Round 623: -38 (iTerminateThread) and -42 (iChangeThreadPriority)
+    /* R1250: 71/-72/-73 also entered the real HLE semaphore family
+     * in R1097b. Test their documented HLE contract, rather than
+     * demanding the obsolete exception path.
+     * Round 623: -38 (iTerminateThread) and -42 (iChangeThreadPriority)
      * are claimed by the real Round 569 HLE thread scheduler, not the
      * generic exception-vectoring code - verify the real HLE-path
      * behavior (halted==0, NOT vectored as a Syscall exception, pc
@@ -125,9 +127,9 @@ int main(void) {
      * assertion. -44 (iRotateThreadReadyQueue) was found to have the
      * same issue during verification and is included here too. */
     {
-        int32_t hle_nums[] = { -38, -42, -44 };
-        const char *hle_labels[] = { "iTerminateThread (-38)", "iChangeThreadPriority (-42)", "iRotateThreadReadyQueue (-44)" };
-        for (int i = 0; i < 3; i++) {
+        int32_t hle_nums[] = { -38, -42, -44, 71, -72, -73 };
+        const char *hle_labels[] = { "iTerminateThread (-38)", "iChangeThreadPriority (-42)", "iRotateThreadReadyQueue (-44)", "ReferSemaStatus (71)", "iReferSemaStatus (-72)", "iDeleteSema (-73)" };
+        for (unsigned i = 0; i < sizeof(hle_nums)/sizeof(hle_nums[0]); i++) {
             bios_image_t bios = make_bios();
             uint8_t *p = bios.data;
             int pc = 0;

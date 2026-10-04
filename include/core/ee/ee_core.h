@@ -268,6 +268,9 @@ typedef struct {
      * test/boot path that never hits this exact self-block-with-
      * nothing-ready condition - a no-op everywhere else. */
     uint8_t  idle;
+    /* HLE MCSERV reports metadata from requested real IOP modules,
+     * not invented versions. Saved/reset with the EE state. */
+    uint16_t mcserv_module_version, mcman_module_version;
 } ee_state_t;
 
 int  ee_core_init(const bios_image_t *bios);
@@ -299,6 +302,10 @@ uint64_t ee_core_get_loadfile_reply_count(void);
 /* Single-step entry point, for the interleaved EE/IOP scheduler
  * in core/system.h. See its definition in ee_core.c for details. */
 int ee_core_step(void);
+/* R1165: execute up to n EE instructions while preserving the exact
+ * ee_step() epilogue at every guest-instruction boundary. Returns the
+ * number of guest instructions actually retired. */
+unsigned ee_core_step_n(unsigned n);
 void ee_core_shutdown(void);
 
 /* Round 781 (task #803): real elapsed-hardware-time tick, for use by
@@ -341,6 +348,9 @@ void ee_core_set_iop_read_bridge(void *iop_ctx, uint32_t (*read_fn)(void *ctx, u
 
 /* Exposed for the recompiler PoC (source/core/recompiler) to share
  * register state layout / memory access helpers. */
+void ee_core_get_r1189_exception_diag(uint64_t *exc, uint64_t *nested, uint64_t *eret,
+                                      uint32_t *pc, uint32_t *va, uint32_t *iw,
+                                      uint32_t *rs, uint32_t *rv, uint32_t *ea);
 ee_state_t *ee_core_get_state(void);
 
 uint8_t  ee_mem_read8(ee_state_t *st, uint32_t addr);
@@ -362,5 +372,102 @@ void vu0_exec_micro_continue(ee_state_t *st); /* Round 576: real MSCNT semantics
 /* VU0 local DATA memory (see ee_core.c for the full comment) - called
  * from vif.c's VIF0 UNPACK handling. */
 void vu0_mem_write32(ee_state_t *st, uint32_t addr, uint32_t value);
+
+/* R1176 sampled ee_step Time Base profiler (1/4096 normal instructions). */
+extern volatile uint64_t g_r1176_prof_samples;
+extern volatile uint64_t g_r1176_prof_fetch_tb;
+extern volatile uint64_t g_r1176_prof_jit_tb;
+extern volatile uint64_t g_r1176_prof_epilogue_tb;
+extern volatile uint64_t g_r1177_prof_base_tb;
+extern volatile uint64_t g_r1177_prof_clock_tb;
+extern volatile uint64_t g_r1177_prof_house_tb;
+extern volatile uint64_t g_r1177_prof_irq_tb;
+extern volatile uint64_t g_r1178_prof_latch_tb;
+extern volatile uint64_t g_r1178_prof_vblank_tb;
+extern volatile uint64_t g_r1178_prof_bootchecks_tb;
+extern volatile uint64_t g_r1178_prof_gsvsync_tb;
+extern volatile uint64_t g_r1178_prof_timers_tb;
+
+
+void ee_core_get_r1190_sif_diag(uint64_t *itake, uint64_t *stake, uint64_t *hhit, uint64_t *rend, uint32_t *cd, uint32_t *sema);
+uint64_t ee_core_get_r1191_tlbwr_count(void);
+void ee_core_get_r1192_sif_flow(uint64_t *arms, uint64_t *isig, uint64_t *wait, uint32_t *count, uint32_t out[8]);
+void ee_core_get_r1195_sif_calls(uint32_t idx, uint32_t out[8]);
+void ee_core_get_r1197_rend_packet(uint32_t out[12], uint32_t *recvbuf, uint32_t *phys, uint32_t *inner);
+void ee_core_get_r1198_rend_reads(uint32_t *count, uint32_t out[8][6]);
+void ee_core_get_r1199_dma(uint32_t which, uint32_t out[9]);
+void ee_core_get_r1201_writes(uint32_t *count, uint32_t out[6][4]);
+void ee_core_get_r1202_corr(uint32_t *handler_rend, uint32_t out[3][5]);
+void ee_core_get_r1204_dispatch(uint32_t *count, uint32_t out[8]);
+void ee_core_get_r1205_hwreads(uint32_t *count, uint32_t out[8][3]);
+void ee_core_get_r1206_steps(uint32_t *count, uint32_t out[24][4]);
+void ee_core_get_r1207_steps(uint32_t *count, uint32_t out[24][6]);
+void ee_core_get_r1210_probe(uint32_t out[7]);
+void ee_core_get_r1212_pcs(uint32_t *count, uint32_t out[96][2]);
+void ee_core_get_r1214_fb(uint32_t out[4][5], uint32_t *smflag);
+void ee_core_get_r1217_trace(uint32_t *count, uint32_t out[64][4]);
+void ee_core_get_r1230_trace(uint32_t *count, uint32_t out[128][4]);
+void ee_core_get_r1234_trace(uint32_t *count, uint32_t out[512][3]);
+void ee_core_get_r1235_trace(uint32_t *count, uint32_t out[128][8]);
+void ee_core_get_r1236_census(uint64_t *steps, uint64_t outreg[5], uint32_t *tn, uint32_t *head, uint32_t out[16][6]);
+void ee_core_get_r1237_kseg(uint32_t *en, uint32_t entry[128][2], uint64_t *samples,
+                            uint32_t hotpc[8], uint32_t hotscore[8], uint32_t recent[8], uint32_t *rhead);
+void ee_core_get_r1238_sink(uint32_t *head, uint32_t ring[16][4], uint32_t snap[12]);
+void ee_core_get_r1239_jump(uint32_t out[16]);
+void ee_core_get_r1240_flow(uint32_t *count, uint32_t out[40][7]);
+void ee_core_get_r1241_raflow(uint32_t *count, uint32_t out[24][9]);
+void ee_core_get_r1242_slot(uint32_t *armed, uint32_t *sp, uint32_t *slot, uint32_t *n, uint32_t w[16][8], uint32_t restore[8]);
+void ee_core_get_r1243_spflow(uint32_t *count, uint32_t out[32][10]);
+void ee_core_get_r1245_slottruth(uint32_t *hit, uint32_t snap[12]);
+void ee_core_get_r1246_writer(uint32_t *hit, uint32_t snap[16]);
+/* R1249 counts: repairs, continuation visits, LD visits, JR visits. */
+void ee_core_get_r1249_repair(uint64_t counts[4], uint32_t last[6]);
+void ee_core_get_r1218_syscalls(uint32_t *count, uint32_t out[12][7]);
+void ee_core_get_r1219_sema2(uint32_t create2[7], uint32_t wait2[10], uint32_t *rn, uint32_t rend[8][4]);
+void ee_core_get_r1223_sig2(uint32_t out[8]);
+void ee_core_get_r1224_ncmd(uint32_t out[5]);
+void ee_core_get_r1252_fault(uint32_t out[112]);
+
+/* Host PADMAN DMA bindings are not guest registers and must survive
+ * save/resume independently of ee_state_t's ABI-sensitive layout. */
+typedef struct {
+    uint32_t legacy_area[2];
+    uint32_t new_area[2][4];
+    uint32_t new_status;
+} ee_pad_checkpoint_t;
+/* Diagnostic actual emitted VBLANK edges since core reset; no guest effect. */
+uint64_t ee_core_get_vblank_events(void);
+void ee_core_pad_checkpoint_save(ee_pad_checkpoint_t *out);
+void ee_core_pad_checkpoint_load(const ee_pad_checkpoint_t *in);
+
+/* R1179 BC split profiler. */
+extern volatile uint64_t g_r1179_prof_selfloop_tb;
+extern volatile uint64_t g_r1179_prof_eeload_tb;
+extern volatile uint64_t g_r1179_prof_escalate_tb;
+extern volatile uint64_t g_r1179_prof_carousel_tb;
+extern volatile uint64_t g_r1179_prof_sbus_tb;
+
+/* R1181 SBUS guard/helper profiler. */
+extern volatile uint64_t g_r1181_prof_sbus_guard_tb;
+extern volatile uint64_t g_r1181_prof_sbus_helper_tb;
+extern volatile uint64_t g_r1181_sbus_guard_match;
+extern volatile uint64_t g_r1181_sbus_helper_calls;
+extern volatile uint64_t g_r1181_sbus_unblocks;
+
+/* R1262 INTC delivery scheduler; kept separate from EES1 ABI. The current
+ * approximate core advances one timing tick per instruction or idle tick. */
+typedef struct { uint32_t intc_delay; uint32_t intc_armed; } ee_irq_checkpoint_t;
+void ee_core_irq_checkpoint_save(ee_irq_checkpoint_t *out);
+void ee_core_irq_checkpoint_load(const ee_irq_checkpoint_t *in);
+/* Independent display timing; optional ECLK checkpoint block. */
+uint64_t ee_core_display_clock_save(void);
+void ee_core_display_clock_load(uint64_t ticks);
+
+/* Precise block-JIT callbacks; mapped code is reread at every boundary. */
+int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word);
+unsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit);
+int ee_core_block_prepare(ee_state_t *st,uint32_t pc,uint32_t instruction);
+int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc);
+void ee_core_block_commit(ee_state_t *st);
 
 #endif

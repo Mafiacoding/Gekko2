@@ -38,6 +38,11 @@ static void wle32(uint8_t *p, uint32_t v) { p[0]=v&0xFF;p[1]=(v>>8)&0xFF;p[2]=(v
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo);
     wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr);
@@ -81,7 +86,7 @@ int main(void)
     uint32_t tex0_lo = (base_bp & 0x3FFFu) | (((base_bw / 64u) & 0x3Fu) << 14) | (6u << 26) | (2u << 30);
     uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
     append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
-    append_ad(buf, &off, (3u << 2) | (2u << 10), 0, GS_REG_TEX1_1); /* MXL=3, MMIN=2 */
+    append_ad(buf, &off, (3u << 2) | (2u << 6), 0, GS_REG_TEX1_1); /* MXL=3, MMIN=2 */
     uint32_t tbw3_field = mip3_bw / 64u;
     append_ad(buf, &off, 0u, ((mip3_bp & 0x3FFFu) << 8) | ((tbw3_field & 0x3Fu) << 22), GS_REG_MIPTBP1_1);
 

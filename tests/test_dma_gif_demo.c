@@ -63,7 +63,7 @@ int main(void)
     off += 16;
 
     uint32_t fbw_field = fbWidth / 64u;
-    APPEND_AD((fbw_field << 9), 0, GS_REG_FRAME_1);
+    APPEND_AD((fbw_field << 16), 0, GS_REG_FRAME_1);
     APPEND_AD(0, 0, GS_REG_XYOFFSET_1);
     APPEND_AD((uint32_t)PRIM_TYPE_TRIANGLE | PRIM_IIP_MASK, 0, GS_REG_PRIM);
 
@@ -74,7 +74,7 @@ int main(void)
         uint32_t rgbaq_lo = (rgba & 0xFFu) | (((rgba >> 8) & 0xFFu) << 8) |
                             (((rgba >> 16) & 0xFFu) << 16) | (((rgba >> 24) & 0xFFu) << 24);
         APPEND_AD(rgbaq_lo, 0, GS_REG_RGBAQ);
-        APPEND_AD((uint32_t)(vpos[i][0] << 4), (uint32_t)(vpos[i][1] << 4), GS_REG_XYZ2);
+        APPEND_AD((uint32_t)(vpos[i][0] << 4) | ((uint32_t)(vpos[i][1] << 4) << 16), 0u, GS_REG_XYZ2);
     }
 #undef APPEND_AD
 #undef WLE32

@@ -50,6 +50,11 @@ static void write_tag(uint8_t *buf, int *off, uint32_t nloop, uint32_t regs_nibb
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo); wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr); wle32(buf + *off + 12, 0);
     *off += 16;
@@ -86,7 +91,7 @@ static uint32_t sample_decal_pixel(int write_texa)
     write_tag(buf, &off, nloop, 0xE);
     append_ad(buf, &off, (10u << 9), 0, GS_REG_FRAME_1);
     append_ad(buf, &off, 0, 0, GS_REG_XYOFFSET_1);
-    append_ad(buf, &off, (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14), (TEX_TFX_DECAL << 3), GS_REG_TEX0_1);
+    append_ad(buf, &off, (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14), ((1u << 2) | (TEX_TFX_DECAL << 3)), GS_REG_TEX0_1);
     if (write_texa) {
         /* Arbitrary TA0/AEM/TA1 - should have zero effect on the
          * PSMCT32 DECAL path since the format already has real alpha. */

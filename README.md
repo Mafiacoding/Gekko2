@@ -1,105 +1,128 @@
-# PCSX2-Wii (experimental)
+<p align="center"><img src="assets/branding/menu-gecko-master.png" width="640" alt="Gekko2 — gecko wordmark"></p>
 
-A from-scratch, work-in-progress skeleton exploring what it would take to
-boot a PS2 BIOS on a Nintendo Wii, built with devkitPPC + libogc.
+# Gekko2 for Nintendo Wii
 
-Upstream reference: [github.com/PCSX2/pcsx2](https://github.com/PCSX2/pcsx2) (master branch, fetched 2026-07-04) - used as the semantic reference for `ee_core.c`'s instruction implementations.
+**Experimental PlayStation 2 emulation • Early alpha • Alpha coming soon**
 
-**Read [docs/STATUS.md](docs/STATUS.md) before opening issues**, and see [docs/ROADMAP.md](docs/ROADMAP.md) for the full subsystem-by-subsystem task breakdown (EE, IOP, DMA, GIF/VIF, VU0/VU1, GS) with what's done vs. open. This is a
-fun/research project, not a usable PS2 emulator, and it will not become one
-without a lot more work than a solo project can realistically deliver. See
-that document for exactly what works, what doesn't, and why.
+Gekko2 explores PS2 emulation on Nintendo Wii hardware. Alex has spent approximately eight months reading, debugging and testing the project, with assistance from Claude AI and later ChatGPT/GPT-6.1. The original goal was to get the real PS2 BIOS running before attempting games or playable performance.
 
-## What's here
+That work now produces the Sony Computer Entertainment startup screen on a real Wii. The OSDSYS menu renders in the native development build, where entering the Browser and returning to the menu has been tested. Stable, responsive OSDSYS navigation on Wii remains a development goal.
 
-- `source/main.c` - Wii bring-up (video/console init via libogc), mounts
-  SD/USB via libfat, loads a BIOS image, hands off to the EE core.
-- `source/core/bios_loader.c` - loads a raw 4MB PS2 BIOS dump, does a
-  best-effort ROMDIR walk to read the ROMVER string.
-- `source/core/ee/ee_core.c` - an R5900 (Emotion Engine) interpreter:
-  full MIPS III integer core (ALU imm + reg-reg, shifts incl. 64-bit
-  D-variants, MULT/DIV, HI/LO moves, branches incl. REGIMM, jumps incl.
-  link register, byte/half/word/double loads and stores), basic COP0
-  (MFC0/MTC0), CACHE/SYNC/PREF as no-ops, and ~35 of the ~90 MMI (SIMD)
-  opcodes (add/sub/logic/copy/extend/pack across byte/half/word lanes,
-  plus the MULT1/DIV1/MFHI1/MFLO1 "pipe 1" variants). Instruction
-  semantics are ported from PCSX2's own `R5900OpcodeImpl.cpp` and
-  `MMI.cpp` (not reinvented), so behavior matches real PCSX2 for the
-  opcodes covered - see `tests/test_ee_core.c` for a host-native unit
-  test. Still no FPU, no VU0/COP2, no LWL/LWR/SWL/SWR, no LQ/SQ, no
-  MMU/exceptions, and ~55 MMI opcodes remain unimplemented. Halts
-  cleanly on the first unimplemented opcode and prints where it
-  stopped - see `docs/STATUS.md` for the full coverage table.
-- `source/core/recompiler/ppc_dynarec.c` - an experimental proof of
-  concept that translates straight-line ADDIU/OR sequences into native
-  PPC machine code at runtime (with proper icache/dcache handling via
-  libogc). It is not wired into the main boot path by default and
-  covers two opcodes, as a demonstration that dynamic codegen works on
-  Wii hardware - not as a real recompiler.
+**Current source checkpoint: R1302.** R1302 adds the Gekko2 launcher header and Homebrew Channel icon; guest emulation remains at R1301. Read [STATUS.md](STATUS.md) for evidence and limitations, and [the roadmap](docs/ROADMAP.md) for next steps. There is no firm alpha release date, confirmed playable-game list or promised FPS target.
 
-## Getting the real devkitPro base_tools
+## Why Gekko2?
 
-The devkitPPC tarball some of us started from had an empty `base_tools`
-directory (no `elf2dol`, `wiiload`, `gxtexconv`, ...). Two ways to get
-the genuine tools:
+Previously called PCSX2-Wii, the project now has its own name to reflect its Wii-specific frontend, custom PowerPC recompiler and experimental GX renderer. The gecko mascot nods to Nintendo's PowerPC heritage; the “2” refers to PlayStation 2. Existing `sd:/pcsx2/` data paths remain compatible with older installations.
 
-1. **Recommended - devkitPro pacman** (gets everything, kept up to date):
-   install the devkitPro pacman package manager from
-   https://github.com/devkitPro/pacman/releases, then:
-   ```sh
-   sudo dkp-pacman -S wii-dev gamecube-tools general-tools
-   ```
-2. **Vendored sources** (what this repo does automatically, or you
-   can build yourself): the sources for the specific tools this
-   project actually uses are vendored here under their original
-   licenses, and built natively (host gcc, not the PPC cross
-   compiler):
-   - `tools/elf2dol.c` (from `devkitPro/gamecube-tools`) - compiled
-     on demand by the Makefile if no system-wide `elf2dol` is on
-     `PATH`. `tools/elf2dol.py` is a last-resort pure-Python
-     reimplementation if neither is available.
-   - `tools/wiiload/` (from `devkitPro/wiiload`) - pushes a `.dol` to
-     a running Homebrew Channel over network. Not wired into the
-     Makefile automatically (needs `zlib`), build it yourself:
-     `gcc -o wiiload tools/wiiload/wiiload.c tools/wiiload/gecko.c -lz`,
-     then `WIILOAD=tcp:<your wii's IP>` + running `wiiload pcsx2-wii.dol`
-     (or `make run`, which already assumes `wiiload` is on `PATH`).
-   - `gxtexconv` (TPL texture conversion) isn't vendored - it doesn't
-     appear to have its own public repo under `devkitPro/`, and this
-     project doesn't produce any `.tpl` texture assets, so it isn't
-     actually needed here. Get it via `dkp-pacman` if some other
-     project needs it.
+PCSX2 remains an important source and semantic reference. Gekko2 is an independent homebrew project, not an official PCSX2 release.
 
-## Building
+## Progress gallery
 
-Requires devkitPPC (r32 tested) and libogc 1.8.18 installed under a
-`DEVKITPRO` tree:
+<p align="center"><img src="docs/images/osdsys-menu.png" width="640" alt="OSDSYS menu in native development build"></p>
+
+*OSDSYS: native development framebuffer capture, not a Wii hardware screenshot.*
+
+<details>
+<summary>Tekken Tag Tournament boot progress</summary>
+
+![Tekken Namco logo](docs/images/tekken-namco.png)
+
+*Historical R1258 native development capture of the Namco startup logo. Subsequent R1297 work fixes the observed retail resource-transfer fault and fractional sprite seams. This image demonstrates boot progress, not a working title screen or gameplay. The owner has also reported reaching the Namco logo on Wii; no playable performance is established.*
+
+</details>
+
+<details>
+<summary>Gekko2 launcher preview</summary>
+
+![Gekko2 launcher](docs/images/launcher-r1302.png)
+
+*R1302 host render of the actual launcher drawing routines, not a Wii photograph.*
+
+</details>
+
+## Current features
+
+- R5900 EE and IOP interpretation, guest memory, interrupts, timers, DMA and SIF services.
+- Experimental native PPC translation, conservative EE blocks and guarded VU instruction pairs/blocks. EE/IOP/VU coverage and timing remain incomplete.
+- Software GS rendering plus one optional **GX (EXPERIMENTAL)** setting for presentation and supported hardware draw paths. Complex states still use software or hybrid handling.
+- A Wii launcher with an SD ISO/BIN browser, optional diagnostics and a switchable FPS counter.
+- Wii Remote, optional Nunchuk and GameCube controller support; launcher/HBC exit actions.
+- SD diagnostics for BIOS startup, JIT counters and GX routing/synchronization.
+
+## Install on SD
+
+Use a build produced from this source. Place the chosen DOL, `meta.xml` and `assets/branding/icon.png` together:
+
+```text
+sd:/apps/gekko2/boot.dol
+sd:/apps/gekko2/meta.xml
+sd:/apps/gekko2/icon.png
+```
+
+Place your own BIOS dump in `sd:/pcsx2/bios/`. The loader checks `SCPH50004.bin`, `SCPH39001.bin`, `SCPH10000.bin`, then `bios.bin`. Most verification uses SCPH-50004; other BIOS revisions are not equally verified. Choose **BIOS / OSDSYS** for a disc-free boot.
+
+Optional disc images can go in `sd:/pcsx2/games/`, or be selected elsewhere on SD using the ISO/BIN browser. CHD is not currently supported by the launcher. Disc changes apply on a new boot; resume retains the mounted image.
+
+Configuration may be written to `sd:/pcsx2/bios-config.bin`. Current logs use `Gekko2-R1302-software.log` and `Gekko2-R1302-gx-render.log` in `sd:/pcsx2/`. Launcher settings are session-only. Please identify the build, controller, software/GX setting and BIOS revision when reporting an issue; never attach BIOS, disc images or guest RAM/checkpoints.
+
+## Controls
+
+| Action | Wii Remote / Nunchuk |
+| --- | --- |
+| Navigate launcher | D-pad / Nunchuk stick |
+| Confirm / back | A / B |
+| Pause into launcher | HOME |
+| Exit to Homebrew Channel | HOME + MINUS, or EXIT TO HBC |
+| Toggle FPS in SETTINGS | 2 |
+| Toggle diagnostic HUD in SETTINGS | A |
+| Toggle update budget in SETTINGS | 1 |
+| Toggle GX in SETTINGS | LEFT / RIGHT |
+| PS2 Cross / Circle | A / B |
+| PS2 Square / Triangle | 1 / 2 |
+| PS2 Start / Select | PLUS / MINUS |
+| PS2 L1 / R1 | Nunchuk C / Z |
+
+Nunchuk movement currently maps to digital directions, not a complete analog-pad protocol. GameCube controllers are supported; B + Z + START requests HBC exit.
+
+## Build
+
+Install devkitPPC and libogc, then set their paths:
 
 ```sh
 export DEVKITPRO=/path/to/devkitpro
-export DEVKITPPC=$DEVKITPRO/devkitPPC
-export PATH=$DEVKITPPC/bin:$PATH
-make
+export DEVKITPPC="$DEVKITPRO/devkitPPC"
+export PATH="$DEVKITPPC/bin:$PATH"
+sh tools/build_r1302.sh
 ```
 
-Produces `pcsx2-wii.dol`, loadable via HBC (Homebrew Channel) or
-Dolphin.
+This produces `Gekko2-R1302-Menu-JIT.{elf,dol}` and `Gekko2-R1302-Menu-Interpreter.{elf,dol}`. The validated toolchain is devkitPPC r32 / libogc 1.8.18 with libfat, wiiuse and bte. Other toolchain versions have not been verified for identical behavior. The Makefile supplies an ELF-to-DOL fallback; SDK/compiler distributions are not included.
 
-## Running
+## Verification
 
-Put a **legally-dumped** PS2 BIOS you own at `sd:/pcsx2/bios/bios.bin`
-(or `SCPH39001.bin`) on an SD card, then launch the `.dol`. No BIOS
-image is included or distributed in this repository - PS2 BIOS ROMs
-are copyrighted Sony firmware.
+```sh
+python3 tools/verify_regressions.py
+```
 
-## License
+The native suite requires GCC and Python. PPC verification additionally requires Python `unicorn` and, for linked-ELF tools, the built ELF and `powerpc-eabi-nm`:
 
-**GPL-3.0** (see `COPYING.GPLv3`). `source/core/ee/ee_core.c`'s
-instruction semantics are ported from PCSX2 (github.com/PCSX2/pcsx2,
-GPL-3.0), so the project as a whole is licensed under GPL-3.0 to match
-- this is a legal requirement of using GPL'd reference code, not a
-  stylistic choice. `tools/elf2dol.c` is vendored from
-  `devkitPro/gamecube-tools` under its own license (see file header).
-  devkitPPC/libogc are separately licensed by their respective projects
-  (BSD-style, see `libogc_license.txt` if you vendor libogc into this
-  tree).
+```sh
+python3 tools/verify_ee_calls_r1301.py Gekko2-R1302-Menu-JIT.elf --nm "$DEVKITPPC/bin/powerpc-eabi-nm"
+python3 tools/verify_gs_paths_r1285.py Gekko2-R1302-Menu-JIT.elf --nm "$DEVKITPPC/bin/powerpc-eabi-nm"
+```
+
+Host tests cannot execute native PPC directly. Synthetic PPC instruction counts are not Wii cycles or BIOS/game FPS. [STATUS.md](STATUS.md) distinguishes inherited R1301 tests, R1302 artwork/build checks and owner hardware observations.
+
+## Credits and license
+
+Thank you to the **PCSX2 team and contributors** for their PS2 emulator, code, documentation and research. EE instruction semantics originated from PCSX2 references/ports; attribution and GPL notices remain in the source. The name change does not remove those origins.
+
+- [PCSX2](https://pcsx2.net/) / [source](https://github.com/PCSX2/pcsx2)
+- [ps2sdk](https://github.com/ps2dev/ps2sdk): PS2 interfaces and reference documentation.
+- [devkitPro](https://devkitpro.org/) and [libogc](https://github.com/devkitPro/libogc): Wii toolchain and platform libraries.
+- Bundled ELF-to-DOL/wiiload tools retain their individual licenses. Font attribution is in [docs/licenses/DejaVu.txt](docs/licenses/DejaVu.txt).
+- Alex: project development, hardware testing and direction, with Claude AI and ChatGPT/GPT-6.1 assistance.
+- Gekko2 logo artwork was created with image-generation assistance; see [branding notes](docs/BRANDING-R1302.md).
+
+The project is **GPL-3.0**; see [COPYING.GPLv3](COPYING.GPLv3). Third-party files retain their own notices and terms. Gekko2 is independent of the credited teams.
+
+BIOS ROMs, game images, private guest RAM/checkpoints, personal runtime logs, BIOS configuration and SDK/compiler binaries are excluded from the public source tree.

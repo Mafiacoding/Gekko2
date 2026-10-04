@@ -65,4 +65,12 @@ uint32_t gs_rgb8_pair_to_ycbcr(uint8_t r1, uint8_t g1, uint8_t b1,
  * copy - no behavior change, verified identical logic. */
 void gs_decode_dispfb(uint64_t dispfb, uint32_t *out_bp_words, uint32_t *out_bw_pixels);
 
+void gs_decode_display_region(uint64_t dispfb, uint64_t display, uint64_t smode2,
+                              uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h);
+void gs_blit_scaled_psmct32_to_xfb(void *xfb, uint32_t dst_w, uint32_t dst_h,
+                                  uint32_t bp, uint32_t bw,
+                                  uint32_t sx, uint32_t sy, uint32_t sw, uint32_t sh);
+/* Sample the displayed rectangle for actual RGB content. Alpha-only black
+ * pixels do not count. This is a presentation probe, never a guest mutation. */
+int gs_display_has_rgb(uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t sw,uint32_t sh);
 #endif

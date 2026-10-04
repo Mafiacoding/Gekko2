@@ -55,8 +55,8 @@ static int detect_sector_format(FILE *fp, uint32_t *stride, uint32_t *data_offse
 
 int iso_open(const char *path, iso_image_t *out)
 {
-    memset(out, 0, sizeof(*out));
     if (!path || !out) return -1;
+    memset(out, 0, sizeof(*out));
 
     FILE *fp = fopen(path, "rb");
     if (!fp) return -1;
@@ -128,7 +128,7 @@ int iso_find_in_root(iso_image_t *img, const char *name, iso_dirent_t *out)
         while (off < ISO_SECTOR_SIZE) {
             uint8_t rec_len = sector[off];
             if (rec_len == 0) break; /* padding - next sector */
-            if (off + rec_len > ISO_SECTOR_SIZE) break;
+            if (rec_len < 34u || off + rec_len > ISO_SECTOR_SIZE) return -1;
 
             const uint8_t *rec = &sector[off];
             uint8_t name_len = rec[32];
@@ -158,6 +158,42 @@ int iso_find_in_root(iso_image_t *img, const char *name, iso_dirent_t *out)
         if (remaining <= ISO_SECTOR_SIZE) break;
         remaining -= ISO_SECTOR_SIZE;
         lba++;
+    }
+    return -1;
+}
+
+int iso_find_path(iso_image_t *img,const char *path,iso_dirent_t *out)
+{
+    if(!img || !path || !out)return -1;
+    const char *colon=strchr(path,':');
+    if(colon) {
+        size_t n=(size_t)(colon-path);
+        if(!((n==5 && !memcmp(path,"cdrom",5)) ||
+             (n==6 && !memcmp(path,"cdrom",5) && (path[5]=='0'||path[5]=='1'))))return -1;
+        path=colon+1;
+    }
+    iso_image_t dir=*img;
+    for(unsigned depth=0;depth<32;depth++) {
+        while(*path=='/' || *path=='\\')path++;
+        if(!*path)return -1;
+        char component[224];size_t n=0;
+        while(path[n] && path[n]!='/' && path[n]!='\\') {
+            if(n>=sizeof(component)-3u)return -1;
+            component[n]=path[n];n++;
+        }
+        component[n]=0;path+=n;
+        if(!strcmp(component,".") || !strcmp(component,".."))return -1;
+        int more=*path!=0;
+        iso_dirent_t found;
+        int rc=iso_find_in_root(&dir,component,&found);
+        if(rc && !more && !strchr(component,';')) {
+            component[n++]=';';component[n++]='1';component[n]=0;
+            rc=iso_find_in_root(&dir,component,&found);
+        }
+        if(rc)return -1;
+        if(!more){*out=found;return 0;}
+        if(!found.is_directory)return -1;
+        dir.root_lba=found.lba;dir.root_size=found.size;
     }
     return -1;
 }

@@ -38,6 +38,11 @@ static void wle32(uint8_t *p, uint32_t v) { p[0]=v&0xFF;p[1]=(v>>8)&0xFF;p[2]=(v
 
 static void append_ad(uint8_t *buf, int *off, uint32_t data_lo, uint32_t data_hi, uint32_t addr)
 {
+    if (addr == GS_REG_FRAME_1 || addr == GS_REG_FRAME_2) data_lo = (data_lo & 0x1ffu) | (((data_lo >> 9) & 0x3fu) << 16);
+    /* Encode fixture pixel coordinates into the real 64-bit XYZ register. */
+    if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZ3 || addr == GS_REG_XYZF2 || addr == GS_REG_XYZF3) {
+        data_lo = (data_lo & 0xffffu) | ((data_hi & 0xffffu) << 16); data_hi = 0u;
+    }
     wle32(buf + *off, data_lo);
     wle32(buf + *off + 4, data_hi);
     wle32(buf + *off + 8, addr);
@@ -57,11 +62,12 @@ static void fill_clut_entry(uint32_t cbp, uint32_t flat_index, uint32_t rgba)
  * the texture's own (bp,bw) - mirroring this project's established
  * "no real texture-upload path yet, gs_mem_write_psmct32 populates
  * textures directly" convention (see test_gif_texture.c). */
-static void fill_texture_index(uint32_t bp, uint32_t bw, uint32_t w, uint32_t h, uint32_t index)
+static void fill_texture_index(uint32_t bp, uint32_t bw, uint32_t w, uint32_t h, uint32_t index, uint32_t psm)
 {
     for (uint32_t y = 0; y < h; y++)
         for (uint32_t x = 0; x < w; x++)
-            gs_mem_write_psmct32_blk(bp, bw, x, y, index);
+            if(psm==TEX_PSM_PSMCT32) gs_mem_write_psmct32_blk(bp, bw, x, y, index);
+            else gs_mem_write_index(bp*64u,bw,x,y,psm,index);
 }
 
 /* Draws a single flat, DECAL-textured triangle sampling exactly one
@@ -86,7 +92,7 @@ static void draw_clut_triangle(uint32_t tex_bp, uint32_t tex_bw, uint32_t psm,
     append_ad(buf, &off, 0, 0, GS_REG_XYOFFSET_1);
 
     uint32_t tex0_lo = (tex_bp & 0x3FFFu) | (((tex_bw / 64u) & 0x3Fu) << 14) | ((psm & 0x3Fu) << 20);
-    uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | ((cbp & 0x3FFFu) << 5) | ((cpsm & 0xFu) << 19) | ((csa & 0x1Fu) << 24);
+    uint32_t tex0_hi = (1u << 29) | (TEX_TFX_DECAL << 3) | ((cbp & 0x3FFFu) << 5) | ((cpsm & 0xFu) << 19) | ((csa & 0x1Fu) << 24);
     append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
     append_ad(buf, &off, (uint32_t)PRIM_TYPE_TRIANGLE | PRIM_TME_MASK | PRIM_FST_MASK, 0, GS_REG_PRIM);
 
@@ -112,7 +118,7 @@ int main(void)
         for (uint32_t i = 0; i < 16; i++)
             fill_clut_entry(cbp, i, 0xFF000000u | (i * 0x010101u)); /* distinct filler per entry */
         fill_clut_entry(cbp, 5, expect);
-        fill_texture_index(tex_bp, tex_bw, 8, 8, 5);
+        fill_texture_index(tex_bp, tex_bw, 8, 8, 5, TEX_PSM_PSMT4);
 
         draw_clut_triangle(tex_bp, tex_bw, TEX_PSM_PSMT4, cbp, TEX_PSM_PSMCT32, 0);
         uint32_t px = gs_mem_read_psmct32(0, 640, 25, 25);
@@ -128,8 +134,8 @@ int main(void)
         uint32_t bank0_color = 0xFF111111u;
         uint32_t bank2_color = 0xFF999999u;
         fill_clut_entry(cbp, 5, bank0_color);       /* CSA=0 bank, entry 5 */
-        fill_clut_entry(cbp, 2 * 16 + 5, bank2_color); /* CSA=2 bank, entry 5 */
-        fill_texture_index(tex_bp, tex_bw, 8, 8, 5);
+        fill_clut_entry(cbp, 5, bank2_color); /* CSA selects cache destination, not source VRAM. */ /* CSA=2 bank, entry 5 */
+        fill_texture_index(tex_bp, tex_bw, 8, 8, 5, TEX_PSM_PSMT4);
 
         draw_clut_triangle(tex_bp, tex_bw, TEX_PSM_PSMT4, cbp, TEX_PSM_PSMCT32, 2);
         uint32_t px = gs_mem_read_psmct32(0, 640, 25, 25);
@@ -146,7 +152,7 @@ int main(void)
         uint32_t entry16_color = 0xFF00FF00u; /* expected */
         fill_clut_entry(cbp, 8, entry8_color);
         fill_clut_entry(cbp, 16, entry16_color);
-        fill_texture_index(tex_bp, tex_bw, 8, 8, 8);
+        fill_texture_index(tex_bp, tex_bw, 8, 8, 8, TEX_PSM_PSMT8);
 
         draw_clut_triangle(tex_bp, tex_bw, TEX_PSM_PSMT8, cbp, TEX_PSM_PSMCT32, 0);
         uint32_t px = gs_mem_read_psmct32(0, 640, 25, 25);
@@ -161,7 +167,7 @@ int main(void)
         uint32_t entry16_color = 0xFF00FF00u; /* decoy - must NOT be selected */
         fill_clut_entry(cbp, 8, entry8_color);
         fill_clut_entry(cbp, 16, entry16_color);
-        fill_texture_index(tex_bp, tex_bw, 8, 8, 16);
+        fill_texture_index(tex_bp, tex_bw, 8, 8, 16, TEX_PSM_PSMT8);
 
         draw_clut_triangle(tex_bp, tex_bw, TEX_PSM_PSMT8, cbp, TEX_PSM_PSMCT32, 0);
         uint32_t px = gs_mem_read_psmct32(0, 640, 25, 25);
@@ -174,7 +180,7 @@ int main(void)
         uint32_t cbp = 9000, tex_bp = 9200, tex_bw = 64;
         uint32_t expect = 0xFF123456u;
         fill_clut_entry(cbp, 3, expect);
-        fill_texture_index(tex_bp, tex_bw, 8, 8, 3);
+        fill_texture_index(tex_bp, tex_bw, 8, 8, 3, TEX_PSM_PSMT8);
 
         draw_clut_triangle(tex_bp, tex_bw, TEX_PSM_PSMT8, cbp, TEX_PSM_PSMCT32, 0);
         uint32_t px = gs_mem_read_psmct32(0, 640, 25, 25);
@@ -188,7 +194,7 @@ int main(void)
         gs_mem_init(); gif_init();
         uint32_t tex_bp = 10200, tex_bw = 64;
         uint32_t direct_color = 0xFFCAFEBAu;
-        fill_texture_index(tex_bp, tex_bw, 8, 8, direct_color); /* "index" fill is really just a raw write here */
+        fill_texture_index(tex_bp, tex_bw, 8, 8, direct_color, TEX_PSM_PSMCT32); /* "index" fill is really just a raw write here */
 
         draw_clut_triangle(tex_bp, tex_bw, TEX_PSM_PSMCT32, 0, 0, 0);
         uint32_t px = gs_mem_read_psmct32(0, 640, 25, 25);
