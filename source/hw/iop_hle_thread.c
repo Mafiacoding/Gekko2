@@ -218,6 +218,7 @@ static void load_context(iop_state_t *st, int thid)
 {
     iop_tcb_t *t = tcb(thid);
     if (!t) return;
+    st->gpr_generation++;
     memcpy(st->gpr, t->gpr, sizeof(t->gpr));
     st->pc = t->pc;
     st->next_pc = t->next_pc;
@@ -1435,6 +1436,7 @@ void iop_hle_thread_tick(iop_state_t *st)
                 iop_core_flush_pipeline(st);
                 g.alarm_resume_pc = st->pc;
                 g.alarm_resume_next_pc = st->next_pc;
+                st->gpr_generation++;
                 st->gpr[4] = a->common; /* $a0 = common, real alarm_callback_t(void *common) ABI */
                 st->gpr[31] = IOP_HLE_THREAD_ALARM_RETURN_TRAMPOLINE; /* $ra = our own return gate */
                 st->pc = a->handler;

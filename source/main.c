@@ -4,7 +4,7 @@
 #include "core/hw/frontend_runtime.h"
 #include "core/recompiler/iop_jit.h"
 #include "core/recompiler/vu_jit.h"
-/* R1306: native Wii launcher followed by real EE/IOP boot. */
+/* R1307: native Wii launcher followed by real EE/IOP boot. */
 #include <gccore.h>
 #include <wiiuse/wpad.h>
 #include "frontend.h"
@@ -89,7 +89,7 @@ static uint16_t wii_pad_to_ps2_pad(uint16_t wii_held)
     return ps2;
 }
 
-/* R1306: one build supports GameCube pads and upright Wii Remotes,
+/* R1307: one build supports GameCube pads and upright Wii Remotes,
  * with optional Nunchuk. Expansion bits are accepted only for Nunchuk,
  * so another expansion cannot accidentally become a shoulder button. */
 __attribute__((noinline)) uint16_t wii_remote_to_pad(uint32_t buttons,
@@ -291,7 +291,7 @@ static int g_first_picture;
 static uint64_t g_boot_started,g_boot_log_next;
 static const char *boot_log_path(void)
 {
-    return g_gx_present?"sd:/pcsx2/Gekko2-R1306-gx-render.log":"sd:/pcsx2/Gekko2-R1306-software.log";
+    return g_gx_present?"sd:/pcsx2/Gekko2-R1307-gx-render.log":"sd:/pcsx2/Gekko2-R1307-software.log";
 }
 static void save_boot_progress(const char *event,int truncate)
 {
@@ -424,6 +424,10 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned long long)ppc_dynarec_get_eliminated_word_ops(),
             (unsigned long long)ppc_dynarec_get_word_spills(),
             (unsigned long long)ppc_dynarec_get_reused_word_loads());
+    fprintf(f,"RESIDENT blocks=%llu removed_loads=%llu refresh_edges=%llu\n",
+        (unsigned long long)ppc_dynarec_get_resident_blocks(),
+        (unsigned long long)ppc_dynarec_get_resident_loads(),
+        (unsigned long long)ppc_dynarec_get_resident_refresh_edges());
     fprintf(f,"IOP_BLOCK compiled=%u runs=%llu ticks=%llu stale=%llu\n",
             (unsigned)iop_jit_get_block_cache_size(),
             (unsigned long long)iop_jit_get_block_runs(),
@@ -471,9 +475,9 @@ static void r1252_save_fault_evidence(void)
 {
     uint32_t f[112]={0}; ee_core_get_r1252_fault(f);
     if (!f[0] || r1252_evidence_written) return;
-    FILE *fp=fopen("sd:/pcsx2/Gekko2-R1306-first-fault.txt", "w");
+    FILE *fp=fopen("sd:/pcsx2/Gekko2-R1307-first-fault.txt", "w");
     if (!fp) return;
-    fprintf(fp,"Gekko2 R1306 JIT=%s disc=%d BIOS=%s version=%s size=%u\n",
+    fprintf(fp,"Gekko2 R1307 JIT=%s disc=%d BIOS=%s version=%s size=%u\n",
 #ifdef PCSX2WII_JIT_DISABLE
         "OFF",
 #else
@@ -562,7 +566,7 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
 #else
             const char *jm="ON";
 #endif
-            printf("R1306 MENU / RPC-GS JIT=%s REND=%llu hh=%llu S5=%ld/%ld w=%ld | slot2=%lu writer=%lu\033[K\n",jm,(unsigned long long)re,(unsigned long long)hh,(long)sc,(long)sm,(long)sw,(unsigned long)hit,(unsigned long)wh);
+            printf("R1307 MENU / RPC-GS JIT=%s REND=%llu hh=%llu S5=%ld/%ld w=%ld | slot2=%lu writer=%lu\033[K\n",jm,(unsigned long long)re,(unsigned long long)hh,(long)sc,(long)sm,(long)sw,(unsigned long)hit,(unsigned long)wh);
             uint64_t rc[4]={0}; uint32_t rl[6]={0};
             ee_core_get_r1249_repair(rc,rl);
             printf("REPAIR=%llu T%lu CONT=%llu LD=%llu JR=%llu\033[K\n",
@@ -680,7 +684,7 @@ static void run_real_boot_flow(void)
         g_disc_checked = 1;
         if (!g_boot_disc) {
         g_disc_ok = 0;
-        printf("[R1306] BIOS mode: no disc mounted.\n");
+        printf("[R1307] BIOS mode: no disc mounted.\n");
         } else {
         int cdvd_rc = iop_cdvd_mount_iso(g_disc_path);
         int legacy_rc = iop_cdrom_legacy_mount_iso(g_disc_path);

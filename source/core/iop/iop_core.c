@@ -828,6 +828,7 @@ static void iop_check_hw_interrupt(iop_state_t *st, uint32_t epc, uint32_t cause
      * see this function's own doc comment above for the full citation
      * trail on why BD/epc are now caller-supplied instead of always
      * being the plain "next not-yet-executed instruction" address. */
+    st->gpr_generation++; /* IRQ dispatch may write argument/link GPRs. */
     st->cop0[13] = (st->cop0[13] & ~(0x7Fu | IOP_CAUSE_BD)) | cause_bd;
     if(cause_bd)st->cop0[6]=st->next_pc;
     iop_core_flush_pipeline(st);
@@ -1024,7 +1025,7 @@ static void iop_check_hw_interrupt(iop_state_t *st, uint32_t epc, uint32_t cause
  * Merge loads forward the pending value without forwarding their EA base. */
 void iop_core_flush_pipeline(iop_state_t *st)
 {
-    if(st->load_delay_reg)st->gpr[st->load_delay_reg]=st->load_delay_value;
+    if(st->load_delay_reg){st->gpr_generation++;st->gpr[st->load_delay_reg]=st->load_delay_value;}
     st->load_delay_reg=0;
     st->branch_delay_pending=0;
     st->pipe_active=0;
@@ -1475,6 +1476,7 @@ static void iop_retire(iop_state_t *st,uint32_t this_pc,uint32_t fallthrough_pc)
     if(st->pipe_active) {
         unsigned load=st->pipe_fault?0u:st->pipe_load_reg;
         uint32_t value=st->gpr[load];
+        if(load||st->load_delay_reg)st->gpr_generation++;
         if(load)st->gpr[load]=st->pipe_load_old;
         if(st->load_delay_reg && (st->pipe_fault||st->load_delay_reg!=st->pipe_write_reg))
             st->gpr[st->load_delay_reg]=st->load_delay_value;

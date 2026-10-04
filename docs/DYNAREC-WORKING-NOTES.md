@@ -1,9 +1,9 @@
 # Unreleased dynarec work after R1306
 
-This is source development, not an alpha release or a completed full dynarec.
-R1306 remains the last delivered build. The owner requests ELF/DOL/checkpoint
-only once genuinely at most one planned step remains; that gate is not met.
-Internal cross-builds exist solely for verification.
+R1307 is an early-alpha development checkpoint. The owner has explicitly
+requested ELF and checkpoint delivery after the register-residency work;
+these test builds do not certify completion of the full dynarec plan.
+See R1307-HANDOFF.md for the current verified scope and performance limits.
 
 Implemented in the working source:
 
@@ -49,9 +49,9 @@ not Wii timing, stable BIOS frames, PS2-wide floating-point correctness or FPS.
 
 1. Remaining EE instruction/trap/control cases and instruction-family audit.
    The eight standard word/doubleword merge RAM operations are implemented.
-2. Extend the general native word-binding/spill allocator to residency across
-   instructions using audited helper read/write contracts. The initial pass
-   flushes at every observable preparation/retirement/helper boundary.
+2. Wider IR-level allocation/residency coverage. Write-through scalar-source
+   residency now crosses audited EE/IOP callbacks; opaque helpers and bodies
+   remain fences, and patched inter-block residency is not implemented.
 3. Native block links, source/TLB generations and invalidation/eviction tests.
 4. Further IOP hardware-accuracy and HLE/context audit. Delayed loads, merge
    forwarding, synchronous EPC/BD/TAR, alignment and arithmetic overflow are
@@ -241,3 +241,35 @@ comparisons; 552 COP1 and 56 link/BC1 outcomes; and 30/68 helper plus 45
 continuation EABI oracles. Platform services are mocked. No physical Wii
 coldboot/OSDSYS stability or speed improvement is established by this work.
 R1306 remains the delivered release; the completion gate is still open.
+
+
+## R1307 audited register residency
+
+Frequently reused scalar operand words use r18-r29 across instruction and
+prepare/retire boundaries. r30 retains the external-GPR generation. Temporary
+operands are renamed to those bindings so resident loads disappear rather
+than becoming extra moves. Stores keep the guest register file canonical.
+Overwriting a resident word first materializes any live temporary aliases of
+its previous value. All pool registers, stack and CR2-4 follow PPC EABI.
+
+EE preparation changes r0 and pipeline/proof state, not nonzero GPRs. The
+retirement helper closure changes nonzero GPRs only through the audited HLE
+thread context replacement, which increments the generation. IOP retirement
+can restore/mature delayed loads; IRQ entry, thread replacement and Alarm
+dispatch also increment the IOP generation. The live guard after preparation
+reloads valid copies when the generation differs. Counter wrap is tested.
+
+Unknown helper/register effects, local control-flow bodies and partial-word
+writes fence residency. Generic callback emitters remain conservative; the
+frontends opt into dedicated resident APIs with these explicit contracts.
+Memory-only blocks and unsuitable sources do not allocate a resident pool.
+The scalar pool covers low 64-bit EE operands and full IOP words; upper EE
+words remain canonical and are preserved by the existing word allocator.
+This completes the bounded audited scalar residency path, not full IR
+liveness allocation, arbitrary-helper contracts or the remaining dynarec.
+
+The 62 independent observer/external-write/generation-wrap programs and 48
+hostile resident-pool ABI programs pass, alongside 211 host tests, including
+real EE/IOP context-replacement and Alarm invalidation checks. The handoff
+reports warm PPC instruction counts without hiding regressions. No physical
+Wii speed or BIOS stability claim follows from synthetic execution.

@@ -8,7 +8,7 @@ Gekko2 explores PS2 emulation on Nintendo Wii hardware. Alex has spent approxima
 
 That work now produces the Sony Computer Entertainment startup screen on a real Wii. The OSDSYS menu renders in the native development build, where entering the Browser and returning to the menu has been tested. Stable, responsive OSDSYS navigation on Wii remains a development goal.
 
-**Current source checkpoint: R1306.** Live proven RAM blocks now include LD/SD, LQ/SQ and LWC1/SWC1. Selected branches/jumps terminate precise EE blocks, with scalar delay-slot execution retained. Regular not-taken native branches now correctly mark their delay slot, including the prior scalar REGIMM gap. Read [STATUS.md](STATUS.md), [the completion plan](docs/DYNAREC-COMPLETION-PLAN.md) and [the roadmap](docs/ROADMAP.md) for evidence and remaining work. There is no firm alpha release date, confirmed playable-game list or promised FPS target.
+**Current development checkpoint: R1307.** Precise EE/IOP blocks now include the earlier delay-slot, RAM merge and native continuation work. IOP delayed loads and exception boundaries are implemented. Frequently reused scalar source words remain in PPC registers across audited helper calls, with write-through guest state and invalidation on external changes. ELF/DOL test builds accompany this checkpoint at the owner's request. Read [STATUS.md](STATUS.md), [the R1307 handoff](docs/R1307-HANDOFF.md) and [the completion plan](docs/DYNAREC-COMPLETION-PLAN.md). The full dynarec and physical-Wii performance work remain unfinished.
 
 ## Why Gekko2?
 

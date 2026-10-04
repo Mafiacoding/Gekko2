@@ -105,7 +105,7 @@ unsigned iop_jit_try_execute_block(iop_state_t *st,unsigned budget)
   ppc_codegen_ctx_t ctx;
   if(ppc_dynarec_init(&ctx,(count*100u+160u+127u)/128u))return 0;
   unsigned native;
-  if(ppc_dynarec_translate_iop_block(&ctx,pc,words,count,
+  if(ppc_dynarec_translate_iop_resident_block(&ctx,pc,words,count,
      (uint32_t)(uintptr_t)iop_core_block_prepare,
      (uint32_t)(uintptr_t)iop_core_block_retire,
      (uint32_t)(uintptr_t)iop_core_block_scalar,&native)) {

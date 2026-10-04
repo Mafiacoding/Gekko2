@@ -1144,4 +1144,11 @@ uint64_t ppc_dynarec_get_allocated_bodies(void);
 uint64_t ppc_dynarec_get_eliminated_word_ops(void);
 uint64_t ppc_dynarec_get_word_spills(void);
 uint64_t ppc_dynarec_get_reused_word_loads(void);
+/* Audited write-through residency. Generic callback APIs remain fenced. */
+uint64_t ppc_dynarec_get_resident_blocks(void);
+uint64_t ppc_dynarec_get_resident_loads(void);
+uint64_t ppc_dynarec_get_resident_refresh_edges(void);
+int ppc_dynarec_translate_iop_resident_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,uint32_t,uint32_t,unsigned *);
+int ppc_dynarec_translate_ee_resident_delay_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t);
+
 #endif

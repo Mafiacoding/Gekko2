@@ -1,0 +1,174 @@
+{
+  "revision": "R1307",
+  "date": "2026-10-04",
+  "scope": "Early-alpha development checkpoint; no physical-Wii/FPS certification",
+  "host_tests": 211,
+  "builds": {
+    "Gekko2-R1307-JIT.elf": {
+      "bytes": 5782852,
+      "sha256": "449e144a3958f0c039dbcbedab6523e41275f3a07be0e3dfab96100262d3b624"
+    },
+    "Gekko2-R1307-JIT.dol": {
+      "bytes": 1081664,
+      "sha256": "38309ab540ed4d4634ef6c7733a609bf2e8ab0ab113e65812108e8045c12c460"
+    },
+    "Gekko2-R1307-Interpreter.elf": {
+      "bytes": 5597392,
+      "sha256": "10c2d505dbf5b96ea1a188bf6dd8a0f3802e7212df9836bc21fdaa84005233eb"
+    },
+    "Gekko2-R1307-Interpreter.dol": {
+      "bytes": 961408,
+      "sha256": "240ed169a5f96d3cb946f93614757ce5dda91ef57156de6de54dedb69b34fd17"
+    }
+  },
+  "linked_tests": {
+    "verify_residency_internal_r1307_final": {
+      "pass_lines": [
+        "PASS 62 independent canonical helper views, external GPR changes, destination aliases and generation wrap residency oracles"
+      ],
+      "signatures": {}
+    },
+    "verify_resident_abi_internal_r1307_final": {
+      "pass_lines": [
+        "PASS 245 independent IOP wrapper budget/early-exit/EABI oracles with volatile register and argument-area clobbering",
+        "PASS 48 hostile resident-pool EABI, all nonvolatile registers, budgets and generation wrap oracles"
+      ],
+      "signatures": {}
+    },
+    "verify_iop_blocks_r1307_checked": {
+      "pass_lines": [
+        "PASS 458 linked PPC IOP block/scalar programs: ALU, HI/LO, all memory forms, controls, exceptions, IRQ/idle, source mutation and allocation failure",
+        "PASS exact EE8/IOP1 ordering across block boundaries and profiling intervals",
+        "PASS warm source replacement, active-code reset pinning and retail ROM HLE guards"
+      ],
+      "signatures": {
+        "IOP_BLOCK_SIGNATURE": "f861bafd0eb6c8c4e040a4e5b4ea25d12aec2aba5120547dee4e8afcd235d377"
+      }
+    },
+    "verify_iop_pipeline_internal_r1307_final": {
+      "pass_lines": [
+        "PASS 50 independent linked-PPC load visibility/block exits, merge aliasing, EPC/BD/TAR/BEV, alignment/overflow and HLE delay-slot resumption oracles"
+      ],
+      "signatures": {}
+    },
+    "verify_ee_merge_internal_r1307_final": {
+      "pass_lines": [
+        "PASS merge aliased-source invalidation and 64 exact IRQ exits",
+        "PASS 1152 merge programs, full state/RAM and independent byte-lane oracle"
+      ],
+      "signatures": {
+        "EE_MERGE_SIGNATURE": "76d9383f65f920c881f32abb6938cbb3e01c45ac22a5983e48831e4ce3bf4867"
+      }
+    },
+    "verify_ee_fpu_links_internal_r1307_final": {
+      "pass_lines": [
+        "PASS 53 actual Wii ELF GS color/depth memory checks on big-endian PPC",
+        "PASS 19 actual Wii ELF CLUT checks: native 8x2 palette, CSA destination and CLD reuse",
+        "PASS 6 actual Wii ELF SPR checks: both directions, byte order, scratch wrap and address progress",
+        "PASS 9 actual Wii ELF MFIFO checks: empty wait, partial packet, producer wakeup and real payload",
+        "PASS 5 actual Wii ELF rendered-image checks: packed textures/clamp, split packets and alternating context offsets",
+        "PASS 4 actual Wii ELF IRX metadata checks: LE ELF, module name, native version and truncation",
+        "PASS 3 actual Wii ELF STQ triangle pixels: varying Q, constant Q=2, Q=1; both S and T",
+        "PASS 5 actual Wii ELF linear STQ images: sprite, triangle, texel center, clamp and negative repeat",
+        "PASS 3 actual Wii ELF EE interpreter IRQ checks: polling exit, guest ACK/ERET, no halt",
+        "PASS 24 actual Wii ELF syscall checks: INTC/DMAC changed returns, mask state, pending flags and wrapped shift counts",
+        "PASS 11 actual Wii ELF independent-clock checks: MTC0, parked edges, Count wrap, 64-bit width and carry",
+        "PASS 7 actual Wii ELF MCSERV dispatch checks: modern/legacy OPEN, reply bounds and CLOSE",
+        "PASS 18 actual Wii ELF boot-config checks: selected versions, INIT ABI, bounds and provider invalidation",
+        "PASS 19 actual Wii ELF config checks: shared RPC/MMIO data, checksum, completed count, bounds and errors",
+        "PASS 2 actual Wii ELF UV sprite pixels: nearest and bilinear",
+        "PASS 7 actual Wii ELF JIT frontend groups: unsupported reuse, unchanged registers, word replacement, owned reuse, transient allocation retry, full-cache bounds, full-cache positive reuse",
+        "PASS 1 actual Wii ELF EE fallback integration group: rejected instruction retires twice, PC advances, no halt, registers preserved",
+        "PASS actual PPC mapped fetch/load retirement, Count/PC and immediate TLB replacement/SMC",
+        "PASS precise native EE blocks: budgets, Count/PC, source SMC exit, actual IRQ exit/EPC, delay/idle/halt, page boundary, cache collision, ownership and allocation retry",
+        "PASS 8 linked PPC COP1 mixed blocks, bit-preserving NaN/sign/zero transfers and exact interrupt boundary",
+        "PASS far PPC block callback fallback: 8 precise retirements beyond BL reach",
+        "PASS 35 early source exits + seven full exits, exact retirement/PC and all 18 nonvolatile PPC registers",
+        "PASS mapped block TLB replacement + V/D/ASID/RAM/MMIO live revocation, aliased source mutation and eight store IRQ boundaries",
+        "PASS 96 mixed mapped-memory programs across KUSEG, KSEG2, kernel mirror and even/odd 4KB/16KB pages",
+        "PASS 48 wide/float memory IRQ boundaries",
+        "PASS taken/not-taken terminal IRQ deferral, delay-slot TLB fault EPC/BD and scalar REGIMM delay flag",
+        "PASS 72 wide-memory and 128 terminal-control programs",
+        "PASS native compiled DS, first-op jumps, mutated delay source, scalar fault BD and delayed IRQ",
+        "PASS 256 control+ALU/memory delay programs with exact retirement",
+        "PASS 60 LWU/vector programs, VF00 constants, unmasked/cross-page addresses and seven chain budgets",
+        "PASS raw native CVT.S.W EABI with callee linkage-area write",
+        "PASS 552 COP1 corner programs and 56 link/BC1 control outcomes"
+      ],
+      "signatures": {
+        "EE_BLOCK_ALU_SIGNATURE": "4d34ebc96f6787f60d10c47cb6c0c80f7778bb04e3f4c15f50387e64798c53ba",
+        "COP1_BLOCK_SIGNATURE": "f819040294478c1fdee748a1dff473e9aa0d12d60e9c32fd4cd8dd767f858aa2",
+        "EE_MEMORY_SIGNATURE": "d47a53029e30f36fc33d85c821c3a22b0e439e8205b4529fb80716546558d599",
+        "EE_MAPPED_BLOCK_SIGNATURE": "c164e1b2f5b4b54948931b4d50edbfdfbf742475ad26b89573e9724a3f74804e",
+        "EE_WIDE_SIGNATURE": "72d98331903a33f2dc22870db3573ee123da12996e7ec35b604d7d4b6cd19d1f",
+        "EE_CONTROL_SIGNATURE": "56f35310ff18c37521cf67ed6dcefd8e4a599bd2a3d5f7d714a0399760868e9f",
+        "EE_DELAY_SIGNATURE": "2fb65cdad3d193c9a3b93edbb86c44c0bea312b32f650dbcea583658ead79aae",
+        "EE_VECTOR_SIGNATURE": "e3c274fb323283ed32e56d01c57841ad99f1884fb2fe3f0558285f1545be5bbb",
+        "EE_CHAIN_SIGNATURE": "273227e319bf1633c1c5c445322af43273f8c53d1d27682b3110487547f77ad6",
+        "EE_FPU_ARITHMETIC_SIGNATURE": "7ad0022f1373d965394c91af3cc5fccd5aa5d7c35b2ef78c49a5709af19d5dd1",
+        "EE_EXTENDED_LINK_SIGNATURE": "fd2ac341ba1fb2235d8bd0269454c7d12c40f7615905389f96aa20dffe1f19b7"
+      }
+    },
+    "verify_fpu_r1307_interpreter_final": {
+      "pass_lines": [
+        "PASS 552 COP1 corner programs and 56 link/BC1 control outcomes"
+      ],
+      "signatures": {
+        "EE_FPU_ARITHMETIC_SIGNATURE": "7ad0022f1373d965394c91af3cc5fccd5aa5d7c35b2ef78c49a5709af19d5dd1",
+        "EE_EXTENDED_LINK_SIGNATURE": "fd2ac341ba1fb2235d8bd0269454c7d12c40f7615905389f96aa20dffe1f19b7"
+      }
+    },
+    "verify_ee_native_chain_internal_resident": {
+      "pass_lines": [
+        "PASS required warm native successor, all nonvolatile registers and allocation-failure fallback",
+        "PASS 126 cold/warm chain budgets, modified successor source and timer boundaries"
+      ],
+      "signatures": {
+        "EE_NATIVE_CHAIN_SIGNATURE": "dc31389850cd8e187655dd34ac53def15da76a22a4a6f8c0d16683bb4df5826a"
+      }
+    },
+    "verify_jit_helper_abi_internal_resident": {
+      "pass_lines": [
+        "PASS 30 generated PPC helper cases with hostile EABI linkage/argument/volatile writes",
+        "PASS 68 scalar memory helper EABI/argument/result cases"
+      ],
+      "signatures": {}
+    },
+    "verify_native_chain_abi_internal_resident": {
+      "pass_lines": [
+        "PASS 45 native continuation oracle cases, arguments/budgets/partial exits and hostile EABI"
+      ],
+      "signatures": {}
+    }
+  },
+  "warm_before": {
+    "elf": "Gekko2-Internal-R1307-JIT.elf",
+    "retirements": 8,
+    "warm_PPC_instructions": {
+      "EE_ADDIU_self": 3244,
+      "EE_OR_sources": 3287,
+      "EE_XOR_accumulator": 3287,
+      "EE_LW_base": 3893,
+      "IOP_ADDIU_self": 6600,
+      "IOP_OR_sources": 6632,
+      "IOP_XOR_accumulator": 6632,
+      "IOP_LW_base": 8317
+    },
+    "scope": "Mocked platform, synthetic programs; includes full CPU retirement. Not Wii cycles, BIOS timing or FPS."
+  },
+  "warm_after": {
+    "elf": "Gekko2-R1307-JIT.elf",
+    "retirements": 8,
+    "warm_PPC_instructions": {
+      "EE_ADDIU_self": 3244,
+      "EE_OR_sources": 3292,
+      "EE_XOR_accumulator": 3302,
+      "EE_LW_base": 3893,
+      "IOP_ADDIU_self": 6590,
+      "IOP_OR_sources": 6637,
+      "IOP_XOR_accumulator": 6642,
+      "IOP_LW_base": 8335
+    },
+    "scope": "Mocked platform, synthetic programs; includes full CPU retirement. Not Wii cycles, BIOS timing or FPS."
+  }
+}

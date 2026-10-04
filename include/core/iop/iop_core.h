@@ -109,6 +109,8 @@ typedef struct {
     uint8_t load_delay_reg; /* 0 means no pending write */
     uint8_t branch_delay_pending;
     uint8_t pipe_load_reg,pipe_write_reg,pipe_bd,pipe_fault,pipe_active;
+    /* Native resident copies are invalid after an external GPR mutation. */
+    uint32_t gpr_generation;
 } iop_state_t;
 
 void iop_core_flush_pipeline(iop_state_t *st);

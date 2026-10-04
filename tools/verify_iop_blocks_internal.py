@@ -4,7 +4,7 @@ Platform allocation/cache maintenance are mocked; IOP hooks and ticks run.
 from pathlib import Path
 exec(compile(Path(__file__).with_name('ee_ppc_fixture_internal.py').read_text(),'ee_ppc_fixture_internal.py','exec'))
 import random
-fields=['pc','next_pc','hi','lo','cop0','ram','ram_size','bios','instructions_executed','halted','sched_ticks','idle','exception_pending','devtable_pending_image']
+fields=['pc','next_pc','hi','lo','cop0','ram','ram_size','bios','instructions_executed','halted','sched_ticks','idle','exception_pending','devtable_pending_image','gpr_generation']
 with tempfile.TemporaryDirectory() as d:
  src=Path(d)/'layout.c';obj=Path(d)/'layout.o';raw=Path(d)/'layout.bin'
  src.write_text('#include <stddef.h>\n#include "core/iop/iop_core.h"\nconst unsigned layout[]={sizeof(iop_state_t),'+','.join('offsetof(iop_state_t,'+f+')' for f in fields)+'};\n')
