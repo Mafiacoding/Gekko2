@@ -1,4 +1,4 @@
-# Gekko2 experimental GX renderer — R1303
+# Gekko2 experimental GX renderer — R1304
 
 Guest graphics remain at the R1300 checkpoint. New GX features are paused while custom PPC dynarec work takes priority. [STATUS](../STATUS.md) gives the current evidence; [R1300 handoff](R1300-HANDOFF.md) describes the exact resident/snapshot implementation.
 

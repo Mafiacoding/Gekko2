@@ -468,6 +468,8 @@ int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word);
 unsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit);
 int ee_core_block_prepare(ee_state_t *st,uint32_t pc,uint32_t instruction);
 int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc);
+int ee_core_block_memory_safe(const ee_state_t *st,uint32_t instruction);
+int ee_core_block_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t instruction);
 void ee_core_block_commit(ee_state_t *st);
 
 #endif

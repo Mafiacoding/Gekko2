@@ -1,4 +1,4 @@
-# Gekko2 status — R1303
+# Gekko2 status — R1304
 
 Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
 
@@ -13,6 +13,16 @@ Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** Th
 | PPC JIT | Many scalar EE/IOP families, guarded VU pairs/blocks, conservative 2–8 instruction EE ALU/COP1 blocks and direct relative helper calls. | Full EE/IOP/VU recompilation, larger memory/control blocks, register allocation and safe linking remain incomplete. |
 | GX | Optional CT32/24 presentation, guarded sprites/flat triangles, snapshot textures, selected TEV blending/depth paths, deferred VRAM resolve and compatible resident framebuffers. | Varying Gouraud/textured triangle routing, broad GPU residency and complex GS states still require software/hybrid handling. |
 | R1302 branding | Gekko2 launcher header, HBC icon, checked 640×480 native launcher preview and both Wii cross-builds. | No fresh physical-Wii R1302 timing result. Guest emulation remains R1301. |
+
+## R1304 memory-block milestone
+
+Eight byte/halfword/word memory families (LB/LBU/LH/LHU/LW/SB/SH/SW) now run inside conservative EE blocks with ALU/COP1 instructions. Live KSEG0/KSEG1 main-RAM proofs check pointer, bounds and alignment before preparation. MMIO, ROM, scratchpad, TLB data and unaligned/out-of-range addresses decline into the existing scalar path before that instruction executes. Per-instruction source/mapping, retirement and IRQ checks remain. Memory instructions use a specialized preparation callback; ALU instructions retain their original callback.
+
+Validation: **201/201 native tests**, paired cross-builds, four linked-PPC jobs, 64 mixed programs, 58 first-address decline cases, eight later-decline families, store-to-next-code mutation, all eight store interrupt positions, all 35 inherited source exits and nonvolatile-register checks. Complete memory/ALU/COP1 signatures match Interpreter/JIT; the memory signature also matches the old R1303 JIT. All 66 VRAM signatures agree.
+
+Eight warm direct-RAM LW instructions count **5009→3907 PPC instructions** (about 22% fewer). Eight ALU/COP1 instructions add three PPC instructions (3177→3180 / 3163→3166). Allocation/cache services are synthetic; these numbers are not physical Wii FPS or end-to-end BIOS speed. TLB-mapped data is deliberately not accelerated by this new block path.
+
+See [R1304 handoff](docs/R1304-HANDOFF.md), [nullDC4Wii review](docs/NULLDC4WII-REVIEW-R1304.md) and [verification](docs/verification/R1304.json). Full register allocation, control-flow linking, wide memory operations and IOP block execution remain unfinished. GX is unchanged.
 
 ## R1303 CPU change
 

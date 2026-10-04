@@ -6272,7 +6272,7 @@ static void ee_block_call(ppc_codegen_ctx_t *ctx,uint32_t target)
 /* Precise native block: every instruction crosses the existing retirement
  * machinery before continuing. Caller guards source/mapping and control flow. */
 static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
- const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared)
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared,uint32_t memory_prepare)
 {
  if(!ctx||!words||count<2u||count>8u||!prepare||!commit)return -1;
  size_t exits[8],returns[8];
@@ -6281,13 +6281,15 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
  emit(ctx,enc_or(14,3,3));
  for(unsigned n=0;n<count;n++) {
   if(!ee_jit_block_candidate(words[n]))return -1;
+  uint32_t callback=ee_jit_block_memory_width(words[n])?memory_prepare:prepare;
+  if(!callback)return -1;
   size_t skip=0;
   if(n==0u&&allow_prepared) {
    emit(ctx,(11u<<26)|(4u<<16)); /* cmpwi r4,0 */
    skip=ctx->used_words;emit(ctx,enc_bc(4,2,0));
   }
   emit(ctx,enc_or(3,14,14));emit_load_const32(ctx,4,pc+4u*n);
-  emit_load_const32(ctx,5,words[n]);ee_block_call(ctx,prepare);emit(ctx,(11u<<26)|(3u<<16)); /* cmpwi r3,0 */
+  emit_load_const32(ctx,5,words[n]);ee_block_call(ctx,callback);emit(ctx,(11u<<26)|(3u<<16)); /* cmpwi r3,0 */
   exits[n]=ctx->used_words;emit(ctx,enc_bc(12,2,0));
   if(skip)ctx->code[skip]=enc_bc(4,2,(int32_t)(ctx->used_words-skip)*4);
   emit(ctx,enc_or(3,14,14));
@@ -6315,7 +6317,11 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
 
 int ppc_dynarec_translate_ee_precise_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,0);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,0,0u);}
 int ppc_dynarec_translate_ee_prepared_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,1);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,1,0u);}
+
+int ppc_dynarec_translate_ee_prepared_memory_block(ppc_codegen_ctx_t *c,uint32_t pc,
+ const uint32_t *w,unsigned n,uint32_t prepare,uint32_t memory_prepare,uint32_t commit)
+{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare);}

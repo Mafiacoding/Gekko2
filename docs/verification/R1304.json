@@ -1,0 +1,89 @@
+{
+  "name": "Gekko2",
+  "revision": "R1304",
+  "scope": "First integrated guarded byte/halfword/word EE memory blocks; own PPC emitter, no foreign engine imported",
+  "native_tests": {
+    "total": 201,
+    "passed": 201
+  },
+  "linked_ppc_jobs": [
+    {
+      "script": "verify_ee_memory_blocks_r1304",
+      "engine": "Interpreter",
+      "exit": 0
+    },
+    {
+      "script": "verify_ee_memory_blocks_r1304",
+      "engine": "JIT",
+      "exit": 0
+    },
+    {
+      "script": "verify_gs_paths_r1285",
+      "engine": "Interpreter",
+      "exit": 0
+    },
+    {
+      "script": "verify_gs_paths_r1285",
+      "engine": "JIT",
+      "exit": 0
+    }
+  ],
+  "matching_vram_signatures": 66,
+  "memory_programs": 64,
+  "unsafe_first_address_cases": 58,
+  "source_exit_cases": 35,
+  "memory_families": [
+    "LB",
+    "LBU",
+    "LH",
+    "LHU",
+    "LW",
+    "SB",
+    "SH",
+    "SW"
+  ],
+  "memory_state_matches": [
+    "R1303 JIT",
+    "R1304 Interpreter",
+    "R1304 JIT"
+  ],
+  "memory_irq_boundaries": 8,
+  "self_modifying_SW": "passes; stale next instruction declines",
+  "benchmarks": {
+    "scope": "actual linked PPC and guest retirement under mocked allocation/cache services; not Wii cycles or FPS",
+    "eight_direct_RAM_LW": {
+      "R1303": 5009,
+      "R1304": 3907,
+      "reduction_percent": 22.00039928129367
+    },
+    "eight_ALU": {
+      "R1303": 3177,
+      "R1304": 3180
+    },
+    "eight_COP1_mix": {
+      "R1303": 3163,
+      "R1304": 3166
+    }
+  },
+  "nulldc4wii_reference_commit": "26a623e3feca9927d8ffe43706b06d82d672dd64",
+  "physical_wii_verified": false,
+  "fresh_bios_coldboot": false,
+  "binaries": {
+    "Gekko2-R1304-Menu-Interpreter.elf": {
+      "bytes": 5298520,
+      "sha256": "626f9302ae72dd1473f305c1364389fc70a276d2d226f64951fe8d624b5c0de4"
+    },
+    "Gekko2-R1304-Menu-Interpreter.dol": {
+      "bytes": 955584,
+      "sha256": "33264fc631927bcf02e276525c003c38d7621e85546e6569bb641be35fd02889"
+    },
+    "Gekko2-R1304-Menu-JIT.elf": {
+      "bytes": 5430916,
+      "sha256": "a8197aa98b1010f685d1f6a79aed6a71663fec9f9e673803f2ee11337cf67a37"
+    },
+    "Gekko2-R1304-Menu-JIT.dol": {
+      "bytes": 1036608,
+      "sha256": "f4b2d4e3f02a3f4fd568b84285670478b62a3c5566de4d86b4fc6eabb68c652e"
+    }
+  }
+}

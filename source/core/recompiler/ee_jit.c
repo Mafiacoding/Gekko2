@@ -650,8 +650,8 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  if(count<2u)return 0;
  if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
   ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,count*2u))return 0;
-  if(ppc_dynarec_translate_ee_prepared_block(&c,pc,words,count,
-    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_commit)) {
+  if(ppc_dynarec_translate_ee_prepared_memory_block(&c,pc,words,count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory,(uint32_t)(uintptr_t)ee_core_block_commit)) {
    ppc_dynarec_free(&c);return 0;
   }
   ee_precise_fn fn=(ee_precise_fn)ppc_dynarec_finalize(&c);
@@ -661,7 +661,11 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  }
 execute_slot:
  if(fetched) {
-  if(slot->words[0]!=first_word||!ee_core_block_prepare_fetched(st,pc))return 0;
+  if(slot->words[0]!=first_word)return 0;
+  /* The scalar fetch already happened, but preparation must wait until
+   * a first memory operation proves its current direct-RAM address. */
+  if((first_word>>26)>=0x20u&&ee_jit_block_memory_width(first_word)&&!ee_core_block_memory_safe(st,first_word))return 0;
+  if(!ee_core_block_prepare_fetched(st,pc))return 0;
  }
  precise_active=1;unsigned n=slot->fn(st,fetched);precise_active=0;
  precise_runs++;precise_retired+=n;

@@ -12933,6 +12933,19 @@ unsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned
         words[n]=(uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
     return limit;
 }
+int ee_core_block_memory_safe(const ee_state_t *st,uint32_t instruction)
+{
+ unsigned width=ee_jit_block_memory_width(instruction);
+ if(!width)return 1;
+ if(!st||!st->ram||st->ram_size<width)return 0;
+ unsigned rs=(instruction>>21)&31u;
+ uint32_t base=rs?(uint32_t)st->gpr[rs].ud0:0u;
+ uint32_t addr=base+(uint32_t)(int32_t)(int16_t)instruction;
+ /* Exact direct main-RAM proof; no TLB/MMIO/ROM/scratchpad access here.
+  * Check subtraction rather than overflowing end-address arithmetic. */
+ if((addr&0xc0000000u)!=0x80000000u||(addr&(width-1u)))return 0;
+ return (addr&0x1fffffffu)<=st->ram_size-width;
+}
 int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc)
 {
     if(st!=&g_state||st->halted||st->idle||st->branch_pending||st->pc!=pc||
@@ -12947,6 +12960,13 @@ int ee_core_block_prepare(ee_state_t *st,uint32_t pc,uint32_t instruction)
     uint32_t actual;
     if(!ee_core_block_peek(st,pc,&actual)||actual!=instruction)return 0;
     return ee_core_block_prepare_fetched(st,pc);
+}
+int ee_core_block_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t instruction)
+{
+ uint32_t actual;
+ if(!ee_core_block_peek(st,pc,&actual)||actual!=instruction)return 0;
+ if(!ee_core_block_memory_safe(st,instruction))return 0;
+ return ee_core_block_prepare_fetched(st,pc);
 }
 void ee_core_block_commit(ee_state_t *st){ee_retire_instruction(st,0);}
 

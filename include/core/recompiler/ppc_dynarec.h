@@ -1121,6 +1121,8 @@ int ppc_dynarec_translate_ee_alu_block(ppc_codegen_ctx_t *ctx,
                                       const uint32_t *words,unsigned count);
 
 /* Prepared variant returns unsigned(st,first_prepared). */
+int ppc_dynarec_translate_ee_prepared_memory_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t prepare_addr,uint32_t memory_prepare_addr,uint32_t commit_addr);
 int ppc_dynarec_translate_ee_prepared_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
  const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit);
 int ppc_dynarec_translate_ee_precise_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
