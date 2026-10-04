@@ -9,6 +9,8 @@
 #include "core/hw/vu_pair.h"
 #include "core/hw/gif.h"
 #include "core/hw/vif.h"
+#include "core/hw/ee_intc.h"
+#include "core/ee/ee_core.h"
 #include "vu_opcodes.h"
 #include "core/recompiler/vu_jit.h"
 #include <string.h>
@@ -520,7 +522,7 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
             *branch_delay = 2u; *branch_target = (uint32_t)((int32_t)pc + 8 + off11 * 8);
             return 1;
         case VUL_BAL:
-            vu_write_vi(vi, rt, (pc + 16) >> 3); /* link: instruction-pair index after the delay slot - this project's own convention, see vu_opcodes.h note */
+            vu_write_vi(vi, rt, ((*branch_delay==1u?*branch_target+8u:pc+16u)>>3));
             *branch_delay = 2u; *branch_target = (uint32_t)((int32_t)pc + 8 + off11 * 8);
             return 1;
         case VUL_JR:
@@ -530,7 +532,7 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
             /* Capture target before a potentially aliased link write,
              * matching primary VUops.cpp _vuJALR. */
             uint32_t target = vu_read_vi16(vi, rs) * 8u;
-            vu_write_vi(vi, rt, (pc + 16) >> 3);
+            vu_write_vi(vi, rt, ((*branch_delay==1u?*branch_target+8u:pc+16u)>>3));
             *branch_delay = 2u; *branch_target = target;
             return 1;
         }
@@ -788,6 +790,8 @@ int vu_micro_step_pipeline(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
     uint32_t lower = vu_rd_le32(micro + off);       /* ptr[0] */
     uint32_t upper = vu_rd_le32(micro + off + 4u);  /* ptr[1] */
     uint32_t this_pc = off;
+    uint32_t previous_branch_delay=*branch_delay;
+    uint32_t previous_branch_target=*branch_target;
 
     int qop=!(upper&0x80000000u)&&VU_L_OPCODE(lower)==64u&&
         VU_L_FUNCT6(lower)>=60u&&VU_L_RD(lower)==14u;
@@ -824,6 +828,26 @@ int vu_micro_step_pipeline(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
      * comment for the exact countdown arithmetic this mirrors. */
     if (upper & 0x40000000u)
         *ebit_delay = 2u;
+
+    /* PCSX2 VU0microInterp.cpp / VU1microInterp.cpp: D/T use
+     * VU0's shared FBRST and VPU_STAT even for VU1. A gated trap
+     * executes this pair, then stops without an extra E delay pair.
+     * Disabled traps leave an already pending E countdown intact. */
+    if (upper & 0x18000000u) {
+        int unit1=mem_mask==VU1_MEM_SIZE-1u;
+        uint32_t *control=unit1?ee_core_get_state()->cop2_ctrl:vi;
+        unsigned shift=unit1?8u:0u;
+        uint32_t flags=0;
+        if((upper&0x10000000u)&&(control[28]&(4u<<shift)))flags|=2u<<shift;
+        if((upper&0x08000000u)&&(control[28]&(8u<<shift)))flags|=4u<<shift;
+        if(flags) {
+            control[29]|=flags;
+            /* Each enabled source has its own raise, including D+T. */
+            if(flags&(2u<<shift))ee_intc_raise(unit1?7:6);
+            if(flags&(4u<<shift))ee_intc_raise(unit1?7:6);
+            *ebit_delay=1u;
+        }
+    }
 
     int upper_ok, lower_ok;
 
@@ -875,7 +899,13 @@ int vu_micro_step_pipeline(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
      * this instruction; this countdown (shared with any branch armed
      * on a PRIOR step) is what actually redirects *tpc once the one
      * real delay-slot instruction has retired. */
-    if (*branch_delay > 0) {
+    if(previous_branch_delay==1u && *branch_delay==2u) {
+        /* A taken branch in a branch delay slot does not replace the
+         * older redirect. Its own delay slot executes at that older
+         * target, then redirects to the younger branch target. */
+        *tpc=previous_branch_target&micro_mask;
+        *branch_delay=1u;
+    } else if (*branch_delay > 0) {
         if (--(*branch_delay) == 0)
             *tpc = *branch_target & micro_mask;
     }

@@ -2,6 +2,8 @@
 #include <string.h>
 #include "core/hw/vu.h"
 #include "core/hw/gif.h"
+#include "core/hw/ee_intc.h"
+#include "core/ee/ee_core.h"
 #define CHECK(x) do{if(!(x)){printf("FAIL line %d\n",__LINE__);return 1;}}while(0)
 static uint32_t vf[32][4],vi[32],acc[4],pc,bd,bt,ed;static uint64_t retired,unknown;
 static uint8_t mem[16384],micro[16384];static vu_pipeline_t pipe;
@@ -44,6 +46,39 @@ int main(void){
     reset();vi[21]=bits(3);vf[1][0]=bits(2);
     step(upper(2,1,0,8,34)|0x80000000u,bits(4));CHECK(vf[2][0]==bits(5));CHECK(vi[21]==bits(4));
     step(upper(2,1,0,8,34),0);CHECK(vf[2][0]==bits(6));
+    /* Nested taken branches retain both redirects: the younger delay
+     * slot executes at the older target, not at the sequential PC. */
+    reset();step(NOP,(32u<<25)|2);CHECK(pc==8&&bd==1&&bt==24);
+    step(NOP,(32u<<25)|3);CHECK(pc==24&&bd==1&&bt==40);
+    step(NOP,lower(12,0,5,8,0));CHECK(pc==40&&bd==0);
+    reset();step(NOP,(32u<<25)|2);vi[1]=1;vi[2]=2;
+    step(NOP,(40u<<25)|(1u<<11)|(2u<<16)|3);CHECK(pc==24&&bd==0);
+    reset();step(NOP,(32u<<25)|2);vi[1]=9;
+    step(NOP,(37u<<25)|(1u<<11)|(1u<<16));CHECK(pc==24&&bd==1&&bt==72&&vi[1]==4);
+    step(NOP,0);CHECK(pc==72&&bd==0);
+    /* Shared FBRST trap matrix: D/T gates are per-unit, VU1 must
+     * not consult its local VI[28]. Marked pair retires in full. */
+    for(unsigned unit=0;unit<2;unit++)for(unsigned gates=0;gates<4;gates++)
+    for(unsigned marked=1;marked<4;marked++)for(unsigned e=0;e<2;e++) {
+        reset();ee_intc_init();unsigned shift=unit?8:0;
+        uint32_t *ctrl=unit?ee_core_get_state()->cop2_ctrl:vi;
+        ctrl[28]=gates<<(shift+2);ctrl[29]=0x80000000u;
+        if(unit)vi[28]=0xc; /* Poison the non-shared register. */
+        put(0,0x80000000u|(2u<<16)|(1u<<11)|(3u<<6)|48u);
+        put(4,upper(3,1,2,8,40)|(marked&1?0x10000000u:0)|
+            (marked&2?0x08000000u:0)|(e?0x40000000u:0));
+        vi[1]=7;vi[2]=9;vf[1][0]=bits(2);vf[2][0]=bits(3);
+        int stop=vu_micro_step_pipeline(vf,vi,acc,mem,unit?16383:4095,
+            micro,unit?16383:4095,&pc,&bd,&bt,&ed,&retired,&unknown,&pipe);
+        unsigned enabled=gates&marked;
+        CHECK(stop==!!enabled);CHECK(retired==1&&pc==8);
+        CHECK(vf[3][0]==bits(5)&&vi[3]==16);
+        CHECK(ctrl[29]==(0x80000000u|(enabled<<(shift+1))));
+        CHECK(ee_intc_get_state()->stat==(enabled?(1u<<(unit?7:6)):0));
+        CHECK(ee_intc_get_raise_count(unit?7:6)==((enabled&1)!=0)+((enabled&2)!=0));
+        CHECK(ed==(enabled?0:e));
+    }
+    puts("PASS 48 VU0/VU1 D/T gate, shared control, E priority and pair-retirement oracles");
     /* All 13 EFU operations: independent simple inputs and issue latencies. */
     const unsigned sub[13]={28,28,28,28,29,29,29,30,30,30,31,31,31};
     const unsigned bc[13]={0,1,2,3,0,1,2,0,1,2,0,1,2};

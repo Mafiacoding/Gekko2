@@ -6087,7 +6087,15 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx,uint32_t w)
         if(op==0x24u||op==0x25u){emit_micro_vi_read(ctx,10,rs);emit(ctx,enc_rlwinm(10,10,3,0,28));}
         else {int off=(int)(w&0x7ffu);if(off&0x400)off-=0x800;emit(ctx,enc_addi(10,7,(int16_t)(8+off*8)));}
         if((op==0x21u||op==0x25u)&&(rt&15u)) {
-            emit(ctx,enc_addi(11,7,16));emit(ctx,enc_rlwinm(11,11,29,16,31));
+            /* Link follows the older target when BAL/JALR is itself
+             * in a branch delay slot (PCSX2 _vuBAL/_vuJALR). Keep
+             * the captured younger target in r10, including Is==It. */
+            emit(ctx,enc_lwz(12,8,0));
+            emit(ctx,(11u<<26)|(12u<<16)|1u); /* cmpwi r12,1 */
+            emit(ctx,enc_addi(11,7,16));
+            emit(ctx,enc_bc(4,2,12)); /* bne past target-based link */
+            emit(ctx,enc_lwz(11,9,0));emit(ctx,enc_addi(11,11,8));
+            emit(ctx,enc_rlwinm(11,11,29,16,31));
             emit(ctx,enc_stw(11,4,(int16_t)((rt&15u)*4u)));
         }
         emit(ctx,enc_addi(11,0,2));emit(ctx,enc_stw(11,8,0));emit(ctx,enc_stw(10,9,0));

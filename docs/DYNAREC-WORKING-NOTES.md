@@ -1,5 +1,9 @@
 # Unreleased dynarec work after R1306
 
+Latest source development is documented in [R1309 working notes](R1309-WORKING-NOTES.md).
+It corrects VU nested links and D/T traps and defers event-free IOP timer
+updates. Full VU pipelines and general event scheduling remain open.
+
 R1307 is an early-alpha development checkpoint. The owner has explicitly
 requested ELF and checkpoint delivery after the register-residency work;
 these test builds do not certify completion of the full dynarec plan.

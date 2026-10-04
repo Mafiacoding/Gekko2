@@ -7,10 +7,11 @@ exec(compile(Path(__file__).with_name('verify_ppc_gs_memory.py').read_text().spl
 r=Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory() as d:
  d=Path(d);fields=['vf','vi','acc','mem','micro','tpc','branch_delay','branch_target','ebit_delay','instructions_executed','unimplemented_opcodes_seen','pipeline']
- (d/'s.c').write_text('#include <stddef.h>\n#include "core/hw/vu.h"\nconst unsigned offsets[]={'+','.join('offsetof(vu1_state_t,'+f+')' for f in fields)+'};')
+ (d/'s.c').write_text('#include <stddef.h>\n#include "core/hw/vu.h"\n#include "core/ee/ee_core.h"\nconst unsigned offsets[]={'+','.join('offsetof(vu1_state_t,'+f+')' for f in fields)+',offsetof(ee_state_t,cop2_ctrl)};')
  subprocess.run([str(Path(a.nm).with_name('powerpc-eabi-gcc')),'-O2','-msdata=none','-I'+str(r/'include'),'-c',str(d/'s.c'),'-o',str(d/'s.o')],check=True)
  subprocess.run([str(Path(a.nm).with_name('powerpc-eabi-objcopy')),'-O','binary','--only-section=.rodata',str(d/'s.o'),str(d/'s.bin')],check=True)
- offsets=dict(zip(fields,struct.unpack('>12I',(d/'s.bin').read_bytes())))
+ raw_offsets=struct.unpack('>13I',(d/'s.bin').read_bytes())
+ offsets=dict(zip(fields,raw_offsets));ee_ctrl_offset=raw_offsets[-1]
 u.reg_write(UC_PPC_REG_MSR,0x2000);heap=[0x81600000]
 def hook(uc,address,size,data):
  if address==syms.get('memalign'):
@@ -59,6 +60,33 @@ for k in range(13):
  step(NOP,lo(25,0,5,8,0));assert get(v['vf']+80)==fbits(answers[k]);checks+=1
 print('PASS',checks,'linked PPC VU Q/P/EFU and dual-issue hazard oracles',Path(a.elf).name)
 
+# The 48 D/T cases assert constants independently of the interpreter.
+shared_ctrl=call('ee_core_get_state')+ee_ctrl_offset
+for unit in range(2):
+ for gates in range(4):
+  for marked in range(1,4):
+   for e in range(2):
+    reset();call('ee_intc_init');shift=8 if unit else 0
+    ctrl=shared_ctrl if unit else v['vi']
+    word(ctrl+28*4,gates<<(shift+2));word(ctrl+29*4,0x80000000)
+    if unit:word(v['vi']+28*4,12)
+    word(v['vi']+4,7);word(v['vi']+8,9)
+    word(v['vf']+16,fbits(2));word(v['vf']+32,fbits(3))
+    upper=up(3,1,2,8,40)|(0x10000000 if marked&1 else 0)|(0x08000000 if marked&2 else 0)|(0x40000000 if e else 0)
+    lower=0x80000000|2<<16|1<<11|3<<6|48
+    u.mem_write(v['micro'],struct.pack('<2I',lower,upper))
+    for n,f in enumerate(['branch_delay','branch_target','ebit_delay','instructions_executed','unimplemented_opcodes_seen','pipeline']):word(0x81780008+n*4,v[f])
+    mask=16383 if unit else 4095
+    stop=call('vu_micro_step_pipeline',v['vf'],v['vi'],v['acc'],v['mem'],mask,v['micro'],mask,v['tpc'])
+    enabled=gates&marked
+    assert stop==bool(enabled) and get(v['tpc'])==8 and get(v['instructions_executed']+4)==1
+    assert get(v['vf']+48)==fbits(5) and get(v['vi']+12)==16
+    assert get(ctrl+29*4)==(0x80000000|enabled<<(shift+1))
+    assert get(call('ee_intc_get_state'))==(1<<(7 if unit else 6) if enabled else 0)
+    assert get(syms['g_raise_count']+(7 if unit else 6)*4)==bool(enabled&1)+bool(enabled&2)
+    assert get(v['ebit_delay'])==(0 if enabled else e)
+print('PASS 48 linked PPC VU D/T shared FBRST, trap priority and full-pair oracles')
+
 # Native block admission/cache checks use this focused loader, avoiding
 # historical nested IOP fixtures whose JAL rejection assumption is obsolete.
 def put(at,l,h):u.mem_write(v['micro']+at,struct.pack('<2I',l,h))
@@ -87,3 +115,26 @@ if enabled:
  put(8,low,up(6,1,0,15,34));assert block()==2
  assert get(v['vf']+80)==fbits(4) and get(v['vf']+96)==fbits(5)
  print('PASS 7 linked PPC native VU block cache/budget/alias/hazard/I-order groups')
+
+reset();step(NOP,(32<<25)|2);assert get(v['tpc'])==8 and get(v['branch_delay'])==1
+step(NOP,(32<<25)|3);assert get(v['tpc'])==24 and get(v['branch_delay'])==1 and get(v['branch_target'])==40
+step(NOP,0);assert get(v['tpc'])==40 and get(v['branch_delay'])==0
+reset();step(NOP,(32<<25)|2);word(v['vi']+4,1);word(v['vi']+8,2)
+step(NOP,(40<<25)|(1<<11)|(2<<16)|3);assert get(v['tpc'])==24 and get(v['branch_delay'])==0
+reset();step(NOP,(32<<25)|2);word(v['vi']+4,9)
+step(NOP,(37<<25)|(1<<11)|(1<<16));assert get(v['tpc'])==24 and get(v['branch_target'])==72 and get(v['vi']+4)==4
+step(NOP,0);assert get(v['tpc'])==72 and get(v['branch_delay'])==0
+print('PASS 3 linked PPC nested VU branch/untaken/JALR independent control oracles')
+
+if enabled:
+ for opcode in [33,37]:
+  for delay in [0,1,2]:
+   for dst in [0,1,2]:
+    reset();word(v['branch_delay'],delay);word(v['branch_target'],24)
+    word(v['vi']+4,9);word(v['vi']+8,0xbeef)
+    lower=(opcode<<25)|(dst<<16)|((1<<11) if opcode==37 else 2)
+    assert call('vu_jit_try_lower',v['vf'],v['vi'],v['mem'],16383,lower,8,v['branch_delay'],v['branch_target'])==1
+    assert get(v['branch_delay'])==2 and get(v['branch_target'])==(72 if opcode==37 else 32)
+    if dst:assert get(v['vi']+dst*4)==(4 if delay==1 else 3)
+    else:assert get(v['vi'])==0 and get(v['vi']+4)==9
+ print('PASS 18 independent native PPC BAL/JALR normal/nested/alias/VI0 link oracles')

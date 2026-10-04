@@ -109,7 +109,10 @@ int checkpoint_save(const char *path)
         void *ihli_blob = iop_hle_intr_get_checkpoint_blob(&ihli_size);
         if (write_block(f, "IHLI", ihli_blob, ihli_size) < 0) goto fail;
     }
-    if (write_block(f, "ITMR", iop_timers_get_state(), sizeof(*iop_timers_get_state())) < 0) goto fail;
+    {
+        iop_timers_state_t timers;iop_timers_snapshot(&timers);
+        if (write_block(f,"ITMR",&timers,sizeof(timers))<0)goto fail;
+    }
     /* Round 659: IOP HLE thread-scheduler state (source/hw/iop_hle_thread.c)
      * - see iop_hle_thread.h's iop_hle_thread_get_checkpoint_blob() header
      * comment for why this block was missing entirely before this round
@@ -312,7 +315,12 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
         if (size != ihli_cap) goto fail_close; /* struct-layout mismatch - fail safely, per this file's own documented contract */
         memcpy(ihli_dest, generic, size);
     }
-    EXPECT("ITMR", generic, sizeof(generic), &size); memcpy(iop_timers_get_state(), generic, size);
+    {
+        iop_timers_state_t timers;
+        EXPECT("ITMR",generic,sizeof(generic),&size);
+        if(size!=sizeof(timers))goto fail_close;
+        memcpy(&timers,generic,size);iop_timers_restore(&timers);
+    }
     {
         uint32_t ithr_cap = 0;
         void *ithr_dest = iop_hle_thread_get_checkpoint_blob(&ithr_cap);

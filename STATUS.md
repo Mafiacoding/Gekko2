@@ -4,6 +4,13 @@ Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** Th
 
 ## Verified progress
 
+Development branch work after R1308: VU nested control/link corrections,
+shared FBRST D/T traps and event-free IOP timer intervals pass 214 host tests
+and linked PPC oracles. See [R1309 working notes](docs/R1309-WORKING-NOTES.md)
+for exact coverage and measured cost, including the dense-event regression.
+This is source development; points 4 and 5 are not complete and no R1309
+hardware release is certified.
+
 | Area | Evidence | Remaining limits |
 | --- | --- | --- |
 | Real Wii BIOS | Owner confirmed the Sony Computer Entertainment startup screen and Wii Remote idle fix. Both earlier GX variants booted in owner testing. | Stable, responsive OSDSYS navigation and current-build FPS need hardware confirmation. |

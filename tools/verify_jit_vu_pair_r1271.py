@@ -11,6 +11,9 @@ s=(r/'source/hw/vu.c').read_text().replace('    if (vu_jit_try_upper(vf, vi, acc
 s+='''\nint reference_conflict(uint32_t u,uint32_t l){return vu_pair_vf_conflict(u,l)||(!(u&0x80000000u)&&(l>>25)==64u&&((l>>6)&31u)==14u&&(l&63u)==63u);}
 int reference_upper(uint32_t vf[32][4],uint32_t *vi,uint32_t *acc,uint32_t w){return vu_exec_upper(vf,vi,acc,w);}
 int reference_lower(uint32_t vf[32][4],uint32_t *vi,uint8_t *m,uint32_t mask,uint32_t w,uint32_t pc,uint32_t *d,uint32_t *t){return vu_exec_lower(vf,vi,m,mask,w,pc,d,t);}
+static ee_state_t stub_ee;
+ee_state_t *ee_core_get_state(void){return &stub_ee;}
+void ee_intc_raise(int irq){(void)irq;}
 static vif_state_t stub_vif;
 vif_state_t *vif0_get_state(void){return &stub_vif;}
 vif_state_t *vif1_get_state(void){return &stub_vif;}

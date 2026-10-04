@@ -31,13 +31,25 @@ static const iop_timer_range_t s_ranges[IOP_TIMERS_COUNT] = {
 static const int s_irq_bit[IOP_TIMERS_COUNT] = { 4, 5, 6, 14, 15, 16 };
 
 static iop_timers_state_t g_timers;
+static uint32_t g_deferred_ticks,g_event_distance;
+static int g_state_exposed,g_dense_events;
+static void iop_timers_materialize(void);
 
 void iop_timers_init(void)
 {
     memset(&g_timers, 0, sizeof(g_timers));
+    g_deferred_ticks=g_event_distance=0;g_state_exposed=g_dense_events=0;
 }
 
-iop_timers_state_t *iop_timers_get_state(void) { return &g_timers; }
+iop_timers_state_t *iop_timers_get_state(void) {
+    iop_timers_materialize();g_event_distance=0;g_state_exposed=1;return &g_timers;
+}
+void iop_timers_snapshot(iop_timers_state_t *out) {
+    iop_timers_materialize();*out=g_timers;
+}
+void iop_timers_restore(const iop_timers_state_t *in) {
+    g_timers=*in;g_deferred_ticks=g_event_distance=0;g_dense_events=0;
+}
 
 static iop_timer_t *find_timer(uint32_t addr, uint32_t *sub_off_out)
 {
@@ -73,6 +85,7 @@ int iop_timers_mmio_read32(uint32_t addr, uint32_t *out)
     if (!t)
         return 0;
 
+    iop_timers_materialize();
     switch (sub_off) {
         case 0x00: *out = t->count;  return 1;
         case 0x04: *out = t->mode;   return 1;
@@ -88,6 +101,7 @@ int iop_timers_mmio_write32(uint32_t addr, uint32_t value)
     if (!t)
         return 0;
 
+    iop_timers_materialize();g_event_distance=0;g_dense_events=0;
     switch (sub_off) {
         case 0x00:
             t->count = value;
@@ -122,7 +136,7 @@ int iop_timers_mmio_write32(uint32_t addr, uint32_t value)
  * scope (no gate modes, no prescale dividers, no toggle-mode IRQ
  * polarity inversion - only plain free-running counting plus the two
  * most common real IRQ behaviors: one-shot, and zero-return/repeat). */
-void iop_timers_tick(void)
+static __attribute__((noinline)) void iop_timers_tick_scalar(void)
 {
     for (int i = 0; i < IOP_TIMERS_COUNT; i++) {
         iop_timer_t *t = &g_timers.t[i];
@@ -173,4 +187,46 @@ void iop_timers_tick(void)
             t->mode &= ~IOP_CNT_MODE_TARGET_FLAG; /* real: target's IOPCNT_FUTURE_TARGET bit is cleared on overflow */
         }
     }
+}
+
+/* R1309: advance only intervals proven to contain no target or wrap
+ * transition. The existing scalar model owns the exact boundary tick,
+ * including its current 32-bit wrap behavior and one-shot IRQ gates.
+ * This changes execution cost, not the timer model's hardware scope. */
+static void iop_timers_materialize(void) {
+    uint32_t ticks=g_deferred_ticks;if(!ticks)return;
+    for(unsigned i=0;i<IOP_TIMERS_COUNT;i++)
+        if(!(g_timers.t[i].mode&IOP_CNT_MODE_STOPPED))g_timers.t[i].count+=ticks;
+    g_deferred_ticks=0;
+}
+static uint32_t iop_timers_distance(void) {
+    uint32_t distance=4096;
+    for(unsigned i=0;i<IOP_TIMERS_COUNT;i++) {
+        const iop_timer_t *t=&g_timers.t[i];
+        if(t->mode&IOP_CNT_MODE_STOPPED)continue;
+        uint64_t wrap=(i<3?0x10000ull:0x100000000ull);
+        if(t->count>=wrap)return 1; /* wide 16-bit COUNT writes */
+        uint64_t ticks=wrap-t->count;
+        if(!(t->mode&IOP_CNT_MODE_TARGET_FLAG)) {
+            /* Zero-return with TARGET=0 has a transition every tick.
+             * It stays dense until MMIO/reset/restore changes the
+             * configuration; don't rescan its distance every time. */
+            if(!t->target&&(t->mode&IOP_CNT_MODE_ZERO_RETURN))g_dense_events=1;
+            if(t->count>=t->target)return 1;
+            uint32_t target_ticks=t->target-t->count;
+            if(target_ticks<ticks)ticks=target_ticks;
+        }
+        if(ticks<distance)distance=(uint32_t)ticks;
+    }
+    return distance;
+}
+static __attribute__((noinline)) void iop_timers_boundary(void) {
+    if(g_state_exposed||g_dense_events){iop_timers_tick_scalar();return;}
+    if(!g_event_distance)g_event_distance=iop_timers_distance();
+    if(--g_event_distance){g_deferred_ticks++;return;}
+    iop_timers_materialize();iop_timers_tick_scalar();
+}
+void iop_timers_tick(void) {
+    if(g_event_distance>1u){--g_event_distance;g_deferred_ticks++;return;}
+    iop_timers_boundary();
 }

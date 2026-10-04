@@ -45,11 +45,10 @@
  *     instruction after this one, the classic VU "E-bit delay slot",
  *     before actually stopping - verified from the exact ebit
  *     countdown arithmetic in `_vu0Exec`). Real hardware also has M/D/
- *     T flags (bits 29/28/27) gating INTC/FBRST-based debug
- *     interrupts - NOT implemented here (no VU-side interrupt
- *     delivery exists in this project yet, same "real bit position
- *     cited, side effect not modeled" pattern as round 12's FBRST/
- *     CTC2 handling). Branches use the same 1-instruction-delay-slot
+ *     T flags (bits 29/28/27). D/T now use VU0's shared FBRST to
+ *     set VPU_STAT and raise INTC VU0/VU1 after executing the marked
+ *     pair, without an E delay pair. M synchronization is still open.
+ *     Branches use the same 1-instruction-delay-slot
  *     mechanism as the E-bit (`VU->branch`countdown in `_vu0Exec`).
  *
  * UPDATE (task #94, this round): a real opcode-number-to-mnemonic
