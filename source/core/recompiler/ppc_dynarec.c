@@ -6275,30 +6275,41 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
  const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared)
 {
  if(!ctx||!words||count<2u||count>8u||!prepare||!commit)return -1;
- size_t exits[8];
- emit(ctx,enc_addi(1,1,-64));emit(ctx,enc_stw(14,1,40));emit(ctx,enc_stw(15,1,44));
+ size_t exits[8],returns[8];
+ emit(ctx,enc_addi(1,1,-64));emit(ctx,enc_stw(14,1,40));
  emit(ctx,enc_mflr(12));emit(ctx,enc_stw(12,1,48));
- emit(ctx,enc_or(14,3,3));emit(ctx,enc_addi(15,0,0));
+ emit(ctx,enc_or(14,3,3));
  for(unsigned n=0;n<count;n++) {
   if(!ee_jit_block_candidate(words[n]))return -1;
   size_t skip=0;
   if(n==0u&&allow_prepared) {
-   emit(ctx,enc_addi(5,0,0));emit(ctx,enc_cmplw(4,5));
+   emit(ctx,(11u<<26)|(4u<<16)); /* cmpwi r4,0 */
    skip=ctx->used_words;emit(ctx,enc_bc(4,2,0));
   }
   emit(ctx,enc_or(3,14,14));emit_load_const32(ctx,4,pc+4u*n);
-  emit_load_const32(ctx,5,words[n]);ee_block_call(ctx,prepare);emit(ctx,enc_addi(4,0,0));emit(ctx,enc_cmplw(3,4));
+  emit_load_const32(ctx,5,words[n]);ee_block_call(ctx,prepare);emit(ctx,(11u<<26)|(3u<<16)); /* cmpwi r3,0 */
   exits[n]=ctx->used_words;emit(ctx,enc_bc(12,2,0));
   if(skip)ctx->code[skip]=enc_bc(4,2,(int32_t)(ctx->used_words-skip)*4);
   emit(ctx,enc_or(3,14,14));
   if(ppc_dynarec_translate_one(ctx,words[n]))return -1;
   emit(ctx,enc_or(3,14,14));ee_block_call(ctx,commit);
-  emit(ctx,enc_addi(15,15,1));
+ }
+ /* R1303: retirement count is known at each live preparation exit. Return
+  * that constant instead of maintaining a callee-saved counter in the hot
+  * path. No instruction/device boundary is removed or fused. */
+ emit(ctx,enc_addi(3,0,(int16_t)count));
+ size_t success=ctx->used_words;emit(ctx,enc_b(0));
+ for(unsigned n=0;n<count;n++) {
+  size_t stub=ctx->used_words;
+  ctx->code[exits[n]]=enc_bc(12,2,(int32_t)(stub-exits[n])*4);
+  emit(ctx,enc_addi(3,0,(int16_t)n));
+  returns[n]=ctx->used_words;emit(ctx,enc_b(0));
  }
  size_t done=ctx->used_words;
- for(unsigned n=0;n<count;n++)ctx->code[exits[n]]=enc_bc(12,2,(int32_t)(done-exits[n])*4);
- emit(ctx,enc_or(3,15,15));emit(ctx,enc_lwz(12,1,48));emit(ctx,enc_mtlr(12));
- emit(ctx,enc_lwz(14,1,40));emit(ctx,enc_lwz(15,1,44));emit(ctx,enc_addi(1,1,64));
+ ctx->code[success]=enc_b((int32_t)(done-success)*4);
+ for(unsigned n=0;n<count;n++)ctx->code[returns[n]]=enc_b((int32_t)(done-returns[n])*4);
+ emit(ctx,enc_lwz(12,1,48));emit(ctx,enc_mtlr(12));
+ emit(ctx,enc_lwz(14,1,40));emit(ctx,enc_addi(1,1,64));
  return 0;
 }
 

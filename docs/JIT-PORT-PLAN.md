@@ -1,4 +1,4 @@
-# Gekko2 PPC dynarec plan — R1302
+# Gekko2 PPC dynarec plan — R1303
 
 The custom EE/IOP/VU PowerPC backend is implemented in part; it is not a complete recompiler. Read [STATUS](../STATUS.md) and [R1301 handoff](R1301-HANDOFF.md) for verified scope.
 

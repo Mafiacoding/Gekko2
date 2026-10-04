@@ -1,4 +1,4 @@
-# Gekko2 status — R1302
+# Gekko2 status — R1303
 
 Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
 
@@ -14,6 +14,10 @@ Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** Th
 | GX | Optional CT32/24 presentation, guarded sprites/flat triangles, snapshot textures, selected TEV blending/depth paths, deferred VRAM resolve and compatible resident framebuffers. | Varying Gouraud/textured triangle routing, broad GPU residency and complex GS states still require software/hybrid handling. |
 | R1302 branding | Gekko2 launcher header, HBC icon, checked 640×480 native launcher preview and both Wii cross-builds. | No fresh physical-Wii R1302 timing result. Guest emulation remains R1301. |
 
+## R1303 CPU change
+
+Precise EE blocks return a constant retirement count at each exit rather than maintaining a counter in PPC r15. Zero tests use immediate comparisons. Every live source/mapping check, guest retirement, interrupt and timer boundary is retained. Source-exit stubs slightly increase generated code size; they avoid bookkeeping in the common full-block path. This is an incremental improvement, not a complete dynarec.
+
 ## Latest changes
 
 - **R1297:** guarded Tekken retail resource transfers, fractional sprite coverage and precise COP1 block admission. [Details](docs/R1297-HANDOFF.md).
@@ -24,11 +28,16 @@ Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** Th
 
 ## Validation record
 
+R1303: **200/200 native tests**, both cross-builds and four linked-PPC jobs. Additional tests cover all 35 early source-mutation exits for block lengths 2–8 and seven successful exits, including exact PC/retirement and all 18 nonvolatile PPC registers. Interpreter/JIT ALU/COP1 state and 66 full-VRAM signatures remain matched.
+
+Under the same synthetic services, R1302→R1303 warm eight-instruction counts are ADDIU **3195→3177**, mixed COP1 **3181→3163**: 18 fewer PPC instructions (about 0.6%) in these workloads. This does not establish physical Wii FPS.
+
+
 R1301 passed **200/200 native tests** and four linked-PPC jobs across Interpreter/JIT builds. The linked paths preserve **66 matching full-VRAM signatures**, ALU/COP1 state parity, and checks for budgets, interrupt boundaries, source mutation/TLB replacement and far callback fallback.
 
 R1300 additionally checked resident framebuffer ownership and snapshot reuse with synthetic EFB/linked-PPC tests. These test services validate control/state behavior; they do not substitute for a physical GX GPU or establish Wii rendering speed.
 
-R1302 passed both devkitPPC builds and native launcher visual inspection. The guest suite is inherited from R1301, **not rerun for the artwork-only revision**. See [public verification summary](docs/verification/R1302.json).
+R1302 passed both devkitPPC builds and native launcher visual inspection. The guest suite is inherited from R1301, **not rerun for the artwork-only revision**. See [public verification summary](docs/verification/R1303.json).
 
 Warm eight-instruction R1301 benchmarks counted 45 fewer PPC instructions: ADDIU 3240→3195; mixed COP1 3226→3181. These isolated counts are not Wii cycle measurements or an overall FPS improvement.
 

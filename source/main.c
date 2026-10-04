@@ -3,7 +3,7 @@
 #include "core/hw/frontend_runtime.h"
 #include "core/recompiler/iop_jit.h"
 #include "core/recompiler/vu_jit.h"
-/* R1302: native Wii launcher followed by real EE/IOP boot. */
+/* R1303: native Wii launcher followed by real EE/IOP boot. */
 #include <gccore.h>
 #include <wiiuse/wpad.h>
 #include "frontend.h"
@@ -88,7 +88,7 @@ static uint16_t wii_pad_to_ps2_pad(uint16_t wii_held)
     return ps2;
 }
 
-/* R1302: one build supports GameCube pads and upright Wii Remotes,
+/* R1303: one build supports GameCube pads and upright Wii Remotes,
  * with optional Nunchuk. Expansion bits are accepted only for Nunchuk,
  * so another expansion cannot accidentally become a shoulder button. */
 __attribute__((noinline)) uint16_t wii_remote_to_pad(uint32_t buttons,
@@ -290,7 +290,7 @@ static int g_first_picture;
 static uint64_t g_boot_started,g_boot_log_next;
 static const char *boot_log_path(void)
 {
-    return g_gx_present?"sd:/pcsx2/Gekko2-R1302-gx-render.log":"sd:/pcsx2/Gekko2-R1302-software.log";
+    return g_gx_present?"sd:/pcsx2/Gekko2-R1303-gx-render.log":"sd:/pcsx2/Gekko2-R1303-software.log";
 }
 static void save_boot_progress(const char *event,int truncate)
 {
@@ -460,9 +460,9 @@ static void r1252_save_fault_evidence(void)
 {
     uint32_t f[112]={0}; ee_core_get_r1252_fault(f);
     if (!f[0] || r1252_evidence_written) return;
-    FILE *fp=fopen("sd:/pcsx2/Gekko2-R1302-first-fault.txt", "w");
+    FILE *fp=fopen("sd:/pcsx2/Gekko2-R1303-first-fault.txt", "w");
     if (!fp) return;
-    fprintf(fp,"Gekko2 R1302 JIT=%s disc=%d BIOS=%s version=%s size=%u\n",
+    fprintf(fp,"Gekko2 R1303 JIT=%s disc=%d BIOS=%s version=%s size=%u\n",
 #ifdef PCSX2WII_JIT_DISABLE
         "OFF",
 #else
@@ -551,7 +551,7 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
 #else
             const char *jm="ON";
 #endif
-            printf("R1302 MENU / RPC-GS JIT=%s REND=%llu hh=%llu S5=%ld/%ld w=%ld | slot2=%lu writer=%lu\033[K\n",jm,(unsigned long long)re,(unsigned long long)hh,(long)sc,(long)sm,(long)sw,(unsigned long)hit,(unsigned long)wh);
+            printf("R1303 MENU / RPC-GS JIT=%s REND=%llu hh=%llu S5=%ld/%ld w=%ld | slot2=%lu writer=%lu\033[K\n",jm,(unsigned long long)re,(unsigned long long)hh,(long)sc,(long)sm,(long)sw,(unsigned long)hit,(unsigned long)wh);
             uint64_t rc[4]={0}; uint32_t rl[6]={0};
             ee_core_get_r1249_repair(rc,rl);
             printf("REPAIR=%llu T%lu CONT=%llu LD=%llu JR=%llu\033[K\n",
@@ -669,7 +669,7 @@ static void run_real_boot_flow(void)
         g_disc_checked = 1;
         if (!g_boot_disc) {
         g_disc_ok = 0;
-        printf("[R1302] BIOS mode: no disc mounted.\n");
+        printf("[R1303] BIOS mode: no disc mounted.\n");
         } else {
         int cdvd_rc = iop_cdvd_mount_iso(g_disc_path);
         int legacy_rc = iop_cdrom_legacy_mount_iso(g_disc_path);

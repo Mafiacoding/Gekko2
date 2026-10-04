@@ -1,0 +1,66 @@
+{
+  "name": "Gekko2",
+  "revision": "R1303",
+  "scope": "Precise EE block constant retirement exits and immediate zero comparisons; R1302 artwork and GX preserved",
+  "native_tests": {
+    "total": 200,
+    "passed": 200
+  },
+  "linked_ppc_jobs": [
+    {
+      "script": "verify_ee_exit_counts_r1303",
+      "engine": "Interpreter",
+      "exit": 0
+    },
+    {
+      "script": "verify_ee_exit_counts_r1303",
+      "engine": "JIT",
+      "exit": 0
+    },
+    {
+      "script": "verify_gs_paths_r1285",
+      "engine": "Interpreter",
+      "exit": 0
+    },
+    {
+      "script": "verify_gs_paths_r1285",
+      "engine": "JIT",
+      "exit": 0
+    }
+  ],
+  "matching_vram_signatures": 66,
+  "early_source_exits": 35,
+  "successful_length_exits": 7,
+  "preserved_nonvolatile_registers": 18,
+  "benchmarks": {
+    "scope": "eight real retired guest instructions under mocked platform services; not physical Wii cycles or FPS",
+    "ADDIU": {
+      "R1302": 3195,
+      "R1303": 3177
+    },
+    "COP1_mix": {
+      "R1302": 3181,
+      "R1303": 3163
+    }
+  },
+  "physical_wii_verified": false,
+  "fresh_bios_coldboot": false,
+  "binaries": {
+    "Gekko2-R1303-Menu-Interpreter.elf": {
+      "bytes": 5295732,
+      "sha256": "0373ed66e009bbbe7df1f5668d637d7ae978d410739f2d9c3c6657849236a3dc"
+    },
+    "Gekko2-R1303-Menu-Interpreter.dol": {
+      "bytes": 955584,
+      "sha256": "1ab6bdec7d0d089ae8f6eac437bc43d2d5d8fb1febc85561b19fc27ada3f5b3b"
+    },
+    "Gekko2-R1303-Menu-JIT.elf": {
+      "bytes": 5427564,
+      "sha256": "650474d9362d15e8e5177231a1286e453fbbf36633bbfe3168ad2b5422a856f3"
+    },
+    "Gekko2-R1303-Menu-JIT.dol": {
+      "bytes": 1035648,
+      "sha256": "cfa9269ac1687989ff3a9205414ecea23621d31af95ab6b4f5962b40e291ddfc"
+    }
+  }
+}

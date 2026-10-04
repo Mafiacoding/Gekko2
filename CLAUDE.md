@@ -1,8 +1,8 @@
-# Gekko2 development handoff — R1302
+# Gekko2 development handoff — R1303
 
-Start with README.md, STATUS.md, docs/ROADMAP.md, docs/R1301-HANDOFF.md and docs/R1302-HANDOFF.md. Historical round documents are evidence for their own checkpoints, not current promises.
+Start with README.md, STATUS.md, docs/ROADMAP.md, docs/R1301-HANDOFF.md and docs/R1303-HANDOFF.md. Historical round documents are evidence for their own checkpoints, not current promises.
 
-The project is named Gekko2. Preserve legacy sd:/pcsx2/ data paths. Current builds, launcher and logs use Gekko2. R1302 adds embedded header/icon artwork only; guest runtime remains R1301.
+The project is named Gekko2. Preserve legacy sd:/pcsx2/ data paths. Current builds, launcher and logs use Gekko2. R1303 uses constant precise-block retirement exits and immediate zero comparisons; R1302 artwork remains. Every guest boundary remains precise.
 
 Owner direction: pause GX feature expansion and prioritize our own PPC EE/IOP dynarec and stable BIOS/OSDSYS. Register allocation, larger guarded memory/control blocks and IOP blocks are next. Wii64/nullDC4Wii are references, not imported engines.
 

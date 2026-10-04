@@ -116,7 +116,7 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  rect(36,35,4,51,67,182,255);
  if(ui_logo_renderer)ui_logo_renderer(54,8);
  else ui_text(rect,54,32,3,"GEKKO2",204,232,255);
- ui_text(rect,344,84,1,"W I I  /  R1302",78,163,229);
+ ui_text(rect,344,84,1,"W I I  /  R1303",78,163,229);
  /* Geometric 2 motif, inspired by the console's blue line art. */
  rect(526,35,72,3,55,133,225);rect(595,35,3,20,55,133,225);
  rect(526,52,72,3,55,133,225);rect(526,52,3,20,55,133,225);
