@@ -1,0 +1,67 @@
+name: R1316 precise cache source generations retry
+on:
+  push:
+    branches: [dynarec-development-r1308]
+    paths: ['.github/workflows/r1316-cache-generation-retry.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dynarec-development-r1308
+          fetch-depth: 0
+      - name: Reuse guarded R1316 patch
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+          w=Path('.github/workflows/r1316-cache-generation.yml').read_text()
+          marker="python3 <<'PY'\n"
+          assert w.count(marker)==1
+          body=w.split(marker,1)[1].split('\n          PY',1)[0]
+          exec(compile(textwrap.dedent(body),'<r1316-guarded-patch>','exec'))
+          PY
+          cat > tests/test_jit_generation_r1316.c <<'EOF'
+          #include <stdio.h>
+          #include <stdint.h>
+          #include "core/recompiler/ee_jit.c"
+
+          static int fail(const char *m){fprintf(stderr,"R1316 generation test: %s\n",m);return 1;}
+          int main(void)
+          {
+              ee_precise_reset_cache();
+              if(precise_page_generation[0]||precise_page_generation[1]||precise_mapping_generation) return fail("reset");
+              ee_jit_notify_physical_write(0x00000fffu,2u);
+              if(precise_page_generation[0]!=1u||precise_page_generation[1]!=1u) return fail("cross-page write");
+              ee_jit_notify_physical_write(0x00002000u,0u);
+              if(precise_page_generation[2]!=0u) return fail("zero-length write");
+              ee_jit_notify_physical_write(32u*1024u*1024u-1u,8u);
+              if(precise_page_generation[EE_PRECISE_RAM_PAGES-1u]!=1u) return fail("RAM-end clipping");
+              ee_jit_notify_physical_write(32u*1024u*1024u,4u);
+              if(precise_page_generation[EE_PRECISE_RAM_PAGES-1u]!=1u) return fail("out-of-RAM write");
+              ee_jit_notify_mapping_change();
+              ee_jit_notify_mapping_change();
+              if(precise_mapping_generation!=2u) return fail("mapping epoch");
+              puts("R1316 generation test: PASS");
+              return 0;
+          }
+          EOF
+          sed -i 's/^          //' tests/test_jit_generation_r1316.c
+      - name: Structural and MMI audits
+        run: |
+          python3 tools/audit_mmi_coverage_internal.py
+          python3 tools/audit-ee-jit-coverage.py
+      - name: Full host regression suite
+        run: bash tests/run_test.sh --all
+      - name: Commit verified R1316
+        run: |
+          rm -f .github/workflows/r1315-mmi-coverage.yml .github/workflows/r1316-cache-generation.yml .github/workflows/r1316-cache-generation-retry.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'R1316: add precise cache source generations'
+          git push origin HEAD:dynarec-development-r1308
