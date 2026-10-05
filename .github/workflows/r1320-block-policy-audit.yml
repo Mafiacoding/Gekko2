@@ -1,0 +1,21 @@
+name: R1320 precise-block policy reachability audit
+on:
+  push:
+    branches: [r1320-block-policy-reachability-audit]
+    paths:
+      - 'include/core/recompiler/ee_block_policy.h'
+      - 'source/core/recompiler/ppc_dynarec.c'
+      - 'tools/audit_ee_block_policy_reachability_r1320.py'
+      - '.github/workflows/r1320-block-policy-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1320-block-policy-reachability-audit
+      - name: Exhaust precise-block frontend/backend reachability
+        run: python3 tools/audit_ee_block_policy_reachability_r1320.py
