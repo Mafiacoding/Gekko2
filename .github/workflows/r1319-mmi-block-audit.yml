@@ -1,0 +1,27 @@
+name: R1319 MMI precise-block admission verification
+on:
+  push:
+    branches: [dynarec-development-r1308]
+    paths:
+      - 'include/core/recompiler/ee_block_policy.h'
+      - 'tools/audit_mmi_block_admission.py'
+      - '.github/workflows/r1319-mmi-block-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dynarec-development-r1308
+          fetch-depth: 0
+      - name: Exact MMI precise-block admission audit
+        run: python3 tools/audit_mmi_block_admission.py
+      - name: Existing MMI and EE JIT structural audits
+        run: |
+          python3 tools/audit_mmi_coverage_internal.py
+          python3 tools/audit-ee-jit-coverage.py
+      - name: Full host regression suite
+        run: bash tests/run_test.sh --all
