@@ -31,3 +31,4 @@ jobs:
           git add source/core/recompiler/ppc_dynarec.c source/core/recompiler/ee_jit.c
           git commit -m "R1322: complete interpreter-backed VU0 SPECIAL2 JIT coverage"
           git push origin HEAD:r1322-vu0-special2-impl
+# retry after removing invalid first-pass workflow
