@@ -1,0 +1,30 @@
+name: R1317 Wii devkitPPC crossbuild
+on:
+  push:
+    branches: [r1317-wii-crossbuild-staging]
+    paths: ['.github/workflows/r1317-wii-crossbuild.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitppc:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1317-wii-crossbuild-staging
+          fetch-depth: 0
+      - name: Apply R1317 source patch
+        run: python3 tools/r1317_apply.py
+      - name: Build default Wii target
+        run: |
+          make clean
+          make -j2
+          test -s Gekko2.elf
+          test -s Gekko2.dol
+      - name: Build FAST dynarec Wii target
+        run: |
+          make clean
+          make -j2 EXTRA_CFLAGS=-DPCSX2WII_FAST
+          test -s Gekko2.elf
+          test -s Gekko2.dol
