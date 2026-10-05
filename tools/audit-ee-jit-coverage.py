@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R1312 EE JIT coverage audit.
+"""R1313 EE JIT coverage audit.
 
 Static reachability audit for the independently maintained EE front gate and
 PPC translator. This catches the R922 class of regression where working PPC
@@ -46,6 +46,10 @@ def has_op(text: str, op: int) -> bool:
     return bool(re.search(rf"\bop\s*==\s*0x{op:02x}[uU]?\b", text, re.I))
 
 
+def has_case(text: str, value: int) -> bool:
+    return bool(re.search(rf"\bcase\s+0x{value:02x}\s*:", text, re.I))
+
+
 for op, name in {0x00:"SPECIAL",0x01:"REGIMM",0x10:"COP0",0x11:"COP1",0x12:"COP2",0x1C:"MMI"}.items():
     if not has_op(predicate, op): errors.append(f"front gate missing {name} (op 0x{op:02x})")
     if not has_op(translator, op): errors.append(f"backend dispatch missing {name} (op 0x{op:02x})")
@@ -62,21 +66,38 @@ for selector,label in [(8,"TGEI"),(9,"TGEIU"),(10,"TLTI"),(11,"TLTIU"),(12,"TEQI
     if not re.search(rf"\btrap\s*==\s*{selector}[uU]?\b", predicate):
         errors.append(f"R1310 trap front gate missing {label}")
 for funct,label in [(0x30,"TGE"),(0x31,"TGEU"),(0x32,"TLT"),(0x33,"TLTU"),(0x34,"TEQ"),(0x36,"TNE")]:
-    if not re.search(rf"\bcase\s+0x{funct:02x}\s*:", predicate, re.I):
+    if not has_case(predicate, funct):
         errors.append(f"R1310 trap front gate missing {label}")
 
 # R1311 signed-overflow forms must remain admitted.
 for op,label in [(0x08,"ADDI"),(0x18,"DADDI")]:
     if not has_op(predicate, op): errors.append(f"R1311 overflow front gate missing {label}")
 for funct,label in [(0x20,"ADD"),(0x22,"SUB"),(0x2C,"DADD"),(0x2E,"DSUB")]:
-    if not re.search(rf"\bcase\s+0x{funct:02x}\s*:", predicate, re.I):
+    if not has_case(predicate, funct):
         errors.append(f"R1311 overflow front gate missing {label}")
+
+# R1313: the translator already has all four REGIMM branch-and-link forms.
+# They must also pass the independent single-op GEKKO gate. This explicitly
+# guards against the same backend-present/front-gate-missing failure R922
+# exposed for COP2/MMI.
+regimm_gate = re.search(r"if\s*\(\s*op\s*==\s*0x01[uU]?\s*\)\s*\{(.*?)\n\s*\}\n\s*if\s*\(\s*op\s*==\s*0x11", predicate, re.I|re.S)
+if not regimm_gate:
+    errors.append("cannot isolate REGIMM front gate")
+else:
+    body = regimm_gate.group(1)
+    for selector,label in [(0x10,"BLTZAL"),(0x11,"BGEZAL"),(0x12,"BLTZALL"),(0x13,"BGEZALL")]:
+        if not has_case(body, selector):
+            errors.append(f"R1313 REGIMM front gate missing native {label} selector 0x{selector:02x}")
+
+backend_links = re.search(r"rt\s*>=\s*0x10[uU]?\s*&&\s*rt\s*<=\s*0x13[uU]?", translator, re.I)
+if not backend_links:
+    errors.append("backend no longer contains the four REGIMM link branches")
 
 # Reachability alone is insufficient if the native synchronous-exception
 # machinery was removed by a refactor.
-for token,label in [("EE_EXC_TRAP","trap"),("EE_EXC_OVERFLOW","overflow")]:
+for token,label in [("ADDR_EE_RAISE_TRAP","trap"),("ADDR_EE_RAISE_OVERFLOW","overflow")]:
     if token not in translator:
-        errors.append(f"backend missing native {label} exception marker {token}")
+        errors.append(f"backend missing native {label} exception call target {token}")
 
 if errors:
     print("EE JIT coverage audit: FAIL", file=sys.stderr)
@@ -87,4 +108,5 @@ print("EE JIT coverage audit: PASS")
 print("  SPECIAL/REGIMM/COP0/COP1/COP2/MMI have front + backend dispatch")
 print("  COP0 one-op gate remains restricted to MFC0/MTC0")
 print("  R1310 trap and R1311 signed-overflow gates remain reachable")
+print("  BLTZAL/BGEZAL/BLTZALL/BGEZALL are reachable through the single-op gate")
 print("  native trap/overflow exception machinery remains present")
