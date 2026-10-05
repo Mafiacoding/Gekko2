@@ -644,17 +644,55 @@ typedef unsigned (*ee_precise_fn)(ee_state_t *,unsigned,uint32_t);
 typedef struct {
  uint32_t pc,words[8],count;
  uint32_t source_page,source_generation,mapping_generation;
+ uint32_t serial; /* R1318: non-zero identity of this installed allocation. */
  ee_precise_fn fn;
 } ee_precise_slot;
 static ee_precise_slot precise_cache[256];
 static uint32_t precise_page_generation[EE_PRECISE_RAM_PAGES];
 static uint32_t precise_mapping_generation;
-static uint64_t precise_runs,precise_retired;
+static uint32_t precise_serial_source;
+static uint64_t precise_runs,precise_retired,precise_evictions;
 static int precise_active;
+
+static inline unsigned ee_precise_cache_index(uint32_t pc)
+{
+ return ((pc>>2)^(pc>>12))&255u;
+}
 
 static void ee_precise_bump(uint32_t *generation)
 {
  if(++*generation==0u)*generation=1u;
+}
+static uint32_t ee_precise_next_serial(void)
+{
+ ee_precise_bump(&precise_serial_source);
+ return precise_serial_source;
+}
+/* R1318: publish a replacement only after translation/finalization succeeded.
+ * A live chain pins all installed allocations via precise_active, so failed or
+ * nested installs leave the old slot byte-for-byte intact. */
+static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t source_page,
+ uint32_t source_generation,uint32_t mapping_generation,ee_precise_fn fn)
+{
+ if(!slot||!words||!fn||count<2u||count>8u||precise_active)return 0;
+ ee_precise_slot next;memset(&next,0,sizeof(next));
+ next.pc=pc;next.count=count;memcpy(next.words,words,count*4u);
+ next.source_page=source_page;next.source_generation=source_generation;
+ next.mapping_generation=mapping_generation;next.serial=ee_precise_next_serial();
+ next.fn=fn;
+ ee_precise_fn old=slot->fn;
+ int displaced=old&&(slot->pc!=pc||slot->count!=count||
+                    memcmp(slot->words,words,count*4u)!=0);
+ *slot=next;
+ if(old&&old!=fn){if(displaced)precise_evictions++;free((void*)old);}
+ return 1;
+}
+static void ee_precise_release_slot(ee_precise_slot *slot)
+{
+ if(!slot||precise_active)return;
+ if(slot->fn)free((void*)slot->fn);
+ memset(slot,0,sizeof(*slot));
 }
 void ee_jit_notify_physical_write(uint32_t phys_addr,uint32_t len)
 {
@@ -670,6 +708,7 @@ void ee_jit_notify_mapping_change(void)
 }
 uint64_t ee_jit_get_block_count(void){return precise_runs;}
 uint64_t ee_jit_get_block_retired(void){return precise_retired;}
+uint64_t ee_jit_get_block_evictions(void){return precise_evictions;}
 typedef unsigned (*ee_cached_chain_fn)(ee_state_t *,unsigned,uint32_t,unsigned,ee_precise_fn,unsigned);
 static ee_cached_chain_fn precise_chain_fn;
 static uint64_t precise_native_successors;
@@ -695,13 +734,18 @@ static int ee_precise_slot_generation_current(const ee_precise_slot *slot)
 static uint64_t ee_precise_cached_next(ee_state_t *st,unsigned remaining)
 {
  if(!precise_active||!st||remaining<2u||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u)return 0;
- ee_precise_slot *slot=&precise_cache[((st->pc>>2)^(st->pc>>12))&255u];
- if(!slot->fn||slot->pc!=st->pc||slot->count<2u||slot->count>remaining)return 0;
+ ee_precise_slot *slot=&precise_cache[ee_precise_cache_index(st->pc)];
+ if(!slot->fn||!slot->serial||slot->pc!=st->pc||slot->count<2u||slot->count>remaining)return 0;
+ uint32_t serial=slot->serial;ee_precise_fn fn=slot->fn;
  if(!ee_precise_slot_generation_current(slot))return 0;
  uint32_t word;
  if(!ee_core_block_peek(st,st->pc,&word)||word!=slot->words[0])return 0;
+ /* Identity is rechecked after every live source lookup. This is redundant
+  * today because precise_active forbids eviction, and makes that invariant
+  * explicit for future cache/link changes. */
+ if(slot->serial!=serial||slot->fn!=fn||slot->pc!=st->pc)return 0;
  precise_native_successors++;
- return ((uint64_t)(uint32_t)(uintptr_t)slot->fn<<32)|slot->count;
+ return ((uint64_t)(uint32_t)(uintptr_t)fn<<32)|slot->count;
 }
 static void ee_precise_make_chain(void)
 {
@@ -719,7 +763,7 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
 #if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)
  if(!st||budget<2u||st->halted||st->idle||st->branch_pending||precise_active)return 0;
  uint32_t pc=st->pc,words[8];unsigned count=0,limit=budget<8u?budget:8u;
- ee_precise_slot *slot=&precise_cache[((pc>>2)^(pc>>12))&255u];
+ ee_precise_slot *slot=&precise_cache[ee_precise_cache_index(pc)];
  /* The emitted prepare callback validates live mapping/encoding before
   * EACH instruction. A warm entry needs no duplicate full-block scan. */
  if(slot->fn&&slot->pc==pc&&slot->count<=budget&&
@@ -745,13 +789,16 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   }
   ee_precise_fn fn=(ee_precise_fn)ppc_dynarec_finalize(&c);
   if(!fn){ppc_dynarec_free(&c);return 0;}
-  if(slot->fn)free((void*)slot->fn);
-  slot->fn=fn;slot->pc=pc;slot->count=count;memcpy(slot->words,words,count*4u);
+  if(!ee_precise_install_slot(slot,pc,words,count,source_page,source_generation,mapping_generation,fn)) {
+   ppc_dynarec_free(&c);return 0;
+  }
+ } else {
+  /* A stale epoch with byte-identical code reuses the compiled PPC safely;
+   * only the validated source/mapping stamp changes; its allocation identity
+   * remains stable because no executable buffer was replaced. */
+  slot->source_page=source_page;slot->source_generation=source_generation;
+  slot->mapping_generation=mapping_generation;
  }
- /* A stale epoch with byte-identical code reuses the compiled PPC safely;
-  * only the validated source/mapping stamp changes. */
- slot->source_page=source_page;slot->source_generation=source_generation;
- slot->mapping_generation=mapping_generation;
 execute_slot:;
  uint32_t first_physical=0;
  if(fetched) {
@@ -773,7 +820,7 @@ execute_slot:;
  precise_runs++;precise_retired+=n;
  /* Changed first word/mapping: release only after the native function
   * returns. The scalar path handles this instruction; later visits retry. */
- if(!n){free((void*)slot->fn);memset(slot,0,sizeof(*slot));}
+ if(!n)ee_precise_release_slot(slot);
  return n;
 #else
  (void)st;(void)budget;(void)fetched;(void)first_word;(void)native_chain;return 0;
@@ -796,7 +843,7 @@ unsigned ee_jit_try_execute_chain_fetched(ee_state_t *st,unsigned budget,uint32_
  uint32_t start=st->pc;
  unsigned n=ee_precise_execute(st,budget,1u,first_word,1),total=n;
  while(n&&budget-total>=2u) {
-  ee_precise_slot *previous=&precise_cache[((start>>2)^(start>>12))&255u];
+  ee_precise_slot *previous=&precise_cache[ee_precise_cache_index(start)];
   if(previous->pc!=start||n!=previous->count||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u)break;
   uint32_t instruction;
   if(!ee_core_block_peek(st,st->pc,&instruction)||
@@ -816,8 +863,9 @@ static void ee_precise_reset_cache(void)
  if(precise_active)return; /* Never release the currently executing buffer. */
  if(precise_chain_fn)free((void*)precise_chain_fn);
  precise_chain_fn=0;precise_native_successors=0;
- for(unsigned n=0;n<256;n++)if(precise_cache[n].fn)free((void*)precise_cache[n].fn);
+ for(unsigned n=0;n<256;n++)ee_precise_release_slot(&precise_cache[n]);
  memset(precise_cache,0,sizeof(precise_cache));
  memset(precise_page_generation,0,sizeof(precise_page_generation));
- precise_mapping_generation=0;precise_runs=precise_retired=0;
+ precise_mapping_generation=0;precise_serial_source=0;
+ precise_runs=precise_retired=precise_evictions=0;
 }
