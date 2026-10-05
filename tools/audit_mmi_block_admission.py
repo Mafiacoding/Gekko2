@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """R1319 verification: exact legal MMI selectors must be admitted by the
 precise-block policy and accepted by both the single-op and resident-block PPC
-translators. Unknown subgroup selectors and invalid PMFHL modes stay scalar.
+translators. Unknown subgroup selectors and invalid PMFHL/PMTHL modes stay scalar.
 No generated PPC is executed on the host.
 """
 from pathlib import Path
@@ -48,10 +48,13 @@ def selector_legal(funct,sa):
     if name in subdispatch:
         return tables[subdispatch[name]][sa]!='MMI_Unknown'
     if name=='PMFHL': return sa<=4
+    # PCSX2's primary table names PMTHL at funct 0x31, while the R5900
+    # encoding only defines PMTHL.LW (sa==0); non-zero modes are reserved.
+    if name=='PMTHL': return sa==0
     return True
 
 # Exhaust every primary-funct/sa selector pair. Direct MMI operations ignore
-# sa, while subgroup dispatch and PMFHL use it architecturally.
+# sa, while subgroup dispatch, PMFHL and PMTHL use it architecturally.
 selector_rows=[]
 for funct in range(64):
     for sa in range(32):
