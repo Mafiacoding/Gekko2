@@ -1,0 +1,17 @@
+name: R1319 MMI precise-block admission audit
+on:
+  push:
+    branches: [r1319-block-admission-audit]
+    paths: ['.github/workflows/r1319-mmi-block-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1319-block-admission-audit
+          fetch-depth: 0
+      - name: Audit MMI block admission
+        run: python3 tools/audit_mmi_block_admission.py
