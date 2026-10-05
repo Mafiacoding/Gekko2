@@ -31,16 +31,14 @@ def table(name, n):
         raise SystemExit(f'{name}: expected {n} entries, got {len(vals)}')
     return vals
 
-# Locate the primary 64-entry table by contents instead of depending on its
-# historical variable name.
-primary = None
-for m in re.finditer(r'static const OPCODE\s+(tbl_\w+)\[64\]\s*=\s*\{(.*?)\};', ref, re.S):
-    vals = [x.strip() for x in m.group(2).split(',') if x.strip()]
-    if len(vals) == 64 and all(x in vals for x in ('SPECIAL','REGIMM','J','JAL','BEQ','BNE')):
-        primary = vals
-        break
-if primary is None:
-    raise SystemExit('could not locate primary R5900 opcode table')
+# PCSX2 exposes the primary table as a non-static const while the subgroup
+# tables are static. Parse it explicitly so the audit remains reference-led.
+m = re.search(r'const OPCODE\s+tbl_Standard\[64\]\s*=\s*\{(.*?)\};', ref, re.S)
+if not m:
+    raise SystemExit('could not locate primary R5900 tbl_Standard')
+primary = [x.strip() for x in m.group(1).split(',') if x.strip()]
+if len(primary) != 64:
+    raise SystemExit(f'tbl_Standard: expected 64 entries, got {len(primary)}')
 
 special = table('tbl_Special', 64)
 regimm = table('tbl_RegImm', 32)
