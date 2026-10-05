@@ -4944,6 +4944,25 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         return 0;
     }
 
+    /* R1314: native MADD/MADDU/MADD1/MADDU1. The R5900 MMI
+     * accumulator uses low32(LO):low32(HI), with 0x20/0x21 selecting pipe 1. */
+    if (op == 0x1Cu && (funct == 0x00u || funct == 0x01u || funct == 0x20u || funct == 0x21u)) {
+        unsigned pipe_lane=(funct&0x20u)?2u:0u; int is_unsigned=(funct&1u)!=0;
+        emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,mmi_w_off((int)rs,0)));
+        emit(ctx,enc_lwz(SCRATCH_B,CTX_REG,mmi_w_off((int)rt,0)));
+        emit(ctx,enc_mullw(SCRATCH_C,SCRATCH_A,SCRATCH_B));
+        emit(ctx,is_unsigned?enc_mulhwu(SCRATCH_D,SCRATCH_A,SCRATCH_B):enc_mulhw(SCRATCH_D,SCRATCH_A,SCRATCH_B));
+        emit(ctx,enc_lwz(SCRATCH_E,CTX_REG,mmi_w_off(LO_IDX,pipe_lane)));
+        emit(ctx,enc_lwz(SCRATCH_F,CTX_REG,mmi_w_off(HI_IDX,pipe_lane)));
+        emit(ctx,enc_addc(SCRATCH_C,SCRATCH_C,SCRATCH_E)); emit(ctx,enc_adde(SCRATCH_D,SCRATCH_D,SCRATCH_F));
+        emit(ctx,enc_stw(SCRATCH_C,CTX_REG,mmi_w_off(LO_IDX,pipe_lane))); emit(ctx,enc_srawi(SCRATCH_E,SCRATCH_C,31));
+        emit(ctx,enc_stw(SCRATCH_E,CTX_REG,mmi_w_off(LO_IDX,pipe_lane+1u)));
+        emit(ctx,enc_stw(SCRATCH_D,CTX_REG,mmi_w_off(HI_IDX,pipe_lane))); emit(ctx,enc_srawi(SCRATCH_F,SCRATCH_D,31));
+        emit(ctx,enc_stw(SCRATCH_F,CTX_REG,mmi_w_off(HI_IDX,pipe_lane+1u)));
+        if(rd){emit(ctx,enc_stw(SCRATCH_C,CTX_REG,mmi_w_off((int)rd,0)));emit(ctx,enc_stw(SCRATCH_E,CTX_REG,mmi_w_off((int)rd,1)));}
+        return 0;
+    }
+
     if (op == 0x1Cu && funct == 0x04u) { /* PLZCW: low two signed word lanes. */
         if (!rd) return 0;
         emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, mmi_w_off((int)rs, 0)));

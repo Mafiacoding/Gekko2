@@ -93,6 +93,11 @@ backend_links = re.search(r"rt\s*>=\s*0x10[uU]?\s*&&\s*rt\s*<=\s*0x13[uU]?", tra
 if not backend_links:
     errors.append("backend no longer contains the four REGIMM link branches")
 
+# R1314 native MMI accumulator family.
+for funct,label in [(0x00,"MADD"),(0x01,"MADDU"),(0x20,"MADD1"),(0x21,"MADDU1")]:
+    if not re.search(rf"funct\s*==\s*0x{funct:02x}[uU]?", translator, re.I): errors.append(f"R1314 backend missing native {label}")
+if "R1314: native MADD/MADDU/MADD1/MADDU1" not in back: errors.append("R1314 native MMI accumulator family marker missing")
+
 # Reachability alone is insufficient if the native synchronous-exception
 # machinery was removed by a refactor.
 for token,label in [("ADDR_EE_RAISE_TRAP","trap"),("ADDR_EE_RAISE_OVERFLOW","overflow")]:
