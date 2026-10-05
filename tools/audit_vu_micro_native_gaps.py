@@ -3,13 +3,15 @@
 
 This compiles the real PPC lower-word translator and probes canonical encodings
 for every lower-word family currently implemented by source/hw/vu.c. It does
-not execute generated PPC. The result is a gap inventory, not a pass/fail gate:
-rejected entries are candidates for later native implementation or deliberate
-scheduler/side-effect boundaries.
+not execute generated PPC. The result is a gap inventory; with
+--require-ordinary-native it becomes a guard requiring every ordinary
+interpreter-backed form to have a native lower-word translation while allowing
+explicit scheduler/side-effect boundaries to remain scalar.
 """
 from pathlib import Path
 import ctypes as C
 import subprocess
+import sys
 
 root=Path(__file__).resolve().parents[1]
 out=root/'outputs'/'verification'
@@ -84,3 +86,7 @@ print('  ordinary native gaps:',len(ordinary_gap))
 print('  scheduler/side-effect boundaries:',len(boundary))
 for name,kind,ok,w in rows:
     print(f'  {"NATIVE" if ok else "FALLBACK":8} {kind:22} {name:18} {w:#010x}')
+
+if '--require-ordinary-native' in sys.argv and ordinary_gap:
+    print('ordinary native gaps remain:', ', '.join(r[0] for r in ordinary_gap), file=sys.stderr)
+    raise SystemExit(1)
