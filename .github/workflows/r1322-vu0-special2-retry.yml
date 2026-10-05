@@ -1,0 +1,33 @@
+name: R1322 VU0 SPECIAL2 completion retry
+on:
+  push:
+    branches: [r1322-vu0-special2-impl]
+    paths:
+      - '.github/workflows/r1322-vu0-special2-retry.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1322-vu0-special2-impl
+      - name: Apply guarded SPECIAL2 implementation
+        run: |
+          python3 tools/r1322_apply_vu0_special2.py
+          git diff --check
+      - name: Exact VU0 macro selector coverage
+        run: python3 tools/audit_vu0_macro_coverage.py
+      - name: Existing EE JIT structural audit
+        run: python3 tools/audit-ee-jit-coverage.py
+      - name: Full host regression suite
+        run: bash tests/run_test.sh --all
+      - name: Commit verified implementation
+        run: |
+          git config user.name "Mafiacoding"
+          git config user.email "mthalicious@gmail.com"
+          git add source/core/recompiler/ppc_dynarec.c source/core/recompiler/ee_jit.c
+          git commit -m "R1322: complete interpreter-backed VU0 SPECIAL2 JIT coverage"
+          git push origin HEAD:r1322-vu0-special2-impl
