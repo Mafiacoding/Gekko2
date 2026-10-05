@@ -15,6 +15,7 @@ jobs:
           fetch-depth: 0
       - name: Apply R1317 then R1318
         run: |
+          python3 tools/r1318_fix_apply.py
           python3 tools/r1317_apply.py
           python3 tools/r1318_apply.py
       - name: Structural audits
@@ -36,6 +37,7 @@ jobs:
           fetch-depth: 0
       - name: Apply R1317 then R1318
         run: |
+          python3 tools/r1318_fix_apply.py
           python3 tools/r1317_apply.py
           python3 tools/r1318_apply.py
       - name: Default Wii crossbuild
