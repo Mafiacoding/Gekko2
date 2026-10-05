@@ -4468,7 +4468,7 @@ static uint32_t vu0_mem_read32(const ee_state_t *st, uint32_t addr)
  * shared one-pair scheduler. Entry selection avoids branch-loop scans. */
 static inline int vu0_block_candidate(const ee_state_t *st)
 {
-    if(st->vu0_branch_delay||st->vu0_ebit_delay||st->vu0_pipeline.q_pending)return 0;
+    if(st->vu0_branch_delay||st->vu0_ebit_delay||(st->vu0_pipeline.q_pending||st->vu0_pipeline.p_pending))return 0;
     for(unsigned n=0;n<2;n++) {
         uint32_t off=(st->cop2_ctrl[26]+n*8u)&(sizeof(st->vu0_micro)-1u);
         uint32_t up=elfld_rd_le32(st->vu0_micro+off+4u);
