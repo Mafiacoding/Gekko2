@@ -1,3 +1,4 @@
+# R1326 retry 3: event-boundary audit corrected
 name: R1326 final dynarec batch
 on:
   push:
