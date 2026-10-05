@@ -1,0 +1,16 @@
+name: R1323 VU micro native-gap discovery
+on:
+  push:
+    branches: [r1323-vu-micro-native-gap-audit]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1323-vu-micro-native-gap-audit
+      - name: Enumerate interpreter-backed lower-word native gaps
+        run: python3 tools/audit_vu_micro_native_gaps.py
