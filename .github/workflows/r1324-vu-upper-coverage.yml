@@ -1,0 +1,22 @@
+name: R1324 VU upper native coverage
+on:
+  push:
+    branches: [r1324-vu-upper-coverage-r1323]
+    paths:
+      - '.github/workflows/r1324-vu-upper-coverage.yml'
+  workflow_dispatch:
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1324-vu-upper-coverage-r1323
+      - name: Exact VU upper native coverage audit
+        run: python3 tools/audit_vu_upper_native_coverage.py
+      - name: Existing VU lower native gap audit
+        run: python3 tools/audit_vu_micro_native_gaps.py --require-ordinary-native
+      - name: Existing VU0 macro coverage audit
+        run: python3 tools/audit_vu0_macro_coverage.py
+      - name: Existing EE JIT structural audit
+        run: python3 tools/audit-ee-jit-coverage.py
