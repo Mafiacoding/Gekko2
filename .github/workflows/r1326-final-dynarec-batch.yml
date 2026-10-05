@@ -17,6 +17,8 @@ jobs:
           fetch-depth: 0
       - name: Apply phase 1-2 VU/residency batch
         run: python3 tools/r1326_apply_final_batch.py
+      - name: Correct generated VU opcode include
+        run: python3 tools/r1326_fix_generated_include.py
       - name: Apply phase 3 direct EE links
         run: python3 tools/r1326_apply_block_links.py
       - name: Apply phase 5 IOP SMC safety
