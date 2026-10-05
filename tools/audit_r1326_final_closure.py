@@ -84,8 +84,14 @@ require(Path('source/core/ee/ee_core.c'),
 require(Path('source/core/iop/iop_core.c'),
         'void iop_core_block_retire(iop_state_t *st,uint32_t pc)',
         'if(st==&g_iop)iop_retire(st,pc,st->pc);')
-require(Path('source/core/recompiler/ppc_dynarec.c'),
-        'ee_core_block_commit', 'iop_core_block_retire')
+# Verify the JITs wire those architectural retire callbacks into their emitted
+# blocks.  The PPC emitter itself receives raw callback addresses by design,
+# so the callback symbol names correctly live in ee_jit.c/iop_jit.c, not in
+# ppc_dynarec.c.
+require(Path('source/core/recompiler/ee_jit.c'),
+        '(uint32_t)(uintptr_t)ee_core_block_commit')
+require(Path('source/core/recompiler/iop_jit.c'),
+        '(uint32_t)(uintptr_t)iop_core_block_retire')
 
 print('R1326 final dynarec closure audit: PASS')
 print('  VU scheduler/R semantics: guarded')
