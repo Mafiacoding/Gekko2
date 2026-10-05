@@ -1410,10 +1410,23 @@ static void emit_vu_minmax(ppc_codegen_ctx_t *ctx,int minimum) {
 
 #ifdef GEKKO
 extern void ee_core_raise_trap(void *st);
+extern void ee_core_raise_overflow(void *st);
 #define ADDR_EE_RAISE_TRAP ((uint32_t)(uintptr_t)&ee_core_raise_trap)
+#define ADDR_EE_RAISE_OVERFLOW ((uint32_t)(uintptr_t)&ee_core_raise_overflow)
 #else
 #define ADDR_EE_RAISE_TRAP 0x111u
+#define ADDR_EE_RAISE_OVERFLOW 0x112u
 #endif
+
+static void emit_ee_exception_call(ppc_codegen_ctx_t *ctx,uint32_t address)
+{
+    emit(ctx,((37u<<26)|(1u<<21)|(1u<<16)|(uint16_t)-96));
+    emit(ctx,enc_stw(14,1,48));emit(ctx,enc_stw(15,1,52));
+    emit(ctx,enc_mflr(14));emit(ctx,enc_or(15,3,3));
+    emit_load_const32(ctx,12,address);emit(ctx,enc_mtctr(12));emit(ctx,enc_bctrl());
+    emit(ctx,enc_or(3,15,15));emit(ctx,enc_mtlr(14));
+    emit(ctx,enc_lwz(14,1,48));emit(ctx,enc_lwz(15,1,52));emit(ctx,enc_addi(1,1,96));
+}
 
 int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
 {
@@ -1430,6 +1443,29 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
 
     if(op==0x1cu&&emit_mmi_extra(ctx,rs,rt,rd,sa,funct))return 0;
 
+    if(op==8u||op==0x18u||(op==0u&&(funct==0x20u||funct==0x22u||funct==0x2cu||funct==0x2eu))) {
+        unsigned wide=op==0x18u||(op==0u&&funct>=0x2cu);
+        unsigned subtract=op==0u&&(funct==0x22u||funct==0x2eu),dest=op?rt:rd;
+        emit(ctx,enc_lwz(4,3,REG_LO(rs)));
+        if(wide)emit(ctx,enc_lwz(6,3,REG_HI(rs)));
+        if(op){emit_load_const32(ctx,5,(uint32_t)imm);if(wide)emit(ctx,enc_addi(7,0,imm<0?-1:0));}
+        else {emit(ctx,enc_lwz(5,3,REG_LO(rt)));if(wide)emit(ctx,enc_lwz(7,3,REG_HI(rt)));}
+        if(wide) {
+            emit(ctx,subtract?enc_subfc(8,5,4):enc_addc(8,4,5));
+            emit(ctx,subtract?enc_subfe(9,7,6):enc_adde(9,6,7));
+        } else emit(ctx,subtract?enc_subf(8,5,4):enc_add(8,4,5));
+        int left=wide?6:4,right=wide?7:5,result=wide?9:8;
+        emit(ctx,enc_xor(10,left,right));if(!subtract)emit(ctx,enc_nor(10,10,10));
+        emit(ctx,enc_xor(11,left,result));emit(ctx,enc_and(10,10,11));emit(ctx,mmi_cmpi(10,0));
+        size_t okay=ctx->used_words;emit(ctx,0);emit_ee_exception_call(ctx,ADDR_EE_RAISE_OVERFLOW);
+        size_t done=ctx->used_words;emit(ctx,0);mmi_patch_bc(ctx,okay,4,0);
+        if(dest) {
+            if(!wide)emit(ctx,enc_srawi(9,8,31));
+            emit(ctx,enc_stw(8,3,REG_LO(dest)));emit(ctx,enc_stw(9,3,REG_HI(dest)));
+        }
+        mmi_patch_b(ctx,done);return 0;
+    }
+
     if((op==0u&&(funct==0x30u||funct==0x31u||funct==0x32u||funct==0x33u||funct==0x34u||funct==0x36u))||
        (op==1u&&(rt==8u||rt==9u||rt==10u||rt==11u||rt==12u||rt==14u))) {
         unsigned kind=op==1u?rt+0x28u:funct;
@@ -1445,11 +1481,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
             skip_bo=kind>=0x32u?12u:4u;
         }
         size_t skip=ctx->used_words;emit(ctx,0);
-        emit(ctx,((37u<<26)|(1u<<21)|(1u<<16)|(uint16_t)-96));emit(ctx,enc_stw(14,1,48));emit(ctx,enc_stw(15,1,52));
-        emit(ctx,enc_mflr(14));emit(ctx,enc_or(15,3,3));
-        emit_load_const32(ctx,12,ADDR_EE_RAISE_TRAP);emit(ctx,enc_mtctr(12));emit(ctx,enc_bctrl());
-        emit(ctx,enc_or(3,15,15));emit(ctx,enc_mtlr(14));emit(ctx,enc_lwz(14,1,48));emit(ctx,enc_lwz(15,1,52));
-        emit(ctx,enc_addi(1,1,96));mmi_patch_bc(ctx,skip,skip_bo,2);return 0;
+        emit_ee_exception_call(ctx,ADDR_EE_RAISE_TRAP);mmi_patch_bc(ctx,skip,skip_bo,2);return 0;
     }
 
     /* R1281: native COP0 transfers. Context prefix offsets are checked
@@ -1529,8 +1561,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         return 0;
     }
     /* R1268: missing MIPS64 immediates and the remaining 64-bit shifts.
-     * Signed ADD variants retain the interpreter's existing no-overflow-trap
-     * convention; this is parity, not a new exception model. */
+     * Trapping signed variants are handled above before these wrapping paths. */
     if (op == 0x18u || op == 0x19u) {
         if (!rt) return 0;
         emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, REG_LO(rs)));

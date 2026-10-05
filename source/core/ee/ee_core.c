@@ -637,6 +637,26 @@ void ee_core_raise_trap(ee_state_t *st)
     ee_raise_exception(st,EE_EXC_CODE_TR,st->exc_this_pc,st->exc_in_delay_slot);
 }
 
+void ee_core_raise_overflow(ee_state_t *st)
+{
+    st->exc_raised_this_step=1;
+    ee_raise_exception(st,12u<<2,st->exc_this_pc,st->exc_in_delay_slot);
+}
+
+static void ee_signed_arithmetic(ee_state_t *st,uint64_t left,uint64_t right,
+                                 unsigned bits,int subtract,unsigned dest)
+{
+    uint64_t mask=bits==32u?UINT32_MAX:UINT64_MAX;
+    uint64_t sign=UINT64_C(1)<<(bits-1u);
+    left&=mask;right&=mask;
+    uint64_t result=(subtract?left-right:left+right)&mask;
+    uint64_t different=left^right;
+    if(((left^result)&(subtract?different:~different)&sign)!=0u) {
+        ee_core_raise_overflow(st);return;
+    }
+    if(dest)st->gpr[dest].ud0=bits==32u?(uint64_t)(int64_t)(int32_t)result:result;
+}
+
 /* TLB-miss-specific wrapper: also records BadVAddr/Context/EntryHi the
  * way real hardware does, so a BIOS TLB-refill handler could look up
  * (or install) the right entry - ported from PCSX2's cpuTlbMiss()/
@@ -9990,9 +10010,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             st->lo.ud0 = rt32 ? sext32(rs32 / rt32) : UINT64_MAX;
             st->hi.ud0 = sext32(rt32 ? rs32 % rt32 : rs32);
             break;
-        case 0x20: /* ADD */
+        case 0x20: /* ADD */ ee_signed_arithmetic(st,GPR(rs),GPR(rt),32u,0,rd);break;
         case 0x21: /* ADDU */   if (rd) GPR(rd) = sext32(rs32 + rt32); break;
-        case 0x22: /* SUB */
+        case 0x22: /* SUB */ ee_signed_arithmetic(st,GPR(rs),GPR(rt),32u,1,rd);break;
         case 0x23: /* SUBU */   if (rd) GPR(rd) = sext32(rs32 - rt32); break;
         case 0x24: /* AND */    if (rd) GPR(rd) = GPR(rs) & GPR(rt); break;
         case 0x25: /* OR */     if (rd) GPR(rd) = GPR(rs) | GPR(rt); break;
@@ -10019,26 +10039,11 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                     break;
         case 0x2A: /* SLT */    if (rd) GPR(rd) = ((int64_t)GPR(rs) < (int64_t)GPR(rt)) ? 1 : 0; break;
         case 0x2B: /* SLTU */   if (rd) GPR(rd) = (GPR(rs) < GPR(rt)) ? 1 : 0; break;
-        /* Round 776 (task #447/#764, GT3 fresh-boot survey): real
-         * standard MIPS III DADD/DSUB (funct 0x2C/0x2E) were missing -
-         * only their unsigned siblings DADDU/DSUBU (0x2D/0x2F) were
-         * implemented. First observed live: GT3's real IOP/EE boot
-         * code hit funct=0x2E (raw=0x0008482e, rs=0,rt=8,rd=9) at
-         * pc=0x0100f5ac, halting with "unimplemented SPECIAL funct"
-         * at instr=30,047,008 on a fresh cold-boot chain. Per the real
-         * MIPS III ISA (and matching this exact switch's own
-         * established precedent just above for ADD/ADDU (funct
-         * 0x20/0x21) and SUB/SUBU (funct 0x22/0x23), both already
-         * merged into their unsigned sibling's case since this project
-         * doesn't model integer-overflow trap exceptions), DADD only
-         * differs from DADDU by trapping on signed 64-bit overflow,
-         * and DSUB only differs from DSUBU the same way - so falling
-         * through to the existing unsigned bodies is the correct,
-         * real-ISA-accurate fix given this project's existing
-         * no-overflow-trap convention, not a guess. */
-        case 0x2C: /* DADD */
+        /* Signed doubleword arithmetic raises precise overflow before
+         * discarding a zero destination. Unsigned variants wrap. */
+        case 0x2C: /* DADD */ ee_signed_arithmetic(st,GPR(rs),GPR(rt),64u,0,rd);break;
         case 0x2D: /* DADDU */  if (rd) GPR(rd) = GPR(rs) + GPR(rt); break;
-        case 0x2E: /* DSUB */
+        case 0x2E: /* DSUB */ ee_signed_arithmetic(st,GPR(rs),GPR(rt),64u,1,rd);break;
         case 0x2F: /* DSUBU */  if (rd) GPR(rd) = GPR(rs) - GPR(rt); break;
         /* Round 478: real, standard MIPS II/III/EE trap-on-condition
          * family (funct 0x30-0x36, skipping reserved 0x35/0x37) - see
@@ -10175,19 +10180,16 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
     case 0x16: /* BLEZL */ if ((int64_t)GPR(rs) <= 0) BRANCH_TO(this_pc + 4 + (imm << 2)); else { st->pc = fallthrough_pc + 4; st->next_pc = fallthrough_pc + 8; } break;
     case 0x17: /* BGTZL */ if ((int64_t)GPR(rs) > 0)  BRANCH_TO(this_pc + 4 + (imm << 2)); else { st->pc = fallthrough_pc + 4; st->next_pc = fallthrough_pc + 8; } break;
 
-    case 0x08: /* ADDI */
-    case 0x09: /* ADDIU */ if (rt) GPR(rt) = sext32((uint32_t)((int32_t)rs32 + imm)); break;
+    case 0x08: /* ADDI */ ee_signed_arithmetic(st,GPR(rs),(uint64_t)(int64_t)imm,32u,0,rt);break;
+    case 0x09: /* ADDIU */ if (rt) GPR(rt) = sext32(rs32+(uint32_t)imm); break;
     /* DADDI/DADDIU (primary 0x18/0x19): 64-bit reg + sign-extended
      * imm, full 64-bit result (no truncation/re-sign-extension like
      * the 32-bit ADDI/ADDIU pair above). Found missing (halting
      * cleanly on "unimplemented primary opcode 0x19") once round 11's
      * MCH_RICM/MCH_DRD RDRAM auto-init fix let real BIOS boot progress
      * roughly 100x further than before, into code this project had
-     * never reached. Like ADDI above, DADDI's real overflow-trap
-     * semantics aren't implemented (matches this project's existing,
-     * documented ADDI simplification) - both variants behave like
-     * DADDIU. */
-    case 0x18: /* DADDI */
+     * never reached. DADDI raises a precise signed overflow exception; DADDIU wraps. */
+    case 0x18: /* DADDI */ ee_signed_arithmetic(st,GPR(rs),(uint64_t)(int64_t)imm,64u,0,rt);break;
     case 0x19: /* DADDIU */ if (rt) GPR(rt) = GPR(rs) + (uint64_t)(int64_t)imm; break;
     case 0x0A: /* SLTI */  if (rt) GPR(rt) = ((int64_t)GPR(rs) < (int64_t)imm) ? 1 : 0; break;
     case 0x0B: /* SLTIU */ if (rt) GPR(rt) = (GPR(rs) < (uint64_t)(int64_t)imm) ? 1 : 0; break;
