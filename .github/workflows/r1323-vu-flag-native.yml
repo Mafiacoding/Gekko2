@@ -1,0 +1,35 @@
+name: R1323 VU lower flag native verification
+on:
+  push:
+    branches: [r1323-vu-flag-native]
+    paths:
+      - '.github/workflows/r1323-vu-flag-native.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1323-vu-flag-native
+      - name: Apply guarded VU flag-family patch
+        run: |
+          python3 tools/r1323_apply_vu_flag_lower.py
+          git diff --check
+      - name: Require all ordinary interpreter-backed lower forms native
+        run: python3 tools/audit_vu_micro_native_gaps.py --require-ordinary-native
+      - name: Existing VU0 macro coverage audit
+        run: python3 tools/audit_vu0_macro_coverage.py
+      - name: Existing EE JIT structural audit
+        run: python3 tools/audit-ee-jit-coverage.py
+      - name: Full host regression suite
+        run: bash tests/run_test.sh --all
+      - name: Commit verified R1323 source
+        run: |
+          git config user.name "Mafiacoding"
+          git config user.email "mthalicious@gmail.com"
+          git add source/core/recompiler/ppc_dynarec.c
+          git commit -m "R1323: compile VU lower flag family natively"
+          git push origin HEAD:r1323-vu-flag-native
