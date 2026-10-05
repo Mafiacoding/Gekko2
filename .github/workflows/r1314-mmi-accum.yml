@@ -1,0 +1,79 @@
+name: R1314 native MMI accumulator family
+on:
+  push:
+    branches: [dynarec-development-r1308]
+    paths: ['.github/workflows/r1314-mmi-accum.yml']
+permissions:
+  contents: write
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dynarec-development-r1308
+          fetch-depth: 0
+      - name: Patch native MADD family
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('source/core/recompiler/ppc_dynarec.c')
+          s=p.read_text()
+          marker='    if (op == 0x1Cu && funct == 0x04u) { /* PLZCW: low two signed word lanes. */'
+          assert marker in s and 'R1314: native MADD/MADDU/MADD1/MADDU1' not in s
+          block=r'''    /* R1314: native MADD/MADDU/MADD1/MADDU1.  The R5900 MMI
+     * accumulator forms use the low 32 bits of LO and HI as one 64-bit
+     * accumulator, with funct 0x20/0x21 selecting the second HI/LO pipe.
+     * After the 64-bit add, each 32-bit half is independently sign-extended
+     * into its 64-bit HI/LO slot, exactly like ee_core.c.  Rd receives the
+     * sign-extended low result; its upper 64-bit lane remains untouched. */
+    if (op == 0x1Cu && (funct == 0x00u || funct == 0x01u ||
+                       funct == 0x20u || funct == 0x21u)) {
+        unsigned pipe_lane = (funct & 0x20u) ? 2u : 0u;
+        int is_unsigned = (funct & 1u) != 0;
+        emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, mmi_w_off((int)rs, 0)));
+        emit(ctx, enc_lwz(SCRATCH_B, CTX_REG, mmi_w_off((int)rt, 0)));
+        emit(ctx, enc_mullw(SCRATCH_C, SCRATCH_A, SCRATCH_B));
+        emit(ctx, is_unsigned ? enc_mulhwu(SCRATCH_D, SCRATCH_A, SCRATCH_B)
+                              : enc_mulhw(SCRATCH_D, SCRATCH_A, SCRATCH_B));
+        emit(ctx, enc_lwz(SCRATCH_E, CTX_REG, mmi_w_off(LO_IDX, pipe_lane)));
+        emit(ctx, enc_lwz(SCRATCH_F, CTX_REG, mmi_w_off(HI_IDX, pipe_lane)));
+        emit(ctx, enc_addc(SCRATCH_C, SCRATCH_C, SCRATCH_E));
+        emit(ctx, enc_adde(SCRATCH_D, SCRATCH_D, SCRATCH_F));
+        emit(ctx, enc_stw(SCRATCH_C, CTX_REG, mmi_w_off(LO_IDX, pipe_lane)));
+        emit(ctx, enc_srawi(SCRATCH_E, SCRATCH_C, 31));
+        emit(ctx, enc_stw(SCRATCH_E, CTX_REG, mmi_w_off(LO_IDX, pipe_lane + 1u)));
+        emit(ctx, enc_stw(SCRATCH_D, CTX_REG, mmi_w_off(HI_IDX, pipe_lane)));
+        emit(ctx, enc_srawi(SCRATCH_F, SCRATCH_D, 31));
+        emit(ctx, enc_stw(SCRATCH_F, CTX_REG, mmi_w_off(HI_IDX, pipe_lane + 1u)));
+        if (rd != 0) {
+            emit(ctx, enc_stw(SCRATCH_C, CTX_REG, mmi_w_off((int)rd, 0)));
+            emit(ctx, enc_stw(SCRATCH_E, CTX_REG, mmi_w_off((int)rd, 1)));
+        }
+        return 0;
+    }
+
+'''
+          p.write_text(s.replace(marker,block+marker,1))
+      - name: Extend structural audit
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('tools/audit-ee-jit-coverage.py')
+          s=p.read_text()
+          needle='# Reachability alone is insufficient if the native synchronous-exception\n'
+          assert needle in s and 'R1314 native MMI accumulator family' not in s
+          add='''# R1314 native MMI accumulator family: all four primary funct values must\n# be handled by the backend before the older PLZCW/MMI subgroup dispatch.\nfor funct,label in [(0x00,"MADD"),(0x01,"MADDU"),(0x20,"MADD1"),(0x21,"MADDU1")]:\n    if not re.search(rf"funct\\s*==\\s*0x{funct:02x}[uU]?", translator, re.I):\n        errors.append(f"R1314 backend missing native {label}")\nif "R1314: native MADD/MADDU/MADD1/MADDU1" not in back:\n    errors.append("R1314 native MMI accumulator family marker missing")\n\n'''
+          p.write_text(s.replace(needle,add+needle,1))
+      - name: Structural audit
+        run: python3 tools/audit-ee-jit-coverage.py
+      - name: Host regression suite
+        run: bash tests/run_test.sh
+      - name: Commit verified rewrite
+        run: |
+          rm .github/workflows/r1314-mmi-accum.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add source/core/recompiler/ppc_dynarec.c tools/audit-ee-jit-coverage.py .github/workflows/r1314-mmi-accum.yml
+          git commit -m 'R1314: native MADD accumulator family'
+          git push origin HEAD:dynarec-development-r1308
