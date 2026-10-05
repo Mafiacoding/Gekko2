@@ -87,6 +87,8 @@ _Static_assert(offsetof(ee_state_t, acc) == 1596,
  * COP1 fpr[32] above). */
 _Static_assert(offsetof(ee_state_t, vu0_vf) == 1728,
                "ppc_dynarec.c's VU0_VF_OFF() assumes vu0_vf[0][0] sits at this exact byte offset");
+_Static_assert(offsetof(ee_state_t, vu0_mem) == 2240,
+               "ppc_dynarec.c's VU0_MEM_OFFSET assumes vu0_mem[0] sits at this exact byte offset");
 
 #define EE_JIT_CACHE_SLOTS 8192u /* power of two - see ee_jit_cache_lookup()/insert() */
 
