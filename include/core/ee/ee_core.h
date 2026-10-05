@@ -478,5 +478,6 @@ int ee_core_block_memory_safe(const ee_state_t *st,uint32_t instruction);
 int ee_core_block_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t instruction);
 uint32_t ee_core_block_prepare_delay(ee_state_t *st,uint32_t pc,uint32_t instruction);
 void ee_core_block_commit(ee_state_t *st);
+void ee_core_raise_trap(ee_state_t *st);
 
 #endif

@@ -42,6 +42,8 @@ static inline int ee_jit_block_terminal(uint32_t w)
 static inline int ee_jit_block_candidate(uint32_t w)
 {
  unsigned op=w>>26,f=w&63u;
+ if(op==0u&&(f==0x30u||f==0x31u||f==0x32u||f==0x33u||f==0x34u||f==0x36u))return 1;
+ if(op==1u){unsigned rt=(w>>16)&31u;if(rt==8u||rt==9u||rt==10u||rt==11u||rt==12u||rt==14u)return 1;}
  /* Supported scalar COP1 emitters can join precise blocks. Their current
   * floating-point semantics are checked against the interpreter; this does
   * not add PS2 exception flags absent from that baseline. */

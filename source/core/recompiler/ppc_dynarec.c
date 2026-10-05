@@ -1406,6 +1406,15 @@ static void emit_vu_minmax(ppc_codegen_ctx_t *ctx,int minimum) {
     emit(ctx,enc_and(9,minimum?4:5,8));emit(ctx,enc_nor(10,8,8));
     emit(ctx,enc_and(10,minimum?5:4,10));emit(ctx,enc_or(9,9,10));
 }
+#include "ppc_ee_mmi.inc"
+
+#ifdef GEKKO
+extern void ee_core_raise_trap(void *st);
+#define ADDR_EE_RAISE_TRAP ((uint32_t)(uintptr_t)&ee_core_raise_trap)
+#else
+#define ADDR_EE_RAISE_TRAP 0x111u
+#endif
+
 int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
 {
     if (ctx->used_words + 128 > ctx->capacity_words) /* Round 904: was 80, DIV.S's ~81-word worst case (Round 903 was 61) */
@@ -1418,6 +1427,30 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
     uint32_t sa    = (mips_instr >> 6) & 0x1F; /* Round 888: shift-amount field, used by SLL/SRL/SRA */
     int32_t  imm   = (int16_t)(mips_instr & 0xFFFF);
     uint32_t funct = mips_instr & 0x3F;
+
+    if(op==0x1cu&&emit_mmi_extra(ctx,rs,rt,rd,sa,funct))return 0;
+
+    if((op==0u&&(funct==0x30u||funct==0x31u||funct==0x32u||funct==0x33u||funct==0x34u||funct==0x36u))||
+       (op==1u&&(rt==8u||rt==9u||rt==10u||rt==11u||rt==12u||rt==14u))) {
+        unsigned kind=op==1u?rt+0x28u:funct;
+        emit(ctx,enc_lwz(4,3,REG_LO(rs)));emit(ctx,enc_lwz(6,3,REG_HI(rs)));
+        if(op==1u){emit_load_const32(ctx,5,(uint32_t)imm);emit(ctx,enc_addi(7,0,imm<0?-1:0));}
+        else {emit(ctx,enc_lwz(5,3,REG_LO(rt)));emit(ctx,enc_lwz(7,3,REG_HI(rt)));}
+        unsigned skip_bo;
+        if(kind==0x34u||kind==0x36u) {
+            emit(ctx,enc_xor(4,4,5));emit(ctx,enc_xor(6,6,7));emit(ctx,enc_or(4,4,6));
+            emit(ctx,mmi_cmpi(4,0));skip_bo=kind==0x34u?4u:12u;
+        } else {
+            emit_slt_core(ctx,kind==0x30u||kind==0x32u);emit(ctx,mmi_cmpi(4,0));
+            skip_bo=kind>=0x32u?12u:4u;
+        }
+        size_t skip=ctx->used_words;emit(ctx,0);
+        emit(ctx,((37u<<26)|(1u<<21)|(1u<<16)|(uint16_t)-96));emit(ctx,enc_stw(14,1,48));emit(ctx,enc_stw(15,1,52));
+        emit(ctx,enc_mflr(14));emit(ctx,enc_or(15,3,3));
+        emit_load_const32(ctx,12,ADDR_EE_RAISE_TRAP);emit(ctx,enc_mtctr(12));emit(ctx,enc_bctrl());
+        emit(ctx,enc_or(3,15,15));emit(ctx,enc_mtlr(14));emit(ctx,enc_lwz(14,1,48));emit(ctx,enc_lwz(15,1,52));
+        emit(ctx,enc_addi(1,1,96));mmi_patch_bc(ctx,skip,skip_bo,2);return 0;
+    }
 
     /* R1281: native COP0 transfers. Context prefix offsets are checked
      * against the actual EE struct by ee_jit.c. Read/write semantics match

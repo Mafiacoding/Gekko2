@@ -1,6 +1,8 @@
 # Unreleased dynarec work after R1306
 
-Latest source development is documented in [R1309 working notes](R1309-WORKING-NOTES.md).
+Latest source development is documented in [R1310 working notes](R1310-WORKING-NOTES.md),
+which add 43 MMI emitters and twelve precise integer trap forms.
+Earlier VU/timer work is documented in [R1309 working notes](R1309-WORKING-NOTES.md).
 It corrects VU nested links and D/T traps and defers event-free IOP timer
 updates. Full VU pipelines and general event scheduling remain open.
 

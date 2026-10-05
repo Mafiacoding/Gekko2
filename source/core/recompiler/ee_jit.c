@@ -275,6 +275,8 @@ static int ee_jit_opcode_supported(uint32_t instr)
     if (op == 0x14u || op == 0x15u) return 1; /* BEQL / BNEL (Round 896) */
     if (op == 0x16u || op == 0x17u) return 1; /* BLEZL / BGTZL (Round 896) */
     if (op == 0x01u) {
+        unsigned trap=(instr>>16)&31u;
+        if(trap==8u||trap==9u||trap==10u||trap==11u||trap==12u||trap==14u)return 1;
         /* REGIMM: rt selects the real sub-opcode, not a flat op-only
          * dispatch like every other entry in this function - only
          * BLTZ/BGEZ/BLTZL/BGEZL are implemented by ppc_dynarec.c
@@ -386,6 +388,7 @@ static int ee_jit_opcode_supported(uint32_t instr)
     if (op == 0x00u) {
         uint32_t funct = instr & 0x3Fu;
         switch (funct) {
+        case 0x30:case 0x31:case 0x32:case 0x33:case 0x34:case 0x36: /* traps */
         case 0x00: /* SLL (and the all-zero-word NOP encoding, harmlessly - see translate_one's rd==0 guard) */
         case 0x02: case 0x03: /* SRL / SRA */
         case 0x04: case 0x06: case 0x07: /* SLLV / SRLV / SRAV */
