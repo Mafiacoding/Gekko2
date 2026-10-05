@@ -1,0 +1,19 @@
+name: R1320 control-path admission discovery
+on:
+  push:
+    branches: [r1320-control-admission-audit]
+    paths:
+      - 'tools/audit_control_block_admission.py'
+      - '.github/workflows/r1320-control-admission-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1320-control-admission-audit
+      - name: Exact control-path admission audit
+        run: python3 tools/audit_control_block_admission.py
