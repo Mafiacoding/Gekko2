@@ -4,6 +4,7 @@
  */
 #include "core/checkpoint.h"
 #include "core/ee/ee_core.h"
+#include "core/recompiler/ee_jit.h" /* R1317 checkpoint source/mapping invalidation */
 #include "core/ee/ee_hle_thread.h"
 #include "core/iop/iop_core.h"
 #include "core/hw/dma.h"
@@ -403,6 +404,9 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     ee->ram = era_scratch; /* ownership transferred - this becomes the live EE RAM buffer */
     ee->ram_size = era_size;
     ee->bios = ee_bios;
+    /* R1317: process-local precise JIT stamps are not checkpoint state. */
+    ee_jit_notify_physical_write(0u, ee->ram_size);
+    ee_jit_notify_mapping_change();
     iop->ram = ira_scratch; /* ownership transferred - live IOP RAM buffer */
     iop->ram_size = ira_size;
     iop->bios = iop_bios;

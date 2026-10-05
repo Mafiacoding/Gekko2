@@ -280,3 +280,8 @@ Independent PPC oracles cover live-across-callback reuse, external generation
 changes, r0, aliases, helper fences, 64-bit paired operands, eviction and
 allocation failure. The exact old C helper/IRQ cadence is retained. These
 checks do not certify full dynarec completion or physical Wii speed.
+
+
+## R1317 — raw EE RAM writer invalidation
+
+Precise-block source generations now cover the remaining audited direct EE-RAM bypass writers: checkpoint RAM/TLB replacement, same-process EE re-init, LOADFILE fixed-delta delivery, the verified RSPU2 EE-RAM copy, and the opt-in legacy frame repair. Existing R1316 CPU stores and DMA inbound/fromSPR notifications remain guarded by a permanent static audit. This is source/mapping coherency work only; it is not a Wii performance or hardware-certification claim.

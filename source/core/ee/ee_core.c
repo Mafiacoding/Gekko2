@@ -2880,8 +2880,10 @@ static void sif_loadfile_ram_write8_delta(ee_state_t *st, uint32_t vaddr, int64_
     int64_t phys64 = (int64_t)vaddr + delta;
     if (phys64 < 0) return;
     uint32_t phys = (uint32_t)phys64;
-    if (st->ram && phys < st->ram_size)
+    if (st->ram && phys < st->ram_size) {
+        ee_jit_notify_physical_write(phys, 1u);
         st->ram[phys] = val;
+    }
 }
 
 static int romdir_lookup(const bios_image_t *bios, const char *name, uint32_t *out_off, uint32_t *out_size)
@@ -3225,8 +3227,10 @@ static int ee_rspu2_disc_rpc(ee_state_t *st,uint32_t command,uint32_t payload,
         if(chunk>sizeof(bytes))chunk=sizeof(bytes);
         if(iop_cdvd_disc_read_sector(lba+sector+copied/2048u,bytes))goto done;
         /* SIF DMA destinations are RAM bus addresses, not EE TLB loads. */
-        if(command==0x204eu)memcpy(st->ram+physical+copied,bytes,chunk);
-        else memcpy(spu2_mixer_get_ram()+physical+copied,bytes,chunk);
+        if(command==0x204eu) {
+            memcpy(st->ram+physical+copied,bytes,chunk);
+            ee_jit_notify_physical_write(physical+copied,chunk);
+        } else memcpy(spu2_mixer_get_ram()+physical+copied,bytes,chunk);
         copied+=chunk;
     }
     result=0;
@@ -4252,6 +4256,9 @@ int ee_core_init(const bios_image_t *bios)
 
     dma_bind_ee_ram(g_state.ram, g_state.ram_size); /* chain-mode DMA reads tags/data from here */
     dma_set_ee_write_notify(ee_jit_notify_physical_write); /* R1316 code-page generations */
+    /* R1317: same-process EE re-init replaces the prior RAM/TLB image. */
+    ee_jit_notify_physical_write(0u, g_state.ram_size);
+    ee_jit_notify_mapping_change();
     ee_pad_new_reset();
     memset(&g_ee_irq, 0, sizeof(g_ee_irq));
     memset(g_ee_pad_area_bound, 0, sizeof(g_ee_pad_area_bound));
@@ -5515,6 +5522,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             const uint64_t ra = st->gpr[31].ud0;
             unsigned k;
             for (k = 0; k < 8; k++) q[k] = (uint8_t)(ra >> (8u * k));
+            ee_jit_notify_physical_write(0x01045a00u, 8u);
             r1249_repairs++;
             r1249_last[0]=(uint32_t)ee_hle_thread_get_current_thread_id();
         }
