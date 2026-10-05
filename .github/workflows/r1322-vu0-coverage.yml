@@ -1,0 +1,16 @@
+name: R1322 VU0 macro coverage
+on:
+  push:
+    branches: [r1322-vu0-coverage-audit]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1322-vu0-coverage-audit
+      - name: Exact VU0 macro selector coverage
+        run: python3 tools/audit_vu0_macro_coverage.py
