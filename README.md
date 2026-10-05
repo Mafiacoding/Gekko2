@@ -8,7 +8,7 @@ Gekko2 explores PS2 emulation on Nintendo Wii hardware. Alex has spent approxima
 
 That work now produces the Sony Computer Entertainment startup screen on a real Wii. The OSDSYS menu renders in the native development build, where entering the Browser and returning to the menu has been tested. Stable, responsive OSDSYS navigation on Wii remains a development goal.
 
-**Current development checkpoint: R1307.** Precise EE/IOP blocks now include the earlier delay-slot, RAM merge and native continuation work. IOP delayed loads and exception boundaries are implemented. Frequently reused scalar source words remain in PPC registers across audited helper calls, with write-through guest state and invalidation on external changes. ELF/DOL test builds accompany this checkpoint at the owner's request. Read [STATUS.md](STATUS.md), [the R1307 handoff](docs/R1307-HANDOFF.md) and [the completion plan](docs/DYNAREC-COMPLETION-PLAN.md). The full dynarec and physical-Wii performance work remain unfinished.
+**Current development checkpoint: R1308.** This builds on R1307's precise EE/IOP blocks and audited scalar register residency. VU Q/P issue timing, WAITQ/WAITP, all 13 scalar EFU operations, lower flag queries, dual-issue VF hazards, I-literal ordering and wrapped PATH1 packets are implemented. Event-free EE peripheral timer intervals are deferred with precise IRQ boundaries and materialized MMIO/snapshots. Read [STATUS.md](STATUS.md), [the R1308 handoff](docs/R1308-HANDOFF.md) and [the completion plan](docs/DYNAREC-COMPLETION-PLAN.md). Full FMAC flag/hazard timing, asynchronous VIF/GIF scheduling, general event batching and physical-Wii performance remain unfinished.
 
 ## Why Gekko2?
 

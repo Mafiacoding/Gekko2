@@ -102,6 +102,11 @@ typedef struct {
 #define IOP_CNT_MODE_STOPPED        0x8000u
 
 void iop_timers_init(void);
+/* Read snapshots materialize deferred ticks. Restore invalidates the
+ * derived event distance. Mutable get_state access retains the scalar
+ * path until init, allowing callers to hold and edit the pointer. */
+void iop_timers_snapshot(iop_timers_state_t *out);
+void iop_timers_restore(const iop_timers_state_t *in);
 
 int iop_timers_mmio_read32(uint32_t addr, uint32_t *out);
 int iop_timers_mmio_write32(uint32_t addr, uint32_t value);

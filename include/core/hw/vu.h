@@ -45,11 +45,10 @@
  *     instruction after this one, the classic VU "E-bit delay slot",
  *     before actually stopping - verified from the exact ebit
  *     countdown arithmetic in `_vu0Exec`). Real hardware also has M/D/
- *     T flags (bits 29/28/27) gating INTC/FBRST-based debug
- *     interrupts - NOT implemented here (no VU-side interrupt
- *     delivery exists in this project yet, same "real bit position
- *     cited, side effect not modeled" pattern as round 12's FBRST/
- *     CTC2 handling). Branches use the same 1-instruction-delay-slot
+ *     T flags (bits 29/28/27). D/T now use VU0's shared FBRST to
+ *     set VPU_STAT and raise INTC VU0/VU1 after executing the marked
+ *     pair, without an E delay pair. M synchronization is still open.
+ *     Branches use the same 1-instruction-delay-slot
  *     mechanism as the E-bit (`VU->branch`countdown in `_vu0Exec`).
  *
  * UPDATE (task #94, this round): a real opcode-number-to-mnemonic
@@ -102,6 +101,14 @@
 #define VU1_MEM_SIZE   0x4000u /* 16KB - PCSX2's VU1_MEMSIZE */
 #define VU1_MICRO_SIZE 0x4000u /* 16KB - PCSX2's VU1_PROGSIZE */
 
+/* FDIV issue clock, separate from retired instruction count. Each VU
+ * owns this state; no global pointer-keyed cache survives reset/resume. */
+typedef struct {
+    uint64_t cycle,q_ready,p_ready;
+    uint32_t q_value,q_status,p_value;
+    uint8_t q_pending,p_pending;
+} vu_pipeline_t;
+
 typedef struct {
     uint32_t vf[32][4]; /* VF0-31, 4 lanes (raw float bit patterns) each */
     uint32_t vi[32];    /* only 0-15 are real VU1 integer regs; the rest
@@ -129,6 +136,7 @@ typedef struct {
 
     uint64_t instructions_executed;
     uint64_t unimplemented_opcodes_seen;
+    vu_pipeline_t pipeline;
 } vu1_state_t;
 
 void vu1_init(void);
@@ -171,5 +179,11 @@ int vu_micro_step(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
                    uint32_t *tpc, uint32_t *branch_delay, uint32_t *branch_target,
                    uint32_t *ebit_delay,
                    uint64_t *instructions_executed, uint64_t *unimplemented_opcodes_seen);
+
+int vu_micro_step_pipeline(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
+    uint8_t *mem,uint32_t mem_mask,uint8_t *micro,uint32_t micro_mask,
+    uint32_t *tpc,uint32_t *branch_delay,uint32_t *branch_target,
+    uint32_t *ebit_delay,uint64_t *retired,uint64_t *unknown,
+    vu_pipeline_t *pipeline);
 
 #endif

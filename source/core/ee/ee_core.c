@@ -631,6 +631,32 @@ static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_
     st->next_pc = st->pc + 4u;
 }
 
+void ee_core_raise_trap(ee_state_t *st)
+{
+    st->exc_raised_this_step=1;
+    ee_raise_exception(st,EE_EXC_CODE_TR,st->exc_this_pc,st->exc_in_delay_slot);
+}
+
+void ee_core_raise_overflow(ee_state_t *st)
+{
+    st->exc_raised_this_step=1;
+    ee_raise_exception(st,12u<<2,st->exc_this_pc,st->exc_in_delay_slot);
+}
+
+static void ee_signed_arithmetic(ee_state_t *st,uint64_t left,uint64_t right,
+                                 unsigned bits,int subtract,unsigned dest)
+{
+    uint64_t mask=bits==32u?UINT32_MAX:UINT64_MAX;
+    uint64_t sign=UINT64_C(1)<<(bits-1u);
+    left&=mask;right&=mask;
+    uint64_t result=(subtract?left-right:left+right)&mask;
+    uint64_t different=left^right;
+    if(((left^result)&(subtract?different:~different)&sign)!=0u) {
+        ee_core_raise_overflow(st);return;
+    }
+    if(dest)st->gpr[dest].ud0=bits==32u?(uint64_t)(int64_t)(int32_t)result:result;
+}
+
 /* TLB-miss-specific wrapper: also records BadVAddr/Context/EntryHi the
  * way real hardware does, so a BIOS TLB-refill handler could look up
  * (or install) the right entry - ported from PCSX2's cpuTlbMiss()/
@@ -4421,7 +4447,7 @@ static uint32_t vu0_mem_read32(const ee_state_t *st, uint32_t addr)
  * shared one-pair scheduler. Entry selection avoids branch-loop scans. */
 static inline int vu0_block_candidate(const ee_state_t *st)
 {
-    if(st->vu0_branch_delay||st->vu0_ebit_delay)return 0;
+    if(st->vu0_branch_delay||st->vu0_ebit_delay||st->vu0_pipeline.q_pending)return 0;
     for(unsigned n=0;n<2;n++) {
         uint32_t off=(st->cop2_ctrl[26]+n*8u)&(sizeof(st->vu0_micro)-1u);
         uint32_t up=elfld_rd_le32(st->vu0_micro+off+4u);
@@ -4436,12 +4462,12 @@ static inline int vu0_block_candidate(const ee_state_t *st)
 static void vu0_run_pairs(ee_state_t *st)
 {
     for (uint32_t i = 0; i < VU0_EXEC_STEP_CAP; i++) {
-        int stopped = vu_micro_step(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
+        int stopped = vu_micro_step_pipeline(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
                                      st->vu0_mem, (uint32_t)(sizeof(st->vu0_mem) - 1u),
                                      st->vu0_micro, (uint32_t)(sizeof(st->vu0_micro) - 1u),
                                      &st->cop2_ctrl[26], &st->vu0_branch_delay, &st->vu0_branch_target,
                                      &st->vu0_ebit_delay,
-                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen);
+                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline);
         if (stopped)
             break;
     }
@@ -4456,13 +4482,13 @@ static void vu0_run_blocks(ee_state_t *st)
             st->vu0_micro,(uint32_t)(sizeof(st->vu0_micro)-1u),&st->cop2_ctrl[26],
             &st->vu0_branch_delay,&st->vu0_branch_target,&st->vu0_ebit_delay,
             &st->vu0_instructions_executed,VU0_EXEC_STEP_CAP-i);
-        if(ran){i+=ran-1u;continue;}
-        int stopped = vu_micro_step(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
+        if(ran){st->vu0_pipeline.cycle+=ran;i+=ran-1u;continue;}
+        int stopped = vu_micro_step_pipeline(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
                                      st->vu0_mem, (uint32_t)(sizeof(st->vu0_mem) - 1u),
                                      st->vu0_micro, (uint32_t)(sizeof(st->vu0_micro) - 1u),
                                      &st->cop2_ctrl[26], &st->vu0_branch_delay, &st->vu0_branch_target,
                                      &st->vu0_ebit_delay,
-                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen);
+                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline);
         if (stopped)
             break;
     }
@@ -6165,6 +6191,10 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                     memset(st->vu0_vf, 0, sizeof(st->vu0_vf));
                     memset(st->vu0_mem, 0, sizeof(st->vu0_mem));
                     memset(st->vu0_micro, 0, sizeof(st->vu0_micro));
+                    memset(&st->vu0_pipeline,0,sizeof(st->vu0_pipeline));
+                    memset(st->vu0_acc,0,sizeof(st->vu0_acc));
+                    st->vu0_branch_delay=st->vu0_branch_target=st->vu0_ebit_delay=0;
+                    st->vu0_running=0;
                     st->vu0_vf[0][3] = 0x3F800000u; /* VF00 hardwired to
                         (0,0,0,1.0f) - same real-hardware fact cited by
                         this project's own vu1_init() for VF00. */
@@ -9980,9 +10010,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             st->lo.ud0 = rt32 ? sext32(rs32 / rt32) : UINT64_MAX;
             st->hi.ud0 = sext32(rt32 ? rs32 % rt32 : rs32);
             break;
-        case 0x20: /* ADD */
+        case 0x20: /* ADD */ ee_signed_arithmetic(st,GPR(rs),GPR(rt),32u,0,rd);break;
         case 0x21: /* ADDU */   if (rd) GPR(rd) = sext32(rs32 + rt32); break;
-        case 0x22: /* SUB */
+        case 0x22: /* SUB */ ee_signed_arithmetic(st,GPR(rs),GPR(rt),32u,1,rd);break;
         case 0x23: /* SUBU */   if (rd) GPR(rd) = sext32(rs32 - rt32); break;
         case 0x24: /* AND */    if (rd) GPR(rd) = GPR(rs) & GPR(rt); break;
         case 0x25: /* OR */     if (rd) GPR(rd) = GPR(rs) | GPR(rt); break;
@@ -10009,26 +10039,11 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                     break;
         case 0x2A: /* SLT */    if (rd) GPR(rd) = ((int64_t)GPR(rs) < (int64_t)GPR(rt)) ? 1 : 0; break;
         case 0x2B: /* SLTU */   if (rd) GPR(rd) = (GPR(rs) < GPR(rt)) ? 1 : 0; break;
-        /* Round 776 (task #447/#764, GT3 fresh-boot survey): real
-         * standard MIPS III DADD/DSUB (funct 0x2C/0x2E) were missing -
-         * only their unsigned siblings DADDU/DSUBU (0x2D/0x2F) were
-         * implemented. First observed live: GT3's real IOP/EE boot
-         * code hit funct=0x2E (raw=0x0008482e, rs=0,rt=8,rd=9) at
-         * pc=0x0100f5ac, halting with "unimplemented SPECIAL funct"
-         * at instr=30,047,008 on a fresh cold-boot chain. Per the real
-         * MIPS III ISA (and matching this exact switch's own
-         * established precedent just above for ADD/ADDU (funct
-         * 0x20/0x21) and SUB/SUBU (funct 0x22/0x23), both already
-         * merged into their unsigned sibling's case since this project
-         * doesn't model integer-overflow trap exceptions), DADD only
-         * differs from DADDU by trapping on signed 64-bit overflow,
-         * and DSUB only differs from DSUBU the same way - so falling
-         * through to the existing unsigned bodies is the correct,
-         * real-ISA-accurate fix given this project's existing
-         * no-overflow-trap convention, not a guess. */
-        case 0x2C: /* DADD */
+        /* Signed doubleword arithmetic raises precise overflow before
+         * discarding a zero destination. Unsigned variants wrap. */
+        case 0x2C: /* DADD */ ee_signed_arithmetic(st,GPR(rs),GPR(rt),64u,0,rd);break;
         case 0x2D: /* DADDU */  if (rd) GPR(rd) = GPR(rs) + GPR(rt); break;
-        case 0x2E: /* DSUB */
+        case 0x2E: /* DSUB */ ee_signed_arithmetic(st,GPR(rs),GPR(rt),64u,1,rd);break;
         case 0x2F: /* DSUBU */  if (rd) GPR(rd) = GPR(rs) - GPR(rt); break;
         /* Round 478: real, standard MIPS II/III/EE trap-on-condition
          * family (funct 0x30-0x36, skipping reserved 0x35/0x37) - see
@@ -10042,12 +10057,12 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
          * ee_raise_exception() and fall through to this switch's
          * normal `break`, do NOT return 1 - raising an exception
          * redirects pc, it does not halt the core). */
-        case 0x30: /* TGE  */ if ((int64_t)GPR(rs) >= (int64_t)GPR(rt)) ee_raise_exception(st, EE_EXC_CODE_TR, this_pc, in_delay_slot); break;
-        case 0x31: /* TGEU */ if (GPR(rs) >= GPR(rt)) ee_raise_exception(st, EE_EXC_CODE_TR, this_pc, in_delay_slot); break;
-        case 0x32: /* TLT  */ if ((int64_t)GPR(rs) <  (int64_t)GPR(rt)) ee_raise_exception(st, EE_EXC_CODE_TR, this_pc, in_delay_slot); break;
-        case 0x33: /* TLTU */ if (GPR(rs) <  GPR(rt)) ee_raise_exception(st, EE_EXC_CODE_TR, this_pc, in_delay_slot); break;
-        case 0x34: /* TEQ  */ if (GPR(rs) == GPR(rt)) ee_raise_exception(st, EE_EXC_CODE_TR, this_pc, in_delay_slot); break;
-        case 0x36: /* TNE  */ if (GPR(rs) != GPR(rt)) ee_raise_exception(st, EE_EXC_CODE_TR, this_pc, in_delay_slot); break;
+        case 0x30: /* TGE  */ if ((int64_t)GPR(rs) >= (int64_t)GPR(rt)) ee_core_raise_trap(st); break;
+        case 0x31: /* TGEU */ if (GPR(rs) >= GPR(rt)) ee_core_raise_trap(st); break;
+        case 0x32: /* TLT  */ if ((int64_t)GPR(rs) <  (int64_t)GPR(rt)) ee_core_raise_trap(st); break;
+        case 0x33: /* TLTU */ if (GPR(rs) <  GPR(rt)) ee_core_raise_trap(st); break;
+        case 0x34: /* TEQ  */ if (GPR(rs) == GPR(rt)) ee_core_raise_trap(st); break;
+        case 0x36: /* TNE  */ if (GPR(rs) != GPR(rt)) ee_core_raise_trap(st); break;
         case 0x38: /* DSLL */   if (rd) GPR(rd) = GPR(rt) << sa; break;
         case 0x3A: /* DSRL */   if (rd) GPR(rd) = GPR(rt) >> sa; break;
         case 0x3B: /* DSRA */   if (rd) GPR(rd) = (uint64_t)((int64_t)GPR(rt) >> sa); break;
@@ -10062,6 +10077,12 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 
     case 0x01: /* REGIMM */
         switch (rt) {
+        case 0x08: if((int64_t)GPR(rs)>=(int64_t)imm)ee_core_raise_trap(st);break;
+        case 0x09: if(GPR(rs)>=(uint64_t)(int64_t)imm)ee_core_raise_trap(st);break;
+        case 0x0a: if((int64_t)GPR(rs)<(int64_t)imm)ee_core_raise_trap(st);break;
+        case 0x0b: if(GPR(rs)<(uint64_t)(int64_t)imm)ee_core_raise_trap(st);break;
+        case 0x0c: if(GPR(rs)==(uint64_t)(int64_t)imm)ee_core_raise_trap(st);break;
+        case 0x0e: if(GPR(rs)!=(uint64_t)(int64_t)imm)ee_core_raise_trap(st);break;
         case 0x00: /* BLTZ */ st->branch_pending = 1; /* delay slot always executes for regular branches, taken or not */ if ((int64_t)GPR(rs) < 0)  BRANCH_TO(this_pc + 4 + (imm << 2)); break;
         case 0x01: /* BGEZ */ st->branch_pending = 1; if ((int64_t)GPR(rs) >= 0) BRANCH_TO(this_pc + 4 + (imm << 2)); break;
         /* "Likely" branches (MIPS II+, ported from PCSX2's
@@ -10159,19 +10180,16 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
     case 0x16: /* BLEZL */ if ((int64_t)GPR(rs) <= 0) BRANCH_TO(this_pc + 4 + (imm << 2)); else { st->pc = fallthrough_pc + 4; st->next_pc = fallthrough_pc + 8; } break;
     case 0x17: /* BGTZL */ if ((int64_t)GPR(rs) > 0)  BRANCH_TO(this_pc + 4 + (imm << 2)); else { st->pc = fallthrough_pc + 4; st->next_pc = fallthrough_pc + 8; } break;
 
-    case 0x08: /* ADDI */
-    case 0x09: /* ADDIU */ if (rt) GPR(rt) = sext32((uint32_t)((int32_t)rs32 + imm)); break;
+    case 0x08: /* ADDI */ ee_signed_arithmetic(st,GPR(rs),(uint64_t)(int64_t)imm,32u,0,rt);break;
+    case 0x09: /* ADDIU */ if (rt) GPR(rt) = sext32(rs32+(uint32_t)imm); break;
     /* DADDI/DADDIU (primary 0x18/0x19): 64-bit reg + sign-extended
      * imm, full 64-bit result (no truncation/re-sign-extension like
      * the 32-bit ADDI/ADDIU pair above). Found missing (halting
      * cleanly on "unimplemented primary opcode 0x19") once round 11's
      * MCH_RICM/MCH_DRD RDRAM auto-init fix let real BIOS boot progress
      * roughly 100x further than before, into code this project had
-     * never reached. Like ADDI above, DADDI's real overflow-trap
-     * semantics aren't implemented (matches this project's existing,
-     * documented ADDI simplification) - both variants behave like
-     * DADDIU. */
-    case 0x18: /* DADDI */
+     * never reached. DADDI raises a precise signed overflow exception; DADDIU wraps. */
+    case 0x18: /* DADDI */ ee_signed_arithmetic(st,GPR(rs),(uint64_t)(int64_t)imm,64u,0,rt);break;
     case 0x19: /* DADDIU */ if (rt) GPR(rt) = GPR(rs) + (uint64_t)(int64_t)imm; break;
     case 0x0A: /* SLTI */  if (rt) GPR(rt) = ((int64_t)GPR(rs) < (int64_t)imm) ? 1 : 0; break;
     case 0x0B: /* SLTIU */ if (rt) GPR(rt) = (GPR(rs) < (uint64_t)(int64_t)imm) ? 1 : 0; break;
@@ -12211,17 +12229,17 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 for (int k = 0; k < 2; k++) {
                     int ss = (k == 0) ? 0 : 2;
                     int64_t temp = (int64_t)(int32_t)lane_w(st->gpr[rs], ss) * (int64_t)(int32_t)lane_w(st->gpr[rt], ss);
-                    int64_t temp2 = temp + ((int64_t)(int32_t)(k == 0 ? (int32_t)st->hi.ud0 : (int32_t)(st->hi.ud1)) << 32);
+                    uint64_t bits = (uint64_t)temp + ((uint64_t)(uint32_t)(k == 0 ? st->hi.ud0 : st->hi.ud1) << 32);
                     if (ss == 0) {
                         int32_t rtl = (int32_t)lane_w(st->gpr[rt], ss);
                         if (((rtl & 0x7FFFFFFF) == 0 || (rtl & 0x7FFFFFFF) == 0x7FFFFFFF) &&
                             (int32_t)lane_w(st->gpr[rs], ss) != rtl)
-                            temp2 += 0x70000000;
+                            bits += 0x70000000u;
                     }
-                    temp2 = (int32_t)(temp2 / 4294967295LL);
-                    int32_t lo_new = (int32_t)(temp & 0xFFFFFFFFu) + (k == 0 ? (int32_t)st->lo.ud0 : (int32_t)(st->lo.ud1));
-                    if (k == 0) { st->lo.ud0 = sext32((uint32_t)lo_new); st->hi.ud0 = sext32((uint32_t)temp2); if (rd) GPR(rd) = st->lo.ud0; }
-                    else        { st->lo.ud1 = sext32((uint32_t)lo_new); st->hi.ud1 = sext32((uint32_t)temp2); if (rd) GPR1(rd) = st->lo.ud1; }
+                    int32_t hi_new = (int32_t)((int64_t)bits / 4294967295LL);
+                    uint32_t lo_new = (uint32_t)temp + (uint32_t)(k == 0 ? st->lo.ud0 : st->lo.ud1);
+                    if (k == 0) { st->lo.ud0 = sext32((uint32_t)lo_new); st->hi.ud0 = sext32((uint32_t)hi_new); if (rd) GPR(rd) = ((uint64_t)(uint32_t)hi_new << 32) | lo_new; }
+                    else        { st->lo.ud1 = sext32((uint32_t)lo_new); st->hi.ud1 = sext32((uint32_t)hi_new); if (rd) GPR1(rd) = ((uint64_t)(uint32_t)hi_new << 32) | lo_new; }
                 }
             } break;
             case 0x04: /* PMSUBW - pipe-paired 32x32->64 signed
@@ -12234,11 +12252,11 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 for (int k = 0; k < 2; k++) {
                     int ss = (k == 0) ? 0 : 2;
                     int64_t temp = (int64_t)(int32_t)lane_w(st->gpr[rs], ss) * (int64_t)(int32_t)lane_w(st->gpr[rt], ss);
-                    int64_t temp2 = ((int64_t)(int32_t)(k == 0 ? (int32_t)st->hi.ud0 : (int32_t)(st->hi.ud1)) << 32) - temp;
-                    temp2 = (int32_t)(temp2 / 4294967295LL);
-                    int32_t lo_new = (k == 0 ? (int32_t)st->lo.ud0 : (int32_t)(st->lo.ud1)) - (int32_t)(temp & 0xFFFFFFFFu);
-                    if (k == 0) { st->lo.ud0 = sext32((uint32_t)lo_new); st->hi.ud0 = sext32((uint32_t)temp2); if (rd) GPR(rd) = st->lo.ud0; }
-                    else        { st->lo.ud1 = sext32((uint32_t)lo_new); st->hi.ud1 = sext32((uint32_t)temp2); if (rd) GPR1(rd) = st->lo.ud1; }
+                    uint64_t bits = ((uint64_t)(uint32_t)(k == 0 ? st->hi.ud0 : st->hi.ud1) << 32) - (uint64_t)temp;
+                    int32_t hi_new = (int32_t)((int64_t)bits / 4294967295LL);
+                    uint32_t lo_new = (uint32_t)(k == 0 ? st->lo.ud0 : st->lo.ud1) - (uint32_t)temp;
+                    if (k == 0) { st->lo.ud0 = sext32((uint32_t)lo_new); st->hi.ud0 = sext32((uint32_t)hi_new); if (rd) GPR(rd) = ((uint64_t)(uint32_t)hi_new << 32) | lo_new; }
+                    else        { st->lo.ud1 = sext32((uint32_t)lo_new); st->hi.ud1 = sext32((uint32_t)hi_new); if (rd) GPR1(rd) = ((uint64_t)(uint32_t)hi_new << 32) | lo_new; }
                 }
             } break;
             case 0x0C: /* PMULTW - pipe-paired 32x32->64 signed
@@ -12276,15 +12294,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                         * dd/ss-paired 64-bit halves, PMADDH addresses
                         * all four 32-bit LO/HI lanes directly. */
             {
-                int32_t r[4];
-                r[0] = (int32_t)st->lo.ud0        + (int32_t)(int16_t)lane_h(st->gpr[rs], 0) * (int32_t)(int16_t)lane_h(st->gpr[rt], 0);
-                int32_t r_lo1 = (int32_t)(st->lo.ud0 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], 1);
-                int32_t r_hi0 = (int32_t)st->hi.ud0        + (int32_t)(int16_t)lane_h(st->gpr[rs], 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], 2);
-                int32_t r_hi1 = (int32_t)(st->hi.ud0 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], 3);
-                int32_t r2_lo0 = (int32_t)st->lo.ud1        + (int32_t)(int16_t)lane_h(st->gpr[rs], 4) * (int32_t)(int16_t)lane_h(st->gpr[rt], 4);
-                int32_t r2_lo1 = (int32_t)(st->lo.ud1 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 5) * (int32_t)(int16_t)lane_h(st->gpr[rt], 5);
-                int32_t r2_hi0 = (int32_t)st->hi.ud1        + (int32_t)(int16_t)lane_h(st->gpr[rs], 6) * (int32_t)(int16_t)lane_h(st->gpr[rt], 6);
-                int32_t r2_hi1 = (int32_t)(st->hi.ud1 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 7) * (int32_t)(int16_t)lane_h(st->gpr[rt], 7);
+                uint32_t r[4];
+                r[0] = (uint32_t)st->lo.ud0        + (int32_t)(int16_t)lane_h(st->gpr[rs], 0) * (int32_t)(int16_t)lane_h(st->gpr[rt], 0);
+                uint32_t r_lo1 = (uint32_t)(st->lo.ud0 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], 1);
+                uint32_t r_hi0 = (uint32_t)st->hi.ud0        + (int32_t)(int16_t)lane_h(st->gpr[rs], 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], 2);
+                uint32_t r_hi1 = (uint32_t)(st->hi.ud0 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], 3);
+                uint32_t r2_lo0 = (uint32_t)st->lo.ud1        + (int32_t)(int16_t)lane_h(st->gpr[rs], 4) * (int32_t)(int16_t)lane_h(st->gpr[rt], 4);
+                uint32_t r2_lo1 = (uint32_t)(st->lo.ud1 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 5) * (int32_t)(int16_t)lane_h(st->gpr[rt], 5);
+                uint32_t r2_hi0 = (uint32_t)st->hi.ud1        + (int32_t)(int16_t)lane_h(st->gpr[rs], 6) * (int32_t)(int16_t)lane_h(st->gpr[rt], 6);
+                uint32_t r2_hi1 = (uint32_t)(st->hi.ud1 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 7) * (int32_t)(int16_t)lane_h(st->gpr[rt], 7);
                 st->lo.ud0 = ((uint64_t)(uint32_t)r_lo1 << 32) | (uint32_t)r[0];
                 st->hi.ud0 = ((uint64_t)(uint32_t)r_hi1 << 32) | (uint32_t)r_hi0;
                 st->lo.ud1 = ((uint64_t)(uint32_t)r2_lo1 << 32) | (uint32_t)r2_lo0;
@@ -12303,9 +12321,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 for (int half = 0; half < 2; half++) {
                     int base = half * 4;
                     int32_t first_lo = (int32_t)(int16_t)lane_h(st->gpr[rs], base + 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 1);
-                    int32_t sum_lo = first_lo + (int32_t)(int16_t)lane_h(st->gpr[rs], base) * (int32_t)(int16_t)lane_h(st->gpr[rt], base);
+                    uint32_t sum_lo = (uint32_t)first_lo + (int32_t)(int16_t)lane_h(st->gpr[rs], base) * (int32_t)(int16_t)lane_h(st->gpr[rt], base);
                     int32_t first_hi = (int32_t)(int16_t)lane_h(st->gpr[rs], base + 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 3);
-                    int32_t sum_hi = first_hi + (int32_t)(int16_t)lane_h(st->gpr[rs], base + 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 2);
+                    uint32_t sum_hi = (uint32_t)first_hi + (int32_t)(int16_t)lane_h(st->gpr[rs], base + 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 2);
                     lo_words[half] = (uint32_t)sum_lo; hi_words[half] = (uint32_t)sum_hi;
                     if (half == 0) { st->lo.ud0 = (uint64_t)(uint32_t)first_lo << 32 | (uint32_t)sum_lo; st->hi.ud0 = (uint64_t)(uint32_t)first_hi << 32 | (uint32_t)sum_hi; }
                     else           { st->lo.ud1 = (uint64_t)(uint32_t)first_lo << 32 | (uint32_t)sum_lo; st->hi.ud1 = (uint64_t)(uint32_t)first_hi << 32 | (uint32_t)sum_hi; }
@@ -12318,14 +12336,14 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             case 0x14: /* PMSUBH - like PMADDH but subtracting, ported
                         * from PMSUBH(). */
             {
-                int32_t r0 = (int32_t)st->lo.ud0        - (int32_t)(int16_t)lane_h(st->gpr[rs], 0) * (int32_t)(int16_t)lane_h(st->gpr[rt], 0);
-                int32_t r1 = (int32_t)(st->lo.ud0 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], 1);
-                int32_t r2 = (int32_t)st->hi.ud0        - (int32_t)(int16_t)lane_h(st->gpr[rs], 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], 2);
-                int32_t r3 = (int32_t)(st->hi.ud0 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], 3);
-                int32_t r4 = (int32_t)st->lo.ud1        - (int32_t)(int16_t)lane_h(st->gpr[rs], 4) * (int32_t)(int16_t)lane_h(st->gpr[rt], 4);
-                int32_t r5 = (int32_t)(st->lo.ud1 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 5) * (int32_t)(int16_t)lane_h(st->gpr[rt], 5);
-                int32_t r6 = (int32_t)st->hi.ud1        - (int32_t)(int16_t)lane_h(st->gpr[rs], 6) * (int32_t)(int16_t)lane_h(st->gpr[rt], 6);
-                int32_t r7 = (int32_t)(st->hi.ud1 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 7) * (int32_t)(int16_t)lane_h(st->gpr[rt], 7);
+                uint32_t r0 = (uint32_t)st->lo.ud0        - (int32_t)(int16_t)lane_h(st->gpr[rs], 0) * (int32_t)(int16_t)lane_h(st->gpr[rt], 0);
+                uint32_t r1 = (uint32_t)(st->lo.ud0 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], 1);
+                uint32_t r2 = (uint32_t)st->hi.ud0        - (int32_t)(int16_t)lane_h(st->gpr[rs], 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], 2);
+                uint32_t r3 = (uint32_t)(st->hi.ud0 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], 3);
+                uint32_t r4 = (uint32_t)st->lo.ud1        - (int32_t)(int16_t)lane_h(st->gpr[rs], 4) * (int32_t)(int16_t)lane_h(st->gpr[rt], 4);
+                uint32_t r5 = (uint32_t)(st->lo.ud1 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 5) * (int32_t)(int16_t)lane_h(st->gpr[rt], 5);
+                uint32_t r6 = (uint32_t)st->hi.ud1        - (int32_t)(int16_t)lane_h(st->gpr[rs], 6) * (int32_t)(int16_t)lane_h(st->gpr[rt], 6);
+                uint32_t r7 = (uint32_t)(st->hi.ud1 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 7) * (int32_t)(int16_t)lane_h(st->gpr[rt], 7);
                 st->lo.ud0 = ((uint64_t)(uint32_t)r1 << 32) | (uint32_t)r0;
                 st->hi.ud0 = ((uint64_t)(uint32_t)r3 << 32) | (uint32_t)r2;
                 st->lo.ud1 = ((uint64_t)(uint32_t)r5 << 32) | (uint32_t)r4;
@@ -12346,9 +12364,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 for (int half = 0; half < 2; half++) {
                     int base = half * 4;
                     int32_t first_lo = (int32_t)(int16_t)lane_h(st->gpr[rs], base + 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 1);
-                    int32_t diff_lo = first_lo - (int32_t)(int16_t)lane_h(st->gpr[rs], base) * (int32_t)(int16_t)lane_h(st->gpr[rt], base);
+                    uint32_t diff_lo = (uint32_t)first_lo - (int32_t)(int16_t)lane_h(st->gpr[rs], base) * (int32_t)(int16_t)lane_h(st->gpr[rt], base);
                     int32_t first_hi = (int32_t)(int16_t)lane_h(st->gpr[rs], base + 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 3);
-                    int32_t diff_hi = first_hi - (int32_t)(int16_t)lane_h(st->gpr[rs], base + 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 2);
+                    uint32_t diff_hi = (uint32_t)first_hi - (int32_t)(int16_t)lane_h(st->gpr[rs], base + 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 2);
                     lo_words[half] = (uint32_t)diff_lo; hi_words[half] = (uint32_t)diff_hi;
                     if (half == 0) { st->lo.ud0 = (uint64_t)(uint32_t)(~first_lo) << 32 | (uint32_t)diff_lo; st->hi.ud0 = (uint64_t)(uint32_t)(~first_hi) << 32 | (uint32_t)diff_hi; }
                     else           { st->lo.ud1 = (uint64_t)(uint32_t)(~first_lo) << 32 | (uint32_t)diff_lo; st->hi.ud1 = (uint64_t)(uint32_t)(~first_hi) << 32 | (uint32_t)diff_hi; }

@@ -1,8 +1,15 @@
-# Gekko2 status — R1307
+# Gekko2 status — R1308
 
 Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
 
 ## Verified progress
+
+Development branch work after R1308: VU nested control/link corrections,
+shared FBRST D/T traps and event-free IOP timer intervals pass 214 host tests
+and linked PPC oracles. See [R1309 working notes](docs/R1309-WORKING-NOTES.md)
+for exact coverage and measured cost, including the dense-event regression.
+This is source development; points 4 and 5 are not complete and no R1309
+hardware release is certified.
 
 | Area | Evidence | Remaining limits |
 | --- | --- | --- |
@@ -13,6 +20,14 @@ Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** Th
 | PPC JIT | Precise EE/IOP blocks, fused legal delay slots, RAM merge/vector paths, native returned-block continuation, IOP load/exception precision and guarded scalar register residency. | Full EE/VU coverage, wider allocation, patched generation-based links and event batching remain incomplete; Wii stability/FPS require testing. |
 | GX | Optional CT32/24 presentation, guarded sprites/flat triangles, snapshot textures, selected TEV blending/depth paths, deferred VRAM resolve and compatible resident framebuffers. | Varying Gouraud/textured triangle routing, broad GPU residency and complex GS states still require software/hybrid handling. |
 | R1302 branding | Gekko2 launcher header, HBC icon, checked 640×480 native launcher preview and both Wii cross-builds. | No fresh physical-Wii R1302 timing result. Guest emulation remains R1301. |
+
+## R1308 VU pipeline and timer event checkpoint
+
+Implemented Q DIV/SQRT/RSQRT lane selectors, 7/7/13-cycle issue latencies, WAITQ-before-pair stalls and E-bit flush. VU1 implements all 13 scalar EFU operations with P issue timing, WAITP and MFP; transcendental results follow the PCSX2 polynomial reference and are not claimed hardware-bit-exact. Lower FC/FS/FM instructions read canonical flags; full FMAC flag generation and delayed visibility remain open. Upper/lower VF hazards and I-literal ordering are corrected in both scalar and admitted native paths. Conflicting native pairs decline transactionally. Wrapped XGKICK packets use the existing synchronous PATH1 parser with EOP bounds.
+
+EE peripheral timers defer only event-free intervals. Counts materialize on MMIO, diagnostics and checkpoints. Compare/overflow ticks use the original scalar transition; legacy mutable state falls back to scalar ticking. Count/Compare, CPU interrupt checks, EE8/IOP1 ordering, SIF and GS event scheduling remain per-instruction.
+
+Measured timer-only PPC instruction cost decreases 73–79% across four clock sources. Complete warm synthetic EE eight-instruction samples decrease roughly 5–6%; IOP samples are unchanged. These are linked PPC instruction counts, **not actual Wii FPS measurements**. See [R1308-HANDOFF.md](docs/R1308-HANDOFF.md) for test results and remaining scope.
 
 ## R1307 register residency and IOP precision checkpoint
 

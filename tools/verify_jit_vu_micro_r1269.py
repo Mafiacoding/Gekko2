@@ -10,6 +10,9 @@ r=Path(__file__).resolve().parents[1];out=r/'outputs/verification';out.mkdir(exi
 s=(r/'source/hw/vu.c').read_text().replace('    if (vu_jit_try_upper(vf, vi, acc, w)) return 1;','').replace('    if (vu_jit_try_lower(vf, vi, mem, mem_mask, w, pc, branch_delay, branch_target)) return 1;','')
 s+='''\nint reference_upper(uint32_t vf[32][4],uint32_t *vi,uint32_t *acc,uint32_t w){return vu_exec_upper(vf,vi,acc,w);}
 int reference_lower(uint32_t vf[32][4],uint32_t *vi,uint8_t *m,uint32_t mask,uint32_t w,uint32_t pc,uint32_t *d,uint32_t *t){return vu_exec_lower(vf,vi,m,mask,w,pc,d,t);}
+static ee_state_t stub_ee;
+ee_state_t *ee_core_get_state(void){return &stub_ee;}
+void ee_intc_raise(int irq){(void)irq;}
 static vif_state_t stub_vif;
 vif_state_t *vif0_get_state(void){return &stub_vif;}
 vif_state_t *vif1_get_state(void){return &stub_vif;}

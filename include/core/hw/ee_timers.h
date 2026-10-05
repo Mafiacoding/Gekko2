@@ -145,6 +145,11 @@ int ee_timers_mmio_write32(uint32_t addr, uint32_t value);
  * instruction step, same placement/rationale as ee_check_vblank()/
  * ee_check_gs_vsync() in ee_core.c. */
 void ee_timers_tick(void);
+/* Current counts without handing out a mutable pointer. */
+void ee_timers_snapshot(ee_timers_state_t *out);
+void ee_timers_restore(const ee_timers_state_t *in);
+uint64_t ee_timers_get_batched_ticks(void);
+uint64_t ee_timers_get_boundary_ticks(void);
 
 ee_timers_state_t *ee_timers_get_state(void);
 

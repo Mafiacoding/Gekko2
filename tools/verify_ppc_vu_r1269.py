@@ -45,7 +45,7 @@ print('PASS 1 actual Wii ELF VU branch-target capture/local endian-wrap group')
 # Real VU1 microprogram: I-bit upper ADDi, E + lower IADD, one delayed pair.
 call('vu1_init')
 for k in range(4):word(vf+16+k*4,0x40000000)
-word(vi+4,7)
+word(vi+4,7);word(vi+84,0x40400000) # paired upper reads old I
 pairs=[(0x40400000,0x80000000|(15<<21)|(1<<11)|(2<<6)|0x22),((0x40<<25)|(1<<16)|(1<<11)|(2<<6)|0x30,0x400002ff),((0x40<<25)|(2<<16)|(1<<11)|(3<<6)|0x30,(15<<21)|(2<<16)|(1<<11)|(4<<6)|0x2a)]
 for n,(lo,hi) in enumerate(pairs):u.mem_write(vs+voff['micro']+n*8,struct.pack('<2I',lo,hi))
 call('vu1_exec_micro',0)
@@ -58,7 +58,7 @@ assert int.from_bytes(bytes(u.mem_read(vs+voff['unimplemented_opcodes_seen'],8))
 assert int.from_bytes(bytes(u.mem_read(vs+voff['tpc'],4)),'big')==24
 assert int.from_bytes(bytes(u.mem_read(vs+voff['running'],4)),'big')==0
 print('PASS 1 actual Wii ELF VU1 I/E pair-order and delayed-retirement integration group')
-# Flag instructions unsupported by the existing micro interpreter remain fallback.
+# Flag instructions use the scalar scheduler; native lower declines.
 bad=0x10<<25;before=allocs
 for n in range(1000):assert call('vu_jit_try_lower',vf,vi,mem,16383,bad,0,vs+voff['branch_delay'],vs+voff['branch_target'])==0
 assert allocs==before+int(enabled)

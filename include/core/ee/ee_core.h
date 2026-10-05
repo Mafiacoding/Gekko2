@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "core/bios_loader.h"
+#include "core/hw/vu.h"
 
 /*
  * Emotion Engine (R5900) CPU state.
@@ -273,6 +274,7 @@ typedef struct {
     uint16_t mcserv_module_version, mcman_module_version;
     /* Native resident copies are invalid after an external GPR mutation. */
     uint32_t gpr_generation;
+    vu_pipeline_t vu0_pipeline;
 } ee_state_t;
 
 int  ee_core_init(const bios_image_t *bios);
@@ -476,5 +478,7 @@ int ee_core_block_memory_safe(const ee_state_t *st,uint32_t instruction);
 int ee_core_block_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t instruction);
 uint32_t ee_core_block_prepare_delay(ee_state_t *st,uint32_t pc,uint32_t instruction);
 void ee_core_block_commit(ee_state_t *st);
+void ee_core_raise_trap(ee_state_t *st);
+void ee_core_raise_overflow(ee_state_t *st);
 
 #endif

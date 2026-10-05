@@ -1,5 +1,13 @@
 # Unreleased dynarec work after R1306
 
+Latest source development adds precise signed arithmetic overflow in
+[R1311 working notes](R1311-WORKING-NOTES.md).
+MMI and trap development is documented in [R1310 working notes](R1310-WORKING-NOTES.md),
+which add 43 MMI emitters and twelve precise integer trap forms.
+Earlier VU/timer work is documented in [R1309 working notes](R1309-WORKING-NOTES.md).
+It corrects VU nested links and D/T traps and defers event-free IOP timer
+updates. Full VU pipelines and general event scheduling remain open.
+
 R1307 is an early-alpha development checkpoint. The owner has explicitly
 requested ELF and checkpoint delivery after the register-residency work;
 these test builds do not certify completion of the full dynarec plan.
@@ -273,3 +281,8 @@ hostile resident-pool ABI programs pass, alongside 211 host tests, including
 real EE/IOP context-replacement and Alarm invalidation checks. The handoff
 reports warm PPC instruction counts without hiding regressions. No physical
 Wii speed or BIOS stability claim follows from synthetic execution.
+
+
+## R1308 — user-requested VU and event work
+
+Q/P issue pipeline, scalar EFU and lower flag queries, VF dual-issue hazards, I literal ordering and wrapped synchronous PATH1 are integrated. Precise event-free peripheral timer intervals avoid repeated scanning; MMIO/snapshots materialize current state and IRQ edges run the original scalar transitions. See R1308-HANDOFF.md. This closes selected substeps, not the complete VU/event-scheduling rows; full FMAC/IALU hazards and flag latency, asynchronous VIF/GIF and general CPU/SIF/GS batching remain open.

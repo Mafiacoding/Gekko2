@@ -76,7 +76,8 @@ int checkpoint_save(const char *path)
     if (write_block(f, "DMA0", dma_get_state(), sizeof(*dma_get_state())) < 0) goto fail;
     if (write_block(f, "EINT", ee_intc_get_state(), sizeof(*ee_intc_get_state())) < 0) goto fail;
     if (write_block(f, "ESIO", ee_sio_get_state(), sizeof(*ee_sio_get_state())) < 0) goto fail;
-    if (write_block(f, "ETMR", ee_timers_get_state(), sizeof(*ee_timers_get_state())) < 0) goto fail;
+    { ee_timers_state_t timers;ee_timers_snapshot(&timers);
+      if (write_block(f, "ETMR", &timers, sizeof(timers)) < 0) goto fail; }
     if (write_block(f, "GIF0", gif_get_state(), sizeof(*gif_get_state())) < 0) goto fail;
     if (write_block(f, "GS00", gs_get_state(), sizeof(*gs_get_state())) < 0) goto fail;
     /* Round 649: GS local memory (the actual pixel/texture backing
@@ -108,7 +109,10 @@ int checkpoint_save(const char *path)
         void *ihli_blob = iop_hle_intr_get_checkpoint_blob(&ihli_size);
         if (write_block(f, "IHLI", ihli_blob, ihli_size) < 0) goto fail;
     }
-    if (write_block(f, "ITMR", iop_timers_get_state(), sizeof(*iop_timers_get_state())) < 0) goto fail;
+    {
+        iop_timers_state_t timers;iop_timers_snapshot(&timers);
+        if (write_block(f,"ITMR",&timers,sizeof(timers))<0)goto fail;
+    }
     /* Round 659: IOP HLE thread-scheduler state (source/hw/iop_hle_thread.c)
      * - see iop_hle_thread.h's iop_hle_thread_get_checkpoint_blob() header
      * comment for why this block was missing entirely before this round
@@ -288,7 +292,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     EXPECT("DMA0", generic, sizeof(generic), &size); memcpy(dma_get_state(), generic, size);
     EXPECT("EINT", generic, sizeof(generic), &size); memcpy(ee_intc_get_state(), generic, size);
     EXPECT("ESIO", generic, sizeof(generic), &size); memcpy(ee_sio_get_state(), generic, size);
-    EXPECT("ETMR", generic, sizeof(generic), &size); memcpy(ee_timers_get_state(), generic, size);
+    EXPECT("ETMR", generic, sizeof(generic), &size); { ee_timers_state_t timers;ee_timers_snapshot(&timers);memcpy(&timers,generic,size);ee_timers_restore(&timers); }
     EXPECT("GIF0", generic, sizeof(generic), &size);
     if(size!=sizeof(*gif_get_state()) && size!=sizeof(*gif_get_state())-sizeof(uint64_t))goto fail_close;
     memcpy(gif_get_state(),generic,size);
@@ -311,7 +315,12 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
         if (size != ihli_cap) goto fail_close; /* struct-layout mismatch - fail safely, per this file's own documented contract */
         memcpy(ihli_dest, generic, size);
     }
-    EXPECT("ITMR", generic, sizeof(generic), &size); memcpy(iop_timers_get_state(), generic, size);
+    {
+        iop_timers_state_t timers;
+        EXPECT("ITMR",generic,sizeof(generic),&size);
+        if(size!=sizeof(timers))goto fail_close;
+        memcpy(&timers,generic,size);iop_timers_restore(&timers);
+    }
     {
         uint32_t ithr_cap = 0;
         void *ithr_dest = iop_hle_thread_get_checkpoint_blob(&ithr_cap);

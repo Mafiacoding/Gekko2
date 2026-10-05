@@ -1,3 +1,4 @@
+#include "core/hw/vu_pair.h"
 #include "core/recompiler/ee_block_policy.h"
 /*
  * ppc_dynarec.c - see include/core/recompiler/ppc_dynarec.h for the
@@ -1405,6 +1406,28 @@ static void emit_vu_minmax(ppc_codegen_ctx_t *ctx,int minimum) {
     emit(ctx,enc_and(9,minimum?4:5,8));emit(ctx,enc_nor(10,8,8));
     emit(ctx,enc_and(10,minimum?5:4,10));emit(ctx,enc_or(9,9,10));
 }
+#include "ppc_ee_mmi.inc"
+
+#ifdef GEKKO
+extern void ee_core_raise_trap(void *st);
+extern void ee_core_raise_overflow(void *st);
+#define ADDR_EE_RAISE_TRAP ((uint32_t)(uintptr_t)&ee_core_raise_trap)
+#define ADDR_EE_RAISE_OVERFLOW ((uint32_t)(uintptr_t)&ee_core_raise_overflow)
+#else
+#define ADDR_EE_RAISE_TRAP 0x111u
+#define ADDR_EE_RAISE_OVERFLOW 0x112u
+#endif
+
+static void emit_ee_exception_call(ppc_codegen_ctx_t *ctx,uint32_t address)
+{
+    emit(ctx,((37u<<26)|(1u<<21)|(1u<<16)|(uint16_t)-96));
+    emit(ctx,enc_stw(14,1,48));emit(ctx,enc_stw(15,1,52));
+    emit(ctx,enc_mflr(14));emit(ctx,enc_or(15,3,3));
+    emit_load_const32(ctx,12,address);emit(ctx,enc_mtctr(12));emit(ctx,enc_bctrl());
+    emit(ctx,enc_or(3,15,15));emit(ctx,enc_mtlr(14));
+    emit(ctx,enc_lwz(14,1,48));emit(ctx,enc_lwz(15,1,52));emit(ctx,enc_addi(1,1,96));
+}
+
 int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
 {
     if (ctx->used_words + 128 > ctx->capacity_words) /* Round 904: was 80, DIV.S's ~81-word worst case (Round 903 was 61) */
@@ -1417,6 +1440,49 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
     uint32_t sa    = (mips_instr >> 6) & 0x1F; /* Round 888: shift-amount field, used by SLL/SRL/SRA */
     int32_t  imm   = (int16_t)(mips_instr & 0xFFFF);
     uint32_t funct = mips_instr & 0x3F;
+
+    if(op==0x1cu&&emit_mmi_extra(ctx,rs,rt,rd,sa,funct))return 0;
+
+    if(op==8u||op==0x18u||(op==0u&&(funct==0x20u||funct==0x22u||funct==0x2cu||funct==0x2eu))) {
+        unsigned wide=op==0x18u||(op==0u&&funct>=0x2cu);
+        unsigned subtract=op==0u&&(funct==0x22u||funct==0x2eu),dest=op?rt:rd;
+        emit(ctx,enc_lwz(4,3,REG_LO(rs)));
+        if(wide)emit(ctx,enc_lwz(6,3,REG_HI(rs)));
+        if(op){emit_load_const32(ctx,5,(uint32_t)imm);if(wide)emit(ctx,enc_addi(7,0,imm<0?-1:0));}
+        else {emit(ctx,enc_lwz(5,3,REG_LO(rt)));if(wide)emit(ctx,enc_lwz(7,3,REG_HI(rt)));}
+        if(wide) {
+            emit(ctx,subtract?enc_subfc(8,5,4):enc_addc(8,4,5));
+            emit(ctx,subtract?enc_subfe(9,7,6):enc_adde(9,6,7));
+        } else emit(ctx,subtract?enc_subf(8,5,4):enc_add(8,4,5));
+        int left=wide?6:4,right=wide?7:5,result=wide?9:8;
+        emit(ctx,enc_xor(10,left,right));if(!subtract)emit(ctx,enc_nor(10,10,10));
+        emit(ctx,enc_xor(11,left,result));emit(ctx,enc_and(10,10,11));emit(ctx,mmi_cmpi(10,0));
+        size_t okay=ctx->used_words;emit(ctx,0);emit_ee_exception_call(ctx,ADDR_EE_RAISE_OVERFLOW);
+        size_t done=ctx->used_words;emit(ctx,0);mmi_patch_bc(ctx,okay,4,0);
+        if(dest) {
+            if(!wide)emit(ctx,enc_srawi(9,8,31));
+            emit(ctx,enc_stw(8,3,REG_LO(dest)));emit(ctx,enc_stw(9,3,REG_HI(dest)));
+        }
+        mmi_patch_b(ctx,done);return 0;
+    }
+
+    if((op==0u&&(funct==0x30u||funct==0x31u||funct==0x32u||funct==0x33u||funct==0x34u||funct==0x36u))||
+       (op==1u&&(rt==8u||rt==9u||rt==10u||rt==11u||rt==12u||rt==14u))) {
+        unsigned kind=op==1u?rt+0x28u:funct;
+        emit(ctx,enc_lwz(4,3,REG_LO(rs)));emit(ctx,enc_lwz(6,3,REG_HI(rs)));
+        if(op==1u){emit_load_const32(ctx,5,(uint32_t)imm);emit(ctx,enc_addi(7,0,imm<0?-1:0));}
+        else {emit(ctx,enc_lwz(5,3,REG_LO(rt)));emit(ctx,enc_lwz(7,3,REG_HI(rt)));}
+        unsigned skip_bo;
+        if(kind==0x34u||kind==0x36u) {
+            emit(ctx,enc_xor(4,4,5));emit(ctx,enc_xor(6,6,7));emit(ctx,enc_or(4,4,6));
+            emit(ctx,mmi_cmpi(4,0));skip_bo=kind==0x34u?4u:12u;
+        } else {
+            emit_slt_core(ctx,kind==0x30u||kind==0x32u);emit(ctx,mmi_cmpi(4,0));
+            skip_bo=kind>=0x32u?12u:4u;
+        }
+        size_t skip=ctx->used_words;emit(ctx,0);
+        emit_ee_exception_call(ctx,ADDR_EE_RAISE_TRAP);mmi_patch_bc(ctx,skip,skip_bo,2);return 0;
+    }
 
     /* R1281: native COP0 transfers. Context prefix offsets are checked
      * against the actual EE struct by ee_jit.c. Read/write semantics match
@@ -1495,8 +1561,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         return 0;
     }
     /* R1268: missing MIPS64 immediates and the remaining 64-bit shifts.
-     * Signed ADD variants retain the interpreter's existing no-overflow-trap
-     * convention; this is parity, not a new exception model. */
+     * Trapping signed variants are handled above before these wrapping paths. */
     if (op == 0x18u || op == 0x19u) {
         if (!rt) return 0;
         emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, REG_LO(rs)));
@@ -6086,7 +6151,15 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx,uint32_t w)
         if(op==0x24u||op==0x25u){emit_micro_vi_read(ctx,10,rs);emit(ctx,enc_rlwinm(10,10,3,0,28));}
         else {int off=(int)(w&0x7ffu);if(off&0x400)off-=0x800;emit(ctx,enc_addi(10,7,(int16_t)(8+off*8)));}
         if((op==0x21u||op==0x25u)&&(rt&15u)) {
-            emit(ctx,enc_addi(11,7,16));emit(ctx,enc_rlwinm(11,11,29,16,31));
+            /* Link follows the older target when BAL/JALR is itself
+             * in a branch delay slot (PCSX2 _vuBAL/_vuJALR). Keep
+             * the captured younger target in r10, including Is==It. */
+            emit(ctx,enc_lwz(12,8,0));
+            emit(ctx,(11u<<26)|(12u<<16)|1u); /* cmpwi r12,1 */
+            emit(ctx,enc_addi(11,7,16));
+            emit(ctx,enc_bc(4,2,12)); /* bne past target-based link */
+            emit(ctx,enc_lwz(11,9,0));emit(ctx,enc_addi(11,11,8));
+            emit(ctx,enc_rlwinm(11,11,29,16,31));
             emit(ctx,enc_stw(11,4,(int16_t)((rt&15u)*4u)));
         }
         emit(ctx,enc_addi(11,0,2));emit(ctx,enc_stw(11,8,0));emit(ctx,enc_stw(10,9,0));
@@ -6130,7 +6203,7 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx,uint32_t w)
         for(unsigned l=0;l<4;l++)emit(ctx,enc_lwz(6+(int)l,3,(int16_t)(rs*16u+((l+bc)&3u)*4u)));
         for(unsigned l=0;l<4;l++)if(mask&(8u>>l))emit(ctx,enc_stw(6+(int)l,3,(int16_t)(rt*16u+l*4u)));
         return 0;
-    } else if(op==0x40u && fn==0x3fu && (rd==14u||rd==30u))return 0;
+    } else if(op==0x40u && fn==0x3fu && rd==30u)return 0;
     else return -1;
     emit(ctx,enc_andi_dot(6,6,0xffff));emit(ctx,enc_stw(6,4,(int16_t)(dst*4u)));return 0;
 }
@@ -6140,6 +6213,7 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx,uint32_t w)
  * registers. Translation is transactional: decline leaves caller unchanged. */
 int ppc_dynarec_translate_vu_pair(ppc_codegen_ctx_t *ctx,uint32_t upper,uint32_t lower)
 {
+    if(vu_pair_vf_conflict(upper,lower))return -1;
     ppc_codegen_ctx_t a,b;
     if(ppc_dynarec_init(&a,2))return -2;
     if(ppc_dynarec_init(&b,2)){ppc_dynarec_free(&a);return -2;}
@@ -6155,8 +6229,11 @@ int ppc_dynarec_translate_vu_pair(ppc_codegen_ctx_t *ctx,uint32_t upper,uint32_t
          (rd==15u&&(fn==0x3cu||fn==0x3du)) ||
          (fn==0x3fu&&(rd==14u||rd==30u))));
     if(upper&0x80000000u) {
-        emit_load_const32(ctx,11,lower);emit(ctx,enc_stw(11,4,84));
+        /* I literal becomes visible after the paired upper has read old I. */
+        emit(ctx,enc_addi(1,1,-16));emit(ctx,enc_stw(14,1,8));emit(ctx,enc_or(14,4,4));
         for(size_t n=0;n<a.used_words;n++)emit(ctx,a.code[n]);
+        emit_load_const32(ctx,11,lower);emit(ctx,enc_stw(11,14,84));
+        emit(ctx,enc_lwz(14,1,8));emit(ctx,enc_addi(1,1,16));
     } else if(short_lower) {
         /* These lower forms only need VF/VI. Upper retains r3, but can
          * use r4 as scratch. Save only VI, not all eight arguments. */
@@ -6189,18 +6266,18 @@ int ppc_dynarec_translate_vu_block(ppc_codegen_ctx_t *ctx,const uint32_t *upper,
     for(int n=0;n<8;n++){emit(&body,enc_stw(14+n,1,(int16_t)(8+n*4)));emit(&body,enc_or(14+n,3+n,3+n));}
     for(unsigned i=0;i<count;i++) {
         unsigned op=lower[i]>>25;
-        if((upper[i]&0x7e000000u) || (!(upper[i]&0x80000000u)&&op>=0x20u&&op<=0x2fu)){
+        if(vu_pair_vf_conflict(upper[i],lower[i]) || (upper[i]&0x7e000000u) || (!(upper[i]&0x80000000u)&&op>=0x20u&&op<=0x2fu)){
             ppc_dynarec_free(&body);return -1;
         }
         /* R1282: keep the eight invocation arguments resident for the
          * whole block. Upper VI/ACC accesses address r15/r16 directly,
          * without nested pair/upper save frames on every micro pair. */
         emit(&body,enc_or(3,14,14));
-        if(upper[i]&0x80000000u) {
+        int result=translate_vu_upper_body(&body,upper[i],15,16,0);
+        if(!result && (upper[i]&0x80000000u)) {
             emit_load_const32(&body,11,lower[i]);
             emit(&body,enc_stw(11,15,84));
         }
-        int result=translate_vu_upper_body(&body,upper[i],15,16,0);
         if(!result && !(upper[i]&0x80000000u)) {
             unsigned fn=lower[i]&63u,rd=(lower[i]>>6)&31u;
             int short_lower=op==8u||op==9u ||
