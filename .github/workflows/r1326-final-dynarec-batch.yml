@@ -1,0 +1,80 @@
+name: R1326 final dynarec batch
+on:
+  push:
+    branches: [r1326-final-dynarec-batch]
+    paths: ['.github/workflows/r1326-final-dynarec-batch.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+
+jobs:
+  host-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1326-final-dynarec-batch
+          fetch-depth: 0
+      - name: Apply phase 1-2 VU/residency batch
+        run: python3 tools/r1326_apply_final_batch.py
+      - name: Apply phase 3 direct EE links
+        run: python3 tools/r1326_apply_block_links.py
+      - name: Apply phase 5 IOP SMC safety
+        run: python3 tools/r1326_apply_iop_cache_safety.py
+      - name: Diff sanity
+        run: git diff --check
+      - name: Exact VU REG_R semantics
+        run: bash tests/run_test.sh test_vu_r_lfsr_r1326
+      - name: VU pipeline block gates
+        run: python3 tools/audit_vu_pipeline_block_gates.py
+      - name: VU ordinary lower native closure
+        run: python3 tools/audit_vu_micro_native_gaps.py --require-ordinary-native
+      - name: VU upper native closure
+        run: python3 tools/audit_vu_upper_native_coverage.py
+      - name: Exact MMI admission
+        run: python3 tools/audit_mmi_block_admission.py
+      - name: EE control admission
+        run: python3 tools/audit_control_block_admission.py
+      - name: Precise-cache eviction safety
+        run: python3 tools/audit_precise_cache_eviction_r1318.py
+      - name: EE RAM writer invalidation
+        run: python3 tools/audit_ee_ram_writer_invalidation.py
+      - name: EE JIT structural audit
+        run: python3 tools/audit-ee-jit-coverage.py
+      - name: R1326 six-phase source closure audit
+        run: python3 tools/audit_r1326_final_closure.py
+      - name: Full host regression suite
+        run: bash tests/run_test.sh --all
+      - name: Commit verified batched source
+        run: |
+          git config user.name "Mafiacoding"
+          git config user.email "mthalicious@gmail.com"
+          git add \
+            source/hw/vu.c \
+            source/core/recompiler/vu_jit.c \
+            source/core/recompiler/ppc_residency_internal.h \
+            source/core/recompiler/ee_jit.c \
+            include/core/recompiler/ee_jit.h \
+            source/core/recompiler/iop_jit.c
+          git commit -m "R1326: close batched dynarec source gaps"
+          git push origin HEAD:r1326-final-dynarec-batch
+
+  wii-crossbuild:
+    needs: host-verify
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitppc:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1326-final-dynarec-batch
+          fetch-depth: 0
+      - name: Verify devkitPPC environment
+        run: |
+          echo "DEVKITPRO=$DEVKITPRO"
+          echo "DEVKITPPC=$DEVKITPPC"
+          powerpc-eabi-gcc --version | head -n 1
+      - name: Wii cross-build gate
+        run: make -j2
+      - name: Confirm outputs without publishing checkpoint
+        run: test -s Gekko2.elf && test -s Gekko2.dol
