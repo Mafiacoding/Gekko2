@@ -1,0 +1,159 @@
+name: R1316 precise cache source generations
+on:
+  push:
+    branches: [dynarec-development-r1308]
+    paths: ['.github/workflows/r1316-cache-generation.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dynarec-development-r1308
+          fetch-depth: 0
+      - name: Patch R1316 generation guards
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def once(path, old, new):
+              p=Path(path); s=p.read_text()
+              assert s.count(old)==1, (path, 'expected one match', s.count(old), old[:80])
+              p.write_text(s.replace(old,new,1))
+
+          # Public contracts: JIT invalidation notifications, source-page lookup,
+          # and the DMA layer's optional write-notification bridge.
+          once('include/core/recompiler/ee_jit.h',
+          '''uint64_t ee_jit_get_block_retired(void);\n\n/* First encoding came from the real scalar fetch; later words stay live. */''',
+          '''uint64_t ee_jit_get_block_retired(void);\n\n/* R1316: lazy precise-block invalidation. CPU/DMA RAM writers bump the\n * physical source-page generation; mapping mutations bump a separate epoch. */\nvoid ee_jit_notify_physical_write(uint32_t phys_addr,uint32_t len);\nvoid ee_jit_notify_mapping_change(void);\n\n/* First encoding came from the real scalar fetch; later words stay live. */''')
+
+          once('include/core/ee/ee_core.h',
+          '''int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word);\nunsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit);''',
+          '''int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word);\n/* Returns UINT32_MAX for immutable BIOS source, otherwise the EE RAM 4 KiB page. */\nint ee_core_block_source_page(ee_state_t *st,uint32_t pc,uint32_t *page);\nunsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit);''')
+
+          once('include/core/hw/dma.h',
+          '''void dma_bind_ee_ram(uint8_t *ram, uint32_t ram_size);\nvoid dma_bind_scratchpad(uint8_t *scratch, uint32_t scratch_size); /* Round 572 - see dma.c's dma_resolve_ptr() doc comment */''',
+          '''void dma_bind_ee_ram(uint8_t *ram, uint32_t ram_size);\nvoid dma_bind_scratchpad(uint8_t *scratch, uint32_t scratch_size); /* Round 572 - see dma.c's dma_resolve_ptr() doc comment */\n/* Optional CPU-layer observer; keeps dma.c standalone-linkable. */\nvoid dma_set_ee_write_notify(void (*fn)(uint32_t phys_addr, uint32_t len));''')
+
+          # DMA writes bypass ee_mem_write*. Report only actual EE-RAM destinations.
+          once('source/hw/dma.c',
+          '''static uint8_t *g_ee_ram = NULL;\nstatic uint32_t g_ee_ram_size = 0;''',
+          '''static uint8_t *g_ee_ram = NULL;\nstatic uint32_t g_ee_ram_size = 0;\n/* R1316: optional JIT source-generation observer. Kept as a callback so\n * standalone DMA tests retain zero dependency on the EE core/recompiler. */\nstatic void (*g_ee_write_notify)(uint32_t phys_addr, uint32_t len) = NULL;''')
+
+          once('source/hw/dma.c',
+          '''void dma_bind_scratchpad(uint8_t *scratch, uint32_t scratch_size)\n{\n    g_ee_scratch = scratch;\n    g_ee_scratch_size = scratch_size;\n}\n''',
+          '''void dma_bind_scratchpad(uint8_t *scratch, uint32_t scratch_size)\n{\n    g_ee_scratch = scratch;\n    g_ee_scratch_size = scratch_size;\n}\n\nvoid dma_set_ee_write_notify(void (*fn)(uint32_t phys_addr, uint32_t len))\n{\n    g_ee_write_notify = fn;\n}\n''')
+
+          once('source/hw/dma.c',
+          '''            if (channel == DMA_CHANNEL_TOSPR)\n                memcpy(g_ee_scratch + spr, g_ee_ram + phys + i*16u, 16u);\n            else memcpy(g_ee_ram + (ring?mfifo_wrap(phys+i*16u):phys+i*16u), g_ee_scratch + spr, 16u);''',
+          '''            if (channel == DMA_CHANNEL_TOSPR) {\n                memcpy(g_ee_scratch + spr, g_ee_ram + phys + i*16u, 16u);\n            } else {\n                uint32_t dst = ring ? mfifo_wrap(phys + i*16u) : phys + i*16u;\n                memcpy(g_ee_ram + dst, g_ee_scratch + spr, 16u);\n                if (g_ee_write_notify) g_ee_write_notify(dst, 16u);\n            }''')
+
+          once('source/hw/dma.c',
+          '''    memcpy(g_ee_ram + ch->madr, data, len);\n    ch->madr += len;''',
+          '''    uint32_t written_madr = ch->madr;\n    memcpy(g_ee_ram + written_madr, data, len);\n    if (g_ee_write_notify) g_ee_write_notify(written_madr, len);\n    ch->madr += len;''')
+
+          # EE block source identity: formation is already limited to one 4 KiB page.
+          once('source/core/ee/ee_core.c',
+          '''int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word)\n{\n    uint32_t available;const uint8_t *p=ee_core_block_pointer(st,pc,&available);\n    if(!p||!word)return 0;\n    *word=(uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);\n    return 1;\n}\nunsigned ee_core_block_words''',
+          '''int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word)\n{\n    uint32_t available;const uint8_t *p=ee_core_block_pointer(st,pc,&available);\n    if(!p||!word)return 0;\n    *word=(uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);\n    return 1;\n}\nint ee_core_block_source_page(ee_state_t *st,uint32_t pc,uint32_t *page)\n{\n    uint32_t available;const uint8_t *p=ee_core_block_pointer(st,pc,&available);\n    if(!p||!page)return 0;\n    if(st->ram) {\n        uintptr_t q=(uintptr_t)p,b=(uintptr_t)st->ram;\n        if(q>=b && (uint64_t)(q-b)<st->ram_size) {\n            *page=(uint32_t)(q-b)>>12;\n            return 1;\n        }\n    }\n    /* ee_core_block_pointer only returns RAM or immutable BIOS. */\n    *page=UINT32_MAX;\n    return 1;\n}\nunsigned ee_core_block_words''')
+
+          # Central CPU RAM stores cover interpreter and JIT helper-backed stores.
+          marker='void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)\n'
+          p=Path('source/core/ee/ee_core.c'); s=p.read_text(); assert s.count(marker)==1
+          helper='''/* R1316: only writes into the bound main-RAM allocation can mutate a\n * precise block's source page. MMIO, BIOS and scratchpad writes do not. */\nstatic void ee_jit_notify_ram_write(ee_state_t *st,const uint8_t *p,uint32_t len)\n{\n    if(!st||!st->ram||!p||!len)return;\n    uintptr_t q=(uintptr_t)p,b=(uintptr_t)st->ram;\n    if(q>=b && (uint64_t)(q-b)<st->ram_size)\n        ee_jit_notify_physical_write((uint32_t)(q-b),len);\n}\n\n'''
+          p.write_text(s.replace(marker,helper+marker,1))
+
+          once('source/core/ee/ee_core.c',
+          '''    uint8_t *p = ee_mem_ptr(st, addr, 1);\n    if (p) { *p = val; return; }''',
+          '''    uint8_t *p = ee_mem_ptr(st, addr, 1);\n    if (p) { ee_jit_notify_ram_write(st,p,1u); *p = val; return; }''')
+          once('source/core/ee/ee_core.c',
+          '''    uint8_t *p = ee_mem_ptr(st, addr, 2);\n    if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }\n    p[0] = (uint8_t)(val & 0xFF);''',
+          '''    uint8_t *p = ee_mem_ptr(st, addr, 2);\n    if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }\n    ee_jit_notify_ram_write(st,p,2u);\n    p[0] = (uint8_t)(val & 0xFF);''')
+          once('source/core/ee/ee_core.c',
+          '''    uint8_t *p = ee_mem_ptr(st, addr, 4);\n    if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }\n    p[0] = (uint8_t)(val & 0xFF);''',
+          '''    uint8_t *p = ee_mem_ptr(st, addr, 4);\n    if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }\n    ee_jit_notify_ram_write(st,p,4u);\n    p[0] = (uint8_t)(val & 0xFF);''')
+          once('source/core/ee/ee_core.c',
+          '''    uint8_t *p = ee_mem_ptr(st, addr, 8);\n    if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }\n    for (int i = 0; i < 8; i++)''',
+          '''    uint8_t *p = ee_mem_ptr(st, addr, 8);\n    if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }\n    ee_jit_notify_ram_write(st,p,8u);\n    for (int i = 0; i < 8; i++)''')
+
+          # Mapping mutations: current ASID (EntryHi), TLBR, TLBWI and TLBWR.
+          p=Path('source/core/ee/ee_core.c'); s=p.read_text()
+          old='''            } else {\n                st->cop0[rd] = rt32;\n            }'''
+          assert s.count(old)==1
+          s=s.replace(old,'''            } else {\n                st->cop0[rd] = rt32;\n                if (rd == 10) ee_jit_notify_mapping_change(); /* EntryHi/ASID */\n            }''',1)
+          old='''                    st->cop0[3]  = (lo1 & ~0x7C000000u & ~1u) | g;\n                    break;'''
+          assert s.count(old)==1
+          s=s.replace(old,'''                    st->cop0[3]  = (lo1 & ~0x7C000000u & ~1u) | g;\n                    ee_jit_notify_mapping_change(); /* TLBR changes current EntryHi/ASID. */\n                    break;''',1)
+          old='''                    st->tlb[j].entry_lo0 = st->cop0[2];\n                    st->tlb[j].entry_lo1 = st->cop0[3];'''
+          assert s.count(old)==2, s.count(old)
+          s=s.replace(old,old+'\n                    ee_jit_notify_mapping_change();',2)
+          # Wire the DMA callback without creating a DMA -> EE/JIT link dependency.
+          old='''    dma_bind_ee_ram(g_state.ram, g_state.ram_size); /* chain-mode DMA reads tags/data from here */'''
+          assert s.count(old)==1
+          s=s.replace(old,old+'''\n    dma_set_ee_write_notify(ee_jit_notify_physical_write); /* R1316 code-page generations */''',1)
+          p.write_text(s)
+
+          # JIT generation state and precise-slot stamps.
+          once('source/core/recompiler/ee_jit.c',
+          '''    if(op==0x10u){unsigned rs=(instr>>21)&31u;return rs==0u||rs==4u;}''',
+          '''    if(op==0x10u){\n        unsigned rs=(instr>>21)&31u,rd=(instr>>11)&31u;\n        /* R1316: MTC0 EntryHi changes the active ASID/mapping. Keep this\n         * one form scalar so the authoritative COP0 case bumps the epoch. */\n        if(rs==4u&&rd==10u)return 0;\n        return rs==0u||rs==4u;\n    }''')
+
+          once('source/core/recompiler/ee_jit.c',
+          '''typedef unsigned (*ee_precise_fn)(ee_state_t *,unsigned,uint32_t);\ntypedef struct {uint32_t pc,words[8],count;ee_precise_fn fn;} ee_precise_slot;\nstatic ee_precise_slot precise_cache[256];\nstatic uint64_t precise_runs,precise_retired;\nstatic int precise_active;''',
+          '''typedef unsigned (*ee_precise_fn)(ee_state_t *,unsigned,uint32_t);\n#define EE_PRECISE_RAM_PAGES (32u*1024u*1024u/4096u)\n#define EE_PRECISE_NON_RAM_PAGE UINT32_MAX\ntypedef struct {\n uint32_t pc,words[8],count;\n uint32_t source_page,source_generation,mapping_generation;\n ee_precise_fn fn;\n} ee_precise_slot;\nstatic ee_precise_slot precise_cache[256];\nstatic uint32_t precise_page_generation[EE_PRECISE_RAM_PAGES];\nstatic uint32_t precise_mapping_generation;\nstatic uint64_t precise_runs,precise_retired;\nstatic int precise_active;\n\nstatic void ee_precise_bump(uint32_t *generation)\n{\n if(++*generation==0u)*generation=1u;\n}\nvoid ee_jit_notify_physical_write(uint32_t phys_addr,uint32_t len)\n{\n if(!len||phys_addr>=32u*1024u*1024u)return;\n uint64_t last=(uint64_t)phys_addr+(uint64_t)len-1u;\n if(last>=32u*1024u*1024u)last=32u*1024u*1024u-1u;\n uint32_t first=phys_addr>>12,end=(uint32_t)last>>12;\n for(uint32_t page=first;page<=end;page++)ee_precise_bump(&precise_page_generation[page]);\n}\nvoid ee_jit_notify_mapping_change(void)\n{\n ee_precise_bump(&precise_mapping_generation);\n}''')
+
+          # Add generation helpers only to real Wii precise-block builds.
+          once('source/core/recompiler/ee_jit.c',
+          '''#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)\n/* No allocation, eviction or compilation here. precise_active pins all''',
+          '''#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)\nstatic int ee_precise_source_snapshot(ee_state_t *st,uint32_t pc,uint32_t *page,uint32_t *generation)\n{\n if(!ee_core_block_source_page(st,pc,page))return 0;\n if(*page==EE_PRECISE_NON_RAM_PAGE){*generation=0u;return 1;}\n if(*page>=EE_PRECISE_RAM_PAGES)return 0;\n *generation=precise_page_generation[*page];\n return 1;\n}\nstatic int ee_precise_slot_generation_current(const ee_precise_slot *slot)\n{\n if(slot->mapping_generation!=precise_mapping_generation)return 0;\n return slot->source_page==EE_PRECISE_NON_RAM_PAGE ||\n        (slot->source_page<EE_PRECISE_RAM_PAGES &&\n         slot->source_generation==precise_page_generation[slot->source_page]);\n}\n/* No allocation, eviction or compilation here. precise_active pins all''')
+
+          once('source/core/recompiler/ee_jit.c',
+          ''' if(!slot->fn||slot->pc!=st->pc||slot->count<2u||slot->count>remaining)return 0;\n uint32_t word;''',
+          ''' if(!slot->fn||slot->pc!=st->pc||slot->count<2u||slot->count>remaining)return 0;\n if(!ee_precise_slot_generation_current(slot))return 0;\n uint32_t word;''')
+
+          once('source/core/recompiler/ee_jit.c',
+          ''' if(slot->fn&&slot->pc==pc&&slot->count<=budget&&(!fetched||slot->words[0]==first_word))goto execute_slot;''',
+          ''' if(slot->fn&&slot->pc==pc&&slot->count<=budget&&\n    ee_precise_slot_generation_current(slot)&&(!fetched||slot->words[0]==first_word))goto execute_slot;''')
+
+          once('source/core/recompiler/ee_jit.c',
+          ''' if(count<2u)return 0;\n if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {''',
+          ''' if(count<2u)return 0;\n uint32_t source_page,source_generation;\n if(!ee_precise_source_snapshot(st,pc,&source_page,&source_generation))return 0;\n uint32_t mapping_generation=precise_mapping_generation;\n if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {''')
+
+          once('source/core/recompiler/ee_jit.c',
+          '''  slot->fn=fn;slot->pc=pc;slot->count=count;memcpy(slot->words,words,count*4u);\n }\nexecute_slot:;''',
+          '''  slot->fn=fn;slot->pc=pc;slot->count=count;memcpy(slot->words,words,count*4u);\n }\n /* A stale epoch with byte-identical code reuses the compiled PPC safely;\n  * only the validated source/mapping stamp changes. */\n slot->source_page=source_page;slot->source_generation=source_generation;\n slot->mapping_generation=mapping_generation;\nexecute_slot:;''')
+
+          once('source/core/recompiler/ee_jit.c',
+          ''' memset(precise_cache,0,sizeof(precise_cache));precise_runs=precise_retired=0;\n}''',
+          ''' memset(precise_cache,0,sizeof(precise_cache));\n memset(precise_page_generation,0,sizeof(precise_page_generation));\n precise_mapping_generation=0;precise_runs=precise_retired=0;\n}''')
+
+          # Keep the structural audit explicit about the one intentionally scalar MTC0.
+          p=Path('tools/audit-ee-jit-coverage.py'); s=p.read_text()
+          old='''# R1281: instruction-keyed COP0 is deliberately limited to MFC0/MTC0.\ncop0 = re.search(r"if\\s*\\(\\s*op\\s*==\\s*0x10[uU]?\\s*\\)\\s*\\{([^{}]*)\\}", predicate, re.I|re.S)\nif not cop0:\n    errors.append("cannot locate exact COP0 front gate")\nelif "rs==0u||rs==4u" not in re.sub(r"\\s+", "", cop0.group(1)):\n    errors.append("COP0 front gate is no longer restricted to MFC0/MTC0")\n'''
+          assert s.count(old)==1
+          new='''# R1281/R1316: instruction-keyed COP0 remains MFC0/MTC0 only, but MTC0\n# EntryHi is intentionally scalar because changing ASID/mapping must bump the epoch.\ncompact_predicate = re.sub(r"\\s+", "", predicate)\nif "returnrs==0u||rs==4u" not in compact_predicate:\n    errors.append("COP0 front gate is no longer restricted to MFC0/MTC0")\nif "if(rs==4u&&rd==10u)return0" not in compact_predicate:\n    errors.append("R1316 mapping-sensitive MTC0 EntryHi is no longer forced scalar")\n'''
+          s=s.replace(old,new,1)
+          s=s.replace('print("  COP0 one-op gate remains restricted to MFC0/MTC0")',
+                      'print("  COP0 gate remains MFC0/MTC0; MTC0 EntryHi is scalar for mapping epochs")')
+          p.write_text(s)
+
+          # Direct host unit for page-span bumps, overflow clipping and mapping epoch.
+          Path('tests/test_jit_generation_r1316.c').write_text(r'''#include <stdio.h>\n#include <stdint.h>\n#include "core/recompiler/ee_jit.c"\n\nstatic int fail(const char *m){fprintf(stderr,"R1316 generation test: %s\\n",m);return 1;}\nint main(void)\n{\n    ee_precise_reset_cache();\n    if(precise_page_generation[0]||precise_page_generation[1]||precise_mapping_generation) return fail("reset");\n    ee_jit_notify_physical_write(0x00000fffu,2u);\n    if(precise_page_generation[0]!=1u||precise_page_generation[1]!=1u) return fail("cross-page write");\n    ee_jit_notify_physical_write(0x00002000u,0u);\n    if(precise_page_generation[2]!=0u) return fail("zero-length write");\n    ee_jit_notify_physical_write(32u*1024u*1024u-1u,8u);\n    if(precise_page_generation[EE_PRECISE_RAM_PAGES-1u]!=1u) return fail("RAM-end clipping");\n    ee_jit_notify_physical_write(32u*1024u*1024u,4u);\n    if(precise_page_generation[EE_PRECISE_RAM_PAGES-1u]!=1u) return fail("out-of-RAM write");\n    ee_jit_notify_mapping_change();\n    ee_jit_notify_mapping_change();\n    if(precise_mapping_generation!=2u) return fail("mapping epoch");\n    puts("R1316 generation test: PASS");\n    return 0;\n}\n''')
+          PY
+      - name: Structural and MMI audits
+        run: |
+          python3 tools/audit_mmi_coverage_internal.py
+          python3 tools/audit-ee-jit-coverage.py
+      - name: Full host regression suite
+        run: bash tests/run_test.sh --all
+      - name: Commit verified R1316
+        run: |
+          rm -f .github/workflows/r1315-mmi-coverage.yml .github/workflows/r1316-cache-generation.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'R1316: add precise cache source generations'
+          git push origin HEAD:dynarec-development-r1308
