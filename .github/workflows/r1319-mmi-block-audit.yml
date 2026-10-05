@@ -3,6 +3,7 @@ on:
   push:
     branches: [r1319-block-admission-audit]
     paths: ['.github/workflows/r1319-mmi-block-audit.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -13,5 +14,5 @@ jobs:
         with:
           ref: r1319-block-admission-audit
           fetch-depth: 0
-      - name: Audit MMI block admission
+      - name: Audit current and policy-widened MMI block admission
         run: python3 tools/audit_mmi_block_admission.py
