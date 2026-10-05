@@ -1,0 +1,19 @@
+name: R1325 VU pending pipeline gate
+on:
+  push:
+    branches: [r1325-vu-sideeffects]
+    paths: ['.github/workflows/r1325-vu-pipeline-gate.yml']
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1325-vu-sideeffects
+      - run: python3 tools/r1325_apply_vu0_p_gate.py
+      - run: python3 tools/audit_vu_pipeline_block_gates.py
+      - run: python3 tools/audit_vu_micro_native_gaps.py --require-ordinary-native
+      - run: python3 tools/audit_vu_upper_native_coverage.py
+      - run: python3 tools/audit-ee-jit-coverage.py
+      - run: bash tests/run_test.sh --all
