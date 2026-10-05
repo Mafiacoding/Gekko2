@@ -1,0 +1,52 @@
+name: R1318 single-op cache eviction staging
+on:
+  push:
+    branches: [r1318-single-cache-eviction-staging]
+    paths: ['.github/workflows/r1318-staging-verify.yml']
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1318-single-cache-eviction-staging
+          fetch-depth: 0
+      - name: Apply R1317 then R1318
+        run: |
+          python3 tools/r1317_apply.py
+          python3 tools/r1318_apply.py
+      - name: Structural audits
+        run: |
+          python3 tools/audit_ee_ram_writer_invalidation.py
+          python3 tools/audit_mmi_coverage_internal.py
+          python3 tools/audit-ee-jit-coverage.py
+      - name: Focused eviction ownership test
+        run: bash tests/run_test.sh test_ee_jit_cache_eviction_r1318
+      - name: Full host regression suite
+        run: bash tests/run_test.sh --all
+  wii:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitppc:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1318-single-cache-eviction-staging
+          fetch-depth: 0
+      - name: Apply R1317 then R1318
+        run: |
+          python3 tools/r1317_apply.py
+          python3 tools/r1318_apply.py
+      - name: Default Wii crossbuild
+        run: |
+          make clean
+          make -j2
+          test -s Gekko2.elf
+          test -s Gekko2.dol
+      - name: FAST dynarec Wii crossbuild
+        run: |
+          make clean
+          make -j2 EXTRA_CFLAGS=-DPCSX2WII_FAST
+          test -s Gekko2.elf
+          test -s Gekko2.dol
