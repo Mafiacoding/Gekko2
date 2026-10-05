@@ -277,16 +277,16 @@ static int ee_jit_opcode_supported(uint32_t instr)
     if (op == 0x01u) {
         unsigned trap=(instr>>16)&31u;
         if(trap==8u||trap==9u||trap==10u||trap==11u||trap==12u||trap==14u)return 1;
-        /* REGIMM: rt selects the real sub-opcode, not a flat op-only
-         * dispatch like every other entry in this function - only
-         * BLTZ/BGEZ/BLTZL/BGEZL are implemented by ppc_dynarec.c
-         * (Round 896); every other REGIMM rt value (TGEI/TLTI/etc.)
-         * falls through to the interpreter, same as before this round. */
+        /* REGIMM: rt selects the real sub-opcode. R1313 admits the
+         * four link variants already implemented by ppc_dynarec.c; keeping
+         * them blocked here silently forced scalar fallback on Wii. */
         uint32_t rt = (instr >> 16) & 0x1Fu;
         switch (rt) {
         case 0x18: case 0x19: /* R1270 MTSAB/MTSAH */
         case 0x00: case 0x01: /* BLTZ / BGEZ */
         case 0x02: case 0x03: /* BLTZL / BGEZL */
+        case 0x10: case 0x11: /* BLTZAL / BGEZAL */
+        case 0x12: case 0x13: /* BLTZALL / BGEZALL */
             return 1;
         default:
             return 0;
