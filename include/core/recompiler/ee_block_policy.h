@@ -51,11 +51,13 @@ static inline int ee_jit_block_mmi(uint32_t w)
  case 0x00u:case 0x01u:case 0x04u:
  case 0x10u:case 0x11u:case 0x12u:case 0x13u:
  case 0x18u:case 0x19u:case 0x1au:case 0x1bu:
- case 0x20u:case 0x21u:case 0x31u:case 0x34u:case 0x36u:case 0x37u:
+ case 0x20u:case 0x21u:case 0x34u:case 0x36u:case 0x37u:
  case 0x3cu:case 0x3eu:case 0x3fu:
   return 1;
  case 0x30u: /* PMFHL: LW/UW/SLW/LH/SH modes only. */
   return sa<=4u;
+ case 0x31u: /* PMTHL.LW: all other sa encodings are reserved. */
+  return sa==0u;
  case 0x08u: /* MMI0 */
   switch(sa) {
   case 0u:case 1u:case 2u:case 3u:case 4u:case 5u:case 6u:case 7u:
