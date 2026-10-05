@@ -469,6 +469,8 @@ void ee_core_display_clock_load(uint64_t ticks);
 
 /* Precise block-JIT callbacks; mapped code is reread at every boundary. */
 int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word);
+/* Returns UINT32_MAX for immutable BIOS source, otherwise the EE RAM 4 KiB page. */
+int ee_core_block_source_page(ee_state_t *st,uint32_t pc,uint32_t *page);
 unsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit);
 int ee_core_block_prepare(ee_state_t *st,uint32_t pc,uint32_t instruction);
 int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc);

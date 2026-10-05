@@ -24,6 +24,9 @@
 static dma_state_t g_dma;
 static uint8_t *g_ee_ram = NULL;
 static uint32_t g_ee_ram_size = 0;
+/* R1316: optional JIT source-generation observer. Kept as a callback so
+ * standalone DMA tests retain zero dependency on the EE core/recompiler. */
+static void (*g_ee_write_notify)(uint32_t phys_addr, uint32_t len) = NULL;
 /* Round 572: bound the same way g_ee_ram is (see dma_bind_ee_ram() /
  * dma_bind_scratchpad() below) rather than calling ee_core_get_state()
  * directly - dma.c must stay linkable standalone (several test source
@@ -80,6 +83,11 @@ void dma_bind_scratchpad(uint8_t *scratch, uint32_t scratch_size)
 {
     g_ee_scratch = scratch;
     g_ee_scratch_size = scratch_size;
+}
+
+void dma_set_ee_write_notify(void (*fn)(uint32_t phys_addr, uint32_t len))
+{
+    g_ee_write_notify = fn;
 }
 
 void dma_set_sink(int channel, dma_sink_fn fn)
@@ -197,9 +205,13 @@ static int transfer_quadwords(int channel, uint32_t addr, uint32_t qwc)
             (!ring && (uint64_t)phys + bytes > g_ee_ram_size)) return 0;
         uint32_t spr = ch->sadr & (EE_SCRATCH_SIZE - 16u);
         for (uint32_t i=0; i<qwc; i++) {
-            if (channel == DMA_CHANNEL_TOSPR)
+            if (channel == DMA_CHANNEL_TOSPR) {
                 memcpy(g_ee_scratch + spr, g_ee_ram + phys + i*16u, 16u);
-            else memcpy(g_ee_ram + (ring?mfifo_wrap(phys+i*16u):phys+i*16u), g_ee_scratch + spr, 16u);
+            } else {
+                uint32_t dst = ring ? mfifo_wrap(phys + i*16u) : phys + i*16u;
+                memcpy(g_ee_ram + dst, g_ee_scratch + spr, 16u);
+                if (g_ee_write_notify) g_ee_write_notify(dst, 16u);
+            }
             spr = (spr + 16u) & (EE_SCRATCH_SIZE - 1u);
         }
         ch->sadr = spr;
@@ -454,7 +466,9 @@ int dma_channel_receive_quadwords(int channel, const uint8_t *data, uint32_t qwc
         }
     }
 #endif
-    memcpy(g_ee_ram + ch->madr, data, len);
+    uint32_t written_madr = ch->madr;
+    memcpy(g_ee_ram + written_madr, data, len);
+    if (g_ee_write_notify) g_ee_write_notify(written_madr, len);
     ch->madr += len;
     ch->qwc = (ch->qwc > qwc) ? (ch->qwc - qwc) : 0u;
     ch->quadwords_transferred += qwc;

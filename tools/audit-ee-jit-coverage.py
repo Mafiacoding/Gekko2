@@ -54,12 +54,13 @@ for op, name in {0x00:"SPECIAL",0x01:"REGIMM",0x10:"COP0",0x11:"COP1",0x12:"COP2
     if not has_op(predicate, op): errors.append(f"front gate missing {name} (op 0x{op:02x})")
     if not has_op(translator, op): errors.append(f"backend dispatch missing {name} (op 0x{op:02x})")
 
-# R1281: instruction-keyed COP0 is deliberately limited to MFC0/MTC0.
-cop0 = re.search(r"if\s*\(\s*op\s*==\s*0x10[uU]?\s*\)\s*\{([^{}]*)\}", predicate, re.I|re.S)
-if not cop0:
-    errors.append("cannot locate exact COP0 front gate")
-elif "rs==0u||rs==4u" not in re.sub(r"\s+", "", cop0.group(1)):
+# R1281/R1316: instruction-keyed COP0 remains MFC0/MTC0 only, but MTC0
+# EntryHi is intentionally scalar because changing ASID/mapping must bump the epoch.
+compact_predicate = re.sub(r"\s+", "", predicate)
+if "returnrs==0u||rs==4u" not in compact_predicate:
     errors.append("COP0 front gate is no longer restricted to MFC0/MTC0")
+if "if(rs==4u&&rd==10u)return0" not in compact_predicate:
+    errors.append("R1316 mapping-sensitive MTC0 EntryHi is no longer forced scalar")
 
 # R1310 exact trap selectors must remain admitted.
 for selector,label in [(8,"TGEI"),(9,"TGEIU"),(10,"TLTI"),(11,"TLTIU"),(12,"TEQI"),(14,"TNEI")]:
@@ -111,7 +112,7 @@ if errors:
 
 print("EE JIT coverage audit: PASS")
 print("  SPECIAL/REGIMM/COP0/COP1/COP2/MMI have front + backend dispatch")
-print("  COP0 one-op gate remains restricted to MFC0/MTC0")
+print("  COP0 gate remains MFC0/MTC0; MTC0 EntryHi is scalar for mapping epochs")
 print("  R1310 trap and R1311 signed-overflow gates remain reachable")
 print("  BLTZAL/BGEZAL/BLTZALL/BGEZALL are reachable through the single-op gate")
 print("  native trap/overflow exception machinery remains present")

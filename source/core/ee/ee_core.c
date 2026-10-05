@@ -2488,6 +2488,16 @@ static void r1242_watch_write(ee_state_t *st, uint32_t addr, uint32_t size, uint
     w[5]=(uint32_t)st->gpr[29].ud0; w[6]=(uint32_t)st->gpr[31].ud0; w[7]=(uint32_t)ee_hle_thread_get_current_thread_id();
 }
 
+/* R1316: only writes into the bound main-RAM allocation can mutate a
+ * precise block's source page. MMIO, BIOS and scratchpad writes do not. */
+static void ee_jit_notify_ram_write(ee_state_t *st,const uint8_t *p,uint32_t len)
+{
+    if(!st||!st->ram||!p||!len)return;
+    uintptr_t q=(uintptr_t)p,b=(uintptr_t)st->ram;
+    if(q>=b && (uint64_t)(q-b)<st->ram_size)
+        ee_jit_notify_physical_write((uint32_t)(q-b),len);
+}
+
 void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)
 {
     r1246_watch_write(st, addr, 1u, (uint64_t)val);
@@ -2504,7 +2514,7 @@ void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)
         return;
 
     uint8_t *p = ee_mem_ptr(st, addr, 1);
-    if (p) { *p = val; return; }
+    if (p) { ee_jit_notify_ram_write(st,p,1u); *p = val; return; }
     ee_mem_check_tlb_fault(st, addr, 1);
 }
 
@@ -2522,6 +2532,7 @@ void ee_mem_write16(ee_state_t *st, uint32_t addr, uint16_t val)
 
     uint8_t *p = ee_mem_ptr(st, addr, 2);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }
+    ee_jit_notify_ram_write(st,p,2u);
     p[0] = (uint8_t)(val & 0xFF);
     p[1] = (uint8_t)((val >> 8) & 0xFF);
 }
@@ -2559,6 +2570,7 @@ void ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val)
 
     uint8_t *p = ee_mem_ptr(st, addr, 4);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }
+    ee_jit_notify_ram_write(st,p,4u);
     p[0] = (uint8_t)(val & 0xFF);
     p[1] = (uint8_t)((val >> 8) & 0xFF);
     p[2] = (uint8_t)((val >> 16) & 0xFF);
@@ -2579,6 +2591,7 @@ void ee_mem_write64(ee_state_t *st, uint32_t addr, uint64_t val)
 
     uint8_t *p = ee_mem_ptr(st, addr, 8);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }
+    ee_jit_notify_ram_write(st,p,8u);
     for (int i = 0; i < 8; i++)
         p[i] = (uint8_t)((val >> (8 * i)) & 0xFF);
 }
@@ -4238,6 +4251,7 @@ int ee_core_init(const bios_image_t *bios)
     g_state.ram_size = EE_RAM_SIZE;
 
     dma_bind_ee_ram(g_state.ram, g_state.ram_size); /* chain-mode DMA reads tags/data from here */
+    dma_set_ee_write_notify(ee_jit_notify_physical_write); /* R1316 code-page generations */
     ee_pad_new_reset();
     memset(&g_ee_irq, 0, sizeof(g_ee_irq));
     memset(g_ee_pad_area_bound, 0, sizeof(g_ee_pad_area_bound));
@@ -10213,6 +10227,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 st->cop0[13] &= ~EE_CAUSE_IP7;
             } else {
                 st->cop0[rd] = rt32;
+                if (rd == 10) ee_jit_notify_mapping_change(); /* EntryHi/ASID */
             }
             break;
         case 0x08: { /* BC0F/T/FL/TL: real DMA completion condition. */
@@ -10347,6 +10362,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                     st->cop0[10] = st->tlb[i].entry_hi & ~((st->tlb[i].page_mask) | 0x1F00u);
                     st->cop0[2]  = (lo0 & ~0xFC000000u & ~1u) | g;
                     st->cop0[3]  = (lo1 & ~0x7C000000u & ~1u) | g;
+                    ee_jit_notify_mapping_change(); /* TLBR changes current EntryHi/ASID. */
                     break;
                 }
                 case 0x02: /* TLBWI - Write Indexed TLB Entry. Ported
@@ -10367,6 +10383,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                     st->tlb[j].entry_hi  = st->cop0[10];
                     st->tlb[j].entry_lo0 = st->cop0[2];
                     st->tlb[j].entry_lo1 = st->cop0[3];
+                    ee_jit_notify_mapping_change();
                     break;
                 }
                 case 0x06: /* TLBWR - Write Random TLB Entry. Same as
@@ -10385,6 +10402,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                     st->tlb[j].entry_hi  = st->cop0[10];
                     st->tlb[j].entry_lo0 = st->cop0[2];
                     st->tlb[j].entry_lo1 = st->cop0[3];
+                    ee_jit_notify_mapping_change();
                     r1191_tlbwr_count++;
                     break;
                 }
@@ -12949,6 +12967,21 @@ int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word)
     uint32_t available;const uint8_t *p=ee_core_block_pointer(st,pc,&available);
     if(!p||!word)return 0;
     *word=(uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+    return 1;
+}
+int ee_core_block_source_page(ee_state_t *st,uint32_t pc,uint32_t *page)
+{
+    uint32_t available;const uint8_t *p=ee_core_block_pointer(st,pc,&available);
+    if(!p||!page)return 0;
+    if(st->ram) {
+        uintptr_t q=(uintptr_t)p,b=(uintptr_t)st->ram;
+        if(q>=b && (uint64_t)(q-b)<st->ram_size) {
+            *page=(uint32_t)(q-b)>>12;
+            return 1;
+        }
+    }
+    /* ee_core_block_pointer only returns RAM or immutable BIOS. */
+    *page=UINT32_MAX;
     return 1;
 }
 unsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit)

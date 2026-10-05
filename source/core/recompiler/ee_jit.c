@@ -251,7 +251,13 @@ _Static_assert(offsetof(ee_state_t,sa_reg)==552,"EE SA prefix layout");
 static int ee_jit_opcode_supported(uint32_t instr)
 {
     uint32_t op = (instr >> 26) & 0x3Fu;
-    if(op==0x10u){unsigned rs=(instr>>21)&31u;return rs==0u||rs==4u;}
+    if(op==0x10u){
+        unsigned rs=(instr>>21)&31u,rd=(instr>>11)&31u;
+        /* R1316: MTC0 EntryHi changes the active ASID/mapping. Keep this
+         * one form scalar so the authoritative COP0 case bumps the epoch. */
+        if(rs==4u&&rd==10u)return 0;
+        return rs==0u||rs==4u;
+    }
     if (op == 0x18u || op == 0x19u) return 1; /* R1268 DADDI/DADDIU */
     if (op == 0x08u || op == 0x09u) return 1; /* ADDI (Round 897) / ADDIU */
     if (op == 0x0Au || op == 0x0Bu) return 1; /* SLTI / SLTIU */
@@ -633,10 +639,35 @@ void ee_jit_reset_stats_for_test(void)
 
 /* Bounded PC/tag cache; first conservative precise EE block integration. */
 typedef unsigned (*ee_precise_fn)(ee_state_t *,unsigned,uint32_t);
-typedef struct {uint32_t pc,words[8],count;ee_precise_fn fn;} ee_precise_slot;
+#define EE_PRECISE_RAM_PAGES (32u*1024u*1024u/4096u)
+#define EE_PRECISE_NON_RAM_PAGE UINT32_MAX
+typedef struct {
+ uint32_t pc,words[8],count;
+ uint32_t source_page,source_generation,mapping_generation;
+ ee_precise_fn fn;
+} ee_precise_slot;
 static ee_precise_slot precise_cache[256];
+static uint32_t precise_page_generation[EE_PRECISE_RAM_PAGES];
+static uint32_t precise_mapping_generation;
 static uint64_t precise_runs,precise_retired;
 static int precise_active;
+
+static void ee_precise_bump(uint32_t *generation)
+{
+ if(++*generation==0u)*generation=1u;
+}
+void ee_jit_notify_physical_write(uint32_t phys_addr,uint32_t len)
+{
+ if(!len||phys_addr>=32u*1024u*1024u)return;
+ uint64_t last=(uint64_t)phys_addr+(uint64_t)len-1u;
+ if(last>=32u*1024u*1024u)last=32u*1024u*1024u-1u;
+ uint32_t first=phys_addr>>12,end=(uint32_t)last>>12;
+ for(uint32_t page=first;page<=end;page++)ee_precise_bump(&precise_page_generation[page]);
+}
+void ee_jit_notify_mapping_change(void)
+{
+ ee_precise_bump(&precise_mapping_generation);
+}
 uint64_t ee_jit_get_block_count(void){return precise_runs;}
 uint64_t ee_jit_get_block_retired(void){return precise_retired;}
 typedef unsigned (*ee_cached_chain_fn)(ee_state_t *,unsigned,uint32_t,unsigned,ee_precise_fn,unsigned);
@@ -644,6 +675,21 @@ static ee_cached_chain_fn precise_chain_fn;
 static uint64_t precise_native_successors;
 uint64_t ee_jit_get_native_successors(void){return precise_native_successors;}
 #if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)
+static int ee_precise_source_snapshot(ee_state_t *st,uint32_t pc,uint32_t *page,uint32_t *generation)
+{
+ if(!ee_core_block_source_page(st,pc,page))return 0;
+ if(*page==EE_PRECISE_NON_RAM_PAGE){*generation=0u;return 1;}
+ if(*page>=EE_PRECISE_RAM_PAGES)return 0;
+ *generation=precise_page_generation[*page];
+ return 1;
+}
+static int ee_precise_slot_generation_current(const ee_precise_slot *slot)
+{
+ if(slot->mapping_generation!=precise_mapping_generation)return 0;
+ return slot->source_page==EE_PRECISE_NON_RAM_PAGE ||
+        (slot->source_page<EE_PRECISE_RAM_PAGES &&
+         slot->source_generation==precise_page_generation[slot->source_page]);
+}
 /* No allocation, eviction or compilation here. precise_active pins all
  * precise-cache allocations until the complete native chain returns. */
 static uint64_t ee_precise_cached_next(ee_state_t *st,unsigned remaining)
@@ -651,6 +697,7 @@ static uint64_t ee_precise_cached_next(ee_state_t *st,unsigned remaining)
  if(!precise_active||!st||remaining<2u||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u)return 0;
  ee_precise_slot *slot=&precise_cache[((st->pc>>2)^(st->pc>>12))&255u];
  if(!slot->fn||slot->pc!=st->pc||slot->count<2u||slot->count>remaining)return 0;
+ if(!ee_precise_slot_generation_current(slot))return 0;
  uint32_t word;
  if(!ee_core_block_peek(st,st->pc,&word)||word!=slot->words[0])return 0;
  precise_native_successors++;
@@ -675,7 +722,8 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  ee_precise_slot *slot=&precise_cache[((pc>>2)^(pc>>12))&255u];
  /* The emitted prepare callback validates live mapping/encoding before
   * EACH instruction. A warm entry needs no duplicate full-block scan. */
- if(slot->fn&&slot->pc==pc&&slot->count<=budget&&(!fetched||slot->words[0]==first_word))goto execute_slot;
+ if(slot->fn&&slot->pc==pc&&slot->count<=budget&&
+    ee_precise_slot_generation_current(slot)&&(!fetched||slot->words[0]==first_word))goto execute_slot;
  limit=ee_core_block_words(st,pc,words,limit);
  for(;count<limit;count++) {
   if(ee_jit_block_terminal(words[count])) {
@@ -686,6 +734,9 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   if(!ee_jit_block_candidate(words[count]))break;
  }
  if(count<2u)return 0;
+ uint32_t source_page,source_generation;
+ if(!ee_precise_source_snapshot(st,pc,&source_page,&source_generation))return 0;
+ uint32_t mapping_generation=precise_mapping_generation;
  if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
   ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,count*2u))return 0;
   if(ppc_dynarec_translate_ee_resident_delay_block(&c,pc,words,count,
@@ -697,6 +748,10 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   if(slot->fn)free((void*)slot->fn);
   slot->fn=fn;slot->pc=pc;slot->count=count;memcpy(slot->words,words,count*4u);
  }
+ /* A stale epoch with byte-identical code reuses the compiled PPC safely;
+  * only the validated source/mapping stamp changes. */
+ slot->source_page=source_page;slot->source_generation=source_generation;
+ slot->mapping_generation=mapping_generation;
 execute_slot:;
  uint32_t first_physical=0;
  if(fetched) {
@@ -762,5 +817,7 @@ static void ee_precise_reset_cache(void)
  if(precise_chain_fn)free((void*)precise_chain_fn);
  precise_chain_fn=0;precise_native_successors=0;
  for(unsigned n=0;n<256;n++)if(precise_cache[n].fn)free((void*)precise_cache[n].fn);
- memset(precise_cache,0,sizeof(precise_cache));precise_runs=precise_retired=0;
+ memset(precise_cache,0,sizeof(precise_cache));
+ memset(precise_page_generation,0,sizeof(precise_page_generation));
+ precise_mapping_generation=0;precise_runs=precise_retired=0;
 }

@@ -137,6 +137,11 @@ uint64_t ee_jit_get_native_successors(void);
 uint64_t ee_jit_get_block_count(void);
 uint64_t ee_jit_get_block_retired(void);
 
+/* R1316: lazy precise-block invalidation. CPU/DMA RAM writers bump the
+ * physical source-page generation; mapping mutations bump a separate epoch. */
+void ee_jit_notify_physical_write(uint32_t phys_addr,uint32_t len);
+void ee_jit_notify_mapping_change(void);
+
 /* First encoding came from the real scalar fetch; later words stay live. */
 unsigned ee_jit_try_execute_chain_fetched(ee_state_t *st,unsigned budget,uint32_t first_word);
 unsigned ee_jit_try_execute_block_fetched(ee_state_t *st,unsigned budget,uint32_t first_word);

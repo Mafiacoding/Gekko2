@@ -166,6 +166,8 @@ int dma_mmio_write32(uint32_t addr, uint32_t val);
  */
 void dma_bind_ee_ram(uint8_t *ram, uint32_t ram_size);
 void dma_bind_scratchpad(uint8_t *scratch, uint32_t scratch_size); /* Round 572 - see dma.c's dma_resolve_ptr() doc comment */
+/* Optional CPU-layer observer; keeps dma.c standalone-linkable. */
+void dma_set_ee_write_notify(void (*fn)(uint32_t phys_addr, uint32_t len));
 
 /* Called by a real (future) consumer - e.g. GIF packet parsing - to
  * receive the quadwords a channel's transfer produces. 'data' points
