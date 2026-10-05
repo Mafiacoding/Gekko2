@@ -1,0 +1,31 @@
+name: R1321 cache invalidation hook discovery
+on:
+  push:
+    branches: [r1321-cache-invalidation-audit]
+    paths:
+      - '.github/workflows/r1321-cache-hook-discovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1321-cache-invalidation-audit
+          fetch-depth: 0
+      - name: Locate generation and invalidation hooks
+        run: |
+          echo '=== physical write declarations/calls ==='
+          grep -R -n --exclude-dir=.git 'ee_jit_notify_physical_write' include source tests tools || true
+          echo '=== mapping change declarations/calls ==='
+          grep -R -n --exclude-dir=.git 'ee_jit_notify_mapping_change' include source tests tools || true
+          echo '=== precise generation state ==='
+          grep -R -n --exclude-dir=.git -E 'precise_(page|mapping)_generation|source_generation|mapping_generation' source/core/recompiler include/core/recompiler tests tools || true
+          echo '=== EE RAM write entry points ==='
+          grep -R -n --exclude-dir=.git -E 'ee_mem_write(8|16|32|64|128)|mem_write(8|16|32|64|128)' source/core | head -n 240 || true
+          echo '=== DMA writes/copies likely targeting EE RAM ==='
+          grep -R -n --exclude-dir=.git -E 'DMA|dma|memcpy\(|memmove\(' source/core | head -n 320 || true
+          echo '=== TLB/ASID/mapping mutations ==='
+          grep -R -n --exclude-dir=.git -E 'TLBWI|TLBWR|tlb|EntryHi|ASID|asid|mapping' source/core | head -n 320 || true
