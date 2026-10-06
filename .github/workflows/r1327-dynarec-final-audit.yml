@@ -1,0 +1,70 @@
+name: R1327 final dynarec verification
+
+on:
+  push:
+    branches: [r1327-dynarec-final-audit]
+    paths: ['.github/workflows/r1327-dynarec-final-audit.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1327-dynarec-final-audit
+          fetch-depth: 0
+      - name: Final known-gap inventory
+        run: python3 tools/audit_r1327_final_gap_inventory.py
+      - name: Exact VU REG_R semantics
+        run: bash tests/run_test.sh test_vu_r_lfsr_r1326
+      - name: Full host regression suite
+        run: bash tests/run_test.sh --all
+
+  wii-checkpoint:
+    needs: host-verify
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitppc:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1327-dynarec-final-audit
+          fetch-depth: 0
+      - name: Verify devkitPPC environment
+        run: |
+          echo "DEVKITPRO=$DEVKITPRO"
+          echo "DEVKITPPC=$DEVKITPPC"
+          powerpc-eabi-gcc --version | head -n 1
+      - name: Wii cross-build final dynarec checkpoint
+        run: make -j2
+      - name: Verify ELF and DOL
+        run: |
+          test -s Gekko2.elf
+          test -s Gekko2.dol
+      - name: Prepare Homebrew Channel checkpoint bundle
+        run: |
+          mkdir -p checkpoint/gekko2
+          cp Gekko2.dol checkpoint/gekko2/boot.dol
+          cp Gekko2.elf checkpoint/gekko2/Gekko2.elf
+          cp meta.xml checkpoint/gekko2/meta.xml
+          cp assets/branding/icon.png checkpoint/gekko2/icon.png
+          {
+            echo "Gekko2 R1327 dynarec checkpoint"
+            echo "Source branch: r1327-dynarec-final-audit"
+            echo "Commit: $(git rev-parse HEAD)"
+            echo "Host final-gap inventory: required"
+            echo "Full host regression: required"
+            echo "devkitPPC Wii cross-build: required"
+            echo "Physical Wii runtime validation: NOT implied by this artifact"
+          } > checkpoint/gekko2/CHECKPOINT.txt
+      - name: Upload R1327 ELF/DOL checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gekko2-R1327-Dynarec-Checkpoint
+          path: checkpoint/gekko2
+          if-no-files-found: error
+          retention-days: 14
