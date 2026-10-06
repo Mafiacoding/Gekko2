@@ -8,6 +8,8 @@ on:
       - 'source/core/ee_elf_loader.c'
       - 'tests/test_ee_elf_loader.c'
       - 'source/core/iso_loader.c'
+      - 'include/core/iso_loader.h'
+      - 'tests/test_iso_loader.c'
       - 'source/core/**cdvd**'
       - 'source/core/**sif**'
       - 'source/core/**vif**'
@@ -22,9 +24,14 @@ permissions:
 jobs:
   host:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Focused ISO regression
+        timeout-minutes: 5
+        run: bash tests/run_test.sh test_iso_loader
       - name: Full host regression
+        timeout-minutes: 35
         run: bash tests/run_test.sh --all
 
   wii:
@@ -32,6 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: devkitpro/devkitppc:latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Wii cross-build
