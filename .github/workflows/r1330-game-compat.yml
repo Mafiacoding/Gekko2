@@ -10,7 +10,10 @@ on:
       - 'source/core/iso_loader.c'
       - 'include/core/iso_loader.h'
       - 'tests/test_iso_loader.c'
-      - 'source/core/**cdvd**'
+      - 'source/hw/**cdvd**'
+      - 'include/core/hw/**cdvd**'
+      - 'tests/test_iop_cdvd.c'
+      - 'source/core/ee/ee_core.c'
       - 'source/core/**sif**'
       - 'source/core/**vif**'
       - 'source/core/**gif**'
@@ -30,9 +33,29 @@ jobs:
       - name: Focused ISO regression
         timeout-minutes: 5
         run: bash tests/run_test.sh test_iso_loader
-      - name: Full host regression
+      - name: Isolate host regressions
         timeout-minutes: 35
-        run: bash tests/run_test.sh --all
+        shell: bash
+        run: |
+          set +e
+          fail=0
+          for f in tests/test_*.c; do
+            name="$(basename "$f" .c)"
+            echo "::group::$name"
+            if timeout --signal=TERM --kill-after=5s 90s bash tests/run_test.sh "$name"; then
+              echo "PASS $name"
+            else
+              rc=$?
+              if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+                echo "HANG $name (timeout rc=$rc)"
+              else
+                echo "FAIL $name (rc=$rc)"
+              fi
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$fail"
 
   wii:
     needs: host
