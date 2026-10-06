@@ -1,17 +1,27 @@
 /* iso_loader.c - ISO9660 game-disc loader. */
+#define _FILE_OFFSET_BITS 64
+#define _LARGEFILE_SOURCE 1
 #include "core/iso_loader.h"
 #include <string.h>
 #include <stdlib.h>
-#include <limits.h>
+#include <sys/types.h>
 
 static uint32_t read_le32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
 
+static int seek64(FILE *fp,uint64_t pos)
+{
+    off_t off=(off_t)pos;
+    if(off<0||(uint64_t)off!=pos)return -1;
+    return fseeko(fp,off,SEEK_SET)==0?0:-1;
+}
+
 static int file_size(FILE *fp,uint64_t *out)
 {
-    long cur=ftell(fp); if(cur<0)return -1;
-    if(fseek(fp,0,SEEK_END)!=0)return -1;
-    long end=ftell(fp); if(end<0){fseek(fp,cur,SEEK_SET);return -1;}
-    if(fseek(fp,cur,SEEK_SET)!=0)return -1;
+    if(!fp||!out)return -1;
+    off_t cur=ftello(fp);if(cur<0)return -1;
+    if(fseeko(fp,0,SEEK_END)!=0)return -1;
+    off_t end=ftello(fp);if(end<0){fseeko(fp,cur,SEEK_SET);return -1;}
+    if(fseeko(fp,cur,SEEK_SET)!=0)return -1;
     *out=(uint64_t)end;return 0;
 }
 
@@ -21,8 +31,7 @@ static int read_sector_raw(FILE *fp,uint32_t lba,uint32_t stride,uint32_t data_o
     uint64_t phys=(uint64_t)lba*stride+data_offset;
     uint64_t end=phys+ISO_SECTOR_SIZE,size=0;
     if(end<phys||file_size(fp,&size)!=0||end>size)return -1;
-    if(phys>(uint64_t)LONG_MAX)return -1;
-    if(fseek(fp,(long)phys,SEEK_SET)!=0)return -1;
+    if(seek64(fp,phys)!=0)return -1;
     return fread(buf,1,ISO_SECTOR_SIZE,fp)==ISO_SECTOR_SIZE?0:-1;
 }
 
@@ -58,7 +67,7 @@ int iso_find_in_root(iso_image_t *img,const char *name,iso_dirent_t *out)
     uint32_t remaining=img->root_size,lba=img->root_lba;uint8_t sector[ISO_SECTOR_SIZE];
     while(remaining){if(iso_read_sector(img,lba,sector)!=0)return -1;uint32_t valid=remaining<ISO_SECTOR_SIZE?remaining:ISO_SECTOR_SIZE,off=0;
         while(off<valid){uint8_t len=sector[off];if(!len)break;if(len<34u||len>valid-off)return -1;const uint8_t *r=sector+off;uint8_t nl=r[32],flags=r[25];
-            if(nl>0&&33u+nl<=len){char en[224];uint32_t n=nl<sizeof(en)-1?nl:sizeof(en)-1;memcpy(en,r+33,n);en[n]=0;if(!(nl==1&&(r[33]==0||r[33]==1))&&!strcmp(en,name)){uint32_t extent=read_le32(r+2),bytes=read_le32(r+10);if(bytes){uint64_t count=((uint64_t)bytes+ISO_SECTOR_SIZE-1)/ISO_SECTOR_SIZE;uint8_t probe[ISO_SECTOR_SIZE];if(count&&iso_read_sector(img,extent+(uint32_t)(count-1),probe)!=0)return -1;}out->lba=extent;out->size=bytes;out->is_directory=(flags&2)?1:0;memcpy(out->name,en,n+1);return 0;}}
+            if(nl>0&&33u+nl<=len){char en[224];uint32_t n=nl<sizeof(en)-1?nl:sizeof(en)-1;memcpy(en,r+33,n);en[n]=0;if(!(nl==1&&(r[33]==0||r[33]==1))&&!strcmp(en,name)){uint32_t extent=read_le32(r+2),bytes=read_le32(r+10);if(bytes){uint64_t count=((uint64_t)bytes+ISO_SECTOR_SIZE-1)/ISO_SECTOR_SIZE;if(count>UINT32_MAX||(uint64_t)extent+count-1u>UINT32_MAX)return -1;uint8_t probe[ISO_SECTOR_SIZE];if(iso_read_sector(img,extent+(uint32_t)(count-1),probe)!=0)return -1;}out->lba=extent;out->size=bytes;out->is_directory=(flags&2)?1:0;memcpy(out->name,en,n+1);return 0;}}
             off+=len;}
         if(remaining<=ISO_SECTOR_SIZE)break;remaining-=ISO_SECTOR_SIZE;if(lba==UINT32_MAX)return -1;lba++;}
     return -1;
