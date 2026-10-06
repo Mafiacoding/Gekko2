@@ -3403,7 +3403,7 @@ static int sif_loadfile_elf_load_disc(ee_state_t *st, const char *discname, uint
          * FIO_F_OPEN handler above) - same ";1" fallback established
          * there, kept here for consistency even though real EELOAD
          * path strings observed so far already include it. */
-        char with_ver[64];
+        char with_ver[224];
         int vk;
         for (vk = 0; vk < 58 && discname[vk]; vk++) with_ver[vk] = discname[vk];
         with_ver[vk] = 0;
@@ -9030,7 +9030,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                  * found" reply (Round 303's own
                                  * citation - memory cards/host FS are
                                  * still honestly unmodeled). */
-                                char open_name[64];
+                                char open_name[224];
 /* Round 456 (task #276): real, cited errno correction. This
                                  * blanket reply was -4 since Round 303 - an
                                  * honestly-labeled placeholder, but -4 is
@@ -9050,12 +9050,12 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                     uint32_t open_payload_src = ee_mem_read32(st, open_payload_base + 0u);
                                     if (open_payload_src != 0u) {
                                         int ok;
-                                        for (ok = 0; ok < 63; ok++) {
+                                        for (ok = 0; ok < 223; ok++) {
                                             uint8_t b = ee_mem_read8(st, open_payload_src + 4u + (uint32_t)ok);
                                             open_name[ok] = (char)b;
                                             if (!b) break;
                                         }
-                                        open_name[ok < 63 ? ok : 63] = 0;
+                                        open_name[ok < 223 ? ok : 223] = 0;
 #ifdef EE_FILEIO_DEBUG
                                         fprintf(stderr, "[EE_FILEIO_DEBUG] FIO_F_OPEN name=\"%s\"\n", open_name);
 #endif
@@ -9101,7 +9101,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                             if (!found) {
                                                 char with_ver[64];
                                                 int vk;
-                                                for (vk = 0; vk < 58 && iso_name[vk]; vk++) with_ver[vk] = iso_name[vk];
+                                                for (vk = 0; vk < 221 && iso_name[vk]; vk++) with_ver[vk] = iso_name[vk];
                                                 with_ver[vk] = 0;
                                                 if (vk > 0 && !strchr(with_ver, ';')) {
                                                     with_ver[vk] = ';'; with_ver[vk+1] = '1'; with_ver[vk+2] = 0;
