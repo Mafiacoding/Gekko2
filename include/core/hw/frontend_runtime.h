@@ -9,6 +9,11 @@ int frontend_allow_gx_output(int requested,int first_image,unsigned psm);
 uint32_t frontend_next_budget(uint32_t previous,uint32_t elapsed_ms,uint32_t target_ms);
 uint32_t frontend_rate_milli(uint64_t count,uint64_t milliseconds);
 int frontend_present_due(uint64_t now_ms,uint64_t last_ms,uint64_t events,uint64_t last_events);
+/* R1329: diagnostics/HUD updates must be wall-clock limited. Guest VBlank can
+ * advance much faster than a human-readable diagnostic surface and must never
+ * cause a rapidly flashing console. This gate is deliberately independent of
+ * guest timing and therefore cannot change EE/IOP execution semantics. */
+int frontend_diagnostic_due(uint64_t now_ms,uint64_t last_ms,uint32_t interval_ms);
 
 #define FRONTEND_FPS_SAMPLES 12
 /* Twelve five-second samples: up to one minute of measured wall time. */
