@@ -38,11 +38,14 @@ for cmd in COMMANDS:
 
 # Pin the final architectural classification so a future refactor cannot turn
 # an intentional scalar boundary into an undocumented missing implementation.
+# These markers intentionally live in the R1326 closure audit, where the source
+# contracts are checked directly.  Keep this list aligned with those exact
+# source-contract strings rather than approximate spellings.
 closure = (ROOT / "tools/audit_r1326_final_closure.py").read_text(encoding="utf-8")
 required = {
     "privileged COP0 scalar boundary": "privileged COP0 stays an explicit scalar boundary",
-    "instruction-granular EE event retirement": "ee_core_block_commit(st,0)",
-    "instruction-granular IOP event retirement": "iop_core_block_retire",
+    "instruction-granular EE event retirement": "void ee_core_block_commit(ee_state_t *st){ee_retire_instruction(st,0);}",
+    "instruction-granular IOP event retirement": "void iop_core_block_retire(iop_state_t *st,uint32_t pc)",
     "serial/generation guarded EE links": "source->link_serial==serial",
     "IOP full-prefix SMC validation": "live!=slot->words[n]",
 }
