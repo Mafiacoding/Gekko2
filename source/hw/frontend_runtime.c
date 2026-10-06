@@ -23,6 +23,15 @@ int frontend_present_due(uint64_t now_ms,uint64_t last_ms,uint64_t events,uint64
     return events!=last_events || now_ms<last_ms || now_ms-last_ms>=500;
 }
 
+int frontend_diagnostic_due(uint64_t now_ms,uint64_t last_ms,uint32_t interval_ms)
+{
+    /* A zero interval is treated as the conservative one-second diagnostic
+     * cadence rather than an unlimited redraw rate. Clock rollback forces one
+     * update so callers can recover their baseline without getting stuck. */
+    if(!interval_ms)interval_ms=1000;
+    return now_ms<last_ms || now_ms-last_ms>=(uint64_t)interval_ms;
+}
+
 void frontend_fps_push(frontend_fps_window *w,uint64_t ms,uint64_t events,uint64_t presents)
 {
     if(!w||!ms)return;
