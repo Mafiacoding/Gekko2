@@ -1,0 +1,67 @@
+name: R1329 bootloop diagnostic checkpoint
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [r1329-bootloop-log-throttle]
+    paths:
+      - '.github/workflows/r1329-bootloop-log-throttle.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  host-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1329-bootloop-log-throttle
+          fetch-depth: 0
+      - name: Full host regression suite
+        run: bash tests/run_test.sh --all
+
+  wii-checkpoint:
+    needs: host-verify
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitppc:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1329-bootloop-log-throttle
+          fetch-depth: 0
+      - name: Verify devkitPPC environment
+        run: |
+          echo "DEVKITPRO=$DEVKITPRO"
+          echo "DEVKITPPC=$DEVKITPPC"
+          powerpc-eabi-gcc --version | head -n 1
+      - name: Wii cross-build R1329 diagnostic checkpoint
+        run: make -j2
+      - name: Verify ELF and DOL
+        run: |
+          test -s Gekko2.elf
+          test -s Gekko2.dol
+      - name: Prepare Homebrew Channel checkpoint bundle
+        run: |
+          mkdir -p checkpoint/gekko2
+          cp Gekko2.dol checkpoint/gekko2/boot.dol
+          cp Gekko2.elf checkpoint/gekko2/Gekko2.elf
+          cp meta.xml checkpoint/gekko2/meta.xml
+          cp assets/branding/icon.png checkpoint/gekko2/icon.png
+          {
+            echo "Gekko2 R1329 bootloop diagnostic checkpoint"
+            echo "Source branch: r1329-bootloop-log-throttle"
+            echo "Commit: $(git rev-parse HEAD)"
+            echo "Full host regression: required"
+            echo "devkitPPC Wii cross-build: required"
+            echo "Purpose: SCE boot-livelock and safe logging diagnostics"
+            echo "Physical Wii runtime validation: NOT implied by this artifact"
+          } > checkpoint/gekko2/CHECKPOINT.txt
+      - name: Upload R1329 ELF/DOL checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gekko2-R1329-Bootloop-Diagnostic
+          path: checkpoint/gekko2
+          if-no-files-found: error
+          retention-days: 14
