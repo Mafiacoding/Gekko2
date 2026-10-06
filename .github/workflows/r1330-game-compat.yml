@@ -36,6 +36,9 @@ jobs:
       - name: Focused ISO regression
         timeout-minutes: 5
         run: bash tests/run_test.sh test_iso_loader
+      - name: Focused CDVD regression
+        timeout-minutes: 5
+        run: bash tests/run_test.sh test_iop_cdvd
       - name: Isolate host regressions
         timeout-minutes: 35
         shell: bash
