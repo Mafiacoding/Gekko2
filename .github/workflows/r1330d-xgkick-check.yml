@@ -1,0 +1,42 @@
+name: R1330-D XGKICK verification
+on:
+  push:
+    branches: [r1330-game-compat-audit]
+    paths:
+      - 'source/hw/vu.c'
+      - 'include/core/hw/vu.h'
+      - 'tests/test_vu*.c'
+      - 'tests/test_vif*.c'
+      - 'tests/test_gif*.c'
+      - '.github/workflows/r1330d-xgkick-check.yml'
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Focused VU VIF GIF tests
+        run: |
+          set -e
+          for f in tests/test_vu*.c tests/test_vif*.c tests/test_gif*.c; do
+            [ -f "$f" ] || continue
+            bash tests/run_test.sh "$(basename "$f" .c)"
+          done
+      - name: Full isolated host suite
+        run: |
+          set -e
+          for f in tests/test_*.c; do
+            timeout 90s bash tests/run_test.sh "$(basename "$f" .c)"
+          done
+  wii:
+    runs-on: ubuntu-latest
+    needs: host
+    container: devkitpro/devkitppc:latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wii cross-build
+        run: |
+          make -j2
+          test -s Gekko2.elf
+          test -s Gekko2.dol
