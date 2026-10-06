@@ -1,0 +1,39 @@
+name: R1326 Wii compile fix
+on:
+  push:
+    branches: [r1326-final-dynarec-batch]
+    paths: ['.github/workflows/r1326-wii-fix.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+
+jobs:
+  wii-verify-and-commit:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitppc:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1326-final-dynarec-batch
+          fetch-depth: 0
+      - name: Guard and fix VU lower boundary constants
+        shell: sh
+        run: |
+          test "$(grep -o 'VUL_OP_SPECIAL' source/core/recompiler/vu_jit.c | wc -l)" -eq 1
+          test "$(grep -o 'VULS_FUNCT_MIN' source/core/recompiler/vu_jit.c | wc -l)" -eq 1
+          sed -i 's/VUL_OP_SPECIAL/VU_L_SPECIAL_OPCODE/; s/VULS_FUNCT_MIN/0x3cu/' source/core/recompiler/vu_jit.c
+          grep -q 'VU_L_SPECIAL_OPCODE' source/core/recompiler/vu_jit.c
+          grep -q 'VU_L_FUNCT6(word) < 0x3cu\|word & 63u) < 0x3cu' source/core/recompiler/vu_jit.c
+          git diff --check
+      - name: Wii cross-build gate
+        run: make -j2
+      - name: Confirm Wii outputs
+        run: test -s Gekko2.elf && test -s Gekko2.dol
+      - name: Commit verified Wii source fix
+        run: |
+          git config user.name "Mafiacoding"
+          git config user.email "mthalicious@gmail.com"
+          git add source/core/recompiler/vu_jit.c
+          git commit -m "R1326: fix Wii VU boundary constants"
+          git push origin HEAD:r1326-final-dynarec-batch
