@@ -708,6 +708,9 @@ static void run_real_boot_flow(void)
 
     uint32_t frame = 0;
     uint64_t last_present_ms=0,last_present_events=ee_core_get_vblank_events();
+    /* R1329-B: diagnostic surfaces are wall-clock throttled independently
+     * from guest VBlank so a fast guest loop cannot flash the console. */
+    uint64_t last_diagnostic_ms=0,last_livelock_ms=0;
     uint64_t last_present_quadwords=UINT64_MAX;
     uint64_t last_dispfb=UINT64_MAX,last_display=UINT64_MAX,last_pmode=UINT64_MAX,last_smode=UINT64_MAX;
     gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
@@ -746,6 +749,7 @@ static void run_real_boot_flow(void)
         uint64_t now_display_ms=ticks_to_millisecs(stage_started);
         uint64_t current_events=ee_core_get_vblank_events();
         int present_due=frontend_present_due(now_display_ms,last_present_ms,current_events,last_present_events);
+        int diagnostic_due=frontend_diagnostic_due(now_display_ms,last_diagnostic_ms,1000);
 
         /* PMODE bits 0/1 = EN1/EN2 (circuit 1/2 enabled) - real,
          * documented GS register semantics, not a guess.
@@ -797,7 +801,11 @@ static void run_real_boot_flow(void)
             }
         }
         gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
-        if(present_due)VIDEO_WaitVSync();
+        /* Only real GS presentation follows guest VBlank. The diagnostic HUD
+         * is limited to one update per second to avoid rapid flashing. */
+        int diagnostic_surface=show_hud || !display_active || !g_first_picture;
+        int screen_due=diagnostic_surface ? diagnostic_due : present_due;
+        if(screen_due)VIDEO_WaitVSync();
         if (present_due && display_active && !show_hud) {
             uint64_t active_dispfb = en1 ? gs->dispfb1 : gs->dispfb2;
             uint32_t bp_words, bw_pixels;
@@ -820,8 +828,8 @@ static void run_real_boot_flow(void)
             }
         }
 
-        if(present_due){
-        if (show_hud || !display_active || !g_first_picture) {
+        if(screen_due){
+        if (diagnostic_surface) {
         draw_boot_progress_hud(ee->instructions_executed, iop->instructions_executed,
                                 ee->halted, iop->halted, ee->halt_reason, iop->halt_reason,
                                 display_active);
@@ -838,9 +846,39 @@ static void run_real_boot_flow(void)
 
         if(g_fps_default && g_first_picture && !show_hud)draw_fps_overlay();
         flush_screen();
-        perf_presents++;last_present_ms=now_display_ms;last_present_events=current_events;
-        last_present_quadwords=current_quadwords;last_dispfb=current_dispfb;last_display=current_display;
-        last_pmode=gs->pmode;last_smode=gs->smode2;
+        perf_presents++;
+        if(diagnostic_surface)last_diagnostic_ms=now_display_ms;
+        else {
+            last_present_ms=now_display_ms;last_present_events=current_events;
+            last_present_quadwords=current_quadwords;last_dispfb=current_dispfb;last_display=current_display;
+            last_pmode=gs->pmode;last_smode=gs->smode2;
+        }
+        }
+        /* R1329-B: the final hardware log repeatedly sampled this BIOS wait
+         * window while JIT execution and timer deferrals kept increasing.
+         * Emit one compact state snapshot per 10 seconds; never alter guest
+         * state or timing to 'fix' the loop speculatively. */
+        if(ee->pc>=0x8000e5e0u && ee->pc<=0x8000e610u &&
+           frontend_diagnostic_due(now_display_ms,last_livelock_ms,10000)){
+            FILE *lf=g_fat_mounted?fopen(boot_log_path(),"a"):NULL;
+            if(lf){
+                ee_intc_state_t *is=ee_intc_get_state();
+                dma_state_t *ds=dma_get_state();
+                ee_timers_state_t ts;ee_timers_snapshot(&ts);
+                int tid=ee_hle_thread_get_current_thread_id();
+                fprintf(lf,"LIVELOCK ms=%llu EE_PC=%08lx IOP_PC=%08lx SR=%08lx CAUSE=%08lx EPC=%08lx BADV=%08lx TID=%d TSTAT=%lu PRIO=%lu WAIT=%lu/%lu INTC=%08lx/%08lx DMAC_STAT=%08lx DMAC_CTRL=%08lx TIMER=%lx,%lx,%lx,%lx JIT=%llu EVENT=%llu/%llu\n",
+                    (unsigned long long)now_display_ms,(unsigned long)ee->pc,(unsigned long)iop->pc,
+                    (unsigned long)ee->cop0[12],(unsigned long)ee->cop0[13],
+                    (unsigned long)ee->cop0[14],(unsigned long)ee->cop0[8],tid,
+                    (unsigned long)ee_hle_thread_get_status(tid),(unsigned long)ee_hle_thread_get_priority(tid),
+                    (unsigned long)ee_hle_thread_get_wait_type(tid),(unsigned long)ee_hle_thread_get_wait_id(tid),
+                    (unsigned long)is->stat,(unsigned long)is->mask,(unsigned long)ds->d_stat,(unsigned long)ds->d_ctrl,
+                    (unsigned long)ts.t[0].mode,(unsigned long)ts.t[1].mode,(unsigned long)ts.t[2].mode,(unsigned long)ts.t[3].mode,
+                    (unsigned long long)ee_jit_get_executed_count(),
+                    (unsigned long long)ee_timers_get_batched_ticks(),(unsigned long long)ee_timers_get_boundary_ticks());
+                fclose(lf);
+            }
+            last_livelock_ms=now_display_ms;
         }
         perf_blit+=gettime()-stage_started;
         r1252_save_fault_evidence();
