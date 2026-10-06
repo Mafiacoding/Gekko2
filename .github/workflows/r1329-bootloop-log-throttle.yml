@@ -5,6 +5,9 @@ on:
   push:
     branches: [r1329-bootloop-log-throttle]
     paths:
+      - 'source/main.c'
+      - 'source/hw/frontend_runtime.c'
+      - 'include/core/hw/frontend_runtime.h'
       - '.github/workflows/r1329-bootloop-log-throttle.yml'
 
 permissions:
@@ -36,7 +39,7 @@ jobs:
           echo "DEVKITPRO=$DEVKITPRO"
           echo "DEVKITPPC=$DEVKITPPC"
           powerpc-eabi-gcc --version | head -n 1
-      - name: Wii cross-build R1329 diagnostic checkpoint
+      - name: Wii cross-build R1329-B diagnostic checkpoint
         run: make -j2
       - name: Verify ELF and DOL
         run: |
@@ -50,18 +53,18 @@ jobs:
           cp meta.xml checkpoint/gekko2/meta.xml
           cp assets/branding/icon.png checkpoint/gekko2/icon.png
           {
-            echo "Gekko2 R1329 bootloop diagnostic checkpoint"
+            echo "Gekko2 R1329-B bootloop diagnostic checkpoint"
             echo "Source branch: r1329-bootloop-log-throttle"
             echo "Commit: $(git rev-parse HEAD)"
-            echo "Full host regression: required"
-            echo "devkitPPC Wii cross-build: required"
-            echo "Purpose: SCE boot-livelock and safe logging diagnostics"
+            echo "Full host regression: passed before artifact job"
+            echo "devkitPPC Wii cross-build: passed before artifact upload"
+            echo "Purpose: SCE boot-livelock snapshots and safe diagnostic HUD cadence"
             echo "Physical Wii runtime validation: NOT implied by this artifact"
           } > checkpoint/gekko2/CHECKPOINT.txt
-      - name: Upload R1329 ELF/DOL checkpoint
+      - name: Upload R1329-B ELF/DOL checkpoint
         uses: actions/upload-artifact@v4
         with:
-          name: Gekko2-R1329-Bootloop-Diagnostic
+          name: Gekko2-R1329B-Bootloop-Diagnostic
           path: checkpoint/gekko2
           if-no-files-found: error
           retention-days: 14
