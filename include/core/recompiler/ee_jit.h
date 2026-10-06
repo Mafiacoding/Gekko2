@@ -138,6 +138,8 @@ uint64_t ee_jit_get_block_count(void);
 uint64_t ee_jit_get_block_retired(void);
 /* R1318: number of valid precise blocks displaced by direct-map collisions. */
 uint64_t ee_jit_get_block_evictions(void);
+/* R1326: warm serial/generation-safe direct successor-link hits. */
+uint64_t ee_jit_get_direct_link_hits(void);
 
 /* R1316: lazy precise-block invalidation. CPU/DMA RAM writers bump the
  * physical source-page generation; mapping mutations bump a separate epoch. */

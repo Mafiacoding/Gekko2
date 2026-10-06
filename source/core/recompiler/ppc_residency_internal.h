@@ -13,18 +13,28 @@ uint64_t ppc_dynarec_get_resident_loads(void){return resident_loads;}
 uint64_t ppc_dynarec_get_resident_refresh_edges(void){return resident_refresh_edges;}
 static void residency_plan(ppc_residency *a,const uint32_t *words,unsigned count,int ee,unsigned generation_offset)
 {
-    unsigned reads[32]={0},writes[32]={0};
+    unsigned reads[32]={0},writes[32]={0},has_mmi=0;
     memset(a,0,sizeof(*a));memset(a->slot,-1,sizeof a->slot);
     a->bank_words=ee?128u:32u;
     a->generation_offset=generation_offset;
+    if(ee)for(unsigned n=0;n<count;n++)if((words[n]>>26)==0x1cu){has_mmi=1;break;}
     for(unsigned n=0;n<count;n++) {
         uint32_t w=words[n];unsigned op=w>>26,rs=(w>>21)&31u,rt=(w>>16)&31u,rd=(w>>11)&31u,fn=w&63u;
         /* Only repeated scalar integer sources justify a resident pool.
          * Opaque helpers, merge branches and resolved memory proofs do not
          * reuse those operand loads; a memory-only block stays unmodified. */
-        if(!(op==0u||(op>=8u&&op<=14u)||op==25u))continue;
+        if(!(op==0u||(op>=8u&&op<=14u)||op==25u||(ee&&op==0x1cu)))continue;
         if(op==0u&&(fn==8u||fn==9u||fn==10u||fn==11u||fn==0x1au||fn==0x1bu))continue;
         if(rs)reads[rs]++;
+        if(ee&&op==0x1cu) {
+            /* MMI register fields are intentionally over-approximated here.
+             * Allocation choice may load an unused lane, but emitted-code
+             * rewriting is still keyed by the exact architectural offset,
+             * so an over-approximation cannot alter instruction semantics. */
+            if(rt)reads[rt]++;
+            if(rd)writes[rd]++;
+            continue;
+        }
         if(op==0u) {
             if(rt)reads[rt]++;
             if(rd&&fn!=8u&&fn!=0x11u&&fn!=0x13u)writes[rd]++;
@@ -36,13 +46,15 @@ static void residency_plan(ppc_residency *a,const uint32_t *words,unsigned count
     /* Admission avoids paying resident stores for a simple read/write
      * accumulator. Cache genuinely reused sources; all words keep their
      * architectural offsets; uncached upper EE words remain canonical. */
-    for(unsigned k=0;k<(ee?6u:12u);k++) {
+    unsigned lanes=ee?(has_mmi?4u:2u):1u;
+    unsigned max_guests=12u/lanes;
+    for(unsigned k=0;k<max_guests;k++) {
         unsigned best=0;
         for(unsigned r=1;r<32;r++)
             if(reads[r]>=2u&&reads[r]>writes[r]&&(!best||reads[r]-writes[r]>reads[best]-writes[best]))best=r;
         if(!best)break;
         reads[best]=0;
-        for(unsigned lane=0;lane<(ee?2u:1u);lane++) {
+        for(unsigned lane=0;lane<lanes;lane++) {
             unsigned word=ee?best*4u+lane:best;
             a->slot[word]=(int8_t)a->count;a->offsets[a->count++]=(uint16_t)(word*4u);
         }

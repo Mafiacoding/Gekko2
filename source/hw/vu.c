@@ -747,7 +747,41 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
                     }
                     return 1;
                 }
-                return 0; /* R-group (RNEXT/RGET/RINIT/RXOR - needs a real LFSR, not modeled), XTOP/XITOP (needs real VIF1 TOP register plumbing), and anything else unmatched */
+                if (fdslot == VULS_FD_R_GROUP) {
+                    /* Real VU R register lives at VI[20] (REG_R).  PCSX2's
+                     * interpreter keeps it in 1.x IEEE mantissa form: the
+                     * exponent is forced to 0x3f800000 and only 23 mantissa
+                     * bits participate in the LFSR/XOR operations.  All four
+                     * R instructions are architecturally suppressed when Ft
+                     * is VF0, including RINIT/RXOR's REG_R side effect. */
+                    if (rt == 0) return 1;
+                    uint32_t r = vi[20];
+                    if (bc2 == 0) { /* RNEXT */
+                        uint32_t x = (r >> 4) & 1u, y = (r >> 22) & 1u;
+                        r = (r << 1) ^ x ^ y;
+                        r = (r & 0x007fffffu) | 0x3f800000u;
+                        vi[20] = r;
+                        float rr[4] = { vu_f(r), vu_f(r), vu_f(r), vu_f(r) };
+                        vu_write_dest(vf, rt, dest, rr);
+                        return 1;
+                    }
+                    if (bc2 == 1) { /* RGET */
+                        float rr[4] = { vu_f(r), vu_f(r), vu_f(r), vu_f(r) };
+                        vu_write_dest(vf, rt, dest, rr);
+                        return 1;
+                    }
+                    if (bc2 == 2) { /* RINIT */
+                        uint32_t elem = (w >> 21) & 3u;
+                        vi[20] = (vf[rs][elem] & 0x007fffffu) | 0x3f800000u;
+                        return 1;
+                    }
+                    if (bc2 == 3) { /* RXOR */
+                        uint32_t elem = (w >> 21) & 3u;
+                        vi[20] = ((vf[rs][elem] ^ r) & 0x007fffffu) | 0x3f800000u;
+                        return 1;
+                    }
+                }
+                return 0; /* Any genuinely unmatched SPECIAL2 selector stays on the explicit unimplemented path. */
             }
         }
 

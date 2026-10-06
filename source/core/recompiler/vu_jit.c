@@ -1,5 +1,6 @@
 #include "core/recompiler/vu_jit.h"
 #include "core/recompiler/ppc_dynarec.h"
+#include "hw/vu_opcodes.h"
 #include <stdlib.h>
 #include <string.h>
 static uint64_t upper_count,lower_count,rejected_hits,pair_count,block_count;
@@ -65,6 +66,19 @@ static inline vu_fn hot_lookup(uint32_t word,unsigned lower) {
         return p->fn;
     }
     return resolve(word,lower);
+}
+
+/* Scheduler-visible lower operations are hard native-block boundaries.
+ * Pair/single execution may still JIT ordinary work, but a multi-pair block
+ * must return to vu_micro_step_pipeline() before Q/P publication, WAITQ/P,
+ * VIF TOP/ITOP reads, PATH1 XGKICK, MFP/P reads or REG_R LFSR mutation.
+ * Keeping the lower word as data when the upper I bit is set is intentional. */
+static int vu_lower_pipeline_boundary(uint32_t word)
+{
+    if (VU_L_OPCODE(word) != VU_L_SPECIAL_OPCODE || VU_L_FUNCT6(word) < 0x3cu)
+        return 0;
+    unsigned fd = (word >> 6) & 31u;
+    return fd == VULS_FD_DIVQ_GROUP || fd == VULS_FD_R_GROUP || fd >= 0x19u;
 }
 
 #endif
@@ -142,7 +156,8 @@ unsigned vu_jit_try_block(uint32_t vf[32][4],uint32_t *vi,uint32_t *acc,uint8_t 
         lo[n]=(uint32_t)q[0]|((uint32_t)q[1]<<8)|((uint32_t)q[2]<<16)|((uint32_t)q[3]<<24);
         up[n]=(uint32_t)q[4]|((uint32_t)q[5]<<8)|((uint32_t)q[6]<<16)|((uint32_t)q[7]<<24);
         unsigned op=lo[n]>>25;
-        if((up[n]&0x7e000000u)||(!(up[n]&0x80000000u)&&op>=0x20u&&op<=0x2fu))break;
+        if((up[n]&0x7e000000u)||
+           (!(up[n]&0x80000000u)&&(op>=0x20u&&op<=0x2fu || vu_lower_pipeline_boundary(lo[n]))))break;
         count++;
     }
     if(count<2u)return 0;
