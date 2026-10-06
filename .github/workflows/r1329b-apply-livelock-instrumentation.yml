@@ -1,0 +1,60 @@
+name: R1329-B apply livelock instrumentation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [r1329-bootloop-log-throttle]
+    paths: ['.github/workflows/r1329b-apply-livelock-instrumentation.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1329-bootloop-log-throttle
+          fetch-depth: 0
+      - name: Apply R1329-B diagnostic patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('source/main.c')
+          s=p.read_text()
+          old='''    uint64_t last_present_ms=0,last_present_events=ee_core_get_vblank_events();\n    uint64_t last_present_quadwords=UINT64_MAX;'''
+          new='''    uint64_t last_present_ms=0,last_present_events=ee_core_get_vblank_events();\n    /* R1329-B: diagnostic surfaces are wall-clock throttled independently\n     * from guest VBlank so a fast guest loop cannot flash the console. */\n    uint64_t last_diagnostic_ms=0,last_livelock_ms=0;\n    uint64_t last_present_quadwords=UINT64_MAX;'''
+          assert old in s
+          s=s.replace(old,new,1)
+
+          old='''        int present_due=frontend_present_due(now_display_ms,last_present_ms,current_events,last_present_events);\n'''
+          new='''        int present_due=frontend_present_due(now_display_ms,last_present_ms,current_events,last_present_events);\n        int diagnostic_due=frontend_diagnostic_due(now_display_ms,last_diagnostic_ms,1000);\n'''
+          assert old in s
+          s=s.replace(old,new,1)
+
+          old='''        gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));\n        if(present_due)VIDEO_WaitVSync();\n        if (present_due && display_active && !show_hud) {'''
+          new='''        gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));\n        /* Only real GS presentation follows guest VBlank. The diagnostic HUD\n         * is limited to one update per second to avoid rapid flashing. */\n        int diagnostic_surface=show_hud || !display_active || !g_first_picture;\n        int screen_due=diagnostic_surface ? diagnostic_due : present_due;\n        if(screen_due)VIDEO_WaitVSync();\n        if (present_due && display_active && !show_hud) {'''
+          assert old in s
+          s=s.replace(old,new,1)
+
+          old='''        if(present_due){\n        if (show_hud || !display_active || !g_first_picture) {'''
+          new='''        if(screen_due){\n        if (diagnostic_surface) {'''
+          assert old in s
+          s=s.replace(old,new,1)
+
+          old='''        perf_presents++;last_present_ms=now_display_ms;last_present_events=current_events;\n        last_present_quadwords=current_quadwords;last_dispfb=current_dispfb;last_display=current_display;\n        last_pmode=gs->pmode;last_smode=gs->smode2;\n        }\n        perf_blit+=gettime()-stage_started;'''
+          new='''        perf_presents++;\n        if(diagnostic_surface)last_diagnostic_ms=now_display_ms;\n        else {\n            last_present_ms=now_display_ms;last_present_events=current_events;\n            last_present_quadwords=current_quadwords;last_dispfb=current_dispfb;last_display=current_display;\n            last_pmode=gs->pmode;last_smode=gs->smode2;\n        }\n        }\n        /* R1329-B: the final hardware log repeatedly sampled this BIOS wait\n         * window while JIT execution and timer deferrals kept increasing.\n         * Emit one compact state snapshot per 10 seconds; never alter guest\n         * state or timing to 'fix' the loop speculatively. */\n        if(ee->pc>=0x8000e5e0u && ee->pc<=0x8000e610u &&\n           frontend_diagnostic_due(now_display_ms,last_livelock_ms,10000)){\n            FILE *lf=g_fat_mounted?fopen(boot_log_path(),"a"):NULL;\n            if(lf){\n                ee_intc_state_t *is=ee_intc_get_state();\n                dma_state_t *ds=dma_get_state();\n                ee_timers_state_t ts;ee_timers_snapshot(&ts);\n                int tid=ee_hle_thread_get_current_thread_id();\n                fprintf(lf,"LIVELOCK ms=%llu EE_PC=%08lx IOP_PC=%08lx SR=%08lx CAUSE=%08lx EPC=%08lx BADV=%08lx TID=%d TSTAT=%lu PRIO=%lu WAIT=%lu/%lu INTC=%08lx/%08lx DMAC_STAT=%08lx DMAC_CTRL=%08lx TIMER=%lx,%lx,%lx,%lx JIT=%llu EVENT=%llu/%llu\\n",\n                    (unsigned long long)now_display_ms,(unsigned long)ee->pc,(unsigned long)iop->pc,\n                    (unsigned long)ee->cop0[12],(unsigned long)ee->cop0[13],\n                    (unsigned long)ee->cop0[14],(unsigned long)ee->cop0[8],tid,\n                    (unsigned long)ee_hle_thread_get_status(tid),(unsigned long)ee_hle_thread_get_priority(tid),\n                    (unsigned long)ee_hle_thread_get_wait_type(tid),(unsigned long)ee_hle_thread_get_wait_id(tid),\n                    (unsigned long)is->stat,(unsigned long)is->mask,(unsigned long)ds->d_stat,(unsigned long)ds->d_ctrl,\n                    (unsigned long)ts.t[0].mode,(unsigned long)ts.t[1].mode,(unsigned long)ts.t[2].mode,(unsigned long)ts.t[3].mode,\n                    (unsigned long long)ee_jit_get_executed_count(),\n                    (unsigned long long)ee_timers_get_batched_ticks(),(unsigned long long)ee_timers_get_boundary_ticks());\n                fclose(lf);\n            }\n            last_livelock_ms=now_display_ms;\n        }\n        perf_blit+=gettime()-stage_started;'''
+          assert old in s
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+          git diff --check
+          git diff -- source/main.c
+      - name: Commit R1329-B patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add source/main.c
+          git commit -m 'R1329-B: throttle boot HUD and log livelock snapshots'
+          git push origin HEAD:r1329-bootloop-log-throttle
