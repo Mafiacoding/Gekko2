@@ -1,0 +1,42 @@
+name: R1330 game compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [r1330-game-compat-audit]
+    paths:
+      - 'source/core/ee_elf_loader.c'
+      - 'tests/test_ee_elf_loader.c'
+      - 'source/core/iso_loader.c'
+      - 'source/core/**cdvd**'
+      - 'source/core/**sif**'
+      - 'source/core/**vif**'
+      - 'source/core/**gif**'
+      - 'source/core/**vu**'
+      - 'source/core/**gs**'
+      - '.github/workflows/r1330-game-compat.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Full host regression
+        run: bash tests/run_test.sh --all
+
+  wii:
+    needs: host
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitppc:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wii cross-build
+        run: make -j2
+      - name: Verify ELF/DOL
+        run: |
+          test -s Gekko2.elf
+          test -s Gekko2.dol
