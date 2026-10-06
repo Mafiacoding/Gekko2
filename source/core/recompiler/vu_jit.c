@@ -75,7 +75,7 @@ static inline vu_fn hot_lookup(uint32_t word,unsigned lower) {
  * Keeping the lower word as data when the upper I bit is set is intentional. */
 static int vu_lower_pipeline_boundary(uint32_t word)
 {
-    if ((word >> 25) != VUL_OP_SPECIAL || (word & 63u) < VULS_FUNCT_MIN)
+    if (VU_L_OPCODE(word) != VU_L_SPECIAL_OPCODE || VU_L_FUNCT6(word) < 0x3cu)
         return 0;
     unsigned fd = (word >> 6) & 31u;
     return fd == VULS_FD_DIVQ_GROUP || fd == VULS_FD_R_GROUP || fd >= 0x19u;
