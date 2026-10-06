@@ -1,0 +1,53 @@
+name: R1330-C apply game I/O fixes
+
+on:
+  push:
+    branches: [r1330-game-compat-audit]
+    paths: ['.github/workflows/r1330c-apply-gameio-fixes.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: r1330-game-compat-audit
+      - name: Apply exact audited fixes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('source/hw/iop_cdvd.c')
+          s = p.read_text()
+          old = '''            for (i = 0; i < count; i++) {\n                if (iso_read_sector(&g_disc, sector + i, sector_buf) != 0)\n                    break; /* real end-of-disc/bad-sector case - stop delivering rather than fabricate data */\n'''
+          new = '''            for (i = 0; i < count; i++) {\n                /* R1330-C: reject uint32 LSN wrap. Without this guard a\n                 * request near UINT32_MAX could wrap sector+i back to the\n                 * beginning of a valid image and deliver unrelated data. */\n                if (i > UINT32_MAX - sector)\n                    break;\n                if (iso_read_sector(&g_disc, sector + i, sector_buf) != 0)\n                    break; /* real end-of-disc/bad-sector case - stop delivering rather than fabricate data */\n'''
+          if old not in s:
+              raise SystemExit('iop_cdvd.c target changed; refusing blind edit')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('source/core/ee/ee_core.c')
+          s = p.read_text()
+          s2 = s.replace('char open_name[64];', 'char open_name[224];', 1)
+          s2 = s2.replace('for (ok = 0; ok < 63; ok++) {', 'for (ok = 0; ok < 223; ok++) {', 1)
+          s2 = s2.replace('open_name[ok < 63 ? ok : 63] = 0;', 'open_name[ok < 223 ? ok : 223] = 0;', 1)
+          s2 = s2.replace('char with_ver[64];', 'char with_ver[224];', 1)
+          s2 = s2.replace('for (vk = 0; vk < 58 && iso_name[vk]; vk++) with_ver[vk] = iso_name[vk];', 'for (vk = 0; vk < 221 && iso_name[vk]; vk++) with_ver[vk] = iso_name[vk];', 1)
+          if s2 == s:
+              raise SystemExit('ee_core.c targets changed; refusing blind edit')
+          p.write_text(s2)
+      - name: Focused host regressions
+        run: |
+          bash tests/run_test.sh test_iop_cdvd
+          bash tests/run_test.sh test_iso_loader
+      - name: Commit verified fixes
+        run: |
+          git config user.name 'Gekko2 CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add source/hw/iop_cdvd.c source/core/ee/ee_core.c
+          git diff --cached --check
+          git commit -m 'R1330-C: harden FILEIO paths and CDVD LSN bounds'
+          git push origin HEAD:r1330-game-compat-audit
