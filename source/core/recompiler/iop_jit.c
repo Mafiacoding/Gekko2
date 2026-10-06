@@ -20,7 +20,11 @@ typedef struct {uint32_t pc,instr;iop_block fn;uint8_t rejected;} pc_slot;
 #define BLOCK_SLOTS 128u
 #define BLOCK_WORDS 8u
 typedef unsigned (*iop_precise_block)(iop_state_t *,unsigned);
-typedef struct {uint32_t pc,first; iop_precise_block fn;} precise_slot;
+typedef struct {
+ uint32_t pc,first,words[BLOCK_WORDS];
+ iop_precise_block fn;
+ uint8_t count;
+} precise_slot;
 static precise_slot block_cache[BLOCK_SLOTS];
 static unsigned block_active;
 /* Formation only peeks ordinary RAM/BIOS. No speculative MMIO reads. */
@@ -94,7 +98,12 @@ unsigned iop_jit_try_execute_block(iop_state_t *st,unsigned budget)
  uint32_t pc=st->pc,first;
  if(!block_peek(st,pc,&first))return 0;
  precise_slot *slot=&block_cache[((pc>>2)^(pc>>5)^(pc>>12))&(BLOCK_SLOTS-1u)];
- if(!slot->fn||slot->pc!=pc||slot->first!=first) {
+ int warm=slot->fn&&slot->pc==pc&&slot->first==first&&slot->count>0u&&slot->count<=BLOCK_WORDS;
+ for(unsigned n=0;warm&&n<slot->count;n++) {
+  uint32_t live;
+  if(!block_peek(st,pc+n*4u,&live)||live!=slot->words[n])warm=0;
+ }
+ if(!warm) {
   uint32_t words[BLOCK_WORDS];unsigned count=0;int delay=0;
   for(;count<BLOCK_WORDS;count++) {
    if(!block_peek(st,pc+count*4u,&words[count]))break;
@@ -114,7 +123,9 @@ unsigned iop_jit_try_execute_block(iop_state_t *st,unsigned budget)
   iop_precise_block fn=(iop_precise_block)ppc_dynarec_finalize(&ctx);
   if(!fn){ppc_dynarec_free(&ctx);return 0;}
   if(slot->fn)free((void*)slot->fn);else block_cache_size++;
-  *slot=(precise_slot){pc,first,fn};
+  memset(slot,0,sizeof(*slot));
+  slot->pc=pc;slot->first=first;slot->fn=fn;slot->count=(uint8_t)count;
+  memcpy(slot->words,words,count*sizeof(uint32_t));
  }
  uint64_t stale=iop_core_block_stale_count();
  block_active=1;
