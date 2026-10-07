@@ -901,6 +901,16 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
     uint32_t flat_r = rgba_channel(c2, 0), flat_g = rgba_channel(c2, 8);
     uint32_t flat_b = rgba_channel(c2, 16), flat_a = rgba_channel(c2, 24);
 
+    if(textured&&(gs_effective_attr_prim()&PRIM_FST_MASK)&&g_gif.tex_tfx==TEX_TFX_DECAL&&
+       g_gif.tex_tcc&&g_gif.tex1_mmag==0u&&g_gif.tex1_mmin==0u&&!gouraud&&
+       gs_depth_is_inactive()&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !(gs_effective_attr_prim()&(PRIM_FGE_MASK|PRIM_ABE_MASK))&&g_gif.frame_psm==0u&&gs_gx_render_active()) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};float uv[6]={(float)u0,(float)v0,(float)u1,(float)v1,(float)u2,(float)v2};
+        if(gs_gx_draw_uv_decal_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,uv,
+            1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.scanmsk,gs_gx_raw_texture_sample)) {
+            g_gif.triangles_drawn++;return;
+        }
+    }
     if(g_gx_opaque && !textured && !gouraud && gs_depth_is_inactive() &&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2};
@@ -1130,6 +1140,8 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
 static int32_t g_gx_sprite_columns[640],g_gx_sprite_rows[512];
 static double g_gx_sprite_v[512];
 static unsigned g_gx_sprite_linear,g_gx_sprite_fx,g_gx_sprite_fy,g_gx_sprite_textured;
+static uint32_t gs_gx_raw_texture_sample(int32_t x,int32_t y)
+{return gs_sample_texture((double)x,(double)y);}
 static uint32_t gs_gx_sprite_sample(int32_t x,int32_t y)
 {
     if(!g_gx_sprite_textured)return g_gif.rgba;
