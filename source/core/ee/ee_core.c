@@ -539,11 +539,17 @@ static inline int ee_tlb_translate_selected(const ee_state_t *st, uint32_t vaddr
             while (doubling > 1u) { page_select_bit++; doubling >>= 1; }
         }
         uint32_t lo = (vaddr & (1u << page_select_bit)) ? st->tlb[i].entry_lo1 : st->tlb[i].entry_lo0;
+        if (out_lo) *out_lo = lo;
+        /* EntryLo.V is architectural: a matching VPN/ASID with V=0 is
+         * TLB Invalid, not a refill miss.  The caller must preserve that
+         * distinction because Invalid vectors through the general exception
+         * vector while a true miss uses the refill vector. */
+        if (!(lo & 0x2u))
+            return 2;
         uint32_t pfn = (lo >> 6) & 0xFFFFFu;
         uint32_t phys_page = (pfn & ~mask) << 12;
         uint32_t offset_mask = (1u << page_select_bit) - 1u;
         *out_phys = phys_page | (vaddr & offset_mask);
-        if (out_lo) *out_lo = lo;
         return 1;
     }
     return 0;
@@ -588,12 +594,12 @@ static inline int ee_tlb_translate(ee_state_t *st,uint32_t addr,uint32_t *phys)
  * exception override) for whenever a future change raises a different
  * ExcCode (COP unusable, overflow, address error, etc. are all still
  * unraised - see the coverage notes at the top of this file). */
-static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_pc, int in_delay_slot)
+static void ee_raise_exception_ex(ee_state_t *st, uint32_t exc_code, uint32_t this_pc, int in_delay_slot, int tlb_refill)
 {
     r1189_exc_count++; if (st->cop0[12] & 0x2u) r1189_nested_count++;
     uint32_t offset;
-    if (exc_code == EE_EXC_CODE_TLBL || exc_code == EE_EXC_CODE_TLBS)
-        offset = 0x000u; /* TLB Refill vector */
+    if (tlb_refill && (exc_code == EE_EXC_CODE_TLBL || exc_code == EE_EXC_CODE_TLBS))
+        offset = 0x000u; /* TLB Refill vector: only a true lookup miss */
     else if (exc_code == EE_EXC_CODE_INT)
         offset = 0x200u; /* Interrupt vector */
     else
@@ -629,6 +635,11 @@ static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_
     uint32_t base = (st->cop0[12] & 0x00400000u) ? 0xBFC00200u : 0x80000000u;
     st->pc = base + offset;
     st->next_pc = st->pc + 4u;
+}
+
+static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_pc, int in_delay_slot)
+{
+    ee_raise_exception_ex(st,exc_code,this_pc,in_delay_slot,0);
 }
 
 void ee_core_raise_trap(ee_state_t *st)
@@ -670,7 +681,7 @@ static uint32_t r1252_fault[112];
 void ee_core_get_r1252_fault(uint32_t out[112])
 { if (out) memcpy(out, r1252_fault, sizeof(r1252_fault)); }
 
-static void ee_raise_tlb_exception(ee_state_t *st, int is_store, uint32_t vaddr, uint32_t this_pc, int in_delay_slot)
+static void ee_raise_tlb_exception(ee_state_t *st, int is_store, uint32_t vaddr, uint32_t this_pc, int in_delay_slot, uint8_t fault)
 {
     if (st->exc_raised_this_step)
         return;
@@ -703,7 +714,11 @@ static void ee_raise_tlb_exception(ee_state_t *st, int is_store, uint32_t vaddr,
     st->cop0[4]  = (st->cop0[4] & 0xFF80000Fu) | ((vaddr >> 9) & 0x007FFFF0u); /* Context */
     st->cop0[10] = (vaddr & 0xFFFFE000u) | (st->cop0[10] & 0x1FFFu); /* EntryHi */
 
-    ee_raise_exception(st, is_store ? EE_EXC_CODE_TLBS : EE_EXC_CODE_TLBL, this_pc, in_delay_slot);
+    if (fault == 3u)
+        ee_raise_exception_ex(st, 1u << 2, this_pc, in_delay_slot, 0); /* TLB Modified */
+    else
+        ee_raise_exception_ex(st, is_store ? EE_EXC_CODE_TLBS : EE_EXC_CODE_TLBL,
+                              this_pc, in_delay_slot, fault == 1u);
 }
 
 #define EE_CAUSE_IP7  0x00008000u /* Cause register: latched timer-interrupt pending bit */
@@ -2134,7 +2149,7 @@ static void ee_check_gs_vsync(ee_state_t *st)
         ee_intc_raise(EE_INTC_IRQ_GS);
 }
 
-static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size)
+static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size, int is_store)
 {
     /* R5900 Scratchpad RAM (SPR): a real, dedicated 16KB on-chip buffer
      * hardwired to the fixed KUSEG range 0x70000000-0x70003FFF. Real
@@ -2182,8 +2197,16 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size)
          * real, valid TLB translation a booted real console would use
          * for its own KSEG3-resident kernel data at this exact point in
          * boot. See docs/STATUS.md's 165th finding. */
-        if (!ee_tlb_translate(st, addr, &phys)) {
-            st->mem_tlb_miss = 1; /* real TLB Refill exception territory - see callers below */
+        uint32_t lo = 0;
+        int tlb = ee_tlb_translate_selected(st, addr, &phys, &lo);
+        if (tlb != 1) {
+            st->mem_tlb_miss = (uint8_t)(tlb == 2 ? 2 : 1);
+            return NULL;
+        }
+        /* EntryLo.D controls stores. A valid matching clean page raises
+         * TLB Modified (ExcCode 1); loads remain legal. */
+        if (is_store && !(lo & 0x4u)) {
+            st->mem_tlb_miss = 3;
             return NULL;
         }
     } else {
@@ -2239,7 +2262,7 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size)
 static inline void ee_mem_check_tlb_fault(ee_state_t *st, uint32_t addr, int is_store)
 {
     if (st->mem_tlb_miss)
-        ee_raise_tlb_exception(st, is_store, addr, st->exc_this_pc, st->exc_in_delay_slot);
+        ee_raise_tlb_exception(st, is_store, addr, st->exc_this_pc, st->exc_in_delay_slot, st->mem_tlb_miss);
 }
 
 /* Real hardware/game code always accesses the 0x10000000-0x1FFFFFFF
@@ -2298,7 +2321,7 @@ uint8_t ee_mem_read8(ee_state_t *st, uint32_t addr)
     if (ee_sio_mmio_read32(ee_hw_mmio_addr(addr), &sio_val))
         return (uint8_t)(sio_val & 0xFFu);
 
-    uint8_t *p = ee_mem_ptr(st, addr, 1);
+    uint8_t *p = ee_mem_ptr(st, addr, 1, 0);
     if (p) return *p;
     ee_mem_check_tlb_fault(st, addr, 0);
     return 0;
@@ -2325,7 +2348,7 @@ uint16_t ee_mem_read16(ee_state_t *st, uint32_t addr)
     if (ee_dve_mmio_read16(ee_hw_mmio_addr(addr), &dve_val))
         return dve_val;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 2);
+    uint8_t *p = ee_mem_ptr(st, addr, 2, 0);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 0); return 0; }
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
@@ -2358,7 +2381,7 @@ uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
     /* R1293: retain real TLB translation for low mapped RAM words while
      * avoiding device dispatch. Debug watch hooks above still execute. */
     if(addr<0x10000000u) {
-        const uint8_t *p=ee_mem_ptr(st,addr,4u);
+        const uint8_t *p=ee_mem_ptr(st, addr, 4u, 0);
         if(p)return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
                     ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
         ee_mem_check_tlb_fault(st,addr,0);
@@ -2397,7 +2420,7 @@ uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
     if (gif_mmio_read32(hw_addr, &hw_val)) /* Round 542 (task #510) */
         return hw_val;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 4);
+    uint8_t *p = ee_mem_ptr(st, addr, 4, 0);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 0); return 0; }
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -2434,7 +2457,7 @@ uint64_t ee_mem_read64(ee_state_t *st, uint32_t addr)
     if (gs_mmio_read64(ee_hw_mmio_addr(addr), &gs_val))
         return gs_val;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 8);
+    uint8_t *p = ee_mem_ptr(st, addr, 8, 0);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 0); return 0; }
     return guest_read_le64(p);
 }
@@ -2513,7 +2536,7 @@ void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)
     if (ee_sio_mmio_write32(ee_hw_mmio_addr(addr), (uint32_t)val))
         return;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 1);
+    uint8_t *p = ee_mem_ptr(st, addr, 1, 1);
     if (p) { ee_jit_notify_ram_write(st,p,1u); *p = val; return; }
     ee_mem_check_tlb_fault(st, addr, 1);
 }
@@ -2530,7 +2553,7 @@ void ee_mem_write16(ee_state_t *st, uint32_t addr, uint16_t val)
     if (ee_dve_mmio_write16(ee_hw_mmio_addr(addr), val))
         return;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 2);
+    uint8_t *p = ee_mem_ptr(st, addr, 2, 1);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }
     ee_jit_notify_ram_write(st,p,2u);
     p[0] = (uint8_t)(val & 0xFF);
@@ -2568,7 +2591,7 @@ void ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val)
     if (gif_mmio_write32(hw_addr_w, val)) /* Round 542 (task #510) */
         return;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 4);
+    uint8_t *p = ee_mem_ptr(st, addr, 4, 1);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }
     ee_jit_notify_ram_write(st,p,4u);
     p[0] = (uint8_t)(val & 0xFF);
@@ -2589,7 +2612,7 @@ void ee_mem_write64(ee_state_t *st, uint32_t addr, uint64_t val)
     if (gs_mmio_write64(ee_hw_mmio_addr(addr), val))
         return;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 8);
+    uint8_t *p = ee_mem_ptr(st, addr, 8, 1);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }
     ee_jit_notify_ram_write(st,p,8u);
     for (int i = 0; i < 8; i++)
@@ -4904,7 +4927,7 @@ static inline uint32_t ee_fetch32_backing(ee_state_t *st,uint32_t addr,const uin
      * handler. No cached mapping: ASID/TLB/SMC changes are seen each fetch.
      * Failed translations keep the established fault/MMIO fallback. */
     if(addr<0x10000000u) {
-        const uint8_t *p=ee_mem_ptr(st,addr,4u);
+        const uint8_t *p=ee_mem_ptr(st, addr, 4u, 0);
         if(p){if(backing)*backing=p;return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
                     ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
     }
