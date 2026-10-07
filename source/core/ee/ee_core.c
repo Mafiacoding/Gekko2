@@ -2417,6 +2417,8 @@ uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
         return hw_val;
     if (ipu_mmio_read32(hw_addr, &hw_val)) /* Round 521/522 (task #487) */
         return hw_val;
+    if (vif_mmio_read32(hw_addr, &hw_val)) /* R1330-G */
+        return hw_val;
     if (gif_mmio_read32(hw_addr, &hw_val)) /* Round 542 (task #510) */
         return hw_val;
 
@@ -2587,6 +2589,8 @@ void ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val)
     if (ee_sio_mmio_write32(hw_addr_w, val)) /* Round 392 */
         return;
     if (ipu_mmio_write32(hw_addr_w, val)) /* Round 521/522 (task #487) */
+        return;
+    if (vif_mmio_write32(hw_addr_w, val)) /* R1330-G */
         return;
     if (gif_mmio_write32(hw_addr_w, val)) /* Round 542 (task #510) */
         return;

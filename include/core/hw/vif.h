@@ -132,6 +132,8 @@ typedef struct {
                   * to an error/null handler. */
 
     uint32_t code;              /* last VIFcode word processed */
+    uint32_t stat;              /* observable VIF_STAT subset: VIS/INT */
+    uint64_t interrupts_raised; /* diagnostic count of completed I-bit commands */
     uint8_t  cycle_cl, cycle_wl; /* STCYCL */
     uint32_t mode;               /* STMOD */
     uint32_t mark;                /* MARK */
@@ -249,5 +251,9 @@ void vif1_process_quadwords(int channel, const uint8_t *data, uint32_t qwc);
 
 void vif0_process_tag_words(int channel, const uint8_t *data, uint32_t words);
 void vif1_process_tag_words(int channel, const uint8_t *data, uint32_t words);
+
+/* EE VIF register window subset used by the IRQ/event compatibility path. */
+int vif_mmio_read32(uint32_t addr, uint32_t *out);
+int vif_mmio_write32(uint32_t addr, uint32_t value);
 
 #endif
