@@ -5,6 +5,7 @@
 #include "core/hw/vif.h"
 #include "core/hw/vu.h"
 #include "core/hw/dma.h"
+#include "core/hw/ee_intc.h"
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
