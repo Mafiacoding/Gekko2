@@ -21,8 +21,8 @@
  * A VIF DMA transfer is a stream of 32-bit "VIFcode" words
  * interspersed with data - NOT the 128-bit-tag-plus-PACKED-rows
  * format GIF uses. Each VIFcode word: bits 0-15 = IMM, bits 16-23 =
- * NUM, bits 24-30 = CMD (7 bits), bit 31 = I (interrupt request,
- * not modeled - no VIF interrupt delivery exists in this project).
+ * NUM, bits 24-30 = CMD (7 bits), bit 31 = I (interrupt request). R1330-G models command-completion IRQ
+ * delivery and preserves the remaining stream while VIS stalls VIF.
  *
  * Implemented this round (see vif.c for the full per-command table):
  *   NOP, STCYCL, OFFSET/BASE (VIF1 only), ITOP, STMOD, MARK - trivial
@@ -134,6 +134,9 @@ typedef struct {
     uint32_t code;              /* last VIFcode word processed */
     uint32_t stat;              /* observable VIF_STAT subset: VIS/INT */
     uint64_t interrupts_raised; /* diagnostic count of completed I-bit commands */
+    int      irq_stalled;       /* I-bit command completed; wait for FBRST.STC */
+    uint32_t stall_words;       /* unconsumed stream words preserved across STC */
+    uint8_t  stall_buffer[4096]; /* bounded remainder for synchronous DMA chunks */
     uint8_t  cycle_cl, cycle_wl; /* STCYCL */
     uint32_t mode;               /* STMOD */
     uint32_t mark;                /* MARK */

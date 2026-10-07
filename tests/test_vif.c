@@ -58,10 +58,29 @@ int main(void)
               "VIF0 I-bit: EE INTC source 4 raised");
         CHECK(vif0_get_state()->interrupts_raised == 1,
               "VIF0 I-bit: exactly one interrupt event counted");
+        CHECK((stat & (1u << 10)) != 0,
+              "VIF0 I-bit: STAT.VIS exposes interrupt stall");
         CHECK(vif_mmio_write32(0x10003810u, 1u << 3),
               "VIF0 FBRST STC write accepted");
         CHECK(vif_mmio_read32(0x10003800u, &stat) && !(stat & (1u << 11)),
               "VIF0 FBRST STC clears STAT.INT");
+
+        /* The words after an interrupting command must not execute until STC. */
+        ee_intc_init();
+        vif_init();
+        memset(buf, 0, sizeof(buf));
+        wle32(buf + 0, enc_vifcode(VIF_CMD_NOP, 0, 0) | 0x80000000u);
+        wle32(buf + 4, enc_vifcode(VIF_CMD_STCYCL, 0, (7u << 8) | 3u));
+        wle32(buf + 8, enc_vifcode(VIF_CMD_NOP, 0, 0));
+        wle32(buf + 12, enc_vifcode(VIF_CMD_NOP, 0, 0));
+        vif0_process_quadwords(DMA_CHANNEL_VIF0, buf, 1);
+        CHECK(vif0_get_state()->cycle_cl == 0 && vif0_get_state()->stall_words == 3,
+              "VIF0 IRQ stall: trailing commands preserved but not executed");
+        vif_mmio_write32(0x10003810u, 1u << 3);
+        CHECK(vif0_get_state()->cycle_cl == 3 && vif0_get_state()->cycle_wl == 7,
+              "VIF0 STC: preserved stream resumes at exact next command");
+        CHECK(vif0_get_state()->stall_words == 0 && !vif0_get_state()->irq_stalled,
+              "VIF0 STC: replay drains saved stream and clears stall");
 
         ee_intc_init();
         vif_init();

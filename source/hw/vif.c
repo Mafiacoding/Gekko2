@@ -67,17 +67,21 @@ static vif_state_t g_vif1;
 #define EE_INTC_IRQ_VIF0 4
 #define EE_INTC_IRQ_VIF1 5
 
-static void vif_complete_code(vif_state_t *vif, uint32_t code)
+static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words);
+
+static int vif_complete_code(vif_state_t *vif, uint32_t code)
 {
     if (!(code & 0x80000000u))
-        return;
+        return 0;
     /* PCSX2 latches the code I-bit and delivers the EE INTC event only
      * after the command has completed. This synchronous VIF model does
      * not yet suspend DMA parsing, so expose INT/INTC now but leave VIS
      * clear until a real resumable stall/FIFO model exists. */
-    vif->stat |= VIF_STAT_INT;
+    vif->stat |= VIF_STAT_INT | VIF_STAT_VIS;
+    vif->irq_stalled = 1;
     vif->interrupts_raised++;
     ee_intc_raise(vif->is_vif1 ? EE_INTC_IRQ_VIF1 : EE_INTC_IRQ_VIF0);
+    return 1;
 }
 
 int vif_mmio_read32(uint32_t addr, uint32_t *out)
@@ -96,8 +100,17 @@ int vif_mmio_write32(uint32_t addr, uint32_t value)
 
     /* STC clears the architecturally visible stall/interrupt/error
      * status group. Only VIS/INT exist in this narrow model today. */
-    if (value & VIF_FBRST_STC)
+    if (value & VIF_FBRST_STC) {
+        uint32_t words = vif->stall_words;
+        uint8_t replay[sizeof(vif->stall_buffer)];
+        if (words)
+            memcpy(replay, vif->stall_buffer, words * 4u);
+        vif->stall_words = 0;
+        vif->irq_stalled = 0;
         vif->stat &= ~(VIF_STAT_VIS | VIF_STAT_INT);
+        if (words)
+            vif_process(vif, replay, words);
+    }
     if (value & VIF_FBRST_RST) {
         int is_vif1 = vif->is_vif1;
         memset(vif, 0, sizeof(*vif));
@@ -439,6 +452,13 @@ static void vif_latch_micro(vif_state_t *vif)
 static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words)
 {
     uint32_t pos = 0; /* in 32-bit words */
+    if (vif->irq_stalled) {
+        uint32_t room = (uint32_t)(sizeof(vif->stall_buffer) / 4u) - vif->stall_words;
+        uint32_t take = total_words < room ? total_words : room;
+        memcpy(vif->stall_buffer + vif->stall_words * 4u, data, take * 4u);
+        vif->stall_words += take;
+        return;
+    }
 
     if (vif->direct_needed_words) {
         uint32_t need = vif->direct_needed_words - vif->direct_have_words;
@@ -564,7 +584,14 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
 
             if (!vif_unpack(vif, code, cmd, data, total_words, &pos))
                 return;
-            vif_complete_code(vif, code);
+            if (vif_complete_code(vif, code)) {
+                uint32_t remain = total_words - pos;
+                uint32_t room = (uint32_t)(sizeof(vif->stall_buffer) / 4u);
+                if (remain > room) remain = room;
+                if (remain) memcpy(vif->stall_buffer, data + pos * 4u, remain * 4u);
+                vif->stall_words = remain;
+                return;
+            }
             continue;
         }
 
@@ -790,8 +817,14 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             break;
         }
         if (!vif->register_pending_cmd && !vif->mpg_pending &&
-            !vif->direct_needed_words)
-            vif_complete_code(vif, code);
+            !vif->direct_needed_words && vif_complete_code(vif, code)) {
+            uint32_t remain = total_words - pos;
+            uint32_t room = (uint32_t)(sizeof(vif->stall_buffer) / 4u);
+            if (remain > room) remain = room;
+            if (remain) memcpy(vif->stall_buffer, data + pos * 4u, remain * 4u);
+            vif->stall_words = remain;
+            return;
+        }
     }
 }
 
