@@ -11,6 +11,7 @@ on:
       - 'tests/test_ee*tlb*.c'
       - 'tests/test_ee*j*it*.c'
       - 'tests/test_*dma*.c'
+      - 'tests/test_ee_*.c'
       - '.github/workflows/r1330f-tlb-mmu-check.yml'
 jobs:
   host:
