@@ -236,8 +236,8 @@ int gs_gx_draw_flat_pipeline(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,
 {(void)psm;(void)kind;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)rgba;(void)scanmsk;(void)pipeline;return 0;}
 int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
 {(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)rgba;(void)scanmsk;(void)pipeline;return 0;}
-int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,uint32_t tex_w,uint32_t tex_h,uint32_t scanmsk,gs_gx_texel_fn sample)
-{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;(void)tex_w;(void)tex_h;(void)scanmsk;(void)sample;return 0;}
+int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,uint32_t tex_w,uint32_t tex_h,uint32_t alpha,uint32_t scanmsk,gs_gx_texel_fn sample)
+{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;(void)tex_w;(void)tex_h;(void)alpha;(void)scanmsk;(void)sample;return 0;}
 int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,const int32_t *columns,const int32_t *rows,double step_x,double step_y,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
 {(void)pipeline;(void)psm;(void)bp;(void)bw;(void)x;(void)y;(void)w;(void)h;(void)columns;(void)rows;(void)step_x;(void)step_y;(void)scanmsk;(void)sample;return 0;}
 int gs_gx_ready(void){return 0;}
@@ -984,7 +984,7 @@ int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
 }
 int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
     int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,
-    uint32_t tex_w,uint32_t tex_h,uint32_t scanmsk,gs_gx_texel_fn sample)
+    uint32_t tex_w,uint32_t tex_h,uint32_t alpha,uint32_t scanmsk,gs_gx_texel_fn sample)
 {
     if(!render_enabled||!initialized||psm!=0u||!xy||!uv||!sample||!tex_w||!tex_h||
        maxx<minx||maxy<miny||maxx-minx>=640||maxy-miny>=512)return 0;
@@ -1017,8 +1017,8 @@ int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
     GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
     for(unsigned i=0;i<3;i++){GX_Position3f32((float)(xy[i*2]-minx),(float)(xy[i*2+1]-miny),0);GX_TexCoord2f32(uv[i*2]/d.tw,uv[i*2+1]/d.th);}
     GX_End();
-    if(!gs_gx_capture_vram_psmct32(bp,bw,minx,miny,d.coverage.width,d.coverage.height,0))return 0;
-    capture_flat=1;capture_texture=1;work_counts[0]++;work_counts[1]++;work_counts[2]+=capture.bytes;
+    if(!gs_gx_capture_vram_psmct32(bp,bw,minx,miny,d.coverage.width,d.coverage.height,alpha))return 0;
+    d.coverage.rgba=alpha<<24;flat_draw=d.coverage;capture_flat=1;capture_texture=0;work_counts[0]++;work_counts[1]++;work_counts[2]+=capture.bytes;
     texture_counts[1]++;texture_counts[2]+=bytes;return 1;
 }
 static uint32_t flat_pipeline_sample(int32_t x,int32_t y){(void)x;(void)y;return geometry_rgba;}

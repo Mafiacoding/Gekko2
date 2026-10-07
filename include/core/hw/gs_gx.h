@@ -61,7 +61,7 @@ int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
     const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline);
 int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
     int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,
-    uint32_t tex_w,uint32_t tex_h,uint32_t scanmsk,gs_gx_texel_fn sample);
+    uint32_t tex_w,uint32_t tex_h,uint32_t alpha,uint32_t scanmsk,gs_gx_texel_fn sample);
 int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,
  const int32_t *xy,const int32_t *columns,const int32_t *rows,double du,double dv,uint32_t scanmsk,
  gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline);
