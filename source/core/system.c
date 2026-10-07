@@ -198,8 +198,21 @@ int system_run_interleaved(uint64_t max_slices)
 
         slice+=done;
         if (max_slices != 0 && slice >= max_slices) {
-#ifndef PCSX2WII_FAST
-            system_safe_printf("\n[!] system_run_interleaved: hit slice cap (%llu) before both cores halted\n",
+            /*
+             * R1330-H: max_slices is the normal frontend timeslice quantum,
+             * not an error/safety cap. main.c intentionally calls this
+             * function repeatedly with an adaptive budget (typically a few
+             * thousand IOP instructions) so input, presentation and logging
+             * stay responsive. Printing three warning lines at every normal
+             * quantum boundary floods the Wii video console and can visibly
+             * alternate console text with the guest framebuffer.
+             *
+             * Keep the return value/EE:IOP scheduling exactly unchanged.
+             * Explicit diagnostic builds can opt back into the old boundary
+             * trace without making ordinary hardware builds spam every frame.
+             */
+#ifdef GEKKO2_TRACE_SLICE_BOUNDARIES
+            system_safe_printf("\n[diag] system_run_interleaved: quantum complete (%llu)\n",
                    (unsigned long long)max_slices);
             system_safe_printf("    EE  halted=%d pc=0x%08lX\n", ee->halted, (unsigned long)ee->pc);
             system_safe_printf("    IOP halted=%d pc=0x%08lX\n", iop->halted, (unsigned long)iop->pc);
