@@ -5,6 +5,16 @@
 #include "core/bios_loader.h"
 #include "core/hw/vu.h"
 
+/* Internal TLB fault classification shared by the EE memory/exception path
+ * and white-box regression tests. Keep these values aligned with
+ * ee_mem_ptr()'s mem_tlb_miss encoding. */
+enum {
+    EE_TLB_FAULT_NONE = 0,
+    EE_TLB_FAULT_MISS = 1,
+    EE_TLB_FAULT_INVALID = 2,
+    EE_TLB_FAULT_MODIFIED = 3
+};
+
 /*
  * Emotion Engine (R5900) CPU state.
  *

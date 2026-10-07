@@ -714,11 +714,11 @@ static void ee_raise_tlb_exception(ee_state_t *st, int is_store, uint32_t vaddr,
     st->cop0[4]  = (st->cop0[4] & 0xFF80000Fu) | ((vaddr >> 9) & 0x007FFFF0u); /* Context */
     st->cop0[10] = (vaddr & 0xFFFFE000u) | (st->cop0[10] & 0x1FFFu); /* EntryHi */
 
-    if (fault == 3u)
+    if (fault == EE_TLB_FAULT_MODIFIED)
         ee_raise_exception_ex(st, 1u << 2, this_pc, in_delay_slot, 0); /* TLB Modified */
     else
         ee_raise_exception_ex(st, is_store ? EE_EXC_CODE_TLBS : EE_EXC_CODE_TLBL,
-                              this_pc, in_delay_slot, fault == 1u);
+                              this_pc, in_delay_slot, fault == EE_TLB_FAULT_MISS);
 }
 
 #define EE_CAUSE_IP7  0x00008000u /* Cause register: latched timer-interrupt pending bit */
@@ -2200,13 +2200,13 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size, 
         uint32_t lo = 0;
         int tlb = ee_tlb_translate_selected(st, addr, &phys, &lo);
         if (tlb != 1) {
-            st->mem_tlb_miss = (uint8_t)(tlb == 2 ? 2 : 1);
+            st->mem_tlb_miss = (uint8_t)(tlb == 2 ? EE_TLB_FAULT_INVALID : EE_TLB_FAULT_MISS);
             return NULL;
         }
         /* EntryLo.D controls stores. A valid matching clean page raises
          * TLB Modified (ExcCode 1); loads remain legal. */
         if (is_store && !(lo & 0x4u)) {
-            st->mem_tlb_miss = 3;
+            st->mem_tlb_miss = EE_TLB_FAULT_MODIFIED;
             return NULL;
         }
     } else {
