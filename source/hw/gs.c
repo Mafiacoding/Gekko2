@@ -22,6 +22,14 @@ void gs_init(void)
 }
 gs_state_t *gs_get_state(void) { return &g_gs; }
 
+/* CSR event bits 0..4 map directly to IMR mask bits 8..12. */
+int gs_raise_event(unsigned event)
+{
+    if (event > 4u) return 0;
+    g_gs.csr |= 1ull << event;
+    return (g_gs.imr & (1ull << (event + 8u))) == 0;
+}
+
 typedef struct { uint32_t addr; uint64_t *reg; } gs_reg_map_t;
 
 static uint64_t *reg_for_addr(uint32_t addr)

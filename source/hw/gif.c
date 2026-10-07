@@ -5,6 +5,8 @@
 #include "core/hw/gif.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_gx.h"
+#include "core/hw/gs.h"
+#include "core/hw/ee_intc.h"
 #include <string.h>
 #include <math.h> /* Round 28: log2() for mipmap LOD selection - see rasterize_sprite()'s mip-level logic */
 
@@ -2103,6 +2105,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * interrupt-controller wiring). */
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_sigid = (g_gif.siglblid_sigid & ~idmsk) | (id & idmsk);
+        if (gs_raise_event(0u)) ee_intc_raise(0); /* INTC_GS */
     } break;
     case GS_REG_FINISH:
         /* Round 108 (149th finding, task #254 - FINAL): FINISH -
@@ -2114,6 +2117,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * as a real, distinct register (not falling through to an
          * unknown-register path). */
         g_gif.finish_pending++;
+        if (gs_raise_event(1u)) ee_intc_raise(0); /* INTC_GS */
         break;
     case GS_REG_LABEL: {
         /* Round 108 (149th finding, task #254 - FINAL): LABEL -

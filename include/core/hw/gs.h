@@ -48,5 +48,6 @@ gs_state_t *gs_get_state(void);
  * handles the read/write; 0 otherwise. */
 int gs_mmio_read64(uint32_t addr, uint64_t *out_val);
 int gs_mmio_write64(uint32_t addr, uint64_t val);
+int gs_raise_event(unsigned event);
 
 #endif
