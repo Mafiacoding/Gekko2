@@ -1,0 +1,42 @@
+name: R1330-H scheduler log checkpoint
+on:
+  push:
+    branches: [r1330-game-compat-audit]
+    paths:
+      - 'source/core/system.c'
+      - '.github/workflows/r1330h-scheduler-log-check.yml'
+jobs:
+  wii:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: current-20260503
+            image: devkitpro/devkitppc:20260503
+          - toolchain: legacy-20250102
+            image: devkitpro/devkitppc:20250102
+    container: ${{ matrix.image }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain identity
+        run: |
+          echo "container=${{ matrix.image }}"
+          powerpc-eabi-gcc --version | head -n 1
+      - name: Wii build only
+        run: |
+          set -e
+          make clean || true
+          make -j2
+          test -s Gekko2.elf
+          test -s Gekko2.dol
+      - name: Upload R1330-H checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gekko2-R1330H-Scheduler-Log-Fix-${{ matrix.toolchain }}
+          path: |
+            Gekko2.elf
+            Gekko2.dol
+          if-no-files-found: error
+          retention-days: 14
