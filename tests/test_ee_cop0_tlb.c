@@ -189,7 +189,7 @@ int main(void) {
      * V(bit1)=1 required to be considered valid-ish by our simplified
      * model (we don't check V, but set it anyway to be realistic). */
     st->tlb[0].entry_hi  = 0x71000000u;
-    st->tlb[0].entry_lo0 = (0x1000u << 6) | 0x2u; /* PFN=0x1000 -> phys 0x01000000, V=1 */
+    st->tlb[0].entry_lo0 = (0x1000u << 6) | 0x6u; /* PFN=0x1000 -> phys 0x01000000, V=1, D=1: this case intentionally stores */
     st->tlb[0].entry_lo1 = 0x2u;
     st->tlb[0].page_mask = 0;
     run_until_break(&bios);
