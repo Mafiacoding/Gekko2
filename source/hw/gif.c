@@ -908,6 +908,16 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
             g_gif.triangles_drawn++;return;
         }
     }
+    if(gouraud&&!textured&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !g_gif.zbuf_configured&&!(gs_effective_attr_prim()&PRIM_FGE_MASK)&&
+       g_gif.frame_psm==0u&&gs_gx_render_active()) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};uint32_t colors[3]={c0,c1,c2};
+        gs_gx_pipeline pipe={0};
+        if(gs_gx_draw_gouraud_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,
+            minx,miny,maxx,maxy,xy,colors,g_gif.scanmsk,&pipe)) {
+            g_gif.triangles_drawn++;return;
+        }
+    }
     if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&gs_gx_render_active()) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2};

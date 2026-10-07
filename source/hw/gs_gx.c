@@ -234,6 +234,8 @@ int gs_gx_draw_flat(uint32_t kind,uint32_t bp,uint32_t bw,int32_t minx,int32_t m
 #ifndef GEKKO
 int gs_gx_draw_flat_pipeline(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,uint32_t rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
 {(void)psm;(void)kind;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)rgba;(void)scanmsk;(void)pipeline;return 0;}
+int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
+{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)rgba;(void)scanmsk;(void)pipeline;return 0;}
 int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,const int32_t *columns,const int32_t *rows,double step_x,double step_y,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
 {(void)pipeline;(void)psm;(void)bp;(void)bw;(void)x;(void)y;(void)w;(void)h;(void)columns;(void)rows;(void)step_x;(void)step_y;(void)scanmsk;(void)sample;return 0;}
 int gs_gx_ready(void){return 0;}
@@ -940,6 +942,43 @@ int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,in
  if(!xy)return 0;geometry_kind=3;memcpy(geometry_xy,xy,sizeof(geometry_xy));
  int result=gs_gx_draw_texture_sprite(psm,bp,bw,x,y,w,h,columns,rows,du,dv,scanmsk,sample,pipeline);
  geometry_kind=0;return result;
+}
+int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+    int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+    const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
+{
+    if(!render_enabled||!initialized||!xy||!rgba||!pipeline||psm!=0u||
+       maxx<minx||maxy<miny||maxx-minx>=640||maxy-miny>=512||
+       pipeline->ztest||pipeline->zwrite||pipeline->blend)return 0;
+    gs_gx_flat_draw d;
+    if(!gs_gx_prepare_flat(&d,3,bp,bw,minx,miny,maxx,maxy,xy,0,scanmsk)||
+       d.width>efb_width||d.height>efb_height||!gs_mem_sync())return 0;
+    if(!readback)readback=memalign(32,GX_PRESENT_TEXTURE);
+    if(!readback||!gs_mem_gpu_bind(resolve_capture,NULL))return 0;
+    GX_SetViewport(0,0,d.width,d.height,0,1);GX_SetScissor(0,0,d.width,d.height);
+    GX_SetPixelFmt(GX_PF_RGB8_Z24,GX_ZC_LINEAR);GX_SetDither(GX_FALSE);
+    GX_SetCullMode(GX_CULL_NONE);GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
+    GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    GX_SetColorUpdate(GX_TRUE);GX_SetAlphaUpdate(GX_FALSE);
+    GX_SetAlphaCompare(GX_ALWAYS,0,GX_AOP_AND,GX_ALWAYS,0);
+    GX_SetNumChans(1);GX_SetNumTexGens(0);GX_SetNumTevStages(1);
+    GX_SetChanCtrl(GX_COLOR0A0,GX_FALSE,GX_SRC_VTX,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
+    GX_SetTevOrder(GX_TEVSTAGE0,GX_TEXCOORDNULL,GX_TEXMAP_NULL,GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
+    GX_ClearVtxDesc();GX_SetVtxDesc(GX_VA_POS,GX_DIRECT);GX_SetVtxDesc(GX_VA_CLR0,GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_POS,GX_POS_XYZ,GX_F32,0);
+    GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_CLR0,GX_CLR_RGBA,GX_RGBA8,0);
+    Mtx model;Mtx44 projection;guMtxIdentity(model);guOrtho(projection,0,d.height,0,d.width,-1,1);
+    GX_LoadPosMtxImm(model,GX_PNMTX0);GX_SetCurrentMtx(GX_PNMTX0);GX_LoadProjectionMtx(projection,GX_ORTHOGRAPHIC);
+    GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
+    for(unsigned i=0;i<3;i++) {
+        GX_Position3f32((float)(xy[i*2]-minx),(float)(xy[i*2+1]-miny),0);
+        GX_Color4u8(rgba[i]&255u,(rgba[i]>>8)&255u,(rgba[i]>>16)&255u,(rgba[i]>>24)&255u);
+    }
+    GX_End();
+    if(!gs_gx_capture_vram_psmct32(bp,bw,minx,miny,d.width,d.height,0))return 0;
+    capture_flat=1;capture_texture=0;flat_draw=d;work_counts[0]++;work_counts[1]++;work_counts[2]+=capture.bytes;
+    return 1;
 }
 static uint32_t flat_pipeline_sample(int32_t x,int32_t y){(void)x;(void)y;return geometry_rgba;}
 int gs_gx_draw_flat_pipeline(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,
