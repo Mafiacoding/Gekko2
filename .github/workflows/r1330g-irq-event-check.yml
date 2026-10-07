@@ -1,0 +1,44 @@
+name: R1330-G IRQ event verification
+on:
+  push:
+    branches: [r1330-game-compat-audit]
+    paths:
+      - 'source/hw/vif.c'
+      - 'include/core/hw/vif.h'
+      - 'source/hw/gif.c'
+      - 'source/hw/gs.c'
+      - 'include/core/hw/gs.h'
+      - 'source/core/ee/ee_core.c'
+      - 'include/core/hw/ee_intc.h'
+      - 'tests/test_vif.c'
+      - 'tests/test_gs_registers.c'
+      - '.github/workflows/r1330g-irq-event-check.yml'
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Focused GS VIF IRQ tests
+        run: |
+          set -e
+          bash tests/run_test.sh test_gs_registers
+          bash tests/run_test.sh test_vif
+      - name: Full isolated host suite
+        run: |
+          set -e
+          for f in tests/test_*.c; do
+            timeout 180s bash tests/run_test.sh "$(basename "$f" .c)"
+          done
+  wii:
+    runs-on: ubuntu-latest
+    needs: host
+    container: devkitpro/devkitppc:latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wii cross-build
+        run: |
+          make -j2
+          test -s Gekko2.elf
+          test -s Gekko2.dol
