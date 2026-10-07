@@ -10,11 +10,6 @@
 
 static gs_state_t g_gs;
 
-/* Hardware IMR masks are bits 8..12, distinct from CSR status bits
- * 0..4. Source: PCSX2 GSRegs.h::GSRegIMR. Keep all sources masked
- * at reset; software unmasking uses the real MMIO bit positions. */
-#define GS_IMR_RESET_ALL_MASKED 0x1F00ull
-
 void gs_init(void)
 {
     memset(&g_gs, 0, sizeof(g_gs));
@@ -78,14 +73,8 @@ int gs_mmio_write64(uint32_t addr, uint64_t val)
     uint64_t *reg = reg_for_addr(addr);
     if (reg) {
         if (addr == 0x12001000u) {
-            /* GS_CSR write-1-to-clear semantics for the interrupt
-             * status bits (real hardware clears bits where the
-             * written value has a 1, rather than a plain store) -
-             * approximated here since we don't generate real GS
-             * interrupts yet, but recorded faithfully so debug reads
-             * of CSR aren't nonsensical. GS_IMR (0x12001010) and
-             * everything else are plain read/write registers. */
-            g_gs.csr &= ~(val & 0x1full); /* Only interrupt status is W1C; FIELD is read-only. */
+            /* GS_CSR write-1-to-clear semantics for interrupt status. */
+            g_gs.csr &= ~(val & 0x1full); /* FIELD is read-only. */
         } else {
             *reg = val;
         }
