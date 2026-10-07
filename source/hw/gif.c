@@ -865,6 +865,8 @@ static uint32_t gs_sample_texture(double u, double v)
     return gs_sample_texel(x,y);
 }
 
+static uint32_t gs_gx_raw_texture_sample(int32_t x,int32_t y);
+
 static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
                                 int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
