@@ -43,3 +43,12 @@ jobs:
           make -j2
           test -s Gekko2.elf
           test -s Gekko2.dol
+      - name: Upload R1330-G Wii checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gekko2-R1330G-VIF-IRQ-Checkpoint
+          path: |
+            Gekko2.elf
+            Gekko2.dol
+          if-no-files-found: error
+          retention-days: 14
