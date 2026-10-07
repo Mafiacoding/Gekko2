@@ -1,4 +1,5 @@
 name: R1330-G IRQ event verification
+# R1330-G VIF stall/resume gate
 on:
   push:
     branches: [r1330-game-compat-audit]
