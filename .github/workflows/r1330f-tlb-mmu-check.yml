@@ -1,0 +1,45 @@
+name: R1330-F TLB MMU verification
+on:
+  push:
+    branches: [r1330-game-compat-audit]
+    paths:
+      - 'source/core/ee/ee_core.c'
+      - 'source/core/recompiler/**'
+      - 'include/core/ee/**'
+      - 'include/core/recompiler/**'
+      - 'source/hw/dma.c'
+      - 'tests/test_ee*tlb*.c'
+      - 'tests/test_ee*j*it*.c'
+      - 'tests/test_*dma*.c'
+      - '.github/workflows/r1330f-tlb-mmu-check.yml'
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Focused TLB MMU JIT tests
+        run: |
+          set -e
+          for f in tests/test_ee*tlb*.c tests/test_ee*j*it*.c tests/test_*dma*.c; do
+            [ -f "$f" ] || continue
+            timeout 180s bash tests/run_test.sh "$(basename "$f" .c)"
+          done
+      - name: Full isolated host suite
+        run: |
+          set -e
+          for f in tests/test_*.c; do
+            timeout 180s bash tests/run_test.sh "$(basename "$f" .c)"
+          done
+  wii:
+    runs-on: ubuntu-latest
+    needs: host
+    container: devkitpro/devkitppc:latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wii cross-build
+        run: |
+          make -j2
+          test -s Gekko2.elf
+          test -s Gekko2.dol
