@@ -1,0 +1,46 @@
+name: R1330-E GS GX verification
+on:
+  push:
+    branches: [r1330-game-compat-audit]
+    paths:
+      - 'source/hw/gif.c'
+      - 'source/hw/gs.c'
+      - 'source/hw/gs_gx.c'
+      - 'source/hw/gs_gx_surface.c'
+      - 'source/hw/gs_mem.c'
+      - 'include/core/hw/gs_gx.h'
+      - 'tests/test_gif*.c'
+      - 'tests/test_gs*.c'
+      - 'tests/test_gx*.c'
+      - '.github/workflows/r1330e-gs-gx-check.yml'
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Focused GS GIF GX tests
+        run: |
+          set -e
+          for f in tests/test_gif*.c tests/test_gs*.c tests/test_gx*.c; do
+            [ -f "$f" ] || continue
+            timeout 180s bash tests/run_test.sh "$(basename "$f" .c)"
+          done
+      - name: Full isolated host suite
+        run: |
+          set -e
+          for f in tests/test_*.c; do
+            timeout 180s bash tests/run_test.sh "$(basename "$f" .c)"
+          done
+  wii:
+    runs-on: ubuntu-latest
+    needs: host
+    container: devkitpro/devkitppc:latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wii cross-build
+        run: |
+          make -j2
+          test -s Gekko2.elf
+          test -s Gekko2.dol
