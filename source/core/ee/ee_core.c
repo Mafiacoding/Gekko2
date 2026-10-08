@@ -1,3 +1,4 @@
+#include "core/hw/rspu2_stream.h"
 #include "core/runtime_profile.h"
 #include "core/recompiler/dynarec_config.h"
 #include "core/hw/guest_endian.h"
@@ -3291,6 +3292,21 @@ static int ee_rspu2_disc_profile(void)
         if(image && sif_loadfile_disc_read_raw(lba,0,image,size)==size) {
             for(uint32_t k=0;k<size;k++)hash=(hash^image[k])*16777619u;
             match=hash==0xe16bba10u;
+            if(match) {
+                uint32_t file_lba,file_bytes,films[3],audio[3];
+                if(!iop_cdvd_disc_find_file("TEKKEN.BIN;1",&file_lba,&file_bytes))match=0;
+                else {
+                    for(unsigned k=0;k<3;k++) {
+                        const uint8_t *t=image+160u+0x9ea4u+k*12u;
+                        films[k]=(uint32_t)t[0]|(uint32_t)t[1]<<8|(uint32_t)t[2]<<16|(uint32_t)t[3]<<24;
+                        audio[k]=(uint32_t)t[4]|(uint32_t)t[5]<<8|(uint32_t)t[6]<<16|(uint32_t)t[7]<<24;
+                    }
+                    const rspu2_stream_state_t *current=rspu2_stream_get_state();
+                    if(!current->configured||current->file_lba!=file_lba||current->file_bytes!=file_bytes||
+                       memcmp(current->film_bytes,films,sizeof films)||memcmp(current->audio_bytes,audio,sizeof audio))
+                        rspu2_stream_configure(file_lba,file_bytes,films,audio);
+                }
+            }
         }
     }
     free(image);g_rspu2_disc_profile=match?1:-1;return match;
@@ -3299,8 +3315,25 @@ static int ee_rspu2_disc_profile(void)
 static int ee_rspu2_disc_rpc(ee_state_t *st,uint32_t command,uint32_t payload,
                             uint32_t send_size,uint32_t reply,uint32_t recv_size)
 {
-    if(command!=0x204eu && command!=0x2045u)return 0;
+    if(command!=0x204eu&&command!=0x2045u&&command!=0x2000u&&command!=0x2030u&&
+       command!=0x2050u&&command!=0x2051u&&command!=0x2058u&&command!=0x2059u&&
+       command!=0x205au&&command!=0x205eu)return 0;
     if(!ee_rspu2_disc_profile())return 0;
+    if(command!=0x204eu&&command!=0x2045u) {
+        uint32_t words[16]={0};uint32_t physical=payload&0x1fffffffu;
+        unsigned count=send_size/4u;if(count>16u)count=16u;
+        int32_t answer=-1;
+        if(payload&&physical<st->ram_size&&send_size<=st->ram_size-physical&&reply&&recv_size>=4u) {
+            for(unsigned k=0;k<count;k++)words[k]=ee_mem_read32(st,payload+k*4u);
+            rspu2_stream_rpc(command,words,count,st->ram,st->ram_size,&answer);
+        }
+        if(reply&&recv_size>=4u)ee_mem_write32(st,reply,(uint32_t)answer);
+        {static unsigned logs;unsigned n=command==0x2030u?0u:++logs;
+         if(n&&(n<=40u||(answer<0&&!(n&(n-1u)))))
+            printf("[R1340-RSPU2] cmd=%04x arg=%08x/%08x status=%02x result=%d\n",
+                   (unsigned)command,(unsigned)words[1],(unsigned)words[2],(unsigned)rspu2_stream_status(),(int)answer);}
+        return 1;
+    }
     int32_t result=-1;uint32_t lba=0,file_size=0,sector=0,dst=0,n=0,copied=0;
     uint32_t physical=payload&0x1fffffffu;
     if(!payload || send_size<20u || physical>=st->ram_size ||
@@ -3331,6 +3364,7 @@ static int ee_rspu2_disc_rpc(ee_state_t *st,uint32_t command,uint32_t payload,
     }
     result=0;
 done:
+    rspu2_stream_resource_result(result);
     if(reply && recv_size>=4u)ee_mem_write32(st,reply,(uint32_t)result);
     { static unsigned logs; if(logs++<32u || result<0)
         printf("[R1297-RSPU2] cmd=%04x lba=%u+%u dst=%08x bytes=%u copied=%u result=%d\n",
@@ -3379,6 +3413,7 @@ static void sif_iop_reset_note_mc_config(ee_state_t *st,uint32_t packet,uint32_t
         if(!args[k])return; /* arglen excludes its terminating NUL */
     }
     args[length]=0;
+    g_rspu2_disc_profile=0;rspu2_stream_reset();
     /* A valid reboot replaces the previous service configuration. Unsupported
      * targets leave versions unknown, rather than retaining stale providers. */
     st->mcserv_module_version=st->mcman_module_version=0;
@@ -4344,6 +4379,7 @@ int ee_core_init(const bios_image_t *bios)
     ee_core_display_clock_load(0);
     memset(r1252_fault, 0, sizeof(r1252_fault));
     g_rspu2_disc_profile=0;
+    rspu2_stream_reset();
     memset(&g_state, 0, sizeof(g_state));
 
     dma_init(); /* EE DMA controller register block - see core/hw/dma.h */

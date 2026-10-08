@@ -1,3 +1,19 @@
+# R1340 — retail sound/streaming transport
+
+Verified-provider RSPU2 initialization/status, bounded disc-to-EE video reads,
+separate 7/128 audio/video group extraction, sound-parameter storage and
+checkpoint persistence. A private native cold boot now renders the **Tekken
+Tag Tournament title graphic** in the real GS viewport. Interactive title
+navigation, a complete FMV and streamed audio playback remain unverified;
+physical Wii performance/compatibility requires a new test. See
+[R1340 implementation and limits](docs/R1340-TEKKEN-STREAMING.md).
+
+R1339 ARM loader bounds/diagnostics and R1338 cache/IOS settings are retained.
+The owner's R1338 log measured FIRST_IMAGE 509303 ms vs 552449 ms; ARM completed
+zero jobs. Those measurements do not establish a new R1340 speedup.
+
+## Historical checkpoints
+
 R1338: EE recency / budget admission, persistent ARM settings and explicit
 CURRENT / IOS222 startup selection. See [R1338 details](docs/R1338-CACHE-ARM-IOS.md)
 and packaged verification results; physical Wii speed/ARM loading unverified.
