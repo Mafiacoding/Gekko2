@@ -2,8 +2,8 @@
 <app version="1">
   <name>Gekko2</name>
   <coder>Mafiacoding</coder>
-  <version>R1340 Cache / ARM IOS</version>
-  <release_date>20261008</release_date>
+  <version>R1342 Beta CPU / ARM RAM</version>
+  <release_date>20261009</release_date>
   <short_description>Experimental PS2 emulator for Wii</short_description>
-  <long_description>Gekko2 early alpha. BIOS stability and performance are the current goals. Supply your own BIOS in sd:/pcsx2/bios/. Disc images can be selected through the SD browser. HOME pauses; HOME + MINUS exits to the Homebrew Channel. This build does not promise playable PS2 games.</long_description>
+  <long_description>Gekko2 early alpha. R1342 Beta adds bounded EE reuse, CPU service guards and IOP deadlines. Experimental ARM BIOS RAM jobs require MLOAD and default OFF. Supply your own BIOS in sd:/pcsx2/bios/. PLUS pauses; MINUS + A sends PS2 START. HOME returns to the launcher; HOME + MINUS exits to the Homebrew Channel. Physical Wii speedup and playable PS2 games are not established.</long_description>
 </app>
