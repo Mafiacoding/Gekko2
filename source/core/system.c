@@ -11,6 +11,8 @@
 #include "core/hw/cdvd_config.h"
 #include "core/ee/ee_core.h"
 #include "core/iop/iop_core.h"
+#include "core/hw/arm_worker.h"
+#include "core/hw/ipu.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <unistd.h>
@@ -198,6 +200,8 @@ int system_run_interleaved(uint64_t max_slices)
     iop_state_t *iop = iop_core_get_state();
 
     uint64_t slice = 0;
+    /* Wake once per frontend timeslice, outside the EE/IOP hot loop. */
+    if(arm_worker_completion_ready())ipu_service();
     for (;;) {
         unsigned grant=8u,done;
         if(max_slices && max_slices-slice<grant)grant=(unsigned)(max_slices-slice);

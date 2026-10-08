@@ -3,8 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #define PPC_CODE_CACHE_BYTES (6u*1024u*1024u)
-/* Emitter reservations and final code have stable addresses. Finalization
- * trims the reservation in place. Owners release only after native returns. */
+/* Exact-sized published code has stable addresses. Temporary compilation
+ * scratch is relocated before publication; owners release after native returns. */
 void *ppc_code_cache_alloc(size_t bytes);
 void ppc_code_cache_release(void *code);
 /* Trim unused tail in place; address-relative PPC branches must never move. */

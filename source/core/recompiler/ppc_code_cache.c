@@ -6,18 +6,42 @@
 #include <limits.h>
 #define HEADER 32u
 #define LIVE 0x47434f44u
-typedef struct {uint32_t span,next,magic,pad[5];} chunk;
+#define BINS 18u
+typedef struct {uint32_t span,next,magic,previous_span,free_previous,pad[3];} chunk;
 #if !defined(GEKKO2_CODE_ARENA_DISABLE)
 static uint8_t arena[PPC_CODE_CACHE_BYTES] __attribute__((aligned(32)));
-/* Free-list links are offsets + 1; zero is the terminator. */
-static uint32_t first,used,high_water,cache_initialized;
+/* Physical boundary tags permit constant-time neighbour coalescing. Size
+ * classes skip irrelevant holes; every published owner remains stationary. */
+static uint32_t heads[BINS],bitmap,used,high_water,cache_initialized;
 static uint64_t failures;
 static chunk *node(uint32_t link){return (chunk *)(void *)(arena+link-1u);}
+static uint32_t link_for(chunk *p){return (uint32_t)((uint8_t*)p-arena)+1u;}
+static unsigned bin_for(uint32_t span){return 31u-(unsigned)__builtin_clz(span)-5u;}
+static void list_add(chunk *p)
+{
+ unsigned b=bin_for(p->span);uint32_t link=link_for(p);
+ p->magic=0;p->free_previous=0;p->next=heads[b];
+ if(p->next)node(p->next)->free_previous=link;
+ heads[b]=link;bitmap|=1u<<b;
+}
+static void list_remove(chunk *p)
+{
+ unsigned b=bin_for(p->span);
+ if(p->free_previous)node(p->free_previous)->next=p->next;else heads[b]=p->next;
+ if(p->next)node(p->next)->free_previous=p->free_previous;
+ if(!heads[b])bitmap&=~(1u<<b);
+ p->next=p->free_previous=0;
+}
+static void set_next_previous(chunk *p)
+{
+ uint32_t offset=link_for(p)-1u+p->span;
+ if(offset<PPC_CODE_CACHE_BYTES)((chunk *)(void *)(arena+offset))->previous_span=p->span;
+}
 static void init(void)
 {
  if(cache_initialized)return;
- chunk *p=(chunk *)(void *)arena;memset(p,0,HEADER);
- p->span=PPC_CODE_CACHE_BYTES;first=1u;cache_initialized=1u;
+ chunk *p=(chunk *)(void *)arena;memset(p,0,HEADER);p->span=PPC_CODE_CACHE_BYTES;
+ list_add(p);cache_initialized=1u;
 }
 int ppc_code_cache_owns(const void *code)
 {
@@ -27,60 +51,55 @@ int ppc_code_cache_owns(const void *code)
 void *ppc_code_cache_alloc(size_t bytes)
 {
  if(!gekko2_opt_enabled(GEKKO2_OPT_CODE_ARENA))return bytes?memalign(32,bytes):NULL;
- init();
- if(!bytes||bytes>PPC_CODE_CACHE_BYTES-HEADER){failures++;return NULL;}
- uint32_t span=((uint32_t)bytes+31u)&~31u;span+=HEADER;
- uint32_t *edge=&first;
- while(*edge) {
-  chunk *p=node(*edge);
-  if(p->span>=span) {
-   uint32_t offset=*edge-1u,left=p->span-span,next=p->next;
-   if(left>=HEADER+32u) {
-    chunk *tail=(chunk *)(void *)(arena+offset+span);
-    memset(tail,0,HEADER);tail->span=left;tail->next=next;
-    *edge=offset+span+1u;p->span=span;
-   } else *edge=next;
-   p->next=0;p->magic=LIVE;used+=p->span;
-   if(used>high_water)high_water=used;
-   return (uint8_t *)p+HEADER;
+ init();if(!bytes||bytes>PPC_CODE_CACHE_BYTES-HEADER){failures++;return NULL;}
+ uint32_t span=(((uint32_t)bytes+31u)&~31u)+HEADER;
+ unsigned b=bin_for(span);uint32_t candidates=bitmap&(~0u<<b);
+ while(candidates){
+  b=(unsigned)__builtin_ctz(candidates);
+  for(uint32_t link=heads[b];link;link=node(link)->next){
+   chunk *p=node(link);if(p->span<span)continue;
+   list_remove(p);uint32_t left=p->span-span;
+   if(left>=HEADER+32u){
+    chunk *tail=(chunk *)(void *)((uint8_t*)p+span);memset(tail,0,HEADER);
+    tail->span=left;tail->previous_span=span;p->span=span;
+    set_next_previous(tail);list_add(tail);
+   }
+   p->magic=LIVE;used+=p->span;if(used>high_water)high_water=used;
+   return (uint8_t*)p+HEADER;
   }
-  edge=&p->next;
+  candidates&=~(1u<<b);
  }
  failures++;return NULL;
 }
 void ppc_code_cache_release(void *code)
 {
- if(!code)return;
- if(!ppc_code_cache_owns(code)){free(code);return;}
+ if(!code)return;if(!ppc_code_cache_owns(code)){free(code);return;}
  uintptr_t offset=(uintptr_t)code-(uintptr_t)arena-HEADER;
  if((offset&31u)||offset>PPC_CODE_CACHE_BYTES-HEADER)return;
  chunk *p=(chunk *)(void *)(arena+offset);
- if(p->magic!=LIVE||p->span<HEADER||p->span>PPC_CODE_CACHE_BYTES-offset)return;
+ if(p->magic!=LIVE||p->span<HEADER+32u||(p->span&31u)||p->span>PPC_CODE_CACHE_BYTES-offset)return;
  used-=p->span;p->magic=0;
- uint32_t link=(uint32_t)offset+1u,*edge=&first,previous=0;
- while(*edge&&*edge<link){previous=*edge;edge=&node(*edge)->next;}
- p->next=*edge;*edge=link;
- if(p->next&&offset+p->span==p->next-1u) {
-  chunk *next=node(p->next);p->span+=next->span;p->next=next->next;
+ if(p->previous_span&&p->previous_span<=offset){
+  chunk *previous=(chunk *)(void *)((uint8_t*)p-p->previous_span);
+  if(!previous->magic){list_remove(previous);previous->span+=p->span;p=previous;}
  }
- if(previous) {
-  chunk *prev=node(previous);
-  if(previous-1u+prev->span==offset){prev->span+=p->span;prev->next=p->next;}
+ uint32_t next=link_for(p)-1u+p->span;
+ if(next<PPC_CODE_CACHE_BYTES){chunk *n=(chunk *)(void *)(arena+next);
+  if(!n->magic){list_remove(n);p->span+=n->span;}
  }
+ set_next_previous(p);list_add(p);
 }
 uint32_t ppc_code_cache_used(void){return used;}
 void ppc_code_cache_trim(void *code,size_t bytes)
 {
  if(!code||!bytes||!ppc_code_cache_owns(code)||bytes>PPC_CODE_CACHE_BYTES-HEADER)return;
- uintptr_t offset=(uintptr_t)code-(uintptr_t)arena-HEADER;
- if(offset&31u)return;
- chunk *p=(chunk *)(void *)(arena+offset);
- uint32_t span=(((uint32_t)bytes+31u)&~31u)+HEADER;
+ uintptr_t offset=(uintptr_t)code-(uintptr_t)arena-HEADER;if(offset&31u)return;
+ chunk *p=(chunk *)(void *)(arena+offset);uint32_t span=(((uint32_t)bytes+31u)&~31u)+HEADER;
  if(p->magic!=LIVE||span>p->span||p->span-span<HEADER+32u)return;
  uint32_t left=p->span-span;p->span=span;
- chunk *tail=(chunk *)(void *)(arena+offset+span);
- memset(tail,0,HEADER);tail->span=left;tail->magic=LIVE;
- ppc_code_cache_release((uint8_t *)tail+HEADER);
+ chunk *tail=(chunk *)(void *)(arena+offset+span);memset(tail,0,HEADER);
+ tail->span=left;tail->previous_span=span;tail->magic=LIVE;set_next_previous(tail);
+ ppc_code_cache_release((uint8_t*)tail+HEADER);
 }
 uint32_t ppc_code_cache_high_water(void){return high_water;}
 uint64_t ppc_code_cache_failures(void){return failures;}

@@ -18,7 +18,7 @@ int ipu_state_valid(const ipu_state_t *p)
  return p&&p->bp<128&&p->fp<=2&&p->in_head<8&&p->in_count<=8&&
  p->out_head<8&&p->out_count<=8&&p->busy<=1&&p->skip<=63&&
  p->pos<=1024&&p->blocks<=2047&&p->out_size<=1024&&
- !(p->out_size&15)&&p->out_pos<=p->out_size&&!(p->out_pos&15)&&p->th0<=511&&p->th1<=511;
+ !(p->out_size&15)&&p->out_pos<=p->out_size&&!(p->out_pos&15)&&p->th0<=511&&p->th1<=511&&p->mpeg.phase<=2&&p->mpeg.block<=6&&p->mpeg.index<=64&&p->mpeg.intra<=1&&p->mpeg.interlaced<=1&&p->mpeg.quant<=112&&p->mpeg.cbp<=63;
 }
 void ipu_restore(const ipu_state_t *p){if(ipu_state_valid(p)){s=*p;servicing=worker_pending=0;arm_worker_reset();}}
 void ipu_init(void){memset(&s,0,sizeof s);memset(&profile,0,sizeof profile);servicing=worker_pending=0;arm_worker_reset();}
@@ -70,6 +70,68 @@ static int run(void)
  if(!s.busy)return 0;
  uint32_t v;unsigned cmd=s.command>>28;int progress=0;
  if(s.skip){if(!fill(s.skip))return 0;advance(s.skip);s.skip=0;progress=1;}
+ if(cmd==1||cmd==2){
+  if(cmd==1&&s.pos==5){
+   if(!bits_read(32,0,&v))return progress;
+   unsigned n=0,q=0,quant=0;
+   if(v&0x80000000u)n=1;
+   else if(v&0x40000000u){n=2;quant=1;q=(v>>(32-n-5))&31;n+=5;}
+   else{s.ctrl|=0x4000u;complete();return 1;}
+   if(quant){static const uint8_t nonlin[32]={0,1,2,3,4,5,6,7,8,10,12,14,16,18,20,22,24,28,32,36,40,44,48,52,56,64,72,80,88,96,104,112};s.mpeg.quant=(s.ctrl&(1u<<22))?nonlin[q]:q*2;}
+   s.mpeg.interlaced=0;
+   if(s.command&(1u<<24)){s.mpeg.interlaced=(v>>(31-n))&1;n++;}
+   advance(n);s.mpeg.phase=s.mpeg.block=s.mpeg.index=0;s.mpeg.cbp=63;
+   memset(s.mpeg.coeff,0,sizeof s.mpeg.coeff);memset(s.block,0,384);memset(s.converted,0,768);
+   s.pos=0;progress=1;
+  }
+  if(cmd==1&&s.pos==7){
+   if(!bits_read(32,0,&v))return progress;
+   unsigned n;uint32_t mba=ipu_vlc_decode(v,0,s.ctrl,&n);
+   if(!mba){s.pos=2;}
+   else{
+    advance(n);
+    if((mba&65535)>1&&(mba&65535)!=34)for(unsigned i=0;i<3;i++)s.mpeg.dc[i]=128<<((s.ctrl>>16)&3);
+    if((mba&65535)>=34)return 1;
+    s.pos=5;return 1;
+   }
+  }
+  if(!s.pos){
+   int result=ipu_mpeg_decode(&s,bits_read,advance);
+   if(!result)return progress;
+   if(result<0){complete();return 1;}
+   if(cmd==1){s.pos=6;}else{s.out_size=768;s.pos=1;}
+   progress=1;
+  }
+  if(cmd==1&&s.pos==6){
+   if(worker_pending){int result=arm_worker_take(s.converted,1024);if(!result)return progress;
+    worker_pending=0;if(result<0)ipu_csc_convert(s.block,s.converted,0,0,s.th0,s.th1);
+   }else if(arm_worker_submit_csc(s.block,s.command&~(1u<<27),s.th0,s.th1)){worker_pending=1;return progress;}
+   else ipu_csc_convert(s.block,s.converted,0,0,s.th0,s.th1);
+   if(s.command&(1u<<25))for(unsigned i=0;i<256;i++)for(unsigned c=0;c<3;c++)s.converted[i*4+c]^=128;
+   if(s.command&(1u<<27))ipu_pack_convert(s.converted,s.converted,1,(s.command>>26)&1,s.vq);
+   s.out_size=(s.command&(1u<<27))?512:1024;s.pos=1;profile.csc_macroblocks++;progress=1;
+  }
+  if(s.pos==1){
+   while(s.out_pos<s.out_size&&s.out_count<8){
+    memcpy(s.output[(s.out_head+s.out_count)&7],s.converted+s.out_pos,16);
+    s.out_pos+=16;s.out_count++;progress=1;
+   }
+   if(s.out_pos<s.out_size){profile.output_stalls++;return progress;}
+   s.out_size=s.out_pos=0;s.pos=cmd==1?7:2;
+   if(cmd==1)return 1;
+  }
+  if(s.pos==2){
+   if(!bits_read(8,0,&v))return progress;
+   if(!v){unsigned n=(8-(s.bp&7))&7;if(n)advance(n);s.pos=3;}else s.pos=4;
+  }
+  if(s.pos==3){
+   if(!bits_read(24,0,&v))return progress;
+   if(!v){advance(8);return 1;}
+   s.ctrl|=v==1?0x8000u:0x4000u;s.pos=4;
+  }
+  if(!bits_read(32,0,&v))return progress;
+  s.top=v;complete();return 1;
+ }
  if(cmd==3){
   if(!s.pos){
    if(!bits_read(32,0,&v))return progress;
@@ -122,7 +184,7 @@ void ipu_service(void)
  if(servicing)return;
  servicing=1;
  unsigned previous=gp_enter(GP_IPU);
- /* Bounded work; only IPU MMIO/DMA triggers call this, no per-EE tax. */
+ /* Bounded MMIO/DMA work; scheduler also wakes a completed ARM job. */
  for(unsigned guard=0;guard<16384;guard++){
   int progress=run();if(dma_ipu_service)progress|=dma_ipu_service();
   if(!progress)break;
@@ -137,6 +199,7 @@ static void command(uint32_t value)
  s.command=value;s.ctrl&=~0x0000c000u;s.busy=1;s.pos=s.out_pos=s.out_size=0;s.skip=0;
  if(cmd==0){s.in_head=s.in_count=s.fp=0;s.bp=value&127;complete();}
  else if(cmd==9){s.th0=value&511;s.th1=(value>>16)&511;complete();}
+ else if(cmd==1||cmd==2){s.skip=value&63;ipu_mpeg_begin(&s);if(cmd==1)s.pos=5;}
  else if(cmd==3||cmd==4||cmd==5){s.skip=value&63;}
  else if(cmd==6){}
  else if(cmd==7||cmd==8){s.blocks=value&2047;}

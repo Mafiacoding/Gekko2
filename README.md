@@ -1,12 +1,13 @@
-# R1336 development checkpoint
+# R1337 development checkpoint
 
-See [R1336 changes and verification limits](docs/R1336-VIDEO-CACHE-ARM.md).
+BDEC/IDEC coefficient reconstruction and IDCT, size-class executable arena,
+and experimental MLOAD ARM worker loading. See [R1337 evidence and limits](docs/R1337-DECODER-CACHE-ARM.md).
 
 <p align="center"><img src="assets/branding/menu-gecko-master.png" width="640" alt="Gekko2 — gecko wordmark"></p>
 
 # Gekko2 for Nintendo Wii
 
-## R1335 IPU / HLE / cache comparison checkpoint
+## Historical R1335 IPU / HLE / cache comparison checkpoint
 
 Real IPU FIFO data, FDEC/tables/CSC, resumable TO/FROM DMA and checkpoint state.
 Known HLE RAM copy/fill calls gain a bounded bulk path; unknown-call fallback

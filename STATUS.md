@@ -1,12 +1,13 @@
-# R1336 status
+# R1337 status
 
-PPC quadword IPU FIFO access and fragmented code-arena allocation fixed.
-VDEC/PACK implemented; IDEC/BDEC remain unsupported. A buildable experimental
-ARM IOS service is included; no loader/installer or physical-Wii speed claim.
-KOF progresses past LOADFILE/heap initialization, then waits on CRI/CDVD
-streaming. See [R1336 evidence](docs/R1336-VIDEO-CACHE-ARM.md).
+BDEC/IDEC scalar coefficient decode and IDCT implemented; synthetic native and
+linked PPC checks pass. Executable arena uses size bins and boundary tags.
+Experimental MLOAD RAM loader can start the included ARM CSC service on a
+compatible current IOS; standard IOS remains CPU fallback. No physical-Wii
+ARM acceleration or complete game/movie boot is verified.
+See [R1337 evidence and limits](docs/R1337-DECODER-CACHE-ARM.md).
 
-# Gekko2 status — R1335
+# Historical Gekko2 status — R1335
 
 Updated 2026-10-08. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
 

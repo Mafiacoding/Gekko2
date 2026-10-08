@@ -12,6 +12,7 @@ int gekko2_arm_dispatch(unsigned request,const uint8_t *header,unsigned header_s
  const uint8_t *input,unsigned input_size,uint8_t *output,unsigned output_size);
 void arm_worker_reset(void);
 int arm_worker_available(void);
+int arm_worker_completion_ready(void);
 int arm_worker_submit_csc(const uint8_t input[384],uint32_t command,uint16_t th0,uint16_t th1);
 /* 0 pending, 1 valid completed result copied, -1 unavailable/failed/stale. */
 int arm_worker_take(uint8_t *out,unsigned size);
