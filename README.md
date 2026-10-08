@@ -1,3 +1,7 @@
+R1338: EE recency / budget admission, persistent ARM settings and explicit
+CURRENT / IOS222 startup selection. See [R1338 details](docs/R1338-CACHE-ARM-IOS.md)
+and packaged verification results; physical Wii speed/ARM loading unverified.
+
 # R1337 development checkpoint
 
 BDEC/IDEC coefficient reconstruction and IDCT, size-class executable arena,

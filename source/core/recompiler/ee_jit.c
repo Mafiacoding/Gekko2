@@ -667,10 +667,10 @@ typedef struct {
 #define EE_PRECISE_REUSE_SETS 1024u
 #define EE_PRECISE_CACHE_SLOTS (4u*EE_PRECISE_REUSE_SETS)
 static ee_precise_slot precise_cache[EE_PRECISE_CACHE_SLOTS];
-static uint8_t precise_victim[EE_PRECISE_REUSE_SETS];
+static uint32_t precise_recency[EE_PRECISE_CACHE_SLOTS],precise_clock;
 static jit_cache_profile precise_profile;
-static uint64_t precise_budget_stats[3];
-uint64_t ee_jit_get_budget_cache_stat(unsigned n){return n<3u?precise_budget_stats[n]:0;}
+static uint64_t precise_budget_stats[4];
+uint64_t ee_jit_get_budget_cache_stat(unsigned n){return n<4u?precise_budget_stats[n]:0;}
 void ee_jit_get_cache_profile(jit_cache_profile *out){if(out)*out=precise_profile;}
 /* One Broadway cache line per dispatch tag. Keep instruction arrays and
  * learned-edge bookkeeping off the common successor lookup. */
@@ -706,6 +706,11 @@ unsigned ee_jit_get_cache_entries(void)
 {return gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u*ee_precise_cache_stride():256u;}
 
 /* Lookup never allocates or evicts; native chains pin all cache owners. */
+static void ee_precise_touch(unsigned index)
+{
+ if(++precise_clock==0u){memset(precise_recency,0,sizeof precise_recency);precise_clock=1u;}
+ precise_recency[index]=precise_clock;
+}
 static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
 {
  unsigned set=ee_precise_cache_index(pc),stride=ee_precise_cache_stride(),ways=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u;
@@ -723,8 +728,16 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
  if(!install)return NULL;
  if(largest)precise_budget_stats[1]++;
  for(unsigned w=0;w<ways;w++)if(!precise_dispatch[set+w*stride].fn)return &precise_cache[set+w*stride];
- unsigned w=precise_victim[set]++%ways;
- return &precise_cache[set+w*stride];
+ /* A short scheduler tail must not evict a reusable long block or another
+  * PC just to admit another length variant. The scalar PPC JIT handles this
+  * tail under the unchanged budget. Empty ways still admit warm variants. */
+ if(ways>1u&&largest){precise_budget_stats[3]++;return NULL;}
+ unsigned victim=set;
+ for(unsigned w=1;w<ways;w++) {
+  unsigned index=set+w*stride;
+  if(precise_recency[index]<precise_recency[victim])victim=index;
+ }
+ return &precise_cache[victim];
 }
 
 static void ee_precise_bump(uint32_t *generation)
@@ -846,7 +859,7 @@ static uint64_t ee_precise_cached_next(ee_state_t *st,unsigned remaining)
    source->link_index=(uint16_t)index;source->link_fn=hot->fn;
   }
   precise_chain_source=&precise_cache[index];precise_chain_source_serial=hot->serial;
-  precise_dispatch_hits++;precise_native_successors++;
+  ee_precise_touch(index);precise_dispatch_hits++;precise_native_successors++;
   return ((uint64_t)(uint32_t)(uintptr_t)hot->fn<<32)|hot->count;
  }
  /* Fast edge: use the predecessor's learned direct successor when every
@@ -929,6 +942,7 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  uint32_t pc=st->pc,words[8];unsigned count=0,limit=quantum_budget<8u?quantum_budget:8u;
  ee_precise_slot *slot=ee_precise_find(pc,1,quantum_budget);
  precise_profile.lookups++;
+ if(!slot){precise_profile.misses++;return 0;}
  /* The emitted prepare callback validates live mapping/encoding before
   * EACH instruction. A warm entry needs no duplicate full-block scan. */
  if(slot->fn&&slot->pc==pc&&slot->count<=quantum_budget&&
@@ -962,6 +976,7 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   ee_precise_publish_dispatch(slot);
  }
 execute_slot:;
+ ee_precise_touch((unsigned)(slot-precise_cache));
  uint32_t first_physical=0;
  if(fetched) {
   if(slot->words[0]!=first_word)return 0;
@@ -1040,6 +1055,6 @@ static void ee_precise_reset_cache(void)
  memset(precise_page_generation,0,sizeof(precise_page_generation));
  precise_mapping_generation=0;precise_serial_source=0;
  precise_runs=precise_retired=precise_evictions=0;
- memset(precise_victim,0,sizeof precise_victim);memset(&precise_profile,0,sizeof precise_profile);
+ memset(precise_recency,0,sizeof precise_recency);precise_clock=0;memset(&precise_profile,0,sizeof precise_profile);
  memset(precise_budget_stats,0,sizeof precise_budget_stats);
 }

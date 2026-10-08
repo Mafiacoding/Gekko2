@@ -39,6 +39,7 @@
 #include "core/hw/ipu.h"
 #include "core/hw/arm_worker.h"
 #include "core/hw/arm_loader.h"
+#include "core/hw/wii_arm_ios.h"
 #include "core/hw/iop_hle_bios.h"
 
 static void *xfb = NULL;
@@ -422,9 +423,9 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)caches[n].installed,(unsigned long long)caches[n].failures,
       (unsigned long long)caches[n].compile_tb,(unsigned long long)caches[n].compile_samples);
     fprintf(f,"EE_CACHE_LAYOUT entries=%u sets=%u ways=%u\n",ee_jit_get_cache_entries(),ee_jit_get_cache_entries()/(gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u),gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u);
-    fprintf(f,"EE_CACHE_BUDGET fit_hits=%llu budget_misses=%llu variant_installs=%llu\n",
+    fprintf(f,"EE_CACHE_BUDGET fit_hits=%llu budget_misses=%llu variant_installs=%llu deferred_variants=%llu\n",
       (unsigned long long)ee_jit_get_budget_cache_stat(0),(unsigned long long)ee_jit_get_budget_cache_stat(1),
-      (unsigned long long)ee_jit_get_budget_cache_stat(2));
+      (unsigned long long)ee_jit_get_budget_cache_stat(2),(unsigned long long)ee_jit_get_budget_cache_stat(3));
     fprintf(f,"IOP_ROUTES native_instructions=%llu interpreter_instructions=%llu recovery_ticks=%llu RAM_helper_fast_reads=%llu RAM_helper_fast_writes=%llu\n",
       (unsigned long long)iop_core_route_stat(0),(unsigned long long)iop_core_route_stat(1),
       (unsigned long long)iop_core_route_stat(2),(unsigned long long)iop_core_route_stat(3),(unsigned long long)iop_core_route_stat(4));
@@ -449,6 +450,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)arm_worker_stat(0),(unsigned long long)arm_worker_stat(1),
       (unsigned long long)arm_worker_stat(2),(unsigned long long)arm_worker_stat(3),(unsigned long long)arm_worker_stat(4),gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER),arm_worker_available());
     fprintf(f,"ARM_LOADER status=%d path=sd:/pcsx2/arm/Gekko2-ARM-Worker.elf\n",arm_loader_status());
+    fprintf(f,"ARM_IOS status=%d original=%u active=%u\n",wii_arm_ios_status(),wii_arm_ios_original(),wii_arm_ios_active());
     system_profile_t profile;system_profile_get(&profile);
     uint64_t ee_sample=profile.ee_ticks-g_profile_previous.ee_ticks;
     uint64_t iop_sample=profile.iop_ticks-g_profile_previous.iop_ticks;
@@ -568,7 +570,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             fprintf(f,"GS_GOURAUD_DEGEN_SAMPLE i=%u prim=%lx xy=%ld,%ld %ld,%ld %ld,%ld\n",i,(unsigned long)prim,
                 (long)xy[0],(long)xy[1],(long)xy[2],(long)xy[3],(long)xy[4],(long)xy[5]);
     }
-    fprintf(f,"BUILD checkpoint=R1337 scope=EE-cache-IPU-video-ARM-client mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
+    fprintf(f,"BUILD checkpoint=R1338 scope=EE-cache-IPU-video-ARM-client mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
         (unsigned long)gekko2_optimization_mask,(unsigned long)gekko2_opt_requested(),
         gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT),
         gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS),
@@ -1095,19 +1097,28 @@ int main(int argc, char **argv)
     (void)argc;(void)argv;
     wii_console_setup();
     if (!g_fat_mounted) g_fat_mounted = fatInitDefault() ? 1 : 0;
-    if(g_fat_mounted)gekko2_opt_load("sd:/pcsx2/optimization.cfg");
+    int opt_load_status=g_fat_mounted?gekko2_opt_load("sd:/pcsx2/optimization.cfg"):-1;
+    gekko2_opt_apply(); /* Startup must use loaded settings before IOS selection. */
+#ifdef GEKKO2_ARM_BETA
+    /* Both saved ARM and explicit IOS222 selection are required for reload.
+     * Restart after changing ARM: never reload IOS inside a guest session. */
+    int ios_result=wii_arm_ios_start(gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER)&&gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222)?222:0,&g_fat_mounted);
+    if(ios_result==-4){printf("IOS recovery failed. Restart Wii before using Gekko2.\n");return 1;}
+#endif
     /* Persist a fresh identity before the first launcher draw. Previous
      * BIOS logs can survive a failed startup and must not identify this run. */
     {
         FILE *boot=fopen("sd:/pcsx2/Gekko2-startup.log","w");
         if(boot) {
-            fprintf(boot,"BUILD checkpoint=R1337 stage=launcher-ready resident_pipeline=%d\n",
+            fprintf(boot,"BUILD checkpoint=R1338 stage=launcher-ready resident_pipeline=%d\n",
 #ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
                 0
 #else
                 1
 #endif
             );
+            fprintf(boot,"OPTIONS load_status=%d requested=%08lx active=%08lx ios222=%d\n",opt_load_status,(unsigned long)gekko2_opt_requested(),(unsigned long)gekko2_optimization_mask,gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222));
+            fprintf(boot,"ARM_IOS status=%d original=%u active=%u\n",wii_arm_ios_status(),wii_arm_ios_original(),wii_arm_ios_active());
             fclose(boot);
         }
     }
@@ -1120,7 +1131,11 @@ int main(int argc, char **argv)
 #endif
     for (;;) {
         if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
-            if(page==4)ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
+            if(page==4){
+                ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
+                char ios_line[90];snprintf(ios_line,sizeof ios_line,"Current IOS: %u | %s",wii_arm_ios_active(),wii_arm_ios_message());
+                ui_text(launcher_rect,36,343,1,ios_line,117,186,237);
+            }
             else if(page==3)ui_browser_draw(launcher_rect,&g_browser,notice);
             else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_requested,engine,notice);
             flush_screen();redraw=0;}
@@ -1158,7 +1173,9 @@ int main(int argc, char **argv)
                 else if(down&PAD_BUTTON_DOWN)opt_selected=(opt_selected+1)%GEKKO2_OPT_COUNT;
                 else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT)){
                     if(gekko2_opt_toggle(opt_selected))
-                        notice=gekko2_opt_save("sd:/pcsx2/optimization.cfg")==0?"Saved. Applies to the next cold boot.":"Next cold boot. Could not save options to SD.";
+                        notice=gekko2_opt_save("sd:/pcsx2/optimization.cfg")==0?
+                            (opt_selected==GEKKO2_OPT_ARM_WORKER||opt_selected==GEKKO2_OPT_ARM_IOS222?"Saved. Exit to HBC and restart for ARM / IOS.":"Saved. Applies to the next cold boot."):
+                            "Could not save options to SD. Check card / directory.";
                     else notice="This option is unavailable in this build.";
                 }
                 continue;

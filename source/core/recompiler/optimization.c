@@ -7,7 +7,7 @@ static const char *names[GEKKO2_OPT_COUNT]={
  "EE dynarec","IOP dynarec","VU0 / VU1 dynarec","EE native blocks",
  "Native block links","GPR residency","6 MiB code arena",
  "GX resident depth / blend","GX texture reuse","Fastmem RAM page cache",
- "GX independent VRAM writes","Native load / store reduction","GX Gouraud shading","Block cache reuse","HLE RAM bulk operations","Strict BIOS HLE fallback","ARM IPU worker (requires IOS service)","EE compact cache (1024 owners)"};
+ "GX independent VRAM writes","Native load / store reduction","GX Gouraud shading","Block cache reuse","HLE RAM bulk operations","Strict BIOS HLE fallback","ARM IPU worker (requires IOS service)","EE compact cache (1024 owners)","ARM startup IOS"};
 static const char *descriptions[GEKKO2_OPT_COUNT]={
  "Supported EE instructions use PPC; others use interpreter.",
  "Supported IOP instructions use PPC; others use interpreter.",
@@ -25,8 +25,9 @@ static const char *descriptions[GEKKO2_OPT_COUNT]={
  "Four cache ways; IOP emits only the granted instruction budget.",
  "Known BIOS memcpy / memset use bounded RAM; MMIO keeps helpers.",
  "Unknown A0/B0/C0 calls execute guest code; experimental compatibility.",
- "Experimental /dev/gekko2 CSC service; unavailable means CPU fallback.",
- "Reuse ON: 1024 EE owners instead of 4096; compare on cold boot."};
+ "Experimental CSC worker. ARM / IOS changes require app restart.",
+ "Reuse ON: 1024 EE owners instead of 4096; compare on cold boot.",
+ "Restart app. IOS222 must be installed and provide /dev/mload."};
 uint32_t gekko2_opt_available(void)
 {
  uint32_t mask=(1u<<GEKKO2_OPT_COUNT)-1u;
@@ -58,19 +59,31 @@ int gekko2_opt_toggle(unsigned n)
 void gekko2_opt_apply(void){gekko2_optimization_mask=gekko2_opt_requested();}
 int gekko2_opt_load(const char *path)
 {
- FILE *f=fopen(path,"r");if(!f)return -1;
+ FILE *f=fopen(path,"r");
+ /* libfat may require moving the old destination before rename. A backup
+  * also recovers a power loss between those two renames. */
+ if(!f){char backup[256];if(snprintf(backup,sizeof backup,"%s.bak",path)>=(int)sizeof backup)return -1;f=fopen(backup,"r");}
+ if(!f)return -1;
  unsigned version=0,mask=0;char extra;
  int n=fscanf(f,"GEKKO2_OPTIONS %u %x %c",&version,&mask,&extra);fclose(f);
- if(n!=2||(version!=1u&&version!=2u&&version!=3u)||mask&~((1u<<GEKKO2_OPT_COUNT)-1u)||(version==1u&&mask>0x1fffu))return -1;
+ if(n!=2||(version<1u||version>4u)||mask&~((1u<<GEKKO2_OPT_COUNT)-1u)||(version==1u&&mask>0x1fffu)||(version<4u&&(mask&GEKKO2_OPT_BIT(GEKKO2_OPT_ARM_IOS222))))return -1;
  if(version==1u)mask|=GEKKO2_OPT_CACHE_DEFAULT;
  if(version<3u)mask|=GEKKO2_OPT_BIT(GEKKO2_OPT_HLE_RAM);
  requested=mask&gekko2_opt_available();return 0;
 }
 int gekko2_opt_save(const char *path)
 {
- char temp[256];if(snprintf(temp,sizeof(temp),"%s.tmp",path)>=(int)sizeof(temp))return -1;
+ char temp[256],backup[256];
+ if(snprintf(temp,sizeof(temp),"%s.tmp",path)>=(int)sizeof(temp)||snprintf(backup,sizeof backup,"%s.bak",path)>=(int)sizeof backup)return -1;
  FILE *f=fopen(temp,"w");if(!f)return -1;
- int ok=fprintf(f,"GEKKO2_OPTIONS 3 %08lx\n",(unsigned long)gekko2_opt_requested())>0;
+ int ok=fprintf(f,"GEKKO2_OPTIONS 4 %08lx\n",(unsigned long)gekko2_opt_requested())>0;
  if(fclose(f))ok=0;
- if(!ok||rename(temp,path)){remove(temp);return -1;}return 0;
+ if(!ok){remove(temp);return -1;}
+ if(!rename(temp,path)){remove(backup);return 0;}
+ /* FAT rename implementations can reject an existing destination. Keep the
+  * previous complete file until replacement succeeds; roll back on failure. */
+ remove(backup);
+ if(rename(path,backup)){remove(temp);return -1;}
+ if(rename(temp,path)){rename(backup,path);remove(temp);return -1;}
+ remove(backup);return 0;
 }
