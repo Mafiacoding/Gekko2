@@ -793,6 +793,16 @@ extern void     ee_mem_write64(void *st, uint32_t addr, uint64_t val);
 #define ADDR_EE_MEM_READ64  0x00000107u
 #define ADDR_EE_MEM_WRITE64 0x00000108u
 #endif
+/* R1336: full FIFO transactions cannot be split into two 64-bit calls. */
+#ifdef GEKKO
+extern void ee_mem_read128(void *st,uint32_t addr,void *out);
+extern void ee_mem_write128(void *st,uint32_t addr,const void *value);
+#define ADDR_EE_MEM_READ128 ((uint32_t)(uintptr_t)&ee_mem_read128)
+#define ADDR_EE_MEM_WRITE128 ((uint32_t)(uintptr_t)&ee_mem_write128)
+#else
+#define ADDR_EE_MEM_READ128 0x00000121u
+#define ADDR_EE_MEM_WRITE128 0x00000125u
+#endif
 
 /* Round 905 (task #889): same GEKKO-vs-host dual-address scheme as
  * ADDR_EE_MEM_READ32/etc above, but for the first call trampoline in
@@ -1363,11 +1373,9 @@ int ppc_dynarec_init(ppc_codegen_ctx_t *ctx, size_t max_instructions)
      * expected to need a comparable amount, so this jumps straight to
      * 128 rather than another narrow bump. */
     size_t words = max_instructions * 128 + 1;
-#ifdef GEKKO
-    ctx->code = ppc_code_cache_alloc(words * sizeof(uint32_t));
-#else
+    /* R1336: translation scratch is temporary. Reserving the worst-case
+     * body in the executable arena fragmented it around trimmed owners. */
     ctx->code = memalign(32, words * sizeof(uint32_t));
-#endif
     if (!ctx->code)
         return -1;
 
@@ -2623,99 +2631,22 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         return 0;
     }
 
-    if (op == 0x1E) {
-        /* Round 900 (task #883): lq rt, imm(rs) - 128-bit load. Address
-         * is masked to 16-byte alignment (real hardware ignores the low
-         * 4 bits rather than faulting, unlike LW/LD - ee_core.c's own
-         * `(rs32 + imm) & ~0xFu`). Matches ee_core.c's real PCSX2-ported
-         * behavior of skipping the read ENTIRELY when rt==$0 (unlike
-         * every other load in this dynarec, which still performs the
-         * read for its memory side effects even when the destination is
-         * discarded) - declining outright for rt==0 reproduces that
-         * exactly, consistent with every rd==0/rt==0 guard elsewhere in
-         * this file. This is this dynarec's first opcode that needs TWO
-         * ee_mem_read64() calls in one block (one for ud0/GPR(rt), one
-         * for ud1/GPR1(rt) - see REG_HI1/REG_LO1's own comment) - r15
-         * (saved ctx) is restored into r3 before the second call, since
-         * the first call's bctrl clobbers r3 with its own return value. */
-        if (rt == 0)
-            return 0;
-        emit(ctx, enc_addi(1,1,-96));
-        emit(ctx, enc_stw(14, 1, 48));
-        emit(ctx, enc_stw(15, 1, 52));
-        emit(ctx, enc_or(15, 3, 3));
-        emit(ctx, enc_mflr(14));
-
-        emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, REG_LO(rs)));
-        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, (int16_t)imm));
-        emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 0, 0, 27)); /* &= ~0xF (aligned addr, r4) */
-        /* R1250: retain the original EA across the first load. If rt==rs,
-         * writing ud0 changes the base register; recomputing it would read
-         * the high half from an unrelated address. The C helper may also
-         * clobber every volatile PPC register, so use a local stack slot. */
-        emit(ctx, enc_stw(SCRATCH_A, 1, 56));
-        emit_load_const32(ctx, 12, ADDR_EE_MEM_READ64);
-        emit(ctx, enc_mtctr(12));
-        emit(ctx, enc_bctrl());                       /* r3:r4 = GPR(rt).hi:lo (ud0) */
-        emit(ctx, enc_mtlr(14));
-        emit(ctx, enc_stw(3, 15, REG_HI(rt)));
-        emit(ctx, enc_stw(4, 15, REG_LO(rt)));
-
-        emit(ctx, enc_or(3, 15, 15));                  /* r3 = ctx again for call #2 */
-        emit(ctx, enc_lwz(SCRATCH_A, 1, 56));            /* original aligned EA */
-        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, 8));   /* aligned+8 (r4) */
-        emit_load_const32(ctx, 12, ADDR_EE_MEM_READ64);
-        emit(ctx, enc_mtctr(12));
-        emit(ctx, enc_bctrl());                       /* r3:r4 = GPR1(rt).hi:lo (ud1) */
-        emit(ctx, enc_mtlr(14));
-        emit(ctx, enc_stw(3, 15, REG_HI1(rt)));
-        emit(ctx, enc_stw(4, 15, REG_LO1(rt)));
-
-        emit(ctx, enc_lwz(14, 1, 48));
-        emit(ctx, enc_lwz(15, 1, 52));
-        emit(ctx, enc_addi(1,1,96));
-        return 0;
-    }
-
-    if (op == 0x1F) {
-        /* Round 900 (task #883): sq rt, imm(rs) - 128-bit store, the
-         * mirror of LQ above. Same 16-byte alignment masking. Always
-         * writes both halves, including when rt==$0 (whose value is
-         * always zero) - matches ee_core.c exactly, no rt==0 guard
-         * needed (unlike LQ). Two ee_mem_write64() calls, same
-         * r15-restore-into-r3 discipline as LQ's two reads. */
-        emit(ctx, enc_addi(1,1,-96));
-        emit(ctx, enc_stw(14, 1, 48));
-        emit(ctx, enc_stw(15, 1, 52));
-        emit(ctx, enc_or(15, 3, 3));
-        emit(ctx, enc_mflr(14));
-
-        emit(ctx, enc_lwz(SCRATCH_B, 15, REG_HI(rt)));  /* val (ud0) hi -> r5 */
-        emit(ctx, enc_lwz(SCRATCH_C, 15, REG_LO(rt)));  /* val (ud0) lo -> r6 */
-        emit(ctx, enc_lwz(SCRATCH_A, 15, REG_LO(rs)));
-        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, (int16_t)imm));
-        emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 0, 0, 27)); /* aligned addr (r4) */
-        emit_load_const32(ctx, 12, ADDR_EE_MEM_WRITE64);
-        emit(ctx, enc_mtctr(12));
-        emit(ctx, enc_bctrl());                       /* ee_mem_write64(ctx, aligned, GPR(rt)) */
-        emit(ctx, enc_mtlr(14));
-
-        emit(ctx, enc_or(3, 15, 15));                  /* r3 = ctx again */
-        emit(ctx, enc_lwz(SCRATCH_B, 15, REG_HI1(rt))); /* val (ud1) hi -> r5 */
-        emit(ctx, enc_lwz(SCRATCH_C, 15, REG_LO1(rt))); /* val (ud1) lo -> r6 */
-        emit(ctx, enc_lwz(SCRATCH_A, 15, REG_LO(rs)));
-        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, (int16_t)imm));
-        emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 0, 0, 27));
-        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, 8));   /* aligned+8 (r4) */
-        emit_load_const32(ctx, 12, ADDR_EE_MEM_WRITE64);
-        emit(ctx, enc_mtctr(12));
-        emit(ctx, enc_bctrl());                       /* ee_mem_write64(ctx, aligned+8, GPR1(rt)) */
-        emit(ctx, enc_mtlr(14));
-
-        emit(ctx, enc_lwz(14, 1, 48));
-        emit(ctx, enc_lwz(15, 1, 52));
-        emit(ctx, enc_addi(1,1,96));
-        return 0;
+    if (op == 0x1E || op == 0x1F) {
+        /* Atomic MMIO quadword; RAM helpers retain normal translation and
+         * source invalidation. Compute EA before an aliased LQ updates rt.
+         * r3=state, r4=aligned EA, r5=host-format register address. */
+        if(op==0x1E && rt==0)return 0;
+        emit(ctx,enc_addi(1,1,-96));
+        emit(ctx,enc_stw(14,1,48));
+        emit(ctx,enc_mflr(14));
+        emit(ctx,enc_lwz(4,3,REG_LO(rs)));
+        emit(ctx,enc_addi(4,4,(int16_t)imm));
+        emit(ctx,enc_rlwinm(4,4,0,0,27));
+        emit(ctx,enc_addi(5,3,REG_HI(rt)));
+        emit_load_const32(ctx,12,op==0x1E?ADDR_EE_MEM_READ128:ADDR_EE_MEM_WRITE128);
+        emit(ctx,enc_mtctr(12));emit(ctx,enc_bctrl());
+        emit(ctx,enc_mtlr(14));emit(ctx,enc_lwz(14,1,48));
+        emit(ctx,enc_addi(1,1,96));return 0;
     }
 
     if (op == 0x11) {
@@ -5958,7 +5889,28 @@ ppc_block_fn ppc_dynarec_finalize(ppc_codegen_ctx_t *ctx)
 
     size_t bytes = ctx->used_words * sizeof(uint32_t);
 #ifdef GEKKO
-    ppc_code_cache_trim(ctx->code,bytes);
+    if(gekko2_opt_enabled(GEKKO2_OPT_CODE_ARENA)) {
+        uint32_t *code=ppc_code_cache_alloc(bytes);
+        if(!code)return NULL;
+        memcpy(code,ctx->code,bytes);
+        /* ee_block_call emits external relative BLs. Rebase those calls
+         * while internal non-link branches retain their word-relative span.
+         * Published owners never move; this is before cache publication. */
+        for(size_t n=0;n<ctx->used_words;n++) {
+            uint32_t w=code[n];
+            if((w&0xfc000003u)==0x48000001u) {
+                int32_t displacement=(int32_t)((w&0x03fffffcu)<<6)>>6;
+                uint32_t target=(uint32_t)(uintptr_t)(ctx->code+n)+displacement;
+                int64_t delta=(int64_t)target-(int64_t)(uint32_t)(uintptr_t)(code+n);
+                if(delta<-33554432LL||delta>33554428LL) {
+                    ppc_code_cache_release(code);return NULL;
+                }
+                code[n]=0x48000001u|((uint32_t)delta&0x03fffffcu);
+            }
+        }
+        ppc_code_cache_release(ctx->code);
+        ctx->code=code;
+    }
     ctx->capacity_words = ctx->used_words;
     DCFlushRange(ctx->code, bytes);
     ICInvalidateRange(ctx->code, bytes);
@@ -6651,7 +6603,7 @@ int ppc_dynarec_translate_ee_alu_block(ppc_codegen_ctx_t *ctx,
     ppc_dynarec_free(&body);ppc_dynarec_free(&raw);return result;
 }
 
-/* R1301: code buffers stay at their allocated address through finalize.
+/* R1301/R1336: external BL sites are rebased once at final publication.
  * Use one relative bl when the target is aligned and inside PPC's signed
  * 26-bit reach. MEM2/far targets keep the absolute CTR call unchanged. */
 static void ee_block_call(ppc_codegen_ctx_t *ctx,uint32_t target)

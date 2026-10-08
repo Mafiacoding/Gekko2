@@ -1,3 +1,7 @@
+# R1336 development checkpoint
+
+See [R1336 changes and verification limits](docs/R1336-VIDEO-CACHE-ARM.md).
+
 <p align="center"><img src="assets/branding/menu-gecko-master.png" width="640" alt="Gekko2 — gecko wordmark"></p>
 
 # Gekko2 for Nintendo Wii

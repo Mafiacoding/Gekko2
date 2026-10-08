@@ -33,6 +33,16 @@ int main(void){
     le32(e+96,0x70000080);le32(e+108,132);le32(e+112,26);le16(e+156,0x0306);
     if(system_init(&bios,&bios))return 1;
     ee_state_t *s=ee_core_get_state();
+    s->loadfile_rpc_version=0x34333231u;
+    call(s,SIF_SID_LOADFILE,255,0,4);
+    if(ee_mem_read32(s,0x80006000)!=0x34333231u || ee_mem_read32(s,0x80006004)!=0xcafef00d)return puts("FAIL LOADFILE protocol reply/bounds"),1;
+    for(unsigned bytes=0;bytes<4;bytes++){
+        call(s,SIF_SID_LOADFILE,255,0,bytes);
+        if(ee_mem_read32(s,0x80006000)!=0xfeedface)return puts("FAIL short LOADFILE protocol reply overwritten"),1;
+    }
+    s->loadfile_rpc_version=0;
+    call(s,SIF_SID_LOADFILE,255,0,4);
+    if(ee_mem_read32(s,0x80006000))return puts("FAIL unknown LOADFILE protocol invented"),1;
     call(s,0x12,5,0,256);
     if((int32_t)ee_mem_read32(s,0x80006000)!=-3||ee_mem_read32(s,0x80006004)!=0xcafef00d)return puts("FAIL absent XFROM boot image reply"),1;
     call(s,0x12,1,0,4);
@@ -56,5 +66,12 @@ int main(void){
     if(ee_mem_read32(s,0x80006000)!=0xfeedface)return puts("FAIL RTC zero-size reply overwrite"),1;
     le32(e+108,0xfffffff0);
     if(ee_rom_module_version(&bios,"XPADMAN")!=0)return puts("FAIL malformed ELF accepted"),1;
+    s->pc=0x80007000;s->next_pc=0x80007004;s->cop0[12]=0;s->cop0[13]=0;
+    s->branch_pending=0;s->halted=0;s->idle=0;s->gpr[3].ud0=61;
+    s->gpr[4].ud0=0x00100000;s->gpr[5].ud0=0xffffffff;s->gpr[2].ud0=0xdeadbeef;
+    ee_step();
+    if(s->pc!=0x80000180 || (s->cop0[13]&0x7c)!=0x20 || s->cop0[14]!=0x80007000 ||
+       s->gpr[4].ud0!=0x00100000 || s->gpr[5].ud0!=0xffffffff || s->gpr[2].ud0!=0xdeadbeef)
+        return puts("FAIL SetupHeap must reach real BIOS with original arguments"),1;
     puts("PASS real SifSetDma RPC dispatch: absent boot devices, response bounds, PAD module version");return 0;
 }

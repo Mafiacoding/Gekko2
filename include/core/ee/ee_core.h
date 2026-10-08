@@ -285,6 +285,9 @@ typedef struct {
     /* Native resident copies are invalid after an external GPR mutation. */
     uint32_t gpr_generation;
     vu_pipeline_t vu0_pipeline;
+    /* Literal returned by the selected real LOADFILE legacy RPC getter;
+     * zero means no verified provider. Cold-boot/reset/checkpoint state. */
+    uint32_t loadfile_rpc_version;
 } ee_state_t;
 
 int  ee_core_init(const bios_image_t *bios);
@@ -383,6 +386,10 @@ void     ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val);
 void     ee_mem_write16(ee_state_t *st, uint32_t addr, uint16_t val);
 void     ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val);
 void     ee_mem_write64(ee_state_t *st, uint32_t addr, uint64_t val);
+/* Whole guest quadword access: interpreter and scalar JIT share MMIO semantics.
+ * Values use host register representation; FIFO bytes are guest little-endian. */
+void ee_mem_read128(ee_state_t *st, uint32_t addr, ee_reg128_t *out);
+void ee_mem_write128(ee_state_t *st, uint32_t addr, const ee_reg128_t *value);
 
 /* VU0 micro mode (see this struct's vu0_micro comment above and
  * include/core/hw/vu.h) - called from vif.c's VIF0 MPG/MSCAL/MSCNT/

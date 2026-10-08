@@ -2511,6 +2511,27 @@ uint64_t ee_mem_read64(ee_state_t *st, uint32_t addr)
     return guest_read_le64(p);
 }
 
+void ee_mem_read128(ee_state_t *st,uint32_t addr,ee_reg128_t *out)
+{
+    uint8_t q[16];
+    if(ipu_fifo_read128(ee_hw_mmio_addr(addr),q)) {
+        out->ud0=guest_read_le64(q);out->ud1=guest_read_le64(q+8);
+    } else {
+        /* Read both halves before publishing: LQ may alias its base register. */
+        uint64_t lo=ee_mem_read64(st,addr),hi=ee_mem_read64(st,addr+8);
+        out->ud0=lo;out->ud1=hi;
+    }
+}
+void ee_mem_write128(ee_state_t *st,uint32_t addr,const ee_reg128_t *value)
+{
+    uint64_t lo=value->ud0,hi=value->ud1;
+    if(ee_hw_mmio_addr(addr)==0x10007010u) {
+        uint8_t q[16];
+        for(unsigned n=0;n<8;n++){q[n]=(uint8_t)(lo>>(n*8));q[n+8]=(uint8_t)(hi>>(n*8));}
+        ipu_fifo_write128(0x10007010u,q);
+    } else {ee_mem_write64(st,addr,lo);ee_mem_write64(st,addr+8,hi);}
+}
+
 #ifdef R1132_WRITE_WATCH
 /* Round 1132 (task #1043, follow-up to Round 1131's "single missing
  * observation" request): watch EE RAM words 0x80023FC8/0x80023FCC
@@ -3335,6 +3356,13 @@ static void sif_loadfile_note_mc_module(ee_state_t *st,const char *path)
     free(owned);
 }
 
+/* Consume the selected real IOP image's LOADFILE provider metadata. */
+static void sif_note_loadfile_image(ee_state_t *st,const bios_image_t *image)
+{
+    uint32_t off,size,version;
+    if(romdir_lookup(image,"LOADFILE",&off,&size) && (uint64_t)off+size<=image->size &&
+       iop_loadfile_protocol(image->data+off,size,&version))st->loadfile_rpc_version=version;
+}
 /* R1264: consume the real SifCmdResetData request for the existing RPC HLE.
  * ps2sdk ee/kernel/src/iopcontrol.c: header, arglen, mode, arg[80].
  * UDNL's requested ROM config is itself a small ROM image containing
@@ -3354,14 +3382,28 @@ static void sif_iop_reset_note_mc_config(ee_state_t *st,uint32_t packet,uint32_t
     /* A valid reboot replaces the previous service configuration. Unsupported
      * targets leave versions unknown, rather than retaining stale providers. */
     st->mcserv_module_version=st->mcman_module_version=0;
+    st->loadfile_rpc_version=0;
     cdvd_config_reset_session();
     if(ee_mem_read32(st,packet+20u)!=0u || strncmp(args,"rom0:UDNL ",10))return;
     const char *config=args+10;
-    if(strncmp(config,"rom0:",5) || !config[5] || strchr(config,' ') || strchr(config,'\t'))return;
+    if(!*config || strchr(config,' ') || strchr(config,'\t'))return;
     uint32_t off,size,inner_off,inner_size;
+    if(!strncmp(config,"cdrom",5)) {
+        uint32_t lba;
+        if(iop_cdvd_disc_find_file(config,&lba,&size) && size && size<=2u*1024u*1024u) {
+            uint8_t *data=malloc(size);
+            if(data && sif_loadfile_disc_read_raw(lba,0,data,size)==size) {
+                bios_image_t image={0};image.data=data;image.size=size;sif_note_loadfile_image(st,&image);
+            }
+            free(data);
+        }
+        return;
+    }
+    if(strncmp(config,"rom0:",5) || !config[5])return;
     if(!romdir_lookup(st->bios,config+5,&off,&size) ||
        (uint64_t)off+size>st->bios->size)return;
     bios_image_t nested={0};nested.data=st->bios->data+off;nested.size=size;
+    sif_note_loadfile_image(st,&nested);
     if(!romdir_lookup(&nested,"IOPBTCONF",&inner_off,&inner_size) ||
        (uint64_t)inner_off+inner_size>size)return;
     const uint8_t *text=nested.data+inner_off;
@@ -3375,6 +3417,7 @@ static void sif_iop_reset_note_mc_config(ee_state_t *st,uint32_t packet,uint32_t
         if(!n || n>10u || text[start]=='@')continue;
         char path[16];memcpy(path,"rom0:",5);memcpy(path+5,text+start,n);path[5+n]=0;
         sif_loadfile_note_mc_module(st,path);
+        if(!strcmp(path,"rom0:LOADFILE"))sif_note_loadfile_image(st,st->bios);
     }
 }
 
@@ -4369,6 +4412,7 @@ int ee_core_init(const bios_image_t *bios)
      * applies equally to the new SIF1 sink - see that function below.) */
 
     g_state.bios = bios;
+    sif_note_loadfile_image(&g_state,bios);
     g_state.pc = BIOS_RESET_VECTOR;
     g_state.next_pc = BIOS_RESET_VECTOR + 4;
 
@@ -6059,23 +6103,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
              *     already no-ops elsewhere in this file), so doing
              *     nothing and returning is CORRECT emulated behavior,
              *     not just a stand-in.
-             *   61 (0x3D) SetupHeap: real kernel-internal libc
-             *     heap bookkeeping call with no externally-observable
-             *     effect this project currently models (no EE-side
-             *     libc heap is emulated) - matching this project's
-             *     established generic-default-return precedent for
-             *     unimplemented-but-non-blocking real kernel calls
-             *     (IOP tasks #164/#165's syscall 0x10/0x08/0x14
-             *     handling, iop_hle_bios.c's A0/B0/C0 convention).
-             *     NOTE: 60 (0x3C) SetupThread used to be grouped here
-             *     too, but Round 171 (task #172 continuation) found
-             *     that treatment WRONG - see the dedicated "sysnum ==
-             *     60" block below, which replaces it with a real,
-             *     citable implementation (its return value is
-             *     directly consumed as $sp by every real ps2sdk-built
-             *     ELF's own crt0, so a bare 0 return is not a safe
-             *     no-op the way it is for the calls actually listed
-             *     above).
+             *   SetupHeap(61) is deliberately excluded: it mutates the
+             *   kernel heap bounds later queried by EndOfHeap(62). Both
+             *   execute their real BIOS handlers (R1336 KOF regression).
              *   120 (0x78) sceSifSetDChain/SifSetDChain: real EE-side
              *     SIF0 DMAC-channel (DMAC_SIF0_CHCR, 0x1000c000)
              *     chain-mode setup - confirmed by cross-referencing
@@ -6184,8 +6214,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 r1218_pending=1u;
             }
             if (ee_hle_thread_try_handle(st, sysnum, this_pc, in_delay_slot)) return 1; /* Round 569: real EE thread/sema scheduler - see include/core/ee/ee_hle_thread.h */
-            if (sysnum == 100 || sysnum == 61 ||
-                sysnum == 120 || sysnum == -120) {
+            if(sysnum==61) {
+                /* SetupHeap changes kernel state queried by EndOfHeap(62).
+                 * KOF's first real allocation fails when this is a no-op.
+                 * Execute the selected BIOS handler, as SetupThread does;
+                 * retain its bounds and -1-size convention without guessing. */
+                ee_raise_exception(st,EE_EXC_CODE_SYS,this_pc,in_delay_slot);
+                break;
+            }
+            if (sysnum == 100 || sysnum == 120 || sysnum == -120) {
                 GPR(2) = 0; /* generic default return, matching established precedent */
                 st->pc = this_pc + 4u;
                 st->next_pc = this_pc + 8u;
@@ -7890,6 +7927,12 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                      * miss / bad ELF) is left un-replied - an honest
                                      * gap, not a fabricated success. */
                                 }
+                            } else if (call_sid == SIF_SID_LOADFILE && rpc_number == 0xffu) {
+                                /* Legacy client's provider check. Reply is the real
+                                 * selected module's getter constant; unknown remains 0. */
+                                if(call_recvbuf && ee_mem_read32(st,src+0x2cu)>=4u)
+                                    ee_mem_write32(st,call_recvbuf,st->loadfile_rpc_version);
+                                ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_LOADFILE && rpc_number == 0u && call_recvbuf != 0u && i >= 1u) {
                                 /* task #201 (77th finding): real
                                  * LF_F_MOD_LOAD (=0, see the already-
@@ -12841,9 +12884,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 * real PCSX2, so neither does this. */
         if (rt) {
             uint32_t addr = (rs32 + imm) & ~0xFu;
-            uint8_t q[16];
-            if(ipu_fifo_read128(ee_hw_mmio_addr(addr),q)){GPR(rt)=guest_read_le64(q);GPR1(rt)=guest_read_le64(q+8);}
-            else {GPR(rt)=ee_mem_read64(st,addr);GPR1(rt)=ee_mem_read64(st,addr+8);}
+            ee_mem_read128(st,addr,&st->gpr[rt]);
         }
         break;
     case 0x1F: /* SQ - 128-bit store, ported from PCSX2's R5900OpcodeImpl.cpp.
@@ -12853,11 +12894,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 * special-case needed. */
     {
         uint32_t addr = (rs32 + imm) & ~0xFu;
-        if(ee_hw_mmio_addr(addr)==0x10007010u) {
-            uint8_t q[16];
-            for(unsigned n=0;n<8;n++){q[n]=(uint8_t)(GPR(rt)>>(n*8));q[n+8]=(uint8_t)(GPR1(rt)>>(n*8));}
-            ipu_fifo_write128(0x10007010u,q);
-        }else{ee_mem_write64(st,addr,GPR(rt));ee_mem_write64(st,addr+8,GPR1(rt));}
+        ee_mem_write128(st,addr,&st->gpr[rt]);
     } break;
 
     case 0x3E: /* SQC2 - Store Quadword Coprocessor 2 (round 444, task

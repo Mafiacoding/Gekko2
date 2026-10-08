@@ -2,7 +2,7 @@
 #define PCSX2WII_IPU_H
 #include <stdint.h>
 /* R1335: real bounded input/output FIFOs, FDEC, SETIQ, SETVQ, SETTH
- * and CSC. MPEG IDEC/BDEC/VDEC and PACK remain unsupported, recorded
+ * and CSC. MPEG IDEC/BDEC remain unsupported; R1336 adds VDEC and PACK. Their use is recorded
  * explicitly; they retain legacy acknowledgement until MPEG decoding exists.
  * Register/command semantics: PCSX2 IPU.cpp/IPU.h, see R1335 documentation. */
 typedef struct {
@@ -18,7 +18,7 @@ typedef struct {
  uint32_t skip,pos,blocks,out_pos,out_size;
  uint16_t th0,th1;
  uint8_t input[8][16],internal[2][16],output[8][16];
- uint8_t iq[2][64],vq[32],block[384],converted[1024];
+ uint8_t iq[2][64],vq[32],block[1024],converted[1024];
 } ipu_state_t;
 void ipu_init(void);
 void ipu_get_profile(ipu_profile_t *out);
@@ -37,6 +37,9 @@ uint32_t ipu_output_read(uint8_t *data,uint32_t qwc);
  * are invented. FIFO starvation preserves BUSY and DMA STR. */
 void ipu_service(void);
 void ipu_process_quadwords(int channel,const uint8_t *data,uint32_t qwc);
+uint32_t ipu_vlc_decode(uint32_t lookahead,unsigned table,uint32_t ctrl,unsigned *consumed);
+void ipu_pack_convert(const uint8_t input[1024],uint8_t *output,
+ uint32_t format16,uint32_t dither,const uint8_t palette[32]);
 void ipu_csc_convert(const uint8_t input[384],uint8_t *output,
                      uint32_t format16,uint32_t dither,uint16_t th0,uint16_t th1);
 #endif

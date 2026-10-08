@@ -1,3 +1,11 @@
+# R1336 status
+
+PPC quadword IPU FIFO access and fragmented code-arena allocation fixed.
+VDEC/PACK implemented; IDEC/BDEC remain unsupported. A buildable experimental
+ARM IOS service is included; no loader/installer or physical-Wii speed claim.
+KOF progresses past LOADFILE/heap initialization, then waits on CRI/CDVD
+streaming. See [R1336 evidence](docs/R1336-VIDEO-CACHE-ARM.md).
+
 # Gekko2 status — R1335
 
 Updated 2026-10-08. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.

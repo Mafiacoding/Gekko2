@@ -20,7 +20,7 @@ def console(uc,address,size,user):
 consoles={syms[n] for n in ['printf','puts','fprintf'] if n in syms};u.hook_add(UC_HOOK_CODE,console)
 def setup(words,regs=None):
  global heap
- call('iop_jit_reset_for_test');heap=0x81600000
+ call('iop_jit_reset_for_test');heap=0x81600000;heap_spans.clear();free_ranges.clear()
  for name in ['iop_intc_init','iop_timers_init','iop_asyncio_init','iop_hle_thread_init']:
   call(name)
  u.mem_write(ist,bytes(isize));word(ist+io['ram'],iram);word(ist+io['ram_size'],0x200000)
@@ -135,7 +135,7 @@ u.mem_map(0x90000000,0x800000);heap_limit=0x90800000
 for budget in [1,7,8,9,17,257]:
  print('IOP_SCHEDULER_BUDGET',budget,flush=True)
  extension_setup();setup([(9<<26)|(2<<21)|(2<<16)|1]*300)
- heap=0x90000000
+ heap=0x90000000;heap_spans.clear();free_ranges.clear()
  word(state+off['pc'],base|0x80000000);word(state+off['next_pc'],(base|0x80000000)+4)
  for n in range(8*budget+16):u.mem_write(ram+base+n*4,struct.pack('<I',(9<<26)|(2<<21)|(2<<16)|1))
  observed.clear();assert call('system_run_interleaved',0,budget)==0
