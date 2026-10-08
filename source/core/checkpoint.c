@@ -1,3 +1,4 @@
+#include "core/hw/rspu2_stream.h"
 /*
  * checkpoint.c - see include/core/checkpoint.h for full format/scope
  * notes and the leak-prevention/known-limitation citations.
@@ -220,6 +221,8 @@ int checkpoint_save(const char *path)
         if (write_block(f, "ECLK", clock, sizeof(clock)) < 0) goto fail;
     }
     if (write_block(f,"IPUS",ipu_get_state(),sizeof(ipu_state_t))<0)goto fail;
+    {const rspu2_stream_state_t *stream=rspu2_stream_get_state();
+     if(write_block(f,"RSPU",stream,sizeof *stream)<0)goto fail;}
     if (write_block(f, "END0", NULL, 0) < 0) goto fail;
 
     fclose(f);
@@ -369,9 +372,10 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     uint64_t display_ticks = 0; /* Old snapshots have no recoverable independent phase. */
     uint8_t config[CDVD_CONFIG_SNAPSHOT_SIZE]={0};
     ipu_state_t ipu={0};
+    static rspu2_stream_state_t stream;memset(&stream,0,sizeof stream);
     unsigned seen = 0;
     for (;;) {
-        unsigned char extra[sizeof(ipu_state_t)>CDVD_CONFIG_SNAPSHOT_SIZE?sizeof(ipu_state_t):CDVD_CONFIG_SNAPSHOT_SIZE];
+        static unsigned char extra[sizeof(rspu2_stream_state_t)>sizeof(ipu_state_t)?sizeof(rspu2_stream_state_t):sizeof(ipu_state_t)];
         rc = read_block(f, tag, extra, sizeof(extra), &size);
         if (rc <= 0) break;
         if (memcmp(tag, "EEPD", 4) == 0 && !(seen & 1u) && size == sizeof(pad)) {
@@ -388,6 +392,8 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
             memcpy(config,extra,sizeof config);seen|=8u;
         } else if(memcmp(tag,"IPUS",4)==0&&!(seen&16u)&&size==sizeof ipu){
             memcpy(&ipu,extra,sizeof ipu);if(!ipu_state_valid(&ipu))goto fail_close;seen|=16u;
+        } else if(memcmp(tag,"RSPU",4)==0&&!(seen&32u)&&size==sizeof stream){
+            memcpy(&stream,extra,sizeof stream);if(!rspu2_stream_state_valid(&stream))goto fail_close;seen|=32u;
         } else goto fail_close;
     }
     if (rc != 0 || memcmp(tag, "END0", 4) != 0 || size != 0u) goto fail_close;
@@ -427,6 +433,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     ee_core_display_clock_load(display_ticks);
     cdvd_config_snapshot_load(config);
     ipu_restore(&ipu);
+    rspu2_stream_checkpoint_load(&stream);
     system_rebind_iop_bridge();
     if (iso_path) {
         iop_cdrom_legacy_rebind_iso(iso_path);
