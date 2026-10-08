@@ -1,3 +1,5 @@
+#include "core/recompiler/ppc_code_cache.h"
+#include "core/recompiler/dynarec_config.h"
 /*
  * ee_jit.c - see include/core/recompiler/ee_jit.h for the full design
  * rationale and safety model. Short version: this compiles single
@@ -87,6 +89,8 @@ _Static_assert(offsetof(ee_state_t, acc) == 1596,
  * COP1 fpr[32] above). */
 _Static_assert(offsetof(ee_state_t, vu0_vf) == 1728,
                "ppc_dynarec.c's VU0_VF_OFF() assumes vu0_vf[0][0] sits at this exact byte offset");
+_Static_assert(offsetof(ee_state_t, vu0_mem) == 2240,
+               "ppc_dynarec.c's VU0_MEM_OFFSET assumes vu0_mem[0] sits at this exact byte offset");
 
 #define EE_JIT_CACHE_SLOTS 8192u /* power of two - see ee_jit_cache_lookup()/insert() */
 
@@ -251,7 +255,13 @@ _Static_assert(offsetof(ee_state_t,sa_reg)==552,"EE SA prefix layout");
 static int ee_jit_opcode_supported(uint32_t instr)
 {
     uint32_t op = (instr >> 26) & 0x3Fu;
-    if(op==0x10u){unsigned rs=(instr>>21)&31u;return rs==0u||rs==4u;}
+    if(op==0x10u){
+        unsigned rs=(instr>>21)&31u,rd=(instr>>11)&31u;
+        /* R1316: MTC0 EntryHi changes the active ASID/mapping. Keep this
+         * one form scalar so the authoritative COP0 case bumps the epoch. */
+        if(rs==4u&&rd==10u)return 0;
+        return rs==0u||rs==4u;
+    }
     if (op == 0x18u || op == 0x19u) return 1; /* R1268 DADDI/DADDIU */
     if (op == 0x08u || op == 0x09u) return 1; /* ADDI (Round 897) / ADDIU */
     if (op == 0x0Au || op == 0x0Bu) return 1; /* SLTI / SLTIU */
@@ -277,16 +287,16 @@ static int ee_jit_opcode_supported(uint32_t instr)
     if (op == 0x01u) {
         unsigned trap=(instr>>16)&31u;
         if(trap==8u||trap==9u||trap==10u||trap==11u||trap==12u||trap==14u)return 1;
-        /* REGIMM: rt selects the real sub-opcode, not a flat op-only
-         * dispatch like every other entry in this function - only
-         * BLTZ/BGEZ/BLTZL/BGEZL are implemented by ppc_dynarec.c
-         * (Round 896); every other REGIMM rt value (TGEI/TLTI/etc.)
-         * falls through to the interpreter, same as before this round. */
+        /* REGIMM: rt selects the real sub-opcode. R1313 admits the
+         * four link variants already implemented by ppc_dynarec.c; keeping
+         * them blocked here silently forced scalar fallback on Wii. */
         uint32_t rt = (instr >> 16) & 0x1Fu;
         switch (rt) {
         case 0x18: case 0x19: /* R1270 MTSAB/MTSAH */
         case 0x00: case 0x01: /* BLTZ / BGEZ */
         case 0x02: case 0x03: /* BLTZL / BGEZL */
+        case 0x10: case 0x11: /* BLTZAL / BGEZAL */
+        case 0x12: case 0x13: /* BLTZALL / BGEZALL */
             return 1;
         default:
             return 0;
@@ -452,6 +462,7 @@ static int ee_jit_cache_insert(uint32_t instr, ppc_block_fn fn)
 static int ee_jit_resolve_and_execute(ee_state_t *st, uint32_t instr, ppc_block_fn *out_fn, int *out_rejected)
 {
     if (out_rejected) *out_rejected = 0;
+    if(!gekko2_opt_enabled(GEKKO2_OPT_EE_JIT))return 0;
 #if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
     /* Round 887 host-safety gate: ppc_dynarec.c generates raw PPC750
      * machine code, and the block below CALLS it as a function
@@ -571,6 +582,7 @@ int ee_jit_try_execute_one_at(ee_state_t *st, uint32_t pc, uint32_t instr)
     (void)pc;
     return ee_jit_resolve_and_execute(st, instr, NULL, NULL);
 #else
+    if(!gekko2_opt_enabled(GEKKO2_OPT_EE_JIT))return 0;
     uint32_t i = ee_jit_pc_l0_index(pc);
     ee_jit_pc_l0_slot_t *e = &g_pc_l0[i];
     /* R1280: compare PC+encoding once for both positive and negative
@@ -620,7 +632,7 @@ void ee_jit_reset_stats_for_test(void)
     ee_precise_reset_cache();
     for (uint32_t i = 0; i < EE_JIT_CACHE_SLOTS; i++) {
         if (g_cache[i].fn != NULL)
-            free((void *)g_cache[i].fn);
+            ppc_code_cache_release((void*)g_cache[i].fn);
     }
     memset(g_cache, 0, sizeof(g_cache));
     memset(g_l1, 0, sizeof(g_l1));
@@ -633,28 +645,191 @@ void ee_jit_reset_stats_for_test(void)
 
 /* Bounded PC/tag cache; first conservative precise EE block integration. */
 typedef unsigned (*ee_precise_fn)(ee_state_t *,unsigned,uint32_t);
-typedef struct {uint32_t pc,words[8],count;ee_precise_fn fn;} ee_precise_slot;
+#define EE_PRECISE_RAM_PAGES (32u*1024u*1024u/4096u)
+#define EE_PRECISE_NON_RAM_PAGE UINT32_MAX
+typedef struct {
+ uint32_t pc,words[8],count;
+ uint32_t source_page,source_generation,mapping_generation;
+ uint32_t serial; /* R1318: non-zero identity of this installed allocation. */
+ /* R1326: lazily learned successor identity.  The serial and live target
+  * generation are revalidated before every use, so collision eviction,
+  * source writes, TLB/ASID changes and checkpoint/reset cannot jump into a
+  * stale executable buffer.  This is a native function link, not a patched
+  * code-buffer branch, keeping executable ownership simple and reversible. */
+ uint32_t link_pc,link_serial;
+ uint16_t link_index;
+ ee_precise_fn link_fn;
+ ee_precise_fn fn;
+} ee_precise_slot;
 static ee_precise_slot precise_cache[256];
-static uint64_t precise_runs,precise_retired;
+/* One Broadway cache line per dispatch tag. Keep instruction arrays and
+ * learned-edge bookkeeping off the common successor lookup. */
+typedef struct {
+ uint32_t pc,count,page,generation,mapping,serial,word;
+ ee_precise_fn fn;
+} ee_precise_dispatch;
+#ifdef GEKKO
+_Static_assert(sizeof(ee_precise_dispatch)==32u,"Broadway dispatch tag must fit one cache line");
+#endif
+static ee_precise_dispatch precise_dispatch[256] __attribute__((aligned(32)));
+static uint64_t precise_dispatch_hits;
+uint64_t ee_jit_get_dispatch_hits(void){return precise_dispatch_hits;}
+static uint32_t precise_page_generation[EE_PRECISE_RAM_PAGES];
+static uint32_t precise_mapping_generation;
+static uint32_t precise_serial_source;
+static uint64_t precise_runs,precise_retired,precise_evictions,precise_direct_link_hits;
+static ee_precise_slot *precise_chain_source;
+static uint32_t precise_chain_source_serial;
 static int precise_active;
+static unsigned precise_accounted_remaining;
+
+static inline unsigned ee_precise_cache_index(uint32_t pc)
+{
+ return ((pc>>2)^(pc>>12))&255u;
+}
+
+static void ee_precise_bump(uint32_t *generation)
+{
+ if(++*generation==0u)*generation=1u;
+}
+static uint32_t ee_precise_next_serial(void)
+{
+ ee_precise_bump(&precise_serial_source);
+ return precise_serial_source;
+}
+static void ee_precise_publish_dispatch(const ee_precise_slot *slot)
+{
+ unsigned i=(unsigned)(slot-precise_cache);
+ precise_dispatch[i]=(ee_precise_dispatch){slot->pc,slot->count,slot->source_page,
+  slot->source_generation,slot->mapping_generation,slot->serial,slot->words[0],slot->fn};
+}
+/* R1318: publish a replacement only after translation/finalization succeeded.
+ * A live chain pins all installed allocations via precise_active, so failed or
+ * nested installs leave the old slot byte-for-byte intact. */
+static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t source_page,
+ uint32_t source_generation,uint32_t mapping_generation,ee_precise_fn fn)
+{
+ if(!slot||!words||!fn||count<2u||count>8u||precise_active)return 0;
+ ee_precise_slot next;memset(&next,0,sizeof(next));
+ next.pc=pc;next.count=count;memcpy(next.words,words,count*4u);
+ next.source_page=source_page;next.source_generation=source_generation;
+ next.mapping_generation=mapping_generation;next.serial=ee_precise_next_serial();
+ next.fn=fn;
+ ee_precise_fn old=slot->fn;
+ int displaced=old&&(slot->pc!=pc||slot->count!=count||
+                    memcmp(slot->words,words,count*4u)!=0);
+ *slot=next;
+ ee_precise_publish_dispatch(slot);
+ if(old&&old!=fn){if(displaced)precise_evictions++;ppc_code_cache_release((void*)old);}
+ return 1;
+}
+static void ee_precise_release_slot(ee_precise_slot *slot)
+{
+ if(!slot||precise_active)return;
+ if(slot->fn)ppc_code_cache_release((void*)slot->fn);
+ memset(&precise_dispatch[slot-precise_cache],0,sizeof(precise_dispatch[0]));
+ memset(slot,0,sizeof(*slot));
+}
+void ee_jit_notify_physical_write(uint32_t phys_addr,uint32_t len)
+{
+ if(!len||phys_addr>=32u*1024u*1024u)return;
+ uint64_t last=(uint64_t)phys_addr+(uint64_t)len-1u;
+ if(last>=32u*1024u*1024u)last=32u*1024u*1024u-1u;
+ uint32_t first=phys_addr>>12,end=(uint32_t)last>>12;
+ for(uint32_t page=first;page<=end;page++)ee_precise_bump(&precise_page_generation[page]);
+}
+extern void ee_fastmem_invalidate(void) __attribute__((weak));
+void ee_jit_notify_mapping_change(void)
+{
+ if(ee_fastmem_invalidate)ee_fastmem_invalidate();
+ ee_precise_bump(&precise_mapping_generation);
+}
 uint64_t ee_jit_get_block_count(void){return precise_runs;}
 uint64_t ee_jit_get_block_retired(void){return precise_retired;}
+uint64_t ee_jit_get_native_retired_count(void){return g_jit_executed+precise_retired;}
+uint64_t ee_jit_get_block_evictions(void){return precise_evictions;}
+uint64_t ee_jit_get_direct_link_hits(void){return precise_direct_link_hits;}
 typedef unsigned (*ee_cached_chain_fn)(ee_state_t *,unsigned,uint32_t,unsigned,ee_precise_fn,unsigned);
 static ee_cached_chain_fn precise_chain_fn;
 static uint64_t precise_native_successors;
 uint64_t ee_jit_get_native_successors(void){return precise_native_successors;}
-#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)
+#if GEKKO2_EE_BLOCKS_ENABLED
+static int ee_precise_source_snapshot(ee_state_t *st,uint32_t pc,uint32_t *page,uint32_t *generation)
+{
+ if(!ee_core_block_source_page(st,pc,page))return 0;
+ if(*page==EE_PRECISE_NON_RAM_PAGE){*generation=0u;return 1;}
+ if(*page>=EE_PRECISE_RAM_PAGES)return 0;
+ *generation=precise_page_generation[*page];
+ return 1;
+}
+static int ee_precise_slot_generation_current(const ee_precise_slot *slot)
+{
+ if(slot->mapping_generation!=precise_mapping_generation)return 0;
+ return slot->source_page==EE_PRECISE_NON_RAM_PAGE ||
+        (slot->source_page<EE_PRECISE_RAM_PAGES &&
+         slot->source_generation==precise_page_generation[slot->source_page]);
+}
 /* No allocation, eviction or compilation here. precise_active pins all
  * precise-cache allocations until the complete native chain returns. */
 static uint64_t ee_precise_cached_next(ee_state_t *st,unsigned remaining)
 {
+ if(precise_active&&ee_core_interleave_quantum!=UINT32_MAX) {
+  ee_core_interleave_account(precise_accounted_remaining-remaining);
+  precise_accounted_remaining=remaining;
+ }
+ remaining=ee_core_interleave_limit(remaining);
  if(!precise_active||!st||remaining<2u||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u)return 0;
- ee_precise_slot *slot=&precise_cache[((st->pc>>2)^(st->pc>>12))&255u];
- if(!slot->fn||slot->pc!=st->pc||slot->count<2u||slot->count>remaining)return 0;
+ ee_precise_slot *source=precise_chain_source,*slot=0;
+ unsigned index=ee_precise_cache_index(st->pc);
+ const ee_precise_dispatch *hot=&precise_dispatch[index];
+ if(hot->fn&&hot->pc==st->pc&&hot->count>=2u&&hot->count<=remaining&&
+    hot->mapping==precise_mapping_generation&&
+    (hot->page==EE_PRECISE_NON_RAM_PAGE||
+     (hot->page<EE_PRECISE_RAM_PAGES&&hot->generation==precise_page_generation[hot->page]))) {
+  uint32_t live;
+  if(!ee_core_block_peek(st,st->pc,&live)||live!=hot->word)return 0;
+  /* precise_active excludes replacement/release. Live per-instruction
+   * prepares still check every subsequent word and memory proof. */
+  if(source&&source->serial==precise_chain_source_serial&&
+     source->link_pc==hot->pc&&source->link_serial==hot->serial)precise_direct_link_hits++;
+  if(source&&source->serial==precise_chain_source_serial) {
+   source->link_pc=hot->pc;source->link_serial=hot->serial;
+   source->link_index=(uint16_t)index;source->link_fn=hot->fn;
+  }
+  precise_chain_source=&precise_cache[index];precise_chain_source_serial=hot->serial;
+  precise_dispatch_hits++;precise_native_successors++;
+  return ((uint64_t)(uint32_t)(uintptr_t)hot->fn<<32)|hot->count;
+ }
+ /* Fast edge: use the predecessor's learned direct successor when every
+  * identity field still matches.  No allocation or compilation can occur
+  * while precise_active pins the chain, so the pointer remains owned. */
+ if(source&&source->serial==precise_chain_source_serial&&source->link_fn&&source->link_pc==st->pc) {
+  unsigned li=source->link_index;
+  if(li<256u) {
+   ee_precise_slot *linked=&precise_cache[li];
+   if(linked->serial==source->link_serial&&linked->fn==source->link_fn&&linked->pc==st->pc)
+    slot=linked;
+  }
+ }
+ if(!slot)slot=&precise_cache[ee_precise_cache_index(st->pc)];
+ if(!slot->fn||!slot->serial||slot->pc!=st->pc||slot->count<2u||slot->count>remaining)return 0;
+ uint32_t serial=slot->serial;ee_precise_fn fn=slot->fn;
+ if(!ee_precise_slot_generation_current(slot))return 0;
  uint32_t word;
  if(!ee_core_block_peek(st,st->pc,&word)||word!=slot->words[0])return 0;
+ if(slot->serial!=serial||slot->fn!=fn||slot->pc!=st->pc)return 0;
+ if(source&&source->serial==precise_chain_source_serial) {
+  unsigned idx=ee_precise_cache_index(slot->pc);
+  if(source->link_fn==fn&&source->link_pc==slot->pc&&source->link_serial==serial&&source->link_index==idx)
+   precise_direct_link_hits++;
+  else {
+   source->link_pc=slot->pc;source->link_serial=serial;source->link_index=(uint16_t)idx;source->link_fn=fn;
+  }
+ }
+ precise_chain_source=slot;precise_chain_source_serial=serial;
  precise_native_successors++;
- return ((uint64_t)(uint32_t)(uintptr_t)slot->fn<<32)|slot->count;
+ return ((uint64_t)(uint32_t)(uintptr_t)fn<<32)|slot->count;
 }
 static void ee_precise_make_chain(void)
 {
@@ -669,13 +844,18 @@ static void ee_precise_make_chain(void)
 #endif
 static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetched,uint32_t first_word,int native_chain)
 {
-#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)
+#if GEKKO2_EE_BLOCKS_ENABLED
  if(!st||budget<2u||st->halted||st->idle||st->branch_pending||precise_active)return 0;
- uint32_t pc=st->pc,words[8];unsigned count=0,limit=budget<8u?budget:8u;
- ee_precise_slot *slot=&precise_cache[((pc>>2)^(pc>>12))&255u];
+ if(!gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)||!gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS))return 0;
+ native_chain &= gekko2_opt_enabled(GEKKO2_OPT_NATIVE_LINKS);
+ unsigned quantum_budget=ee_core_interleave_limit(budget);
+ if(quantum_budget<2u)return 0;
+ uint32_t pc=st->pc,words[8];unsigned count=0,limit=quantum_budget<8u?quantum_budget:8u;
+ ee_precise_slot *slot=&precise_cache[ee_precise_cache_index(pc)];
  /* The emitted prepare callback validates live mapping/encoding before
   * EACH instruction. A warm entry needs no duplicate full-block scan. */
- if(slot->fn&&slot->pc==pc&&slot->count<=budget&&(!fetched||slot->words[0]==first_word))goto execute_slot;
+ if(slot->fn&&slot->pc==pc&&slot->count<=quantum_budget&&
+    ee_precise_slot_generation_current(slot)&&(!fetched||slot->words[0]==first_word))goto execute_slot;
  limit=ee_core_block_words(st,pc,words,limit);
  for(;count<limit;count++) {
   if(ee_jit_block_terminal(words[count])) {
@@ -686,16 +866,36 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   if(!ee_jit_block_candidate(words[count]))break;
  }
  if(count<2u)return 0;
+ uint32_t source_page,source_generation;
+ if(!ee_precise_source_snapshot(st,pc,&source_page,&source_generation))return 0;
+ uint32_t mapping_generation=precise_mapping_generation;
  if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
   ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,count*2u))return 0;
-  if(ppc_dynarec_translate_ee_resident_delay_block(&c,pc,words,count,
-    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,(uint32_t)(uintptr_t)ee_core_block_prepare_delay,(uint32_t)(uintptr_t)ee_core_block_commit,(uint32_t)offsetof(ee_state_t,gpr_generation))) {
+#ifdef GEKKO2_LEGACY_BOUNDARIES
+  int translation=ppc_dynarec_translate_ee_resident_delay_block(&c,pc,words,count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,(uint32_t)(uintptr_t)ee_core_block_prepare_delay,(uint32_t)(uintptr_t)ee_core_block_commit,(uint32_t)offsetof(ee_state_t,gpr_generation));
+#else
+  int translation=ppc_dynarec_translate_ee_fused_delay_block(&c,pc,words,count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_delay,(uint32_t)(uintptr_t)ee_core_block_commit,
+    (uint32_t)(uintptr_t)ee_core_block_boundary,(uint32_t)(uintptr_t)ee_core_block_memory_boundary,
+    (uint32_t)(uintptr_t)ee_core_block_delay_boundary,(uint32_t)offsetof(ee_state_t,gpr_generation));
+#endif
+  if(translation) {
    ppc_dynarec_free(&c);return 0;
   }
   ee_precise_fn fn=(ee_precise_fn)ppc_dynarec_finalize(&c);
   if(!fn){ppc_dynarec_free(&c);return 0;}
-  if(slot->fn)free((void*)slot->fn);
-  slot->fn=fn;slot->pc=pc;slot->count=count;memcpy(slot->words,words,count*4u);
+  if(!ee_precise_install_slot(slot,pc,words,count,source_page,source_generation,mapping_generation,fn)) {
+   ppc_dynarec_free(&c);return 0;
+  }
+ } else {
+  /* A stale epoch with byte-identical code reuses the compiled PPC safely;
+   * only the validated source/mapping stamp changes; its allocation identity
+   * remains stable because no executable buffer was replaced. */
+  slot->source_page=source_page;slot->source_generation=source_generation;
+  slot->mapping_generation=mapping_generation;
+  ee_precise_publish_dispatch(slot);
  }
 execute_slot:;
  uint32_t first_physical=0;
@@ -710,15 +910,21 @@ execute_slot:;
   if(!ee_core_block_prepare_fetched(st,pc))return 0;
  }
  if(native_chain&&slot->count+2u<=budget)ee_precise_make_chain();
+ int use_chain=native_chain&&precise_chain_fn&&slot->count+2u<=budget;
+ precise_chain_source=use_chain?slot:0;
+ precise_chain_source_serial=use_chain?slot->serial:0;
  precise_active=1;
- unsigned n=(native_chain&&precise_chain_fn&&slot->count+2u<=budget)?
+ precise_accounted_remaining=budget;
+ unsigned n=use_chain?
   precise_chain_fn(st,fetched,first_physical,budget,slot->fn,slot->count):
   slot->fn(st,fetched,first_physical);
+ if(ee_core_interleave_quantum!=UINT32_MAX)ee_core_interleave_account(precise_accounted_remaining-(budget-n));
  precise_active=0;
+ precise_chain_source=0;precise_chain_source_serial=0;
  precise_runs++;precise_retired+=n;
  /* Changed first word/mapping: release only after the native function
   * returns. The scalar path handles this instruction; later visits retry. */
- if(!n){free((void*)slot->fn);memset(slot,0,sizeof(*slot));}
+ if(!n)ee_precise_release_slot(slot);
  return n;
 #else
  (void)st;(void)budget;(void)fetched;(void)first_word;(void)native_chain;return 0;
@@ -736,12 +942,12 @@ unsigned ee_jit_try_execute_block_fetched(ee_state_t *st,unsigned budget,uint32_
  * and data checks; partial exits return to the full scalar frontend. */
 unsigned ee_jit_try_execute_chain_fetched(ee_state_t *st,unsigned budget,uint32_t first_word)
 {
-#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE)
+#if GEKKO2_EE_BLOCKS_ENABLED
  if(!st)return 0;
  uint32_t start=st->pc;
  unsigned n=ee_precise_execute(st,budget,1u,first_word,1),total=n;
- while(n&&budget-total>=2u) {
-  ee_precise_slot *previous=&precise_cache[((start>>2)^(start>>12))&255u];
+ while(n&&ee_core_interleave_limit(budget-total)>=2u) {
+  ee_precise_slot *previous=&precise_cache[ee_precise_cache_index(start)];
   if(previous->pc!=start||n!=previous->count||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u)break;
   uint32_t instruction;
   if(!ee_core_block_peek(st,st->pc,&instruction)||
@@ -759,8 +965,13 @@ unsigned ee_jit_try_execute_chain_fetched(ee_state_t *st,unsigned budget,uint32_
 static void ee_precise_reset_cache(void)
 {
  if(precise_active)return; /* Never release the currently executing buffer. */
- if(precise_chain_fn)free((void*)precise_chain_fn);
- precise_chain_fn=0;precise_native_successors=0;
- for(unsigned n=0;n<256;n++)if(precise_cache[n].fn)free((void*)precise_cache[n].fn);
- memset(precise_cache,0,sizeof(precise_cache));precise_runs=precise_retired=0;
+ if(precise_chain_fn)ppc_code_cache_release((void*)precise_chain_fn);
+ precise_chain_fn=0;precise_native_successors=0;precise_direct_link_hits=0;
+ precise_chain_source=0;precise_chain_source_serial=0;
+ for(unsigned n=0;n<256;n++)ee_precise_release_slot(&precise_cache[n]);
+ memset(precise_cache,0,sizeof(precise_cache));
+ memset(precise_dispatch,0,sizeof(precise_dispatch));precise_dispatch_hits=0;
+ memset(precise_page_generation,0,sizeof(precise_page_generation));
+ precise_mapping_generation=0;precise_serial_source=0;
+ precise_runs=precise_retired=precise_evictions=0;
 }

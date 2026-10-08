@@ -1150,5 +1150,6 @@ uint64_t ppc_dynarec_get_resident_loads(void);
 uint64_t ppc_dynarec_get_resident_refresh_edges(void);
 int ppc_dynarec_translate_iop_resident_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,uint32_t,uint32_t,unsigned *);
 int ppc_dynarec_translate_ee_resident_delay_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t);
+int ppc_dynarec_translate_ee_fused_delay_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t);
 
 #endif

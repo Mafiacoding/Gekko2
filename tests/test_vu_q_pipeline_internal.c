@@ -113,11 +113,24 @@ int main(void){
     reset();vi[18]=7;vf[1][0]=bits(2);vf[2][3]=bits(1);
     step(upper(7,1,2,0,63),(16u<<25)|7);CHECK(vi[1]==1);CHECK(vi[18]==(7u<<6|1));
     step(upper(7,1,2,0,63),(17u<<25)|0xffffffu);CHECK(vi[18]==((7u<<6|1)<<6|1));
-    /* Wrapped XGKICK: A+D payload continues from the last VU qword to 0. */
+    /* R1330-D: the generic shared step is not a production VU1 and must
+     * not inject PATH1 merely because its synthetic memory is 16 KiB. */
     reset();gif_init();vi[1]=1023;
     unsigned addr=16368;mem[addr]=1;mem[addr+1]=0x80;mem[addr+7]=0x10;mem[addr+8]=0x0e;
-    memset(mem,0,16);mem[0]=0x46;mem[8]=0; /* PRIM=0x46 */
-    step(NOP,lower(27,1,0,0,0));CHECK(gif_get_state()->prim==0x46);CHECK(gif_get_state()->gif_path1_transfers==1);
-    puts("PASS EFU/P, flag queries, CLIP ordering and wrapped PATH1");
+    memset(mem,0,16);mem[0]=0x46;mem[8]=0;
+    step(NOP,lower(27,1,0,0,0));CHECK(gif_get_state()->gif_path1_transfers==0);
+
+    /* Production VU1 XGKICK latches PATH1, preserves ring wrap, and is
+     * drained by the runner boundary before vu1_exec_micro() returns. */
+    vu1_init();gif_init();s=vu1_get_state();s->vi[1]=1023;addr=16368;
+    s->mem[addr]=1;s->mem[addr+1]=0x80;s->mem[addr+7]=0x10;s->mem[addr+8]=0x0e;
+    memset(s->mem,0,16);s->mem[0]=0x46;s->mem[8]=0; /* PRIM=0x46 */
+    vu1_micro_write32(0,lower(27,1,0,0,0));
+    vu1_micro_write32(4,NOP|0x40000000u);
+    vu1_micro_write32(8,0);vu1_micro_write32(12,NOP);
+    vu1_exec_micro(0);
+    CHECK(!s->xgkick_pending);CHECK(s->xgkick_addr==16368);
+    CHECK(gif_get_state()->prim==0x46);CHECK(gif_get_state()->gif_path1_transfers==1);
+    puts("PASS EFU/P, flag queries, CLIP ordering and deferred wrapped PATH1");
     puts("PASS VU selectors, Q issue/WAITQ/reissue/flags/E-bit and VF pair hazards");return 0;
 }

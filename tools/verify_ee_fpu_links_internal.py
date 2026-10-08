@@ -22,7 +22,7 @@ if fused:
  # The last compiled program is CVT.S.W. Enter its native function directly
  # so an enclosing C function cannot hide a damaged nonvolatile register.
  slot=((base>>2)^(base>>12))&255
- native=int.from_bytes(bytes(u.mem_read(syms['precise_cache']+slot*44+40,4)),'big')
+ native=int.from_bytes(bytes(u.mem_read(syms['precise_cache']+slot*precise_slot_size+precise_fn_offset,4)),'big')
  assert native
  syms['internal_native_abi']=native
  word(state+off['pc'],base);word(state+off['next_pc'],base+4)

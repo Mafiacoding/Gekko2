@@ -7,11 +7,16 @@
 #include "core/hw/frontend_browser.h"
 #include "core/hw/iop_cdvd.h"
 #include "core/hw/iop_cdrom_legacy.h"
+static void le32(unsigned char*p,unsigned v){p[0]=v;p[1]=v>>8;p[2]=v>>16;p[3]=v>>24;}
+static void be32(unsigned char*p,unsigned v){p[0]=v>>24;p[1]=v>>16;p[2]=v>>8;p[3]=v;}
+static void both32(unsigned char*p,unsigned v){le32(p,v);be32(p+4,v);}
 static void valid_image(const char *path)
 {
- FILE *f=fopen(path,"wb");if(!f)exit(2);unsigned char sector[2048]={0};
- for(unsigned i=0;i<17;i++){
-  if(i==16){sector[0]=1;memcpy(sector+1,"CD001",5);sector[6]=1;}
+ FILE *f=fopen(path,"wb");if(!f)exit(2);unsigned char sector[2048];
+ for(unsigned i=0;i<18;i++){
+  memset(sector,0,sizeof(sector));
+  if(i==16){sector[0]=1;memcpy(sector+1,"CD001",5);sector[6]=1;unsigned char*r=sector+156;r[0]=34;both32(r+2,17);both32(r+10,2048);r[25]=2;r[32]=1;r[33]=0;}
+  if(i==17){unsigned char*r=sector;r[0]=34;both32(r+2,17);both32(r+10,2048);r[25]=2;r[32]=1;r[33]=0;}
   fwrite(sector,1,sizeof(sector),f);
  }
  fclose(f);

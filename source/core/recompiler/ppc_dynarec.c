@@ -1,3 +1,5 @@
+#include "core/recompiler/ppc_code_cache.h"
+#include "core/recompiler/optimization.h"
 #include "core/hw/vu_pair.h"
 #include "core/recompiler/ee_block_policy.h"
 /*
@@ -1255,6 +1257,7 @@ static int16_t mmi_b_off(int reg, int lane)
  * 1728+31*16+12=2236, comfortably within lwz/stw/lfs/stfs's 16-bit
  * signed displacement range. */
 #define VU0_VF_OFF(reg, lane)  ((int16_t)(1728 + (reg) * 16 + (lane) * 4))
+#define VU0_MEM_OFFSET         ((int16_t)2240) /* ee_state_t::vu0_mem[0] */
 
 /* Round 908 (task #893): byte offsets of ee_state_t's VU0 accumulator
  * (vu0_acc[4], flat uint32_t array - NOT the same field as COP1's single-
@@ -1360,7 +1363,11 @@ int ppc_dynarec_init(ppc_codegen_ctx_t *ctx, size_t max_instructions)
      * expected to need a comparable amount, so this jumps straight to
      * 128 rather than another narrow bump. */
     size_t words = max_instructions * 128 + 1;
+#ifdef GEKKO
+    ctx->code = ppc_code_cache_alloc(words * sizeof(uint32_t));
+#else
     ctx->code = memalign(32, words * sizeof(uint32_t));
+#endif
     if (!ctx->code)
         return -1;
 
@@ -1372,7 +1379,11 @@ int ppc_dynarec_init(ppc_codegen_ctx_t *ctx, size_t max_instructions)
 void ppc_dynarec_free(ppc_codegen_ctx_t *ctx)
 {
     if (ctx->code) {
+#ifdef GEKKO
+        ppc_code_cache_release(ctx->code);
+#else
         free(ctx->code);
+#endif
         ctx->code = NULL;
     }
 }
@@ -4434,6 +4445,126 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                     }
                     return 0;
                 }
+                /* R1322: close the remaining macro-mode SPECIAL2 forms already
+                 * implemented by ee_core.c. VU0 local memory is a little-endian
+                 * byte array inside ee_state_t, so dynamic 16/32-bit accesses use
+                 * lhbrx/lwbrx/stwbrx on the big-endian Gekko. VI0/VF00 are
+                 * canonicalized exactly like the scalar interpreter helpers. */
+                if (idx == 52u || idx == 53u || idx == 54u || idx == 55u) {
+                    int is_load = (idx == 52u || idx == 54u);
+                    int predec = (idx == 54u || idx == 55u);
+                    uint32_t vi = is_load ? fs : ft;
+                    if (vi) emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(vi)));
+                    else emit(ctx, enc_addi(SCRATCH_A, 0, 0));
+                    if (predec) {
+                        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, -1));
+                        emit(ctx, enc_andi_dot(SCRATCH_A, SCRATCH_A, 0xFFFFu));
+                        if (vi) emit(ctx, enc_stw(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(vi)));
+                    }
+                    emit(ctx, enc_andi_dot(SCRATCH_C, SCRATCH_A, 0x00FFu));
+                    emit(ctx, enc_rlwinm(SCRATCH_C, SCRATCH_C, 4, 0, 27));
+                    for (unsigned lane = 0; lane < 4; ++lane) {
+                        if (!(destmask & (8u >> lane))) continue;
+                        emit(ctx, enc_addi(SCRATCH_D, SCRATCH_C,
+                                           (int16_t)(VU0_MEM_OFFSET + lane * 4u)));
+                        if (is_load) {
+                            if (ft) {
+                                emit(ctx, enc_lwbrx(SCRATCH_E, CTX_REG, SCRATCH_D));
+                                emit(ctx, enc_stw(SCRATCH_E, CTX_REG, VU0_VF_OFF(ft, lane)));
+                            }
+                        } else {
+                            emit_vu0_raw_operand(ctx, SCRATCH_E, fs, lane);
+                            emit(ctx, enc_stwbrx(SCRATCH_E, CTX_REG, SCRATCH_D));
+                        }
+                    }
+                    if (!predec) {
+                        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, 1));
+                        emit(ctx, enc_andi_dot(SCRATCH_A, SCRATCH_A, 0xFFFFu));
+                        if (vi) emit(ctx, enc_stw(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(vi)));
+                    }
+                    return 0;
+                }
+                if (idx == 60u) {
+                    if (ft) {
+                        emit_vu0_raw_operand(ctx, SCRATCH_A, fs, destmask & 3u);
+                        emit(ctx, enc_andi_dot(SCRATCH_A, SCRATCH_A, 0xFFFFu));
+                        emit(ctx, enc_stw(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(ft)));
+                    }
+                    return 0;
+                }
+                if (idx == 61u) {
+                    if (ft) {
+                        if (fs) emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(fs)));
+                        else emit(ctx, enc_addi(SCRATCH_A, 0, 0));
+                        emit(ctx, enc_extsh(SCRATCH_A, SCRATCH_A));
+                        for (unsigned lane = 0; lane < 4; ++lane)
+                            if (destmask & (8u >> lane))
+                                emit(ctx, enc_stw(SCRATCH_A, CTX_REG, VU0_VF_OFF(ft, lane)));
+                    }
+                    return 0;
+                }
+                if (idx == 62u) {
+                    if (ft) {
+                        unsigned lane = destmask == 0x8u ? 0u : destmask == 0x4u ? 1u : destmask == 0x2u ? 2u : 3u;
+                        if (fs) emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(fs)));
+                        else emit(ctx, enc_addi(SCRATCH_A, 0, 0));
+                        emit(ctx, enc_andi_dot(SCRATCH_A, SCRATCH_A, 0x00FFu));
+                        emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 4, 0, 27));
+                        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A,
+                                           (int16_t)(VU0_MEM_OFFSET + lane * 4u)));
+                        emit(ctx, enc_lhbrx(SCRATCH_B, CTX_REG, SCRATCH_A));
+                        emit(ctx, enc_stw(SCRATCH_B, CTX_REG, COP2_CTRL_OFF(ft)));
+                    }
+                    return 0;
+                }
+                if (idx == 63u) {
+                    unsigned lane = destmask == 0x8u ? 0u : destmask == 0x4u ? 1u : destmask == 0x2u ? 2u : 3u;
+                    if (fs) emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(fs)));
+                    else emit(ctx, enc_addi(SCRATCH_A, 0, 0));
+                    emit(ctx, enc_andi_dot(SCRATCH_A, SCRATCH_A, 0x00FFu));
+                    emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 4, 0, 27));
+                    emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A,
+                                       (int16_t)(VU0_MEM_OFFSET + lane * 4u)));
+                    if (ft) emit(ctx, enc_lwz(SCRATCH_B, CTX_REG, COP2_CTRL_OFF(ft)));
+                    else emit(ctx, enc_addi(SCRATCH_B, 0, 0));
+                    emit(ctx, enc_stwbrx(SCRATCH_B, CTX_REG, SCRATCH_A));
+                    return 0;
+                }
+                if (idx == 64u || idx == 65u) {
+                    emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(20)));
+                    if (idx == 64u) {
+                        emit(ctx, enc_addi(SCRATCH_C, 0, 4));
+                        emit(ctx, enc_srw(SCRATCH_B, SCRATCH_A, SCRATCH_C));
+                        emit(ctx, enc_andi_dot(SCRATCH_B, SCRATCH_B, 1));
+                        emit(ctx, enc_addi(SCRATCH_C, 0, 22));
+                        emit(ctx, enc_srw(SCRATCH_D, SCRATCH_A, SCRATCH_C));
+                        emit(ctx, enc_andi_dot(SCRATCH_D, SCRATCH_D, 1));
+                        emit(ctx, enc_xor(SCRATCH_B, SCRATCH_B, SCRATCH_D));
+                        emit(ctx, enc_addi(SCRATCH_C, 0, 1));
+                        emit(ctx, enc_slw(SCRATCH_A, SCRATCH_A, SCRATCH_C));
+                        emit(ctx, enc_xor(SCRATCH_A, SCRATCH_A, SCRATCH_B));
+                        emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 0, 9, 31));
+                        emit_load_const32(ctx, SCRATCH_D, 0x3F800000u);
+                        emit(ctx, enc_or(SCRATCH_A, SCRATCH_A, SCRATCH_D));
+                        emit(ctx, enc_stw(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(20)));
+                    }
+                    if (ft) for (unsigned lane = 0; lane < 4; ++lane)
+                        if (destmask & (8u >> lane))
+                            emit(ctx, enc_stw(SCRATCH_A, CTX_REG, VU0_VF_OFF(ft, lane)));
+                    return 0;
+                }
+                if (idx == 66u || idx == 67u) {
+                    emit_vu0_raw_operand(ctx, SCRATCH_A, fs, destmask & 3u);
+                    if (idx == 67u) {
+                        emit(ctx, enc_lwz(SCRATCH_B, CTX_REG, COP2_CTRL_OFF(20)));
+                        emit(ctx, enc_xor(SCRATCH_A, SCRATCH_A, SCRATCH_B));
+                    }
+                    emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 0, 9, 31));
+                    emit_load_const32(ctx, SCRATCH_B, 0x3F800000u);
+                    emit(ctx, enc_or(SCRATCH_A, SCRATCH_A, SCRATCH_B));
+                    emit(ctx, enc_stw(SCRATCH_A, CTX_REG, COP2_CTRL_OFF(20)));
+                    return 0;
+                }
                 return -1; /* every other SPECIAL2 sub-opcode: not yet
                              * JIT-compiled, fall back to the interpreter. */
             }
@@ -4941,6 +5072,25 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         if (op == 0x17) /* BGTZL wants the opposite condition */
             emit(ctx, enc_nor(SCRATCH_E, SCRATCH_E, SCRATCH_E));
         emit_branch_blend_likely(ctx, 4 + (imm * 4));
+        return 0;
+    }
+
+    /* R1314: native MADD/MADDU/MADD1/MADDU1. The R5900 MMI
+     * accumulator uses low32(LO):low32(HI), with 0x20/0x21 selecting pipe 1. */
+    if (op == 0x1Cu && (funct == 0x00u || funct == 0x01u || funct == 0x20u || funct == 0x21u)) {
+        unsigned pipe_lane=(funct&0x20u)?2u:0u; int is_unsigned=(funct&1u)!=0;
+        emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,mmi_w_off((int)rs,0)));
+        emit(ctx,enc_lwz(SCRATCH_B,CTX_REG,mmi_w_off((int)rt,0)));
+        emit(ctx,enc_mullw(SCRATCH_C,SCRATCH_A,SCRATCH_B));
+        emit(ctx,is_unsigned?enc_mulhwu(SCRATCH_D,SCRATCH_A,SCRATCH_B):enc_mulhw(SCRATCH_D,SCRATCH_A,SCRATCH_B));
+        emit(ctx,enc_lwz(SCRATCH_E,CTX_REG,mmi_w_off(LO_IDX,pipe_lane)));
+        emit(ctx,enc_lwz(SCRATCH_F,CTX_REG,mmi_w_off(HI_IDX,pipe_lane)));
+        emit(ctx,enc_addc(SCRATCH_C,SCRATCH_C,SCRATCH_E)); emit(ctx,enc_adde(SCRATCH_D,SCRATCH_D,SCRATCH_F));
+        emit(ctx,enc_stw(SCRATCH_C,CTX_REG,mmi_w_off(LO_IDX,pipe_lane))); emit(ctx,enc_srawi(SCRATCH_E,SCRATCH_C,31));
+        emit(ctx,enc_stw(SCRATCH_E,CTX_REG,mmi_w_off(LO_IDX,pipe_lane+1u)));
+        emit(ctx,enc_stw(SCRATCH_D,CTX_REG,mmi_w_off(HI_IDX,pipe_lane))); emit(ctx,enc_srawi(SCRATCH_F,SCRATCH_D,31));
+        emit(ctx,enc_stw(SCRATCH_F,CTX_REG,mmi_w_off(HI_IDX,pipe_lane+1u)));
+        if(rd){emit(ctx,enc_stw(SCRATCH_C,CTX_REG,mmi_w_off((int)rd,0)));emit(ctx,enc_stw(SCRATCH_E,CTX_REG,mmi_w_off((int)rd,1)));}
         return 0;
     }
 
@@ -5808,6 +5958,8 @@ ppc_block_fn ppc_dynarec_finalize(ppc_codegen_ctx_t *ctx)
 
     size_t bytes = ctx->used_words * sizeof(uint32_t);
 #ifdef GEKKO
+    ppc_code_cache_trim(ctx->code,bytes);
+    ctx->capacity_words = ctx->used_words;
     DCFlushRange(ctx->code, bytes);
     ICInvalidateRange(ctx->code, bytes);
 #else
@@ -6178,6 +6330,83 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx,uint32_t w)
         if(!dst)return 0;
         unsigned imm=((w>>10)&0x7800u)|(w&0x7ffu);
         emit_micro_vi_read(ctx,6,rs);emit(ctx,enc_addi(6,6,(int16_t)(op==8u?imm:-(int)imm)));
+    } else if ((op>=0x10u && op<=0x18u) || (op>=0x1au && op<=0x1cu)) {
+        /* R1323: native VU micro flag/control family already implemented by
+         * vu_exec_lower().  The lower-word ABI supplies VI/control state in
+         * r4; VI16 writes still alias indices to 0..15 and discard VI0.
+         * CLIP/MAC/STATUS are the raw special slots vi[18]/vi[17]/vi[16]. */
+        if (op == 0x11u) { /* FCSET: CLIP = imm24 */
+            emit_load_const32(ctx, 6, w & 0x00ffffffu);
+            emit(ctx, enc_stw(6, 4, 18 * 4));
+            return 0;
+        }
+        if (op == 0x15u) { /* FSSET: preserve low status flags, replace sticky bits. */
+            uint32_t imm=((w>>10)&0x800u)|(w&0x7ffu);
+            emit(ctx, enc_lwz(6, 4, 16 * 4));
+            emit(ctx, enc_andi_dot(6, 6, 0x003fu));
+            emit(ctx, enc_ori(6, 6, (uint16_t)(imm & 0x0fc0u)));
+            emit(ctx, enc_stw(6, 4, 16 * 4));
+            return 0;
+        }
+        if (op == 0x10u || op == 0x12u || op == 0x13u) {
+            /* FCEQ/FCAND/FCOR operate on the low 24 CLIP bits and always
+             * write their boolean result to VI1. */
+            emit(ctx, enc_lwz(6, 4, 18 * 4));
+            emit(ctx, enc_rlwinm(6, 6, 0, 8, 31));
+            emit_load_const32(ctx, 7, w & 0x00ffffffu);
+            if (op == 0x10u) {
+                emit(ctx, enc_cmplw(6, 7));
+                emit(ctx, enc_mfcr(6));
+                emit(ctx, enc_rlwinm(6, 6, 3, 31, 31)); /* CR0.EQ -> bit0 */
+            } else if (op == 0x12u) {
+                emit(ctx, enc_and(6, 6, 7));
+                emit(ctx, (11u<<26)|(6u<<16)); /* cmpwi cr0,r6,0 */
+                emit(ctx, enc_mfcr(6));
+                emit(ctx, enc_rlwinm(6, 6, 3, 31, 31));
+                emit(ctx, enc_xori(6, 6, 1)); /* nonzero */
+            } else {
+                emit(ctx, enc_or(6, 6, 7));
+                emit_load_const32(ctx, 7, 0x00ffffffu);
+                emit(ctx, enc_cmplw(6, 7));
+                emit(ctx, enc_mfcr(6));
+                emit(ctx, enc_rlwinm(6, 6, 3, 31, 31));
+            }
+            emit(ctx, enc_stw(6, 4, 1 * 4));
+            return 0;
+        }
+        if (op >= 0x14u && op <= 0x17u) {
+            uint32_t imm=((w>>10)&0x800u)|(w&0x7ffu);
+            dst=rt&15u;
+            if(!dst)return 0;
+            emit(ctx, enc_lwz(6, 4, 16 * 4));
+            if (op == 0x14u) {
+                emit(ctx, enc_andi_dot(6, 6, 0x0fffu));
+                emit(ctx, enc_addi(7, 0, (int16_t)imm));
+                emit(ctx, enc_cmplw(6, 7));
+                emit(ctx, enc_mfcr(6));
+                emit(ctx, enc_rlwinm(6, 6, 3, 31, 31));
+            } else if (op == 0x16u) {
+                emit(ctx, enc_andi_dot(6, 6, (uint16_t)imm));
+            } else { /* FSOR */
+                emit(ctx, enc_andi_dot(6, 6, 0x0fffu));
+                emit(ctx, enc_ori(6, 6, (uint16_t)imm));
+            }
+        } else if (op == 0x18u || op == 0x1au || op == 0x1bu) {
+            dst=rt&15u;if(!dst)return 0;
+            emit(ctx, enc_lwz(6, 4, 17 * 4));
+            emit(ctx, enc_andi_dot(6, 6, 0xffffu));
+            emit_micro_vi_read(ctx, 7, rs);
+            if (op == 0x18u) {
+                emit(ctx, enc_cmplw(6, 7));
+                emit(ctx, enc_mfcr(6));
+                emit(ctx, enc_rlwinm(6, 6, 3, 31, 31));
+            } else if (op == 0x1au) emit(ctx, enc_and(6, 6, 7));
+            else emit(ctx, enc_or(6, 6, 7));
+        } else { /* FCGET: It = CLIP low 12 bits. */
+            dst=rt&15u;if(!dst)return 0;
+            emit(ctx, enc_lwz(6, 4, 18 * 4));
+            emit(ctx, enc_andi_dot(6, 6, 0x0fffu));
+        }
     } else if(op==0x40u && fn>=0x30u && fn<=0x34u) {
         dst=(fn==0x32u?rt:rd)&15u;if(!dst)return 0;
         emit_micro_vi_read(ctx,6,rs);
@@ -6490,6 +6719,7 @@ static int allocated_edge(uint32_t w,size_t at,size_t count,size_t *target)
  * every spill replaces a deferred original store, and loads emit <=1 op. */
 static int ppc_allocate_emitted_body(ppc_codegen_ctx_t *ctx,size_t begin,unsigned bank_words)
 {
+    if(!gekko2_opt_enabled(GEKKO2_OPT_WORD_ALLOCATION))return 0;
     size_t count=ctx->used_words-begin;
     if(!count||count>512u||bank_words>128u)return 0;
     uint8_t targets[513]={0};size_t map[513],edges[512],destinations[512];unsigned ne=0;
@@ -6570,7 +6800,7 @@ static int iop_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
 {
  if(!ctx||!words||!count||count>8||!prepare||!retire||!scalar)return -1;
  if(ctx->capacity_words-ctx->used_words<(size_t)(count*100u+160u))return -1;
- ppc_residency resident={0};if(use_residency)residency_plan(&resident,words,count,0,offsetof(iop_state_t,gpr_generation));
+ ppc_residency resident={0};if(use_residency&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY))residency_plan(&resident,words,count,0,offsetof(iop_state_t,gpr_generation));
  if(resident.count)resident_blocks++;
  int frame=resident.count?128:96;
  size_t exits[25];unsigned ne=0,native=0;
@@ -6742,10 +6972,10 @@ static void ee_block_resolved_memory(ppc_codegen_ctx_t *ctx,uint32_t iw)
 /* Precise native block: every instruction crosses the existing retirement
  * machinery before continuing. Caller guards source/mapping and control flow. */
 static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
- const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared,uint32_t memory_prepare,uint32_t delay_prepare,int use_residency)
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared,uint32_t memory_prepare,uint32_t delay_prepare,int use_residency,const uint32_t *boundaries)
 {
  if(!ctx||!words||count<2u||count>8u||!prepare||!commit)return -1;
- ppc_residency resident={0};if(use_residency)residency_plan(&resident,words,count,1,(unsigned)use_residency);
+ ppc_residency resident={0};if(use_residency&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY))residency_plan(&resident,words,count,1,(unsigned)use_residency);
  if(resident.count)resident_blocks++;
  int frame=resident.count?128:64;
  size_t exits[8],returns[8];
@@ -6762,13 +6992,15 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
   unsigned memory=ee_jit_block_memory_width(words[n]);
   uint32_t callback=delay?delay_prepare:(memory?memory_prepare:prepare);
   if(!callback)return -1;
+  if(n&&boundaries)callback=boundaries[delay?2u:(memory?1u:0u)];
   size_t skip=0;
   if(n==0u&&allow_prepared) {
    emit(ctx,(11u<<26)|(4u<<16)); /* cmpwi r4,0 */
    skip=ctx->used_words;emit(ctx,enc_bc(4,2,0));
   }
   emit(ctx,enc_or(3,14,14));emit_load_const32(ctx,4,pc+4u*n);
-  emit_load_const32(ctx,5,words[n]);ee_block_call(ctx,callback);emit(ctx,(11u<<26)|(3u<<16)); /* cmpwi r3,0 */
+  emit_load_const32(ctx,5,words[n]);
+  ee_block_call(ctx,callback);emit(ctx,(11u<<26)|(3u<<16)); /* cmpwi r3,0 */
   exits[n]=ctx->used_words;emit(ctx,enc_bc(12,2,0));
   size_t allocated_begin=ctx->used_words;
   if(memory) {
@@ -6794,7 +7026,7 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
   }
   if(!skip)ppc_allocate_emitted_body(ctx,allocated_begin,128u);
   residency_body(ctx,allocated_begin,&resident);
-  emit(ctx,enc_or(3,14,14));ee_block_call(ctx,commit);
+  if(!boundaries||n+1u==count){emit(ctx,enc_or(3,14,14));ee_block_call(ctx,commit);}
  }
  /* R1303: retirement count is known at each live preparation exit. Return
   * that constant instead of maintaining a callee-saved counter in the hot
@@ -6818,19 +7050,24 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
 
 int ppc_dynarec_translate_ee_precise_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,0,0u,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,0,0u,0u,0,0u);}
 int ppc_dynarec_translate_ee_prepared_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,1,0u,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,1,0u,0u,0,0u);}
 
 int ppc_dynarec_translate_ee_prepared_memory_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t prepare,uint32_t memory_prepare,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,0u,0,0u);}
 
 int ppc_dynarec_translate_ee_prepared_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t prepare,uint32_t memory_prepare,uint32_t delay_prepare,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,delay_prepare,0);}
+{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,delay_prepare,0,0u);}
 
 int ppc_dynarec_translate_ee_resident_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,const uint32_t *w,unsigned n,uint32_t p,uint32_t m,uint32_t d,uint32_t commit,uint32_t generation_offset)
 {if(!generation_offset||generation_offset>32767u||(generation_offset&3u))return -1;
- return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset);}
+ return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,0u);}
+
+int ppc_dynarec_translate_ee_fused_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,const uint32_t *w,unsigned n,uint32_t p,uint32_t m,uint32_t d,uint32_t commit,uint32_t boundary,uint32_t memory_boundary,uint32_t delay_boundary,uint32_t generation_offset)
+{if(!boundary||!memory_boundary||!delay_boundary||!generation_offset||generation_offset>32767u||(generation_offset&3u))return -1;
+ uint32_t boundaries[]={boundary,memory_boundary,delay_boundary};
+ return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries);}

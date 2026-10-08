@@ -1193,4 +1193,44 @@ gif_state_t *gif_get_state(void);
 /* Per-draw overlapping state reasons 0..9; cached sprites=10, fast rows=11. */
 uint64_t gif_get_render_work(unsigned index);
 
+/* R1330-K: triangle/Gouraud accounting.  Every counter is incremented once per
+ * rasterize_triangle() call and the groups below are mutually exclusive:
+ *   submitted == degenerate + offscreen + visible          (IIP triangles)
+ *   visible   == gx + software                              (IIP triangles)
+ *   software  == sum(GIF_GFB_*)                             (first blocking reason)
+ * "degenerate" means integer-pixel edge() area == 0 (the software rasterizer
+ * draws nothing).  "offscreen" means non-degenerate but the scissor/clip box is
+ * empty.  GX acceptance means the triangle was handled by a GX path; CPU work
+ * that still remains for that triangle is reported in the GIF_GCPU_* group. */
+enum {
+    GIF_GOURAUD_SUBMITTED=0, GIF_GOURAUD_DEGENERATE, GIF_GOURAUD_OFFSCREEN,
+    GIF_GOURAUD_VISIBLE, GIF_GOURAUD_GX, GIF_GOURAUD_SOFTWARE,
+    GIF_GOURAUD_DEG_IDENTICAL3, GIF_GOURAUD_DEG_TWO_SAME, GIF_GOURAUD_DEG_COLLINEAR,
+    GIF_GOURAUD_DEG_ORIGIN,         /* degenerate and every vertex x,y == 0,0 */
+    GIF_GOURAUD_FLAT_SUBMITTED,     /* non-IIP triangles, for context */
+    GIF_GOURAUD_FLAT_DEGENERATE,
+    GIF_GOURAUD_SW_BBOX_PIXELS,     /* sum of clipped bbox pixels left in software */
+    GIF_GOURAUD_GX_BBOX_PIXELS,     /* same for GX-accepted */
+    GIF_GOURAUD_GX_HYBRID,          /* GX shaded, CPU finished raster-ops per pixel */
+    GIF_GOURAUD_GX_DEFERRED,        /* GX shaded, deferred VRAM import (no CPU raster-ops) */
+    GIF_GOURAUD_GX_CPU_PIXELS,      /* pixels visited by the CPU after GX shading */
+    GIF_GOURAUD_STAT_COUNT
+};
+enum {
+    GIF_GFB_NONE=0, GIF_GFB_GX_INACTIVE, GIF_GFB_BUILD_DISABLED, GIF_GFB_SMALL,
+    GIF_GFB_LARGE, GIF_GFB_TEXTURE, GIF_GFB_ALPHA_TEST, GIF_GFB_DITHER_FBA, GIF_GFB_FBMASK,
+    GIF_GFB_DEPTH, GIF_GFB_BLEND, GIF_GFB_FOG, GIF_GFB_PSM, GIF_GFB_SCANMSK_OR_FIELD,
+    GIF_GFB_GX_REJECTED, GIF_GFB_ALPHA_VARIES, GIF_GFB_COUNT
+};
+uint64_t gif_get_gouraud_stat(unsigned index);
+uint64_t gif_get_gouraud_fallback(unsigned index);
+const char *gif_gouraud_fallback_name(unsigned index);
+/* Small ring of the first degenerate IIP triangles (x0,y0,x1,y1,x2,y2,prim). */
+unsigned gif_get_degenerate_sample(unsigned index,int32_t *xy6,uint32_t *prim);
+/* Visible-state histogram: key bits 0 TME,1 ABE,2 ZWRITE,3 ZTEST,4 FGE,5 ATE,
+ * 6 DTHE|FBA,7 FBMASK,8-9 PSM(0 CT32,1 CT24,2 CT16/16S,3 other),10 Z varies,
+ * 11-12 TFX,13 texture linear filter,14 FST. Returns count or 0 past the end. */
+unsigned gif_get_gouraud_state(unsigned index,uint32_t *key,uint64_t *count);
+uint64_t gif_get_gouraud_state_overflow(void);
+
 #endif

@@ -189,7 +189,7 @@ int main(void) {
      * V(bit1)=1 required to be considered valid-ish by our simplified
      * model (we don't check V, but set it anyway to be realistic). */
     st->tlb[0].entry_hi  = 0x71000000u;
-    st->tlb[0].entry_lo0 = (0x1000u << 6) | 0x2u; /* PFN=0x1000 -> phys 0x01000000, V=1 */
+    st->tlb[0].entry_lo0 = (0x1000u << 6) | 0x6u; /* PFN=0x1000 -> phys 0x01000000, V=1, D=1: this case intentionally stores */
     st->tlb[0].entry_lo1 = 0x2u;
     st->tlb[0].page_mask = 0;
     run_until_break(&bios);
@@ -226,6 +226,33 @@ int main(void) {
     CHECK(st->cop0[8] == 0x7FFF0000u, "KUSEG TLB miss: BadVAddr == the faulting virtual address");
     CHECK((st->cop0[12] & 0x2u) != 0, "KUSEG TLB miss: Status.EXL got set");
     CHECK(st->pc == 0xBFC00200u, "KUSEG TLB miss: pc vectored to the TLB Refill handler (BEV=1 at reset, so the uncached ROM vector, offset 0)");
+
+
+    /* R1330-F: a matching VPN/ASID with EntryLo.V clear is TLB Invalid,
+     * not a refill miss. ExcCode remains TLBL/TLBS but the vector is the
+     * general exception vector (+0x180). */
+    ee_core_init(&bios); st=ee_core_get_state();
+    st->tlb[0].entry_hi=0x71000000u; st->tlb[0].entry_lo0=(0x1000u<<6); st->tlb[0].page_mask=0;
+    st->exc_this_pc=0x80001000u; st->exc_in_delay_slot=0; st->exc_raised_this_step=0;
+    (void)ee_mem_read32(st,0x71000100u);
+    CHECK((st->cop0[13]&0x7cu)==(2u<<2),"TLB Invalid load: ExcCode == TLBL");
+    CHECK(st->pc==0xBFC00380u,"TLB Invalid load: uses general vector, not refill vector");
+
+    ee_core_init(&bios); st=ee_core_get_state();
+    st->tlb[0].entry_hi=0x71000000u; st->tlb[0].entry_lo0=(0x1000u<<6); st->tlb[0].page_mask=0;
+    st->exc_this_pc=0x80001004u; st->exc_in_delay_slot=0; st->exc_raised_this_step=0;
+    ee_mem_write32(st,0x71000100u,0xfeedfaceu);
+    CHECK((st->cop0[13]&0x7cu)==(3u<<2),"TLB Invalid store: ExcCode == TLBS");
+    CHECK(st->pc==0xBFC00380u,"TLB Invalid store: uses general vector, not refill vector");
+
+    /* Valid but D=0 permits reads and rejects stores with TLB Modified. */
+    ee_core_init(&bios); st=ee_core_get_state();
+    st->tlb[0].entry_hi=0x71000000u; st->tlb[0].entry_lo0=(0x1000u<<6)|0x2u; st->tlb[0].page_mask=0;
+    st->exc_this_pc=0x80001008u; st->exc_in_delay_slot=0; st->exc_raised_this_step=0;
+    ee_mem_write32(st,0x71000100u,0xdeadbeefu);
+    CHECK((st->cop0[13]&0x7cu)==(1u<<2),"TLB Modified store: ExcCode == Mod (1)");
+    CHECK(st->pc==0xBFC00380u,"TLB Modified store: uses general exception vector");
+    CHECK(*(uint32_t*)(st->ram+0x01000100u)!=0xdeadbeefu,"TLB Modified store: backing RAM was not written");
 
     printf("\n%d check(s) failed\n", failures);
     return failures != 0;

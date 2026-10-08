@@ -34,7 +34,7 @@ if native:
  assert after==prior+1,(prior,after)
  word(state+off['pc'],base);word(state+off['next_pc'],base+4)
  # Direct thunk ABI, plus allocator failure on a fresh cold continuation.
- fn=int.from_bytes(bytes(u.mem_read(syms['precise_cache']+(((base>>2)^(base>>12))&255)*44+40,4)),'big')
+ fn=int.from_bytes(bytes(u.mem_read(syms['precise_cache']+(((base>>2)^(base>>12))&255)*precise_slot_size+precise_fn_offset,4)),'big')
  thunk=int.from_bytes(bytes(u.mem_read(syms['precise_chain_fn'],4)),'big')
  assert fn and thunk
  saved=[0xa1000000+n for n in range(18)]

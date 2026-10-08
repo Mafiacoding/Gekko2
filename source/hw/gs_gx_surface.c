@@ -2,6 +2,61 @@
 #include "core/hw/gs_gx_surface.h"
 #include "core/hw/gs_mem.h"
 #include <string.h>
+
+static unsigned depth_bytes(uint32_t psm)
+{return psm==1u?3u:(psm==2u||psm==10u)?2u:4u;}
+int gs_gx_surface_depth_range(const gs_gx_texture_draw *d,const gs_gx_pipeline *p,
+ uint32_t color_lo,uint32_t color_hi,uint32_t *lo,uint32_t *hi)
+{
+ if(!d||!p||!lo||!hi||p->ztst>3u||d->rows>512u||d->columns>640u||
+    d->coverage.height>512u||d->coverage.height<d->rows)return 0;
+ uint32_t low=UINT32_MAX,high=0;unsigned n=depth_bytes(p->zpsm);
+ for(uint32_t y=0;y<d->rows;y++) {
+  if(d->coverage.left[y]>d->coverage.right[y]||d->coverage.right[y]>d->columns)return 0;
+  for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++) {
+   uint32_t off=gs_mem_z_offset(p->zbp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y,p->zpsm);
+   if(off==UINT32_MAX)return 0;
+   if(off<low)low=off;
+   if(off+n>high)high=off+n;
+  }
+ }
+ if(high&&!(high<=color_lo||low>=color_hi))return 0;
+ *lo=high?low:0;*hi=high;return 1;
+}
+int gs_gx_surface_depth_clip(gs_gx_texture_draw *d,const gs_gx_pipeline *p,
+ const uint8_t *depth,uint32_t lo,uint32_t bytes,uint64_t *tested,uint64_t *failed)
+{
+ if(!d||!p||!tested||!failed||d->rows>512u||d->coverage.height>512u||
+    d->rows>d->coverage.height||p->ztst>3u)return 0;
+ uint16_t left[512],right[512];uint64_t checks=0,rejects=0;
+ for(uint32_t y=0;y<d->rows;y++) {
+  uint32_t l=d->coverage.left[y],r=d->coverage.right[y],first=r,last=r;int gap=0;
+  if(l>r||r>d->columns)return 0;
+  for(uint32_t x=l;x<r;x++) {
+   uint32_t stored=0;int pass=1;
+   if(p->ztest) {
+    checks++;
+    if(p->ztst>=2u) {
+     uint32_t off=gs_mem_z_offset(p->zbp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y,p->zpsm);
+     unsigned n=depth_bytes(p->zpsm);
+     if(!depth||off==UINT32_MAX||off<lo||off-lo>bytes||n>bytes-(off-lo))return 0;
+     for(unsigned k=0;k<n;k++)stored|=(uint32_t)depth[off-lo+k]<<(8*k);
+    }
+    pass=p->ztst==1u||(p->ztst==2u?p->z>=stored:p->ztst==3u?p->z>stored:0);
+   }
+   if(pass) {
+    if(gap)return 0; /* Existing compact path handles arbitrary holes. */
+    if(first==r)first=x;
+    last=x+1u;
+   } else {rejects++;if(first!=r)gap=1;}
+  }
+  left[y]=first==r?0:first;right[y]=first==r?0:last;
+ }
+ /* Commit only after every row proved representable. */
+ memcpy(d->coverage.left,left,d->rows*sizeof(*left));
+ memcpy(d->coverage.right,right,d->rows*sizeof(*right));
+ *tested=checks;*failed=rejects;return 1;
+}
 static uint32_t offset(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y)
 {
  uint32_t bx=(x&63)>>3,by=(y&31)>>3;

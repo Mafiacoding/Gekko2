@@ -105,10 +105,10 @@ static void test_scratchpad_exact_boundaries(void) {
     memset(st->ram, 0, EE_RAM_SIZE);
     st->ram_size = EE_RAM_SIZE;
 
-    uint8_t *p_low  = ee_mem_ptr(st, 0x70000000u, 4);
-    uint8_t *p_high = ee_mem_ptr(st, 0x70003FFCu, 4);
-    uint8_t *p_below = ee_mem_ptr(st, 0x6FFFFFFCu, 4); /* 4 bytes before the window */
-    uint8_t *p_above = ee_mem_ptr(st, 0x70004000u, 4); /* right after the window */
+    uint8_t *p_low  = ee_mem_ptr(st, 0x70000000u, 4, 0);
+    uint8_t *p_high = ee_mem_ptr(st, 0x70003FFCu, 4, 0);
+    uint8_t *p_below = ee_mem_ptr(st, 0x6FFFFFFCu, 4, 0); /* 4 bytes before the window */
+    uint8_t *p_above = ee_mem_ptr(st, 0x70004000u, 4, 0); /* right after the window */
 
     CHECK(p_low == st->scratch, "Scratchpad boundary: 0x70000000 maps to scratch[0]");
     CHECK(p_high == st->scratch + 0x3FFC, "Scratchpad boundary: 0x70003FFC maps to scratch[0x3FFC] (last word)");

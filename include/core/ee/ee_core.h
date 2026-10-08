@@ -5,6 +5,16 @@
 #include "core/bios_loader.h"
 #include "core/hw/vu.h"
 
+/* Internal TLB fault classification shared by the EE memory/exception path
+ * and white-box regression tests. Keep these values aligned with
+ * ee_mem_ptr()'s mem_tlb_miss encoding. */
+enum {
+    EE_TLB_FAULT_NONE = 0,
+    EE_TLB_FAULT_MISS = 1,
+    EE_TLB_FAULT_INVALID = 2,
+    EE_TLB_FAULT_MODIFIED = 3
+};
+
 /*
  * Emotion Engine (R5900) CPU state.
  *
@@ -306,10 +316,18 @@ uint64_t ee_core_get_loadfile_reply_count(void);
 /* Single-step entry point, for the interleaved EE/IOP scheduler
  * in core/system.h. See its definition in ee_core.c for details. */
 int ee_core_step(void);
-/* R1165: execute up to n EE instructions while preserving the exact
- * ee_step() epilogue at every guest-instruction boundary. Returns the
- * number of guest instructions actually retired. */
+/* Execute at most n EE scheduler slots, preserving each step's epilogue.
+ * Idle park ticks and scalar fault/redirect attempts consume slots without
+ * fabricating retirements. Returns guest instructions actually retired. */
 unsigned ee_core_step_n(unsigned n);
+/* Wii scheduler: after eight EE slots (including idle), service one IOP tick.
+ * The callback returns zero to end this grant (e.g. IOP halted).
+ * Native blocks cannot straddle a quantum; native chains may span quanta. */
+unsigned ee_core_step_interleaved_n(unsigned quanta,int (*after_quantum)(void));
+extern unsigned ee_core_interleave_quantum; /* UINT32_MAX outside a grant. */
+static inline unsigned ee_core_interleave_limit(unsigned budget)
+{return budget<ee_core_interleave_quantum?budget:ee_core_interleave_quantum;}
+void ee_core_interleave_account(unsigned slots);
 void ee_core_shutdown(void);
 
 /* Round 781 (task #803): real elapsed-hardware-time tick, for use by
@@ -469,6 +487,8 @@ void ee_core_display_clock_load(uint64_t ticks);
 
 /* Precise block-JIT callbacks; mapped code is reread at every boundary. */
 int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word);
+/* Returns UINT32_MAX for immutable BIOS source, otherwise the EE RAM 4 KiB page. */
+int ee_core_block_source_page(ee_state_t *st,uint32_t pc,uint32_t *page);
 unsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit);
 int ee_core_block_prepare(ee_state_t *st,uint32_t pc,uint32_t instruction);
 int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc);
@@ -478,7 +498,15 @@ int ee_core_block_memory_safe(const ee_state_t *st,uint32_t instruction);
 int ee_core_block_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t instruction);
 uint32_t ee_core_block_prepare_delay(ee_state_t *st,uint32_t pc,uint32_t instruction);
 void ee_core_block_commit(ee_state_t *st);
+uint32_t ee_core_block_boundary(ee_state_t *,uint32_t,uint32_t);
+uint32_t ee_core_block_memory_boundary(ee_state_t *,uint32_t,uint32_t);
+uint32_t ee_core_block_delay_boundary(ee_state_t *,uint32_t,uint32_t);
+uint64_t ee_core_get_fused_boundaries(void);
 void ee_core_raise_trap(ee_state_t *st);
 void ee_core_raise_overflow(ee_state_t *st);
 
+
+/* R1331: mapping cache lifecycle; any external TLB writer must invalidate. */
+void ee_fastmem_invalidate(void);
+uint64_t ee_fastmem_stat(unsigned n);
 #endif

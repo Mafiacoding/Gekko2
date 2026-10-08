@@ -134,6 +134,11 @@ typedef struct {
     uint32_t ebit_delay;     /* 0 = not stopping; see header comment */
     uint8_t  running;
 
+    /* R1330-D: one outstanding VU1 XGKICK/PATH1 request. */
+    uint8_t  xgkick_pending;
+    uint32_t xgkick_addr;       /* byte offset in the 16 KiB VU1 ring */
+    uint64_t xgkick_busy_stalls;/* rejected overwrite attempts */
+
     uint64_t instructions_executed;
     uint64_t unimplemented_opcodes_seen;
     vu_pipeline_t pipeline;

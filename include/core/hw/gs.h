@@ -41,6 +41,9 @@ typedef struct {
     uint64_t siglblid;
 } gs_state_t;
 
+/* GS IMR masks live at bits 8..12; reset masks all five CSR events. */
+#define GS_IMR_RESET_ALL_MASKED 0x1F00ull
+
 void gs_init(void);
 gs_state_t *gs_get_state(void);
 
@@ -48,5 +51,6 @@ gs_state_t *gs_get_state(void);
  * handles the read/write; 0 otherwise. */
 int gs_mmio_read64(uint32_t addr, uint64_t *out_val);
 int gs_mmio_write64(uint32_t addr, uint64_t val);
+int gs_raise_event(unsigned event);
 
 #endif

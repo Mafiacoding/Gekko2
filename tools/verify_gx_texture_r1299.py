@@ -6,7 +6,7 @@ exec(compile(Path(__file__).with_name('verify_vram_sync_r1289.py').read_text(),'
 import math
 from unicorn import UC_HOOK_MEM_WRITE
 from unicorn.ppc_const import UC_PPC_REG_MSR
-if 'R1300' in Path(a.elf).name:u.mem_write(syms['surface_enabled'],struct.pack('>I',0)) # test legacy TEV/depth capture independently
+u.mem_write(syms['surface_enabled'],struct.pack('>I',0)) # test compact TEV/depth capture independently of resident submission
 u.reg_write(UC_PPC_REG_MSR,0x2000);u.mem_map(0xcc008000,0x1000);u.mem_map(0x90400000,12*1024*1024)
 u.mem_write(syms['texture'],struct.pack('>I',0x90400000))
 next_alloc=[0x90600000];events=[];fifo_writes=[];orders={};colors={};ops={};alpha={};texobjects={};texmaps={}

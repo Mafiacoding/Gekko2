@@ -735,19 +735,56 @@ static int vu_exec_lower(uint32_t vf[32][4], uint32_t *vi,
                      * misinterpreting VU0's much smaller data memory as a
                      * GS packet stream. */
                     uint32_t addr = (vu_read_vi16(vi, rs) & 0x3FFu) * 16u;
-                    if (mem_mask == (VU1_MEM_SIZE - 1u) && addr < VU1_MEM_SIZE) {
-                        uint32_t qwc = (VU1_MEM_SIZE - addr) / 16u;
-                        /* A PATH1 packet can cross the 16 KiB ring boundary. */
-                        if(addr) {
-                            static uint8_t wrapped[VU1_MEM_SIZE];
-                            memcpy(wrapped,mem+addr,VU1_MEM_SIZE-addr);
-                            memcpy(wrapped+VU1_MEM_SIZE-addr,mem,addr);
-                            gif_process_quadwords(GIF_PATH_1,wrapped,VU1_MEM_SIZE/16u);
-                        } else gif_process_quadwords(GIF_PATH_1,mem,qwc);
+                    /* R1330-D: only the real production VU1 state owns
+                     * PATH1. Latch the kick here; the runner drains it at
+                     * an explicit instruction boundary instead of entering
+                     * the GIF parser from inside this opcode. */
+                    if (mem == g_vu1.mem && mem_mask == (VU1_MEM_SIZE - 1u)) {
+                        if (!g_vu1.xgkick_pending) {
+                            g_vu1.xgkick_addr = addr;
+                            g_vu1.xgkick_pending = 1u;
+                        } else {
+                            /* Never overwrite an outstanding PATH1 start. */
+                            g_vu1.xgkick_busy_stalls++;
+                        }
                     }
                     return 1;
                 }
-                return 0; /* R-group (RNEXT/RGET/RINIT/RXOR - needs a real LFSR, not modeled), XTOP/XITOP (needs real VIF1 TOP register plumbing), and anything else unmatched */
+                if (fdslot == VULS_FD_R_GROUP) {
+                    /* Real VU R register lives at VI[20] (REG_R).  PCSX2's
+                     * interpreter keeps it in 1.x IEEE mantissa form: the
+                     * exponent is forced to 0x3f800000 and only 23 mantissa
+                     * bits participate in the LFSR/XOR operations.  All four
+                     * R instructions are architecturally suppressed when Ft
+                     * is VF0, including RINIT/RXOR's REG_R side effect. */
+                    if (rt == 0) return 1;
+                    uint32_t r = vi[20];
+                    if (bc2 == 0) { /* RNEXT */
+                        uint32_t x = (r >> 4) & 1u, y = (r >> 22) & 1u;
+                        r = (r << 1) ^ x ^ y;
+                        r = (r & 0x007fffffu) | 0x3f800000u;
+                        vi[20] = r;
+                        float rr[4] = { vu_f(r), vu_f(r), vu_f(r), vu_f(r) };
+                        vu_write_dest(vf, rt, dest, rr);
+                        return 1;
+                    }
+                    if (bc2 == 1) { /* RGET */
+                        float rr[4] = { vu_f(r), vu_f(r), vu_f(r), vu_f(r) };
+                        vu_write_dest(vf, rt, dest, rr);
+                        return 1;
+                    }
+                    if (bc2 == 2) { /* RINIT */
+                        uint32_t elem = (w >> 21) & 3u;
+                        vi[20] = (vf[rs][elem] & 0x007fffffu) | 0x3f800000u;
+                        return 1;
+                    }
+                    if (bc2 == 3) { /* RXOR */
+                        uint32_t elem = (w >> 21) & 3u;
+                        vi[20] = ((vf[rs][elem] ^ r) & 0x007fffffu) | 0x3f800000u;
+                        return 1;
+                    }
+                }
+                return 0; /* Any genuinely unmatched SPECIAL2 selector stays on the explicit unimplemented path. */
             }
         }
 
@@ -925,6 +962,25 @@ int vu_micro_step_pipeline(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
     return 0;
 }
 
+/* R1330-D PATH1 boundary service. XGKICK supplies a ring start, not an
+ * exact packet length; gif_process_quadwords() already terminates PATH1
+ * at EOP. Linearize only when the packet starts away from qword zero. */
+static void vu1_service_xgkick(void)
+{
+    static uint8_t wrapped[VU1_MEM_SIZE];
+    uint32_t addr;
+    if (!g_vu1.xgkick_pending) return;
+    addr = g_vu1.xgkick_addr & (VU1_MEM_SIZE - 1u);
+    g_vu1.xgkick_pending = 0u;
+    if (addr) {
+        memcpy(wrapped, g_vu1.mem + addr, VU1_MEM_SIZE - addr);
+        memcpy(wrapped + (VU1_MEM_SIZE - addr), g_vu1.mem, addr);
+        gif_process_quadwords(GIF_PATH_1, wrapped, VU1_MEM_SIZE / 16u);
+    } else {
+        gif_process_quadwords(GIF_PATH_1, g_vu1.mem, VU1_MEM_SIZE / 16u);
+    }
+}
+
 /* Compatibility one-pair API: no asynchronous state supplied. Production
  * VU0/VU1 runners use the explicit per-unit pipeline entry below. */
 int vu_micro_step(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
@@ -943,7 +999,7 @@ int vu_micro_step(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
  * delay-slot path. Classification does not execute or alter micro state. */
 static inline int vu1_block_candidate(void)
 {
-    if(g_vu1.branch_delay||g_vu1.ebit_delay||(g_vu1.pipeline.q_pending||g_vu1.pipeline.p_pending))return 0;
+    if(g_vu1.xgkick_pending||g_vu1.branch_delay||g_vu1.ebit_delay||(g_vu1.pipeline.q_pending||g_vu1.pipeline.p_pending))return 0;
     for(unsigned n=0;n<2;n++) {
         uint32_t off=(g_vu1.tpc+n*8u)&(VU1_MICRO_SIZE-1u);
         uint32_t up=vu_rd_le32(g_vu1.micro+off+4u);
@@ -959,6 +1015,7 @@ static inline int vu1_block_candidate(void)
 static void vu1_run_pairs(void)
 {
     for (uint32_t i = 0; i < VU_EXEC_STEP_CAP; i++) {
+        vu1_service_xgkick();
         int stopped = vu_micro_step_pipeline(g_vu1.vf, g_vu1.vi, g_vu1.acc,
                                      g_vu1.mem, VU1_MEM_SIZE - 1u,
                                      g_vu1.micro, VU1_MICRO_SIZE - 1u,
@@ -968,12 +1025,14 @@ static void vu1_run_pairs(void)
         if (stopped)
             break;
     }
+    vu1_service_xgkick();
 
 }
 
 static void vu1_run_blocks(void)
 {
     for (uint32_t i = 0; i < VU_EXEC_STEP_CAP; i++) {
+        vu1_service_xgkick();
         unsigned ran=0;
         if(vu1_block_candidate())ran=vu_jit_try_block(g_vu1.vf,g_vu1.vi,g_vu1.acc,g_vu1.mem,VU1_MEM_SIZE-1u,
             g_vu1.micro,VU1_MICRO_SIZE-1u,&g_vu1.tpc,&g_vu1.branch_delay,&g_vu1.branch_target,
@@ -988,6 +1047,7 @@ static void vu1_run_blocks(void)
         if (stopped)
             break;
     }
+    vu1_service_xgkick();
 
 }
 

@@ -160,5 +160,18 @@ int gs_display_has_rgb(uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t 
     if(!bw||!sw||!sh)return 0;
     for(uint32_t y=0;y<16;y++)for(uint32_t x=0;x<32;x++)
         if(gs_mem_read_psmct32(bp,bw,sx+(uint64_t)x*sw/32,sy+(uint64_t)y*sh/16)&0xffffffu)return 1;
+    /* A black sample grid is not proof of a black display: thin text or
+     * sparse BIOS pixels can fall between all 512 samples and leave GX
+     * permanently behind the first-image gate. Check the complete active
+     * region with bounded stack storage and hoisted swizzle row reads.
+     * main.c calls this only before the first confirmed image. */
+    if(sw>4096u||sh>2048u||sx>UINT32_MAX-sw||sy>UINT32_MAX-sh)return 0;
+    uint32_t pixels[64];
+    for(uint32_t y=0;y<sh;y++)for(uint32_t x=0;x<sw;) {
+        uint32_t count=sw-x;if(count>64u)count=64u;
+        gs_mem_read_psmct32_span(pixels,bp,bw,sx+x,sy+y,count);
+        for(uint32_t n=0;n<count;n++)if(pixels[n]&0xffffffu)return 1;
+        x+=count;
+    }
     return 0;
 }

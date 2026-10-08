@@ -11,6 +11,9 @@ include $(DEVKITPPC)/wii_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	Gekko2
 BUILD		:=	build
+# Default CPU mode matches R1330H; native blocks can be selected in the
+# launcher. build_r1331.sh provides an options build with blocks enabled.
+EXTRA_CFLAGS ?=
 SOURCES		:=	source source/core source/core/ee source/core/iop source/core/vu \
 			source/core/gs source/core/recompiler source/hw
 INCLUDES	:=	include
@@ -49,6 +52,7 @@ else
 endif
 
 export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
+			-I$(CURDIR)/source \
 			$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
 			-I$(CURDIR)/$(BUILD)
 

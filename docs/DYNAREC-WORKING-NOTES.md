@@ -1,6 +1,10 @@
 # Unreleased dynarec work after R1306
 
-Latest source development adds precise signed arithmetic overflow in
+Latest source development adds a structural EE JIT reachability guard in
+[R1312 working notes](R1312-WORKING-NOTES.md). It checks the real front-gate
+and PPC-translator function bodies rather than accepting historical comments
+as coverage evidence.
+Precise signed arithmetic overflow is documented in
 [R1311 working notes](R1311-WORKING-NOTES.md).
 MMI and trap development is documented in [R1310 working notes](R1310-WORKING-NOTES.md),
 which add 43 MMI emitters and twelve precise integer trap forms.
@@ -258,31 +262,26 @@ prepare/retire boundaries. r30 retains the external-GPR generation. Temporary
 operands are renamed to those bindings so resident loads disappear rather
 than becoming extra moves. Stores keep the guest register file canonical.
 Overwriting a resident word first materializes any live temporary aliases of
-its previous value. All pool registers, stack and CR2-4 follow PPC EABI.
+its old value. Opaque helper-backed or multiword bodies remain fences.
 
-EE preparation changes r0 and pipeline/proof state, not nonzero GPRs. The
-retirement helper closure changes nonzero GPRs only through the audited HLE
-thread context replacement, which increments the generation. IOP retirement
-can restore/mature delayed loads; IRQ entry, thread replacement and Alarm
-dispatch also increment the IOP generation. The live guard after preparation
-reloads valid copies when the generation differs. Counter wrap is tested.
+Preparation and retirement return a generation incremented whenever C writes
+a GPR. A resident block compares that generation after every callback and
+reloads only on an observed external write. Control-flow exits, helper calls,
+exceptions, source changes and allocation failure remain conservative. The
+same mechanism is used for EE and IOP blocks; IOP load-delay commits also
+advance its generation.
 
-Unknown helper/register effects, local control-flow bodies and partial-word
-writes fence residency. Generic callback emitters remain conservative; the
-frontends opt into dedicated resident APIs with these explicit contracts.
-Memory-only blocks and unsuitable sources do not allocate a resident pool.
-The scalar pool covers low 64-bit EE operands and full IOP words; upper EE
-words remain canonical and are preserved by the existing word allocator.
-This completes the bounded audited scalar residency path, not full IR
-liveness allocation, arbitrary-helper contracts or the remaining dynarec.
+The allocator itself now uses next-use liveness for r4-r11, binds both halves
+of 64-bit scalar operands when profitable, spills dirty values only when
+required, and reports paired-64 residency separately. This is still not a
+128-bit vector allocator or inter-block residency contract.
 
-The 62 independent observer/external-write/generation-wrap programs and 48
-hostile resident-pool ABI programs pass, alongside 211 host tests, including
-real EE/IOP context-replacement and Alarm invalidation checks. The handoff
-reports warm PPC instruction counts without hiding regressions. No physical
-Wii speed or BIOS stability claim follows from synthetic execution.
+Independent PPC oracles cover live-across-callback reuse, external generation
+changes, r0, aliases, helper fences, 64-bit paired operands, eviction and
+allocation failure. The exact old C helper/IRQ cadence is retained. These
+checks do not certify full dynarec completion or physical Wii speed.
 
 
-## R1308 — user-requested VU and event work
+## R1317 — raw EE RAM writer invalidation
 
-Q/P issue pipeline, scalar EFU and lower flag queries, VF dual-issue hazards, I literal ordering and wrapped synchronous PATH1 are integrated. Precise event-free peripheral timer intervals avoid repeated scanning; MMIO/snapshots materialize current state and IRQ edges run the original scalar transitions. See R1308-HANDOFF.md. This closes selected substeps, not the complete VU/event-scheduling rows; full FMAC/IALU hazards and flag latency, asynchronous VIF/GIF and general CPU/SIF/GS batching remain open.
+Precise-block source generations now cover the remaining audited direct EE-RAM bypass writers: checkpoint RAM/TLB replacement, same-process EE re-init, LOADFILE fixed-delta delivery, the verified RSPU2 EE-RAM copy, and the opt-in legacy frame repair. Existing R1316 CPU stores and DMA inbound/fromSPR notifications remain guarded by a permanent static audit. This is source/mapping coherency work only; it is not a Wii performance or hardware-certification claim.
