@@ -17,7 +17,7 @@ int ipu_state_valid(const ipu_state_t *p)
 {
  return p&&p->bp<128&&p->fp<=2&&p->in_head<8&&p->in_count<=8&&
  p->out_head<8&&p->out_count<=8&&p->busy<=1&&p->skip<=63&&
- p->pos<=384&&p->blocks<=2047&&p->out_size<=1024&&
+ p->pos<=1024&&p->blocks<=2047&&p->out_size<=1024&&
  !(p->out_size&15)&&p->out_pos<=p->out_size&&!(p->out_pos&15)&&p->th0<=511&&p->th1<=511;
 }
 void ipu_restore(const ipu_state_t *p){if(ipu_state_valid(p)){s=*p;servicing=worker_pending=0;arm_worker_reset();}}
@@ -42,7 +42,13 @@ static int bits_read(unsigned bits,int consume,uint32_t *value)
 {
  if(!fill(bits))return 0;
  const uint8_t *p=(const uint8_t*)s.internal;uint32_t v=0;
- for(unsigned i=0;i<bits;i++){unsigned b=s.bp+i;v=(v<<1)|((p[b>>3]>>(7-(b&7)))&1);}
+ /* Extract bytes instead of one branch/shift per bit. The two internal
+  * QWCs make the possible fifth byte of an unaligned 32-bit peek safe. */
+ unsigned at=s.bp,left=bits;
+ while(left){unsigned n=8-(at&7);if(n>left)n=left;
+  v=(v<<n)|((p[at>>3]>>(8-(at&7)-n))&((1u<<n)-1u));
+  at+=n;left-=n;
+ }
  if(consume)advance(bits);
  *value=v;return 1;
 }
@@ -64,6 +70,19 @@ static int run(void)
  if(!s.busy)return 0;
  uint32_t v;unsigned cmd=s.command>>28;int progress=0;
  if(s.skip){if(!fill(s.skip))return 0;advance(s.skip);s.skip=0;progress=1;}
+ if(cmd==3){
+  if(!s.pos){
+   if(!bits_read(32,0,&v))return progress;
+   unsigned consumed=0;s.data=ipu_vlc_decode(v,(s.command>>26)&3,s.ctrl,&consumed);
+   if(consumed)advance(consumed);
+   if(!s.data)s.ctrl|=0x4000u;
+   s.pos=1;progress=1;
+  }
+  /* TOP can starve after the VLC was consumed. Resume this phase without
+   * decoding or advancing the same symbol a second time. */
+  if(!bits_read(32,0,&v))return progress;
+  s.top=v;complete();return 1;
+ }
  if(cmd==4){if(!bits_read(32,0,&v))return progress;s.data=s.top=v;complete();return 1;}
  if(cmd==5||cmd==6){
   unsigned bytes=cmd==5?64:32;
@@ -71,7 +90,7 @@ static int run(void)
   while(s.pos<bytes){if(!bits_read(8,1,&v))return progress;dst[s.pos++]=(uint8_t)v;progress=1;}
   complete();return 1;
  }
- if(cmd==7){
+ if(cmd==7||cmd==8){
   if(s.out_size){
    while(s.out_pos<s.out_size&&s.out_count<8){
     memcpy(s.output[(s.out_head+s.out_count)&7],s.converted+s.out_pos,16);
@@ -81,8 +100,13 @@ static int run(void)
    s.out_size=s.out_pos=0;s.pos=0;s.blocks--;progress=1;
   }
   if(!s.blocks){complete();return 1;}
-  while(s.pos<384){if(!bits_read(8,1,&v))return progress;s.block[s.pos++]=(uint8_t)v;progress=1;}
-  unsigned size=(s.command&(1u<<27))?512:1024;
+  unsigned bytes=cmd==7?384:1024;
+  while(s.pos<bytes){if(!bits_read(8,1,&v))return progress;s.block[s.pos++]=(uint8_t)v;progress=1;}
+  unsigned size=(s.command&(1u<<27))?512:(cmd==7?1024:128);
+  if(cmd==8){
+   ipu_pack_convert(s.block,s.converted,(s.command>>27)&1,(s.command>>26)&1,s.vq);
+   s.out_size=size;return 1;
+  }
   if(worker_pending){
    int result=arm_worker_take(s.converted,size);if(!result)return progress;
    worker_pending=0;
@@ -113,9 +137,9 @@ static void command(uint32_t value)
  s.command=value;s.ctrl&=~0x0000c000u;s.busy=1;s.pos=s.out_pos=s.out_size=0;s.skip=0;
  if(cmd==0){s.in_head=s.in_count=s.fp=0;s.bp=value&127;complete();}
  else if(cmd==9){s.th0=value&511;s.th1=(value>>16)&511;complete();}
- else if(cmd==4||cmd==5){s.skip=value&63;}
+ else if(cmd==3||cmd==4||cmd==5){s.skip=value&63;}
  else if(cmd==6){}
- else if(cmd==7){s.blocks=value&2047;}
+ else if(cmd==7||cmd==8){s.blocks=value&2047;}
  else{profile.unimplemented_commands++;complete();} /* Legacy incomplete MPEG path; diagnostics explicit. */
  ipu_service();
 }

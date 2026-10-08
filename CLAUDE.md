@@ -1,6 +1,7 @@
-# Gekko2 development handoff — R1335
+# Gekko2 development handoff — R1336
 
-Read docs/R1335-IPU-HLE-ARM.md first for implemented IPU/HLE paths, cache A/B,
+Read docs/R1336-VIDEO-CACHE-ARM.md first for quadword/FIFO, exact code
+publication, VDEC/PACK and experimental ARM IOS service changes. Then read docs/R1335-IPU-HLE-ARM.md for implemented IPU/HLE paths, cache A/B,
 ARM protocol and explicit remaining MPEG/IOS/game limits. Then read docs/R1334-EE-CACHE-GAME-DIAGNOSTICS.md first, and docs/R1334-ARM-ROADMAP.md for future ARM work. Then read docs/R1333-COLD-BOOT-CACHE.md for session controls, unique logs,
 boot resets and measured budget-variant cache behavior. Then read
 docs/R1332-CACHE-PROFILER.md for counters/cache/IOP paths,

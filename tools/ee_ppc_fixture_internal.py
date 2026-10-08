@@ -39,13 +39,15 @@ def precise_native_for_pc(pc,count=None):
   fn=int.from_bytes(u.mem_read(slot+precise_fn_offset,4),'big')
   if fn:return fn
  return 0
+
 state=call('ee_core_get_state');ram=0x91000000;base=0x200000
 u.mem_map(ram,0x400000);u.reg_write(UC_PPC_REG_MSR,0x2000)
 def word(address,value):u.mem_write(address,struct.pack('>I',value))
 heap=0x81600000;heap_limit=0x81700000;fail_alloc=False;allocs=frees=0
+heap_spans={};free_ranges=[]
 platforms={syms[n]:n for n in ['memalign','free','DCFlushRange','ICInvalidateRange','memset']}
 def platform(uc,address,size,user):
- global heap,allocs,frees
+ global heap,allocs,frees,heap_spans,free_ranges
  name=platforms.get(address)
  if name is None:return
  if name=='memset':
@@ -57,9 +59,26 @@ def platform(uc,address,size,user):
   if fail_alloc:ret=0
   else:
    align=uc.reg_read(UC_PPC_REG_3);n=uc.reg_read(UC_PPC_REG_4)
-   heap=(heap+align-1)&~(align-1);ret=heap;heap+=n;assert heap<heap_limit
+   n=(n+31)&~31;ret=0
+   for index,(address,length) in enumerate(free_ranges):
+    candidate=(address+align-1)&~(align-1)
+    if candidate+n<=address+length:
+     free_ranges.pop(index)
+     if candidate>address:free_ranges.append((address,candidate-address))
+     if candidate+n<address+length:free_ranges.append((candidate+n,address+length-candidate-n))
+     ret=candidate;break
+   if not ret:
+    heap=(heap+align-1)&~(align-1);ret=heap;heap+=n;assert heap<heap_limit
+   heap_spans[ret]=n
   uc.reg_write(UC_PPC_REG_3,ret)
- elif name=='free':frees+=1
+ elif name=='free':
+  frees+=1;address=uc.reg_read(UC_PPC_REG_3);length=heap_spans.pop(address,0)
+  if length:
+   free_ranges.append((address,length));free_ranges.sort();merged=[]
+   for address,length in free_ranges:
+    if merged and merged[-1][0]+merged[-1][1]==address:merged[-1]=(merged[-1][0],merged[-1][1]+length)
+    else:merged.append((address,length))
+   free_ranges[:]=merged
  elif name=='ICInvalidateRange':
   start=uc.reg_read(UC_PPC_REG_3);n=uc.reg_read(UC_PPC_REG_4);uc.ctl_remove_cache(start,start+n)
  uc.reg_write(UC_PPC_REG_PC,uc.reg_read(UC_PPC_REG_LR))
@@ -77,10 +96,10 @@ fpr=off['fpr'];exc_offset=off['exc_this_pc'];tlb=off['tlb'];vf=off['vu0_vf']
 def executed():return int.from_bytes(bytes(u.mem_read(state+off['instructions_executed'],8)),'big')
 def reg2():return int.from_bytes(bytes(u.mem_read(state+32,8)),'big')
 def extension_setup():
- global heap
+ global heap,heap_spans,free_ranges
  if 'ee_jit_reset_stats_for_test' in syms:call('ee_jit_reset_stats_for_test')
  if 'ee_fastmem_invalidate' in syms:call('ee_fastmem_invalidate')
- heap=0x81600000
+ heap=0x81600000;heap_spans.clear();free_ranges.clear()
  for name in ['ee_timers_init','ee_intc_init','dma_init','gif_init']:call(name)
  u.mem_write(state,bytes(size));word(state+off['ram'],ram);word(state+off['ram_size'],0x400000)
  word(state+off['pc'],base);word(state+off['next_pc'],base+4)
