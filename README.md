@@ -1,3 +1,15 @@
+# R1341 — cache/retirement and ARM transport test build
+
+Guarded EE lookup/admission hints, reduced duplicate IRQ/IOP fetch work,
+event-safe PPC timer bookkeeping and verified MLOAD status-zero transfers.
+Short host button presses persist until the guest controller samples them.
+See [implementation, measured tests and limits](docs/R1341-PERFORMANCE-ARM.md).
+Targeted synthetic EE replay uses 6.07% fewer PPC instructions; a mixed replay
+is essentially unchanged (+0.10%). **A 2x/3x Wii speedup is not established.**
+ARM startup still requires a physical Wii test; its worker currently handles
+CSC only. R1340 Tekken streaming stays intact. PLUS pauses; MINUS+A sends
+PS2 START. No new setting is required.
+
 # R1340 — retail sound/streaming transport
 
 Verified-provider RSPU2 initialization/status, bounded disc-to-EE video reads,

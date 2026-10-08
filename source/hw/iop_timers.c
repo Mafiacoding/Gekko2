@@ -31,7 +31,9 @@ static const iop_timer_range_t s_ranges[IOP_TIMERS_COUNT] = {
 static const int s_irq_bit[IOP_TIMERS_COUNT] = { 4, 5, 6, 14, 15, 16 };
 
 static iop_timers_state_t g_timers;
-static uint32_t g_deferred_ticks,g_event_distance;
+uint32_t iop_timers_batch_clock[2]={0,0};
+#define g_event_distance iop_timers_batch_clock[0]
+#define g_deferred_ticks iop_timers_batch_clock[1]
 static int g_state_exposed,g_dense_events;
 static void iop_timers_materialize(void);
 

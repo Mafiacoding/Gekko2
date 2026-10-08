@@ -2,6 +2,8 @@
 #define PCSX2_WII_IOP_SIO2_H
 
 #include <stdint.h>
+uint16_t iop_sio2_pad_sample_buttons(void);
+uint32_t iop_sio2_pad_sample_count(void);
 
 /*
  * iop_sio2.h - SIO2 (controller/memory-card serial interface)

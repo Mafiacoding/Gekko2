@@ -5,7 +5,9 @@
 #include <string.h>
 static int status,validation_reason;
 static uint32_t diagnostics[5]; /* file bytes, IOS base/size, ELF entry, CRC32 */
-uint32_t arm_loader_stat(unsigned n){return n<5?diagnostics[n]:n==5?(uint32_t)validation_reason:0;}
+static uint32_t transport_operation,transport_address,transport_length;
+static int transport_result;
+uint32_t arm_loader_stat(unsigned n){return n<5?diagnostics[n]:n==5?(uint32_t)validation_reason:n==6?transport_operation:n==7?(uint32_t)transport_result:n==8?transport_address:n==9?transport_length:0;}
 static int invalid(int reason){validation_reason=reason;return 0;}
 static uint32_t be32(const uint8_t *p){return (uint32_t)p[0]<<24|(uint32_t)p[1]<<16|(uint32_t)p[2]<<8|p[3];}
 static unsigned be16(const uint8_t *p){return (unsigned)p[0]<<8|p[1];}
@@ -62,12 +64,22 @@ int arm_loader_validate(const uint8_t *e,unsigned n,uint32_t base,uint32_t capac
 #include <malloc.h>
 #include <stdlib.h>
 static int loader_heap=-1;
+static int loader_seek(int fd,uint32_t address,unsigned length)
+{
+ transport_operation=1;transport_address=address;transport_length=length;
+ transport_result=IOS_Seek(fd,address,SEEK_SET);return transport_result>=0;
+}
+/* MLOAD status-zero and byte-count interfaces: reject positive short I/O.
+ * Poison reads, absolutely seek each chunk, verify every write by readback. */
+static int loader_transfer_ok(int result,unsigned length)
+{return result==0||result==(int)length;}
 int arm_loader_start(void)
 {
  /* Loading is opt-in twice: ARM option and this separately installed ELF.
   * GET_LOAD_BASE authorizes only MLOAD's module-loading area. Every target
   * byte must also be zero before any write. No general IOS RAM writes. */
  memset(diagnostics,0,sizeof diagnostics);validation_reason=0;
+ transport_operation=transport_address=transport_length=0;transport_result=0;
  FILE *f=fopen("sd:/pcsx2/arm/Gekko2-ARM-Worker.elf","rb");
  if(!f)return status=-1;
  uint8_t *elf=0;int fd=-1,hid=-1;status=-2;
@@ -90,21 +102,30 @@ int arm_loader_start(void)
  status=-7;
  for(unsigned i=0;i<plan.count;i++){
   arm_load_segment_t *s=&plan.segment[i];
-  if(IOS_Seek(fd,s->address,SEEK_SET)<0)goto finish;
   for(unsigned at=0;at<s->memory_size;){
    unsigned len=s->memory_size-at;if(len>sizeof transfer)len=sizeof transfer;
-   if(IOS_Read(fd,transfer,len)!=(int)len)goto finish;
+   if(!loader_seek(fd,s->address+at,len))goto finish;
+   memset(transfer,0xa5,len);transport_operation=2;
+   transport_result=IOS_Read(fd,transfer,len);
+   if(!loader_transfer_ok(transport_result,len))goto finish;
    for(unsigned j=0;j<len;j++)if(transfer[j]){status=-8;goto finish;}at+=len;
   }
  }
  status=-9;
  for(unsigned i=0;i<plan.count;i++){
   arm_load_segment_t *s=&plan.segment[i];
-  if(IOS_Seek(fd,s->address,SEEK_SET)<0)goto finish;
   for(unsigned at=0;at<s->memory_size;){
    unsigned len=s->memory_size-at;if(len>sizeof transfer)len=sizeof transfer;memset(transfer,0,len);
    if(at<s->file_size){unsigned copy=s->file_size-at;if(copy>len)copy=len;memcpy(transfer,elf+s->offset+at,copy);}
-   if(IOS_Write(fd,transfer,len)!=(int)len)goto finish;at+=len;
+   if(!loader_seek(fd,s->address+at,len))goto finish;
+   transport_operation=3;transport_result=IOS_Write(fd,transfer,len);
+   if(!loader_transfer_ok(transport_result,len))goto finish;
+   uint8_t verify[1024] __attribute__((aligned(32)));
+   if(!loader_seek(fd,s->address+at,len))goto finish;
+   for(unsigned j=0;j<len;j++)verify[j]=(uint8_t)~transfer[j];
+   transport_operation=4;transport_result=IOS_Read(fd,verify,len);
+   if(!loader_transfer_ok(transport_result,len)||memcmp(verify,transfer,len)) {status=-11;goto finish;}
+   at+=len;
   }
  }
  status=IOS_IoctlvFormat(hid,fd,0x4d4c4482,"iiii:",plan.entry,plan.stack,plan.stack_size,plan.priority)<0?-10:1;

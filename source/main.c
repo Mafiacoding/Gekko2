@@ -424,9 +424,9 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)caches[n].installed,(unsigned long long)caches[n].failures,
       (unsigned long long)caches[n].compile_tb,(unsigned long long)caches[n].compile_samples);
     fprintf(f,"EE_CACHE_LAYOUT entries=%u sets=%u ways=%u\n",ee_jit_get_cache_entries(),ee_jit_get_cache_entries()/(gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u),gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u);
-    fprintf(f,"EE_CACHE_BUDGET fit_hits=%llu budget_misses=%llu variant_installs=%llu deferred_variants=%llu\n",
+    fprintf(f,"EE_CACHE_BUDGET fit_hits=%llu budget_misses=%llu variant_installs=%llu deferred_variants=%llu refusal_hits=%llu lookup_hits=%llu\n",
       (unsigned long long)ee_jit_get_budget_cache_stat(0),(unsigned long long)ee_jit_get_budget_cache_stat(1),
-      (unsigned long long)ee_jit_get_budget_cache_stat(2),(unsigned long long)ee_jit_get_budget_cache_stat(3));
+      (unsigned long long)ee_jit_get_budget_cache_stat(2),(unsigned long long)ee_jit_get_budget_cache_stat(3),(unsigned long long)ee_jit_get_budget_cache_stat(4),(unsigned long long)ee_jit_get_budget_cache_stat(5));
     fprintf(f,"IOP_ROUTES native_instructions=%llu interpreter_instructions=%llu recovery_ticks=%llu RAM_helper_fast_reads=%llu RAM_helper_fast_writes=%llu\n",
       (unsigned long long)iop_core_route_stat(0),(unsigned long long)iop_core_route_stat(1),
       (unsigned long long)iop_core_route_stat(2),(unsigned long long)iop_core_route_stat(3),(unsigned long long)iop_core_route_stat(4));
@@ -452,6 +452,8 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)arm_worker_stat(2),(unsigned long long)arm_worker_stat(3),(unsigned long long)arm_worker_stat(4),gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER),arm_worker_available());
     fprintf(f,"ARM_LOADER status=%d path=sd:/pcsx2/arm/Gekko2-ARM-Worker.elf\n",arm_loader_status());
     fprintf(f,"ARM_LOAD_DETAIL bytes=%lu base=%08lx capacity=%08lx entry=%08lx crc32=%08lx validation=%lu\n",(unsigned long)arm_loader_stat(0),(unsigned long)arm_loader_stat(1),(unsigned long)arm_loader_stat(2),(unsigned long)arm_loader_stat(3),(unsigned long)arm_loader_stat(4),(unsigned long)arm_loader_stat(5));
+    fprintf(f,"ARM_TRANSFER operation=%lu result=%ld address=%08lx length=%lu\n",(unsigned long)arm_loader_stat(6),(long)(int32_t)arm_loader_stat(7),(unsigned long)arm_loader_stat(8),(unsigned long)arm_loader_stat(9));
+    fprintf(f,"PAD_INPUT host_held=%04x guest_pressed=%04x samples=%lu serial_commands=%lu remote_error=%d\n",g_input_held,iop_sio2_pad_get_buttons(),(unsigned long)iop_sio2_pad_sample_count(),(unsigned long)iop_sio2_get_pad_command_count(),g_remote_error);
     {const rspu2_stream_state_t *stream=rspu2_stream_get_state();
      fprintf(f,"RSPU2_STREAM init=%lu cmd=%04lx status=%02lx reads=%lu sectors=%lu remaining=%lu failures=%lu audio_sectors=%lu\n",
        (unsigned long)stream->initialized,(unsigned long)stream->last_command,(unsigned long)rspu2_stream_status(),
@@ -576,7 +578,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             fprintf(f,"GS_GOURAUD_DEGEN_SAMPLE i=%u prim=%lx xy=%ld,%ld %ld,%ld %ld,%ld\n",i,(unsigned long)prim,
                 (long)xy[0],(long)xy[1],(long)xy[2],(long)xy[3],(long)xy[4],(long)xy[5]);
     }
-    fprintf(f,"BUILD checkpoint=R1340 scope=EE-cache-IPU-video-ARM-client mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
+    fprintf(f,"BUILD checkpoint=R1341 scope=EE-cache-IPU-video-ARM-client mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
         (unsigned long)gekko2_optimization_mask,(unsigned long)gekko2_opt_requested(),
         gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT),
         gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS),
@@ -919,6 +921,7 @@ static void run_real_boot_flow(void)
     int show_hud = g_hud_default;g_hud_active=show_hud; /* Z+START toggles diagnosis; START alone belongs to the PS2. */
 
     iop_sio2_pad_connect();
+    frontend_pad_latch pad_latch={iop_sio2_pad_sample_count(),0,0};
     uint64_t perf_start=gettime(),perf_presents=0,perf_events=ee_core_get_vblank_events();
     uint64_t perf_ee=ee->instructions_executed,perf_core=0,perf_blit=0;
 
@@ -931,7 +934,7 @@ static void run_real_boot_flow(void)
         uint16_t guest_held=0;unsigned controls=wii_session_controls(held,down,&guest_held);
         if(controls==1u){stopped_by_user=1;break;}
         if(controls==2u){show_hud=!show_hud;g_hud_active=show_hud;last_present_ms=0;}
-        iop_sio2_pad_set_buttons(wii_pad_to_ps2_pad(guest_held));
+        iop_sio2_pad_set_buttons(frontend_pad_latch_update(&pad_latch,wii_pad_to_ps2_pad(guest_held),iop_sio2_pad_sample_count()));
 
         uint64_t stage_started=gettime();
         if (!(ee->halted && iop->halted)) {
@@ -1116,7 +1119,7 @@ int main(int argc, char **argv)
     {
         FILE *boot=fopen("sd:/pcsx2/Gekko2-startup.log","w");
         if(boot) {
-            fprintf(boot,"BUILD checkpoint=R1340 stage=launcher-ready resident_pipeline=%d\n",
+            fprintf(boot,"BUILD checkpoint=R1341 stage=launcher-ready resident_pipeline=%d\n",
 #ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
                 0
 #else
