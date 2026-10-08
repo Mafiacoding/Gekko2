@@ -1,10 +1,8 @@
 #ifndef PCSX2WII_IPU_H
 #define PCSX2WII_IPU_H
 #include <stdint.h>
-/* R1335: real bounded input/output FIFOs, FDEC, SETIQ, SETVQ, SETTH
- * and CSC. MPEG IDEC/BDEC remain unsupported; R1336 adds VDEC and PACK. Their use is recorded
- * explicitly; they retain legacy acknowledgement until MPEG decoding exists.
- * Register/command semantics: PCSX2 IPU.cpp/IPU.h, see R1335 documentation. */
+/* R1337 adds resumable BDEC/IDEC coefficient reconstruction and IDCT.
+ * Full movie/container/audio and hardware validation remain separate. */
 typedef struct {
  uint64_t commands[16],unimplemented_commands;
  uint64_t input_qwc,accepted_qwc,discarded_qwc;
@@ -13,12 +11,18 @@ typedef struct {
  uint32_t output_available,busy;
 } ipu_profile_t;
 typedef struct {
+ int32_t dc[3];
+ int16_t coeff[64];
+ uint32_t phase,block,index,intra,interlaced,quant,cbp;
+} ipu_mpeg_state_t;
+typedef struct {
  uint32_t ctrl,data,top,command,busy,bp,fp;
  uint32_t in_head,in_count,out_head,out_count;
  uint32_t skip,pos,blocks,out_pos,out_size;
  uint16_t th0,th1;
  uint8_t input[8][16],internal[2][16],output[8][16];
  uint8_t iq[2][64],vq[32],block[1024],converted[1024];
+ ipu_mpeg_state_t mpeg;
 } ipu_state_t;
 void ipu_init(void);
 void ipu_get_profile(ipu_profile_t *out);
@@ -37,6 +41,9 @@ uint32_t ipu_output_read(uint8_t *data,uint32_t qwc);
  * are invented. FIFO starvation preserves BUSY and DMA STR. */
 void ipu_service(void);
 void ipu_process_quadwords(int channel,const uint8_t *data,uint32_t qwc);
+void ipu_idct(int16_t block[64]);
+void ipu_mpeg_begin(ipu_state_t *state);
+int ipu_mpeg_decode(ipu_state_t *state,int (*peek)(unsigned,int,uint32_t *),void (*consume)(unsigned));
 uint32_t ipu_vlc_decode(uint32_t lookahead,unsigned table,uint32_t ctrl,unsigned *consumed);
 void ipu_pack_convert(const uint8_t input[1024],uint8_t *output,
  uint32_t format16,uint32_t dither,const uint8_t palette[32]);

@@ -2,7 +2,7 @@
 <app version="1">
   <name>Gekko2</name>
   <coder>Mafiacoding</coder>
-  <version>R1336 IPU / HLE / Cache</version>
+  <version>R1337 IPU / HLE / Cache</version>
   <release_date>20261008</release_date>
   <short_description>Experimental PS2 emulator for Wii</short_description>
   <long_description>Gekko2 early alpha. BIOS stability and performance are the current goals. Supply your own BIOS in sd:/pcsx2/bios/. Disc images can be selected through the SD browser. HOME pauses; HOME + MINUS exits to the Homebrew Channel. This build does not promise playable PS2 games.</long_description>

@@ -2,12 +2,14 @@
  * The buffers outlive cold boot and every pending request. An old epoch
  * can never publish pixels into a new IPU command/session. */
 #include "core/hw/arm_worker.h"
+#include "core/hw/arm_loader.h"
 #include "core/recompiler/optimization.h"
 #include <string.h>
 static uint64_t stats[5]; /* probes, submissions, successes, errors, stale */
 #ifdef GEKKO
 #include <gccore.h>
 #include <ogc/ipc.h>
+#include <unistd.h>
 static int fd=-1,probed;
 static volatile int pending,done,result;
 static uint32_t epoch,job_epoch,sequence;
@@ -37,12 +39,24 @@ void arm_worker_reset(void)
  /* Never reuse the static vectors while an earlier IOS request owns them. */
  if(gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER)&&!probed){
   probed=1;stats[0]++;fd=IOS_Open("/dev/gekko2",0);
+  if(fd<0&&arm_loader_start()==1){
+   /* Allow the new thread to register. Never reload the user's IOS. */
+   for(unsigned tries=0;tries<32&&fd<0;tries++){usleep(1000);fd=IOS_Open("/dev/gekko2",0);}
+  }
   if(fd>=0){
    uint8_t caps[32] __attribute__((aligned(32)));memset(caps,0,sizeof caps);
    int r=IOS_Ioctl(fd,0,0,0,caps,sizeof caps);
    if(r!=32||rd(caps)!=ARM_WORKER_MAGIC||rd(caps+4)!=ARM_WORKER_VERSION||!(rd(caps+8)&1)||rd(caps+12)<1){IOS_Close(fd);fd=-1;stats[3]++;}
   }
  }
+#endif
+}
+int arm_worker_completion_ready(void)
+{
+#ifdef GEKKO
+ return pending&&done;
+#else
+ return 0;
 #endif
 }
 int arm_worker_submit_csc(const uint8_t in[384],uint32_t command,uint16_t th0,uint16_t th1)
