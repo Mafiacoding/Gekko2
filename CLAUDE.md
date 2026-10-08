@@ -1,6 +1,6 @@
-# Gekko2 development handoff — R1337
+# Gekko2 development handoff — R1338
 
-Read docs/R1337-DECODER-CACHE-ARM.md first for decoder, size-class arena and experimental MLOAD loader. Then read docs/R1336-VIDEO-CACHE-ARM.md for quadword/FIFO, exact code
+Read docs/R1338-CACHE-ARM-IOS.md first for recency/admission and persistent explicit IOS selection. Then read docs/R1337-DECODER-CACHE-ARM.md first for decoder, size-class arena and experimental MLOAD loader. Then read docs/R1336-VIDEO-CACHE-ARM.md for quadword/FIFO, exact code
 publication, VDEC/PACK and experimental ARM IOS service changes. Then read docs/R1335-IPU-HLE-ARM.md for implemented IPU/HLE paths, cache A/B,
 ARM protocol and explicit remaining MPEG/IOS/game limits. Then read docs/R1334-EE-CACHE-GAME-DIAGNOSTICS.md first, and docs/R1334-ARM-ROADMAP.md for future ARM work. Then read docs/R1333-COLD-BOOT-CACHE.md for session controls, unique logs,
 boot resets and measured budget-variant cache behavior. Then read

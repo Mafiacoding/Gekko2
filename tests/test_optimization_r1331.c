@@ -13,7 +13,7 @@ int main(void)
  assert(gekko2_opt_load(path)==0&&gekko2_opt_requested()==next);
  assert(gekko2_optimization_mask==old);gekko2_opt_apply();assert(gekko2_optimization_mask==next);
  assert(!gekko2_opt_toggle(GEKKO2_OPT_COUNT)&&!gekko2_opt_toggle(500));
- const char *bad[]={"GEKKO2_OPTIONS 4 0\n","GEKKO2_OPTIONS 1 ffffffff\n","GEKKO2_OPTIONS 1 0 extra\n","bad\n"};
+ const char *bad[]={"GEKKO2_OPTIONS 5 0\n","GEKKO2_OPTIONS 1 ffffffff\n","GEKKO2_OPTIONS 1 0 extra\n","bad\n"};
  for(unsigned i=0;i<4;i++){
   FILE *f=fopen(path,"w");assert(f);fputs(bad[i],f);fclose(f);
   assert(gekko2_opt_load(path)==-1&&gekko2_opt_requested()==next);
