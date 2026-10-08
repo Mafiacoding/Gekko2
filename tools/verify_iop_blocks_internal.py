@@ -133,6 +133,7 @@ def observe(uc,address,size,user):
 h=u.hook_add(UC_HOOK_CODE,observe)
 u.mem_map(0x90000000,0x800000);heap_limit=0x90800000
 for budget in [1,7,8,9,17,257]:
+ print('IOP_SCHEDULER_BUDGET',budget,flush=True)
  extension_setup();setup([(9<<26)|(2<<21)|(2<<16)|1]*300)
  heap=0x90000000
  word(state+off['pc'],base|0x80000000);word(state+off['next_pc'],(base|0x80000000)+4)

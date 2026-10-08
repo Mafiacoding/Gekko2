@@ -21,9 +21,13 @@
 typedef int (*gs_mem_gpu_resolver)(void *opaque, uint8_t *vram, uint32_t size);
 int gs_mem_gpu_bind(gs_mem_gpu_resolver resolver, void *opaque);
 int gs_mem_gpu_mark_pending(void);
-/* Owner may allow read-only access outside this conservative physical envelope.
- * Every write/raw-buffer access still resolves. New binding clears the guard. */
+/* Owner may allow bounded CPU reads/writes outside this conservative physical
+ * envelope. Resolver must modify only bytes inside that envelope. Overlapping
+ * access and unbounded raw access resolve first. New binding clears the guard. */
 int gs_mem_gpu_protect_range(uint32_t lo,uint32_t hi);
+/* Bounded read-only access. NULL on invalid input/failed ownership transfer.
+ * Do not retain across guest writes or a GPU ownership change. */
+const uint8_t *gs_mem_read_range(uint32_t off,uint32_t bytes);
 int gs_mem_hash_range(uint32_t off,uint32_t bytes,uint64_t *hash);
 int gs_mem_sync(void);
 uint32_t gs_mem_gpu_pending(void);

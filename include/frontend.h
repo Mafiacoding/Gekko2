@@ -1,3 +1,4 @@
+#include "core/recompiler/optimization.h"
 /* R1269 native launcher. Font rasterized from DejaVu Sans (see license). */
 #ifndef FRONTEND_H
 #define FRONTEND_H
@@ -139,7 +140,7 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  ui_text(rect,48,269,1,gx?"> GX (EXPERIMENTAL): ON":"> GX (EXPERIMENTAL): OFF",221,237,255);
  ui_text(rect,48,299,1,"A: HUD    1 / GC X: update    2 / GC Y: FPS",106,171,223);
  ui_text(rect,48,324,1,"LEFT / RIGHT: toggle GX",106,171,223);
- ui_text(rect,48,349,1,"MINUS+PLUS: HUD    HOME: pause to launcher.",106,171,223);
+ ui_text(rect,48,349,1,"DOWN: CPU / GX OPTIMIZATIONS",106,171,223);
  }else{
  ui_text(rect,48,170,1,"Experimental PS2 emulator for Nintendo Wii",221,237,255);
  ui_text(rect,48,207,1,"Native launcher / devkitPPC / libogc",106,171,223);
@@ -150,6 +151,22 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  rect(36,381,568,1,24,61,99);
  ui_text(rect,38,397,1,notice?notice:"",117,186,237);
  ui_text(rect,38,437,1,page?"B  BACK":"D-PAD/STICK SELECT  A OPEN  +/START RESUME",209,227,246);
+}
+static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested,uint32_t available,const char *message)
+{
+ for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
+ ui_text(rect,36,28,2,"CPU / GX OPTIMIZATIONS",204,232,255);
+ ui_text(rect,36,65,1,"Changes apply to the next cold boot. START resumes.",106,171,223);
+ for(unsigned n=0;n<GEKKO2_OPT_COUNT;n++){
+  int y=92+(int)n*20,on=(int)n==selected;char row[90];
+  rect(32,y-2,576,19,on?16:9,on?43:22,on?76:41);
+  snprintf(row,sizeof(row),"%s %-28s %s",on?">":" ",gekko2_opt_name(n),
+      !(available&GEKKO2_OPT_BIT(n))?"UNAVAILABLE":requested&GEKKO2_OPT_BIT(n)?"ON":"OFF");
+  ui_text(rect,40,y,1,row,on?228:148,on?242:176,on?255:207);
+ }
+ ui_text(rect,36,365,1,gekko2_opt_description((unsigned)selected),117,186,237);
+ ui_text(rect,36,397,1,message?message:"",117,186,237);
+ ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT TOGGLE   B BACK",209,227,246);
 }
 static void ui_browser_draw(ui_rect_fn rect,const frontend_browser *browser,const char *message)
 {

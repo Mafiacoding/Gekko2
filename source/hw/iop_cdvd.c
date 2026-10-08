@@ -277,6 +277,11 @@ static void dispatch_ncmd(uint8_t cmd)
             uint32_t i;
             uint32_t read_ok_count = 0;
             for (i = 0; i < count; i++) {
+                /* R1330-C: reject uint32 LSN wrap. Without this guard a
+                 * request near UINT32_MAX could wrap sector+i back to the
+                 * beginning of a valid image and deliver unrelated data. */
+                if (i > UINT32_MAX - sector)
+                    break;
                 if (iso_read_sector(&g_disc, sector + i, sector_buf) != 0)
                     break; /* real end-of-disc/bad-sector case - stop delivering rather than fabricate data */
                 if (!iop_dma_channel_write_bytes(3, sector_buf, CDVD_SECTOR_SIZE))

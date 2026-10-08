@@ -2,6 +2,27 @@
 
 # Gekko2 for Nintendo Wii
 
+## R1331 CPU / GX options checkpoint
+
+The launcher exposes thirteen independent CPU/GX options under
+**Settings → Down → CPU / GX Optimizations**. Options are saved on SD and applied
+at the next cold boot; resuming keeps the current execution mode.
+
+R1331 adds a shared 6 MiB code arena with stable PPC addresses, safe independent
+VRAM writes, and an experimental RAM-TLB page cache (default **OFF**). Precise
+guest boundaries and exact-state graphics fallbacks remain. Options and
+Reference use the same renderer; Reference omits the arena and starts with EE
+blocks disabled. Saved settings override defaults where available.
+
+See [the six optimization batches](docs/R1331-BATCHES.md), including **Fastmem as
+batch 6**, for status, controls, validation and remaining work. Persistent FPU
+pinning, directly patched block branches, general Gouraud depth/alpha coverage,
+and PPC-MMU/DSI Fastmem are still open. No Wii FPS gain or physical boot
+verification is claimed for this checkpoint.
+
+Earlier checkpoint descriptions below are historical.
+
+
 **Experimental PlayStation 2 emulation • Early alpha • Alpha coming soon**
 
 Gekko2 explores PS2 emulation on Nintendo Wii hardware. Alex has spent approximately eight months reading, debugging and testing the project, with assistance from Claude AI and later ChatGPT/GPT-6.1. The original goal was to get the real PS2 BIOS running before attempting games or playable performance.

@@ -1,3 +1,4 @@
+#include "core/recompiler/dynarec_config.h"
 /*
  * system.c - interleaved EE/IOP scheduler. See system.h for the
  * rationale and current known simplifications (EE_IOP_STEP_RATIO
@@ -140,7 +141,7 @@ void system_profile_reset(void)
 }
 void system_profile_get(system_profile_t *out){if(out)*out=g_profile;}
 
-/* EE still runs eight instructions before EVERY IOP tick, including
+/* EE still runs eight scheduler slots before EVERY IOP tick, including
  * native block slots, HLE interception, idle and scalar recovery. Grouping
  * host calls does not grant either guest CPU extra execution time. */
 static unsigned g_iop_sample_pending;
@@ -168,6 +169,27 @@ static void system_before_iop_tick(void)
     } else if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
 }
 
+#if GEKKO2_SCHEDULER_QUANTA_ENABLED
+static unsigned system_quantum_grant;
+static void system_begin_ee_quantum(void)
+{
+ if(--g_profile_remaining==0u) {
+  g_iop_sample_begin=system_profile_clock();g_iop_sample_pending=1u;
+  uint32_t rng=g_profile_rng;rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
+  g_profile_rng=rng;g_profile_remaining=128u+(rng&255u);
+ }
+}
+static int system_after_ee_quantum(void)
+{
+ if(g_iop_sample_pending)g_iop_sample_middle=system_profile_clock();
+ iop_state_t *iop=iop_core_get_state();
+ if(!iop->halted)iop_core_step_n(1u);
+ system_finish_iop_sample();
+ if(--system_quantum_grant&&!iop->halted)system_begin_ee_quantum();
+ return !iop->halted;
+}
+#endif
+
 int system_run_interleaved(uint64_t max_slices)
 {
     ee_state_t  *ee  = ee_core_get_state();
@@ -178,7 +200,14 @@ int system_run_interleaved(uint64_t max_slices)
         unsigned grant=8u,done;
         if(max_slices && max_slices-slice<grant)grant=(unsigned)(max_slices-slice);
         if(!iop->halted) {
+#if GEKKO2_SCHEDULER_QUANTA_ENABLED
+            if(gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)) {
+                system_quantum_grant=grant;system_begin_ee_quantum();
+                done=ee_core_step_interleaved_n(grant,system_after_ee_quantum);
+            } else done=iop_core_step_interleaved_n(grant,system_before_iop_tick);
+#else
             done=iop_core_step_interleaved_n(grant,system_before_iop_tick);
+#endif
         } else {
             system_before_iop_tick();done=1;
         }
@@ -198,8 +227,21 @@ int system_run_interleaved(uint64_t max_slices)
 
         slice+=done;
         if (max_slices != 0 && slice >= max_slices) {
-#ifndef PCSX2WII_FAST
-            system_safe_printf("\n[!] system_run_interleaved: hit slice cap (%llu) before both cores halted\n",
+            /*
+             * R1330-H: max_slices is the normal frontend timeslice quantum,
+             * not an error/safety cap. main.c intentionally calls this
+             * function repeatedly with an adaptive budget (typically a few
+             * thousand IOP instructions) so input, presentation and logging
+             * stay responsive. Printing three warning lines at every normal
+             * quantum boundary floods the Wii video console and can visibly
+             * alternate console text with the guest framebuffer.
+             *
+             * Keep the return value/EE:IOP scheduling exactly unchanged.
+             * Explicit diagnostic builds can opt back into the old boundary
+             * trace without making ordinary hardware builds spam every frame.
+             */
+#ifdef GEKKO2_TRACE_SLICE_BOUNDARIES
+            system_safe_printf("\n[diag] system_run_interleaved: quantum complete (%llu)\n",
                    (unsigned long long)max_slices);
             system_safe_printf("    EE  halted=%d pc=0x%08lX\n", ee->halted, (unsigned long)ee->pc);
             system_safe_printf("    IOP halted=%d pc=0x%08lX\n", iop->halted, (unsigned long)iop->pc);

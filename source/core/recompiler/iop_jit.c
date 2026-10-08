@@ -1,3 +1,5 @@
+#include "core/recompiler/optimization.h"
+#include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/iop_jit.h"
 #include "core/recompiler/ppc_dynarec.h"
 #include <stdlib.h>
@@ -20,7 +22,11 @@ typedef struct {uint32_t pc,instr;iop_block fn;uint8_t rejected;} pc_slot;
 #define BLOCK_SLOTS 128u
 #define BLOCK_WORDS 8u
 typedef unsigned (*iop_precise_block)(iop_state_t *,unsigned);
-typedef struct {uint32_t pc,first; iop_precise_block fn;} precise_slot;
+typedef struct {
+ uint32_t pc,first,words[BLOCK_WORDS];
+ iop_precise_block fn;
+ uint8_t count;
+} precise_slot;
 static precise_slot block_cache[BLOCK_SLOTS];
 static unsigned block_active;
 /* Formation only peeks ordinary RAM/BIOS. No speculative MMIO reads. */
@@ -59,7 +65,7 @@ int iop_jit_try_execute_one(iop_state_t *st,uint32_t pc,uint32_t iw)
 #if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
  (void)st;(void)pc;(void)iw;return 0;
 #else
- if(!iop_core_native_call_safe(st,pc,iw))return 0;
+ if(!gekko2_opt_enabled(GEKKO2_OPT_IOP_JIT)||!iop_core_native_call_safe(st,pc,iw))return 0;
  pc_slot*p=&pc_cache[((pc>>2)^(pc>>12))&(PC_SLOTS-1)];
  if(p->pc==pc&&p->instr==iw){if(p->rejected){rejected_hits++;return 0;}if(p->fn){p->fn(st->gpr,pc);executed++;return 1;}}
  rejected_slot *negative=&rejected_cache[(iw^(iw>>16))&63u];
@@ -90,11 +96,16 @@ unsigned iop_jit_try_execute_block(iop_state_t *st,unsigned budget)
 #if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
  (void)st;(void)budget;return 0;
 #else
- if(!st||!budget||st->halted||st->idle||block_active)return 0;
+ if(!gekko2_opt_enabled(GEKKO2_OPT_IOP_JIT)||!st||!budget||st->halted||st->idle||block_active)return 0;
  uint32_t pc=st->pc,first;
  if(!block_peek(st,pc,&first))return 0;
  precise_slot *slot=&block_cache[((pc>>2)^(pc>>5)^(pc>>12))&(BLOCK_SLOTS-1u)];
- if(!slot->fn||slot->pc!=pc||slot->first!=first) {
+ int warm=slot->fn&&slot->pc==pc&&slot->first==first&&slot->count>0u&&slot->count<=BLOCK_WORDS;
+ for(unsigned n=0;warm&&n<slot->count;n++) {
+  uint32_t live;
+  if(!block_peek(st,pc+n*4u,&live)||live!=slot->words[n])warm=0;
+ }
+ if(!warm) {
   uint32_t words[BLOCK_WORDS];unsigned count=0;int delay=0;
   for(;count<BLOCK_WORDS;count++) {
    if(!block_peek(st,pc+count*4u,&words[count]))break;
@@ -113,15 +124,17 @@ unsigned iop_jit_try_execute_block(iop_state_t *st,unsigned budget)
   }
   iop_precise_block fn=(iop_precise_block)ppc_dynarec_finalize(&ctx);
   if(!fn){ppc_dynarec_free(&ctx);return 0;}
-  if(slot->fn)free((void*)slot->fn);else block_cache_size++;
-  *slot=(precise_slot){pc,first,fn};
+  if(slot->fn)ppc_code_cache_release((void*)slot->fn);else block_cache_size++;
+  memset(slot,0,sizeof(*slot));
+  slot->pc=pc;slot->first=first;slot->fn=fn;slot->count=(uint8_t)count;
+  memcpy(slot->words,words,count*sizeof(uint32_t));
  }
  uint64_t stale=iop_core_block_stale_count();
  block_active=1;
  unsigned ticks=slot->fn(st,budget);
  block_active=0;
  block_runs++;block_ticks+=ticks;
- if(iop_core_block_stale_count()!=stale){free((void*)slot->fn);memset(slot,0,sizeof(*slot));block_cache_size--;}
+ if(iop_core_block_stale_count()!=stale){ppc_code_cache_release((void*)slot->fn);memset(slot,0,sizeof(*slot));block_cache_size--;}
  return ticks;
 #endif
 }
@@ -134,9 +147,9 @@ uint32_t iop_jit_get_cache_size(void){return cache_size;}
 void iop_jit_reset_for_test(void){
 #if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
  if(block_active)return;
- for(unsigned n=0;n<BLOCK_SLOTS;n++)if(block_cache[n].fn)free((void*)block_cache[n].fn);
+ for(unsigned n=0;n<BLOCK_SLOTS;n++)if(block_cache[n].fn)ppc_code_cache_release((void*)block_cache[n].fn);
  memset(block_cache,0,sizeof block_cache);
- for(unsigned n=0;n<CODE_SLOTS;n++)if(code_cache[n].fn)free((void*)code_cache[n].fn);
+ for(unsigned n=0;n<CODE_SLOTS;n++)if(code_cache[n].fn)ppc_code_cache_release((void*)code_cache[n].fn);
  memset(code_cache,0,sizeof code_cache);memset(pc_cache,0,sizeof pc_cache);memset(rejected_cache,0,sizeof rejected_cache);
 #endif
  executed=rejected_hits=block_runs=block_ticks=0;cache_size=block_cache_size=0;

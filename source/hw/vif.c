@@ -6,6 +6,7 @@
 #include "core/hw/gif.h"
 #include "core/hw/vu.h"
 #include "core/ee/ee_core.h"
+#include "core/hw/ee_intc.h"
 #include <string.h>
 
 /* VIFcode CMD field values (bits 24-30 of the code word) - cross-
@@ -54,6 +55,69 @@
 
 static vif_state_t g_vif0;
 static vif_state_t g_vif1;
+
+#define VIF0_STAT_ADDR  0x10003800u
+#define VIF0_FBRST_ADDR 0x10003810u
+#define VIF1_STAT_ADDR  0x10003C00u
+#define VIF1_FBRST_ADDR 0x10003C10u
+#define VIF_STAT_VIS     (1u << 10)
+#define VIF_STAT_INT     (1u << 11)
+#define VIF_FBRST_RST    (1u << 0)
+#define VIF_FBRST_STC    (1u << 3)
+#define EE_INTC_IRQ_VIF0 4
+#define EE_INTC_IRQ_VIF1 5
+
+static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words);
+
+static int vif_complete_code(vif_state_t *vif, uint32_t code)
+{
+    if (!(code & 0x80000000u))
+        return 0;
+    /* PCSX2 latches the code I-bit and delivers the EE INTC event only
+     * after the command has completed. This synchronous VIF model does
+     * not yet suspend DMA parsing, so expose INT/INTC now but leave VIS
+     * clear until a real resumable stall/FIFO model exists. */
+    vif->stat |= VIF_STAT_INT | VIF_STAT_VIS;
+    vif->irq_stalled = 1;
+    vif->interrupts_raised++;
+    ee_intc_raise(vif->is_vif1 ? EE_INTC_IRQ_VIF1 : EE_INTC_IRQ_VIF0);
+    return 1;
+}
+
+int vif_mmio_read32(uint32_t addr, uint32_t *out)
+{
+    if (addr == VIF0_STAT_ADDR) { *out = g_vif0.stat; return 1; }
+    if (addr == VIF1_STAT_ADDR) { *out = g_vif1.stat; return 1; }
+    return 0;
+}
+
+int vif_mmio_write32(uint32_t addr, uint32_t value)
+{
+    vif_state_t *vif;
+    if (addr == VIF0_FBRST_ADDR) vif = &g_vif0;
+    else if (addr == VIF1_FBRST_ADDR) vif = &g_vif1;
+    else return 0;
+
+    /* STC clears the architecturally visible stall/interrupt/error
+     * status group. Only VIS/INT exist in this narrow model today. */
+    if (value & VIF_FBRST_STC) {
+        uint32_t words = vif->stall_words;
+        uint8_t replay[sizeof(vif->stall_buffer)];
+        if (words)
+            memcpy(replay, vif->stall_buffer, words * 4u);
+        vif->stall_words = 0;
+        vif->irq_stalled = 0;
+        vif->stat &= ~(VIF_STAT_VIS | VIF_STAT_INT);
+        if (words)
+            vif_process(vif, replay, words);
+    }
+    if (value & VIF_FBRST_RST) {
+        int is_vif1 = vif->is_vif1;
+        memset(vif, 0, sizeof(*vif));
+        vif->is_vif1 = is_vif1;
+    }
+    return 1;
+}
 
 void vif_init(void)
 {
@@ -388,6 +452,13 @@ static void vif_latch_micro(vif_state_t *vif)
 static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words)
 {
     uint32_t pos = 0; /* in 32-bit words */
+    if (vif->irq_stalled) {
+        uint32_t room = (uint32_t)(sizeof(vif->stall_buffer) / 4u) - vif->stall_words;
+        uint32_t take = total_words < room ? total_words : room;
+        memcpy(vif->stall_buffer + vif->stall_words * 4u, data, take * 4u);
+        vif->stall_words += take;
+        return;
+    }
 
     if (vif->direct_needed_words) {
         uint32_t need = vif->direct_needed_words - vif->direct_have_words;
@@ -400,6 +471,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
                               vif->direct_needed_words / 4u);
         vif->direct_qwords_forwarded += vif->direct_needed_words / 4u;
         vif->direct_needed_words = vif->direct_have_words = 0;
+        vif_complete_code(vif, vif->code);
     }
 
 
@@ -412,6 +484,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             dst[vif->register_pending_have++] = vif_rd_le32(data + pos++ * 4u);
         if (vif->register_pending_have < count) return;
         vif->register_pending_cmd = vif->register_pending_have = 0;
+        vif_complete_code(vif, vif->code);
     }
 
     /* Round 579 (task #536/#556): resume a real MPG upload left
@@ -436,8 +509,10 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
         vif->mpg_pending_addr += words * 4u;
         vif->mpg_pending_words -= words;
         vif->mpg_words_written += words;
-        if (vif->mpg_pending_words == 0u)
+        if (vif->mpg_pending_words == 0u) {
             vif->mpg_pending = 0;
+            vif_complete_code(vif, vif->code);
+        }
     }
 
     /* Round 580 (task #536/#557): resume a real UNPACK payload left
@@ -462,6 +537,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             vif->unpack_pending = 0;
             vif->unpack_have_bytes = 0;
             vif->unpack_needed_bytes = 0;
+            vif_complete_code(vif, vif->unpack_code);
         }
     }
 
@@ -508,6 +584,14 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
 
             if (!vif_unpack(vif, code, cmd, data, total_words, &pos))
                 return;
+            if (vif_complete_code(vif, code)) {
+                uint32_t remain = total_words - pos;
+                uint32_t room = (uint32_t)(sizeof(vif->stall_buffer) / 4u);
+                if (remain > room) remain = room;
+                if (remain) memcpy(vif->stall_buffer, data + pos * 4u, remain * 4u);
+                vif->stall_words = remain;
+                return;
+            }
             continue;
         }
 
@@ -731,6 +815,15 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
              * part for not losing the rest of a legitimate transfer. */
             vif->unsupported_cmds_seen++;
             break;
+        }
+        if (!vif->register_pending_cmd && !vif->mpg_pending &&
+            !vif->direct_needed_words && vif_complete_code(vif, code)) {
+            uint32_t remain = total_words - pos;
+            uint32_t room = (uint32_t)(sizeof(vif->stall_buffer) / 4u);
+            if (remain > room) remain = room;
+            if (remain) memcpy(vif->stall_buffer, data + pos * 4u, remain * 4u);
+            vif->stall_words = remain;
+            return;
         }
     }
 }

@@ -3,10 +3,11 @@
 #include "core/iso_loader.c"
 static unsigned fail;
 #define CHECK(c,m) do{if(!(c)){printf("FAIL: %s\n",m);fail++;}}while(0)
-static void entry(uint8_t*p,const char*n,unsigned lba,unsigned size,int dir){unsigned len=strlen(n);p[0]=34+len+(len%2==0);p[2]=lba;p[10]=size;p[11]=size>>8;p[25]=dir?2:0;p[32]=len;memcpy(p+33,n,len);}
+static void entry(uint8_t*p,const char*n,unsigned lba,unsigned size,int dir){unsigned len=strlen(n);p[0]=34+len+(len%2==0);p[2]=lba;p[3]=lba>>8;p[4]=lba>>16;p[5]=lba>>24;p[10]=size;p[11]=size>>8;p[12]=size>>16;p[13]=size>>24;p[25]=dir?2:0;p[32]=len;memcpy(p+33,n,len);}
 int main(void){
  FILE*f=tmpfile();uint8_t p[2048]={0};entry(p,"IRX",1,2048,1);fwrite(p,1,2048,f);
- memset(p,0,sizeof p);entry(p,"MCSERV.IRX;1",2,100,0);fwrite(p,1,2048,f);fflush(f);
+ memset(p,0,sizeof p);entry(p,"MCSERV.IRX;1",2,100,0);fwrite(p,1,2048,f);
+ memset(p,0,sizeof p);fwrite(p,1,2048,f);fflush(f);
  iso_image_t img={0};img.fp=f;img.opened=1;img.root_size=2048;img.physical_stride=2048;iso_dirent_t out;
  CHECK(!iso_find_path(&img,"cdrom:\\IRX\\MCSERV.IRX;1",&out)&&out.lba==2&&out.size==100,"walks raw game-style module path");
  CHECK(!iso_find_path(&img,"cdrom0:/IRX/MCSERV.IRX",&out),"accepts slash paths and leaf version fallback");

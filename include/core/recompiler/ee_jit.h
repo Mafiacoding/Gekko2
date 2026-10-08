@@ -119,6 +119,8 @@ int ee_jit_try_execute_one_at(ee_state_t *st, uint32_t pc, uint32_t instr);
 /* Diagnostics for verification/STATUS.md writeups and host-native
  * tests - not used by any control-flow decision. */
 uint64_t ee_jit_get_executed_count(void);
+/* All retired native EE instructions: scalar stubs plus precise blocks. */
+uint64_t ee_jit_get_native_retired_count(void);
 /* R1267: negative L0 hits avoid repeated unsupported-opcode compilation. */
 uint64_t ee_jit_get_rejected_hit_count(void);
 uint64_t ee_jit_get_compile_attempt_count(void);
@@ -136,6 +138,16 @@ unsigned ee_jit_try_execute_block(ee_state_t *st,unsigned budget);
 uint64_t ee_jit_get_native_successors(void);
 uint64_t ee_jit_get_block_count(void);
 uint64_t ee_jit_get_block_retired(void);
+/* R1318: number of valid precise blocks displaced by direct-map collisions. */
+uint64_t ee_jit_get_block_evictions(void);
+/* R1326: warm serial/generation-safe direct successor-link hits. */
+uint64_t ee_jit_get_direct_link_hits(void);
+uint64_t ee_jit_get_dispatch_hits(void);
+
+/* R1316: lazy precise-block invalidation. CPU/DMA RAM writers bump the
+ * physical source-page generation; mapping mutations bump a separate epoch. */
+void ee_jit_notify_physical_write(uint32_t phys_addr,uint32_t len);
+void ee_jit_notify_mapping_change(void);
 
 /* First encoding came from the real scalar fetch; later words stay live. */
 unsigned ee_jit_try_execute_chain_fetched(ee_state_t *st,unsigned budget,uint32_t first_word);

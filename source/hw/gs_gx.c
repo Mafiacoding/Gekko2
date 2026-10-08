@@ -1,3 +1,4 @@
+#include "core/recompiler/optimization.h"
 /* Experimental GX presentation and gated flat GS triangle/sprite spans. */
 #include "core/hw/gs_gx.h"
 #include "core/hw/gs_mem.h"
@@ -234,11 +235,16 @@ int gs_gx_draw_flat(uint32_t kind,uint32_t bp,uint32_t bw,int32_t minx,int32_t m
 #ifndef GEKKO
 int gs_gx_draw_flat_pipeline(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,uint32_t rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
 {(void)psm;(void)kind;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)rgba;(void)scanmsk;(void)pipeline;return 0;}
+int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
+{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)rgba;(void)scanmsk;(void)pipeline;return 0;}
+int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,uint32_t tex_w,uint32_t tex_h,uint32_t alpha,uint32_t scanmsk,gs_gx_texel_fn sample)
+{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;(void)tex_w;(void)tex_h;(void)alpha;(void)scanmsk;(void)sample;return 0;}
 int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,const int32_t *columns,const int32_t *rows,double step_x,double step_y,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
 {(void)pipeline;(void)psm;(void)bp;(void)bw;(void)x;(void)y;(void)w;(void)h;(void)columns;(void)rows;(void)step_x;(void)step_y;(void)scanmsk;(void)sample;return 0;}
 int gs_gx_ready(void){return 0;}
 int gs_gx_render_active(void){return 0;}
 uint64_t gs_gx_work_count(unsigned index){(void)index;return 0;}
+uint64_t gs_gx_sync_count(unsigned index){(void)index;return 0;}
 int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,
  const int32_t *xy,const int32_t *columns,const int32_t *rows,double du,double dv,uint32_t scanmsk,
  gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
@@ -246,6 +252,7 @@ int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,in
 uint64_t gs_gx_texture_count(unsigned n){(void)n;return 0;}
 uint64_t gs_gx_pipeline_count(unsigned n){(void)n;return 0;}
 uint64_t gs_gx_surface_count(unsigned n){(void)n;return 0;}
+uint64_t gs_gx_resident_pipeline_count(unsigned n){(void)n;return 0;}
 int gs_gx_set_residency_enabled(int enabled){(void)enabled;return 1;}
 void gs_gx_source_key(uint32_t lo,uint32_t hi,int valid){(void)lo;(void)hi;(void)valid;}
 uint64_t gs_gx_source_cache_count(unsigned n){(void)n;return 0;}
@@ -261,6 +268,19 @@ int gs_gx_draw_flat_psm(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,int32
 #define GX_PRESENT_TEXTURE (1024u*512u*4u)
 static void *fifo,*texture;
 static int initialized;
+/* R1330-I: retain CPU fences only at actual memory ownership transfers.
+ * GPU copy -> GPU sample is ordered inside the FIFO with PixModeSync. */
+static int texture_in_flight;
+static uint64_t sync_counts[8];
+uint64_t gs_gx_sync_count(unsigned n){return n<8u?sync_counts[n]:0;}
+static void gx_cpu_wait(unsigned reason)
+{
+ uint32_t begin,end;__asm__ volatile("mftb %0":"=r"(begin));
+ GX_DrawDone();
+ __asm__ volatile("mftb %0":"=r"(end));
+ sync_counts[reason]++;sync_counts[4u+reason]+=(uint32_t)(end-begin);
+ texture_in_flight=0;
+}
 int gs_gx_ready(void){return initialized;}
 int gs_gx_render_active(void){return initialized&&render_enabled;}
 static uint32_t efb_width,efb_height;
@@ -272,6 +292,8 @@ static gs_gx_surface *surface;
 static void *surface_pixels;
 static int surface_texture_valid;
 static uint64_t surface_counts[6];
+static uint64_t resident_pipeline_counts[11];
+uint64_t gs_gx_resident_pipeline_count(unsigned n){return n<11u?resident_pipeline_counts[n]:0;}
 static uint32_t source_key_lo,source_key_hi,source_key_valid;
 static struct {uint32_t lo,hi,valid;int32_t x,y;uint32_t w,h;gs_gx_texel_fn sample;} source_cache;
 static uint64_t source_cache_counts[3];
@@ -280,11 +302,11 @@ uint64_t gs_gx_source_cache_count(unsigned n){return n<3u?source_cache_counts[n]
 static uint32_t source_pack(gs_gx_texture_draw *d,gs_gx_texel_fn sample)
 {
  uint32_t lo=source_key_lo,hi=source_key_hi,valid=source_key_valid;source_key_valid=0;
- if(valid&&source_cache.valid&&lo==source_cache.lo&&hi==source_cache.hi&&sample==source_cache.sample&&
+ if(gekko2_opt_enabled(GEKKO2_OPT_GX_SOURCE_CACHE)&&valid&&source_cache.valid&&lo==source_cache.lo&&hi==source_cache.hi&&sample==source_cache.sample&&
     d->origin_x==source_cache.x&&d->origin_y==source_cache.y&&d->tw==source_cache.w&&d->th==source_cache.h) {
   source_cache_counts[0]++;return d->tw*d->th*4u;
  }
- if(surface&&surface->active)GX_DrawDone(); /* finish previous sampling before CPU buffer reuse */
+ if(texture_in_flight)gx_cpu_wait(0); /* CPU overwrites a sampled buffer. */
  uint32_t bytes=gs_gx_pack_texture(texture,GX_PRESENT_TEXTURE,d,sample);source_cache_counts[1]++;
  source_cache.valid=valid&&bytes;source_cache.lo=lo;source_cache.hi=hi;source_cache.x=d->origin_x;source_cache.y=d->origin_y;
  source_cache.w=d->tw;source_cache.h=d->th;source_cache.sample=sample;source_cache_counts[2]+=bytes;return bytes;
@@ -292,6 +314,7 @@ static uint32_t source_pack(gs_gx_texture_draw *d,gs_gx_texel_fn sample)
 uint64_t gs_gx_surface_count(unsigned n){return n<6u?surface_counts[n]:0;}
 static int surface_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t width,uint32_t height);
 static int surface_draw_flat(const gs_gx_flat_draw *draw);
+static void pipeline_shader_target(const gs_gx_texture_draw *d,void *pixels,uint32_t w,uint32_t h);
 static gs_gx_texture_draw texture_draw;
 static uint32_t geometry_kind,geometry_rgba;
 static int32_t geometry_xy[6];
@@ -314,7 +337,7 @@ static int resolve_capture(void *opaque,uint8_t *vram,uint32_t size)
 {
     (void)opaque;
     work_counts[3]++;
-    GX_DrawDone(); /* GPU copy must finish before invalidating CPU cache. */
+    gx_cpu_wait(1); /* GPU copy must finish before invalidating CPU cache. */
     DCInvalidateRange(readback,capture.bytes);
     if(capture_texture)return gs_gx_import_texture(vram,size,readback,capture.bytes,texture,texture_draw.tw*texture_draw.th*4u,&texture_draw);
     if(capture_flat)return gs_gx_import_flat(vram,size,readback,capture.bytes,&flat_draw);
@@ -379,7 +402,8 @@ static void surface_copy(void *pixels,uint32_t x,uint32_t y,uint32_t w,uint32_t 
 {
  static uint8_t samples[12][2],filter[7];
  GX_SetCopyFilter(GX_FALSE,samples,GX_FALSE,filter);GX_SetTexCopySrc(x,y,w,h);
- GX_SetTexCopyDst(w,h,GX_TF_RGBA8,GX_FALSE);GX_CopyTex(pixels,GX_FALSE);GX_DrawDone();GX_InvalidateTexAll();
+ GX_SetTexCopyDst(w,h,GX_TF_RGBA8,GX_FALSE);GX_CopyTex(pixels,GX_FALSE);
+ GX_PixModeSync();GX_InvalidateTexAll();
 }
 static int surface_snapshot(void)
 {
@@ -389,8 +413,9 @@ static int surface_snapshot(void)
 }
 static int resolve_surface(void *opaque,uint8_t *vram,uint32_t size)
 {
- (void)opaque;int had_snapshot=surface_texture_valid;
- if(!surface_snapshot())return 0;if(had_snapshot)GX_DrawDone();
+ (void)opaque;
+ if(!surface_snapshot())return 0;
+ gx_cpu_wait(1); /* Snapshot is queued; CPU import owns it after completion. */
  uint32_t bytes=surface->width*surface->height*4;
  DCInvalidateRange(surface_pixels,bytes);
  if(!gs_gx_surface_import(surface,vram,size,surface_pixels,bytes))return 0;
@@ -416,6 +441,7 @@ static int surface_ensure(const gs_gx_flat_draw *draw)
   for(uint32_t y=0;y<h;y++)for(uint32_t x=0;x<draw->bw;x++) {
    uint32_t o=(uint32_t)target_offset(draw->bp,draw->bw,x,y),t=texture_tile(draw->bw,x,y);
    pixels[t]=255;pixels[t+1]=vram[o];pixels[t+32]=vram[o+1];pixels[t+33]=vram[o+2];
+   surface->alpha[y*draw->bw+x]=vram[o+3];
   }
   DCFlushRange(surface_pixels,draw->bw*h*4);GX_InvalidateTexAll();
   surface_state(draw->bw,h,1);surface_texture(surface_pixels,draw->bw,h,GX_NEAR);surface_quad(draw->bw,h);
@@ -444,10 +470,17 @@ static int surface_draw_flat(const gs_gx_flat_draw *draw)
  if(!gs_mem_gpu_mark_pending())return 0;
  surface_counts[1]++;work_counts[0]++;work_counts[1]+=quads;return 1;
 }
-static int surface_draw_textured(gs_gx_texture_draw *d,gs_gx_texel_fn sample)
+static int surface_draw_textured(gs_gx_texture_draw *d,uint32_t bytes)
 {
- if((!surface||!surface->active)&&!gs_mem_sync())return 0;
- uint32_t bytes=source_pack(d,sample);if(!bytes||!surface_ensure(&d->coverage))return 0;
+ if(!bytes||!surface_ensure(&d->coverage))return 0;
+ if(d->hardware_blend) {
+  /* A resident blend samples only its aligned destination rectangle.
+   * Allocate the maximum once: never free a buffer still sampled by GX. */
+  if(destination_capacity<GS_GX_SURFACE_PIXELS*4u && texture_in_flight)gx_cpu_wait(0);
+  if(!grow_texture(&destination_texture,&destination_capacity,GS_GX_SURFACE_PIXELS*4u))return 0;
+  surface_copy(destination_texture,d->coverage.x,d->coverage.y,d->coverage.width,d->coverage.height);
+  resident_pipeline_counts[10]+=(uint64_t)d->coverage.width*d->coverage.height*4u;
+ }
  gs_gx_flat_draw alpha_mark=d->coverage;alpha_mark.psm=1;
  if(!gs_gx_surface_mark(surface,&alpha_mark))return 0;
  if(!d->coverage.psm) {
@@ -465,19 +498,35 @@ static int surface_draw_textured(gs_gx_texture_draw *d,gs_gx_texel_fn sample)
   uint32_t end=y+1;while(end<d->coverage.height&&d->coverage.left[end]==d->coverage.left[y]&&d->coverage.right[end]==d->coverage.right[y])end++;
   if(d->coverage.right[y]>d->coverage.left[y])quads++;y=end;
  }
- if(quads)GX_Begin(GX_QUADS,GX_VTXFMT0,quads*4);
- for(uint32_t y=0;y<d->coverage.height;) {
+ uint32_t passes=d->hardware_blend&&d->pipeline.pabe?2u:1u;
+ for(uint32_t pass=0;pass<passes;pass++) {
+  gs_gx_texture_draw shader=*d;
+  if(passes==2u&&pass==0u)shader.hardware_blend=0;
+  /* Reset the state between complementary PABE passes. */
+  surface_state(surface->width,surface->height,1);surface_texture(texture,d->tw,d->th,GX_NEAR);
+  pipeline_shader_target(&shader,destination_texture,d->coverage.width,d->coverage.height);
+  if(passes==2u)GX_SetAlphaCompare(pass?GX_GEQUAL:GX_LESS,128,GX_AOP_AND,GX_ALWAYS,0);
+  if(quads)GX_Begin(GX_QUADS,GX_VTXFMT0,quads*4);
+  for(uint32_t y=0;y<d->coverage.height;) {
   uint32_t end=y+1,l=d->coverage.left[y],r=d->coverage.right[y];
   while(end<d->coverage.height&&d->coverage.left[end]==l&&d->coverage.right[end]==r)end++;
   if(r>l) {
    float s0=d->s0+(d->s1-d->s0)*(float)l/d->columns,s1=d->s0+(d->s1-d->s0)*(float)r/d->columns;
    float t0=d->t0+(d->t1-d->t0)*(float)y/d->rows,t1=d->t0+(d->t1-d->t0)*(float)end/d->rows;
-   vertex(d->coverage.x+l,d->coverage.y+y,s0,t0);vertex(d->coverage.x+r,d->coverage.y+y,s1,t0);
-   vertex(d->coverage.x+r,d->coverage.y+end,s1,t1);vertex(d->coverage.x+l,d->coverage.y+end,s0,t1);
+   float vx[4]={d->coverage.x+l,d->coverage.x+r,d->coverage.x+r,d->coverage.x+l};
+   float vy[4]={d->coverage.y+y,d->coverage.y+y,d->coverage.y+end,d->coverage.y+end};
+   float ss[4]={s0,s1,s1,s0},tt[4]={t0,t0,t1,t1};
+   for(unsigned k=0;k<4;k++) {
+    vertex(vx[k],vy[k],ss[k],tt[k]);
+    if(shader.hardware_blend)GX_TexCoord2f32((vx[k]-d->coverage.x)/d->coverage.width,(vy[k]-d->coverage.y)/d->coverage.height);
+   }
   }y=end;
+  }
+  if(quads){GX_End();texture_in_flight=1;}
  }
- if(quads)GX_End();surface_texture_valid=0;if(!gs_mem_gpu_mark_pending())return 0;
- surface_counts[1]++;work_counts[0]++;work_counts[1]+=quads;
+ GX_SetAlphaCompare(GX_ALWAYS,0,GX_AOP_AND,GX_ALWAYS,0);
+ surface_texture_valid=0;if(!gs_mem_gpu_mark_pending())return 0;
+ surface_counts[1]++;work_counts[0]++;work_counts[1]+=quads*passes;
  texture_counts[1]++;texture_counts[2]+=bytes;return 1;
 }
 /* Preserve the old broadcast clamp BEFORE linear scanout filtering, entirely
@@ -511,7 +560,8 @@ static int surface_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,ui
  GX_SetDispCopySrc(0,0,mode->fbWidth,mode->efbHeight);GX_SetDispCopyDst(mode->fbWidth,copy_h);
  GX_SetCopyFilter(GX_FALSE,mode->sample_pattern,GX_TRUE,mode->vfilter);
  GX_SetFieldMode(mode->field_rendering,mode->viHeight==2*mode->xfbHeight);GX_SetDispCopyGamma(GX_GM_1_0);
- surface_quad(mode->fbWidth,mode->efbHeight);GX_CopyDisp(xfb,GX_FALSE);GX_DrawDone();
+ surface_quad(mode->fbWidth,mode->efbHeight);texture_in_flight=1;
+ GX_CopyDisp(xfb,GX_FALSE);gx_cpu_wait(2);
  surface_state(surface->width,surface->height,1);surface_texture(surface_pixels,surface->width,surface->height,GX_NEAR);
  surface_quad(surface->width,surface->height);surface_counts[4]++;return 1;
 }
@@ -535,6 +585,7 @@ int gs_gx_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
     if(!initialize())return 0;
     /* Previous copy finishes before CPU texture reuse; DrawDone below also
      * completes the EFB->XFB copy before the software FPS overlay writes. */
+    if(texture_in_flight)gx_cpu_wait(0);
     source_cache.valid=0;
     uint32_t bytes=gs_gx_pack_rgba8(texture,GX_PRESENT_TEXTURE,bp,bw,sx,sy,width,height);
     if(!bytes)return 0;
@@ -572,7 +623,7 @@ int gs_gx_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
     GX_Begin(GX_QUADS,GX_VTXFMT0,4);
     vertex(0,0,0,0);vertex(mode->fbWidth,0,s,0);
     vertex(mode->fbWidth,mode->efbHeight,s,t);vertex(0,mode->efbHeight,0,t);
-    GX_End();GX_CopyDisp(xfb,GX_FALSE);GX_DrawDone();
+    GX_End();texture_in_flight=1;GX_CopyDisp(xfb,GX_FALSE);gx_cpu_wait(2);
     return 1;
 }
 static void color_vertex(float x,float y,uint32_t rgba)
@@ -749,13 +800,13 @@ static void tev_copy(u8 stage,u8 map,u8 coord,u8 reg)
     GX_SetTevAlphaIn(stage,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_TEXA);
     GX_SetTevAlphaOp(stage,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_FALSE,reg);
 }
-static void pipeline_shader(const gs_gx_texture_draw *d)
+static void pipeline_shader_target(const gs_gx_texture_draw *d,void *destination,uint32_t destination_w,uint32_t destination_h)
 {
     unsigned stages=1;const gs_gx_pipeline *p=&d->pipeline;
     if(d->hardware_blend) {
         GX_SetNumTexGens(2);GX_SetTexCoordGen(GX_TEXCOORD1,GX_TG_MTX2x4,GX_TG_TEX1,GX_IDENTITY);
         GX_SetVtxDesc(GX_VA_TEX1,GX_DIRECT);GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_TEX1,GX_TEX_ST,GX_F32,0);
-        GXTexObj obj;GX_InitTexObj(&obj,destination_texture,d->coverage.width,d->coverage.height,GX_TF_RGBA8,GX_CLAMP,GX_CLAMP,GX_FALSE);
+        GXTexObj obj;GX_InitTexObj(&obj,destination,destination_w,destination_h,GX_TF_RGBA8,GX_CLAMP,GX_CLAMP,GX_FALSE);
         GX_InitTexObjLOD(&obj,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);GX_LoadTexObj(&obj,GX_TEXMAP1);
         tev_copy(0,GX_TEXMAP0,GX_TEXCOORD0,GX_TEVREG0);tev_copy(1,GX_TEXMAP1,GX_TEXCOORD1,GX_TEVREG1);
         unsigned coeff=p->c==2u?p->fix:128u;
@@ -831,6 +882,68 @@ static void pipeline_shader(const gs_gx_texture_draw *d)
     }
     GX_SetNumTevStages(stages);
 }
+static void pipeline_shader(const gs_gx_texture_draw *d)
+{pipeline_shader_target(d,destination_texture,d->coverage.width,d->coverage.height);}
+
+/* Keep color on GX, and exact GS Z in a disjoint CPU shadow. Unsupported
+ * fragmented masks/alpha coefficients return to the existing compact path. */
+static int surface_draw_pipeline(gs_gx_texture_draw *d,gs_gx_texel_fn sample,const gs_gx_pipeline *input)
+{
+ resident_pipeline_counts[0]++;
+ if(!sample||!input)return 0;
+ d->pipeline=*input;
+ uint32_t h=efb_height<512u?efb_height&~3u:512u;
+ if(!h||d->coverage.bw>efb_width||d->coverage.bw>640u||
+    d->coverage.x+d->coverage.width>d->coverage.bw||d->coverage.y+d->coverage.height>h||
+    !gs_gx_target_valid(GS_MEM_SIZE,d->coverage.bp,d->coverage.bw,0,0,d->coverage.bw,h)) {
+  resident_pipeline_counts[9]++;return 0;
+ }
+ uint32_t clo=d->coverage.bp*4u,chi=(uint32_t)target_offset(d->coverage.bp,d->coverage.bw,d->coverage.bw-1,h-1)+4u;
+ uint32_t zlo=0,zhi=0;uint64_t tested=0,failed=0;
+ if((input->ztest||input->zwrite)&&!gs_gx_surface_depth_range(d,input,clo,chi,&zlo,&zhi)) {
+  resident_pipeline_counts[7]++;return 0;
+ }
+ /* Read the depth range before opening/changing the resident target. Any
+  * overlap with the previous target follows the normal resolve barrier. */
+ const uint8_t *depth=NULL;
+ if(input->ztest&&input->ztst>=2u&&zhi) {
+  depth=gs_mem_read_range(zlo,zhi-zlo);if(!depth)return 0;
+ }
+ if(!gs_gx_surface_depth_clip(d,input,depth,zlo,zhi-zlo,&tested,&failed)) {
+  resident_pipeline_counts[7]++;return 0;
+ }
+ gs_gx_pipeline *p=&d->pipeline;
+ if(p->blend&&(!p->colclamp||p->a>2u||p->b>2u||p->c>2u||p->d>2u||p->fix>255u)) {
+  resident_pipeline_counts[8]++;return 0;
+ }
+ if((!surface||!surface->active)&&!gs_mem_sync())return 0;
+ uint32_t bytes=source_pack(d,sample);if(!bytes)return 0;
+ pipeline_source_alpha(d,texture);
+ if(!surface_ensure(&d->coverage)){resident_pipeline_counts[9]++;return 0;}
+ if(p->blend&&p->c==1u&&d->coverage.psm==0u&&p->a!=p->b) {
+  unsigned seen=0,value=0;
+  for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++) {
+   unsigned a=surface->alpha[(d->coverage.y+y)*surface->width+d->coverage.x+x];
+   if(seen&&a!=value){resident_pipeline_counts[8]++;return 0;}value=a;seen=1;
+  }
+  p->c=2u;p->fix=value;
+ }
+ if(p->blend&&p->c==0u&&p->a!=p->b){resident_pipeline_counts[8]++;return 0;}
+ d->hardware_blend=p->blend;d->hardware_depth=0;
+ /* CPU preplanned every passing fragment. GX does RGB/TEV, not the Z test. */
+ p->ztest=0;p->zwrite=0;
+ if(!surface_draw_textured(d,bytes))return 0;
+ uint64_t written=0;
+ if(input->zwrite)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++) {
+  gs_mem_write_z(input->zbp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y,input->zpsm,input->z);written++;
+ }
+ resident_pipeline_counts[1]++;resident_pipeline_counts[2]+=tested;resident_pipeline_counts[3]+=failed;
+ resident_pipeline_counts[4]+=written;resident_pipeline_counts[5]+=!!input->blend;
+ resident_pipeline_counts[6]+=(uint64_t)d->coverage.width*d->coverage.height*4u;
+ if(input->ztest||input->zwrite)pipeline_counts[1]++;
+ if(input->blend)pipeline_counts[2]++;
+ return 1;
+}
 static void pipeline_vertex(float x,float y,float s,float t,const gs_gx_texture_draw *d)
 {
     vertex(x,y,s,t);if(d->hardware_blend||d->hardware_depth==2u)GX_TexCoord2f32(x/d->coverage.width,y/d->coverage.height);
@@ -841,14 +954,19 @@ int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,
 {
     if(!render_enabled||!initialized)return 0;
     work_counts[4]++;texture_counts[0]++;
-    if(surface_enabled&&sample&&pipeline&&!pipeline->blend&&!pipeline->zwrite&&(!pipeline->ztest||pipeline->ztst==1u)) {
+    if(surface_enabled&&sample&&pipeline
+       &&(gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)||(!pipeline->blend&&!pipeline->zwrite&&(!pipeline->ztest||pipeline->ztst==1u)))
+#ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
+       &&!pipeline->blend&&!pipeline->zwrite&&(!pipeline->ztest||pipeline->ztst==1u)
+#endif
+       ) {
         gs_gx_texture_draw resident_draw;
         if(gs_gx_prepare_texture(&resident_draw,psm,bp,bw,x,y,w,h,columns,rows,step_x,step_y,scanmsk)) {
             if(geometry_kind) {
                 if(!gs_gx_prepare_flat(&resident_draw.coverage,geometry_kind,bp,bw,x,y,x+w-1,y+h-1,geometry_xy,0,scanmsk))return 0;
                 resident_draw.coverage.psm=psm;
             }
-            if(surface_draw_textured(&resident_draw,sample))return 1;
+            if(surface_draw_pipeline(&resident_draw,sample,pipeline))return 1;
         }
     }
     if(!gs_mem_sync())return 0;
@@ -941,6 +1059,83 @@ int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,in
  int result=gs_gx_draw_texture_sprite(psm,bp,bw,x,y,w,h,columns,rows,du,dv,scanmsk,sample,pipeline);
  geometry_kind=0;return result;
 }
+int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+    int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+    const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
+{
+    if(!render_enabled||!initialized||!xy||!rgba||!pipeline||psm!=0u||
+       maxx<minx||maxy<miny||maxx-minx>=640||maxy-miny>=512||
+       pipeline->ztest||pipeline->zwrite||pipeline->blend)return 0;
+    gs_gx_flat_draw d;
+    if(!gs_gx_prepare_flat(&d,3,bp,bw,minx,miny,maxx,maxy,xy,0,scanmsk)||
+       d.width>efb_width||d.height>efb_height||!gs_mem_sync())return 0;
+    if(!readback)readback=memalign(32,GX_PRESENT_TEXTURE);
+    if(!readback||!gs_mem_gpu_bind(resolve_capture,NULL))return 0;
+    GX_SetViewport(0,0,d.width,d.height,0,1);GX_SetScissor(0,0,d.width,d.height);
+    GX_SetPixelFmt(GX_PF_RGB8_Z24,GX_ZC_LINEAR);GX_SetDither(GX_FALSE);
+    GX_SetCullMode(GX_CULL_NONE);GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
+    GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    GX_SetColorUpdate(GX_TRUE);GX_SetAlphaUpdate(GX_FALSE);
+    GX_SetAlphaCompare(GX_ALWAYS,0,GX_AOP_AND,GX_ALWAYS,0);
+    GX_SetNumChans(1);GX_SetNumTexGens(0);GX_SetNumTevStages(1);
+    GX_SetChanCtrl(GX_COLOR0A0,GX_FALSE,GX_SRC_VTX,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
+    GX_SetTevOrder(GX_TEVSTAGE0,GX_TEXCOORDNULL,GX_TEXMAP_NULL,GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
+    GX_ClearVtxDesc();GX_SetVtxDesc(GX_VA_POS,GX_DIRECT);GX_SetVtxDesc(GX_VA_CLR0,GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_POS,GX_POS_XYZ,GX_F32,0);
+    GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_CLR0,GX_CLR_RGBA,GX_RGBA8,0);
+    Mtx model;Mtx44 projection;guMtxIdentity(model);guOrtho(projection,0,d.height,0,d.width,-1,1);
+    GX_LoadPosMtxImm(model,GX_PNMTX0);GX_SetCurrentMtx(GX_PNMTX0);GX_LoadProjectionMtx(projection,GX_ORTHOGRAPHIC);
+    GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
+    for(unsigned i=0;i<3;i++) {
+        /* K: +0.5 -> GX samples pixel centres, GS software samples corners. */
+        GX_Position3f32((float)(xy[i*2]-minx)+0.5f,(float)(xy[i*2+1]-miny)+0.5f,0);
+        GX_Color4u8(rgba[i]&255u,(rgba[i]>>8)&255u,(rgba[i]>>16)&255u,(rgba[i]>>24)&255u);
+    }
+    GX_End();
+    if(!gs_gx_capture_vram_psmct32(bp,bw,minx,miny,d.width,d.height,rgba[0]>>24))return 0;
+    d.rgba=rgba[0]&0xff000000u;capture_flat=1;capture_texture=0;flat_draw=d;work_counts[0]++;work_counts[1]++;work_counts[2]+=capture.bytes;
+    return 1;
+}
+int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+    int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,
+    uint32_t tex_w,uint32_t tex_h,uint32_t alpha,uint32_t scanmsk,gs_gx_texel_fn sample)
+{
+    if(!render_enabled||!initialized||psm!=0u||!xy||!uv||!sample||!tex_w||!tex_h||
+       maxx<minx||maxy<miny||maxx-minx>=640||maxy-miny>=512)return 0;
+    int32_t cols[640],rows[512];uint32_t w=maxx-minx+1u,h=maxy-miny+1u;
+    for(uint32_t x=0;x<w;x++)cols[x]=(int32_t)x;
+    for(uint32_t y=0;y<h;y++)rows[y]=(int32_t)y;
+    gs_gx_texture_draw d;
+    if(!gs_gx_prepare_texture(&d,psm,bp,bw,minx,miny,w,h,cols,rows,1,1,scanmsk)||
+       !gs_gx_prepare_flat(&d.coverage,3,bp,bw,minx,miny,maxx,maxy,xy,0,scanmsk)||
+       d.coverage.width>efb_width||d.coverage.height>efb_height||!gs_mem_sync())return 0;
+    d.coverage.psm=psm;d.origin_x=0;d.origin_y=0;d.tw=(tex_w+3u)&~3u;d.th=(tex_h+3u)&~3u;
+    if(d.tw>1024u||d.th>512u)return 0;
+    uint32_t bytes=source_pack(&d,sample);if(!bytes)return 0;
+    if(!readback)readback=memalign(32,GX_PRESENT_TEXTURE);
+    if(!readback||!gs_mem_gpu_bind(resolve_capture,NULL))return 0;
+    flat_draw=d.coverage;texture_draw=d;DCFlushRange(texture,bytes);GX_InvalidateTexAll();
+    GX_SetViewport(0,0,d.coverage.width,d.coverage.height,0,1);GX_SetScissor(0,0,d.coverage.width,d.coverage.height);
+    GX_SetPixelFmt(GX_PF_RGB8_Z24,GX_ZC_LINEAR);GX_SetDither(GX_FALSE);GX_SetCullMode(GX_CULL_NONE);
+    GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    GX_SetColorUpdate(GX_TRUE);GX_SetAlphaUpdate(GX_FALSE);GX_SetAlphaCompare(GX_ALWAYS,0,GX_AOP_AND,GX_ALWAYS,0);
+    GX_SetNumChans(0);GX_SetNumTexGens(1);GX_SetNumTevStages(1);
+    GX_SetTexCoordGen(GX_TEXCOORD0,GX_TG_MTX2x4,GX_TG_TEX0,GX_IDENTITY);
+    GX_SetTevOrder(GX_TEVSTAGE0,GX_TEXCOORD0,GX_TEXMAP0,GX_COLORNULL);GX_SetTevOp(GX_TEVSTAGE0,GX_REPLACE);
+    GX_ClearVtxDesc();GX_SetVtxDesc(GX_VA_POS,GX_DIRECT);GX_SetVtxDesc(GX_VA_TEX0,GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_POS,GX_POS_XYZ,GX_F32,0);GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_TEX0,GX_TEX_ST,GX_F32,0);
+    Mtx model;Mtx44 projection;guMtxIdentity(model);guOrtho(projection,0,d.coverage.height,0,d.coverage.width,-1,1);
+    GX_LoadPosMtxImm(model,GX_PNMTX0);GX_SetCurrentMtx(GX_PNMTX0);GX_LoadProjectionMtx(projection,GX_ORTHOGRAPHIC);
+    GXTexObj object;GX_InitTexObj(&object,texture,d.tw,d.th,GX_TF_RGBA8,GX_CLAMP,GX_CLAMP,GX_FALSE);
+    GX_InitTexObjLOD(&object,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);GX_LoadTexObj(&object,GX_TEXMAP0);
+    GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
+    for(unsigned i=0;i<3;i++){GX_Position3f32((float)(xy[i*2]-minx),(float)(xy[i*2+1]-miny),0);GX_TexCoord2f32(uv[i*2]/d.tw,uv[i*2+1]/d.th);}
+    GX_End();
+    if(!gs_gx_capture_vram_psmct32(bp,bw,minx,miny,d.coverage.width,d.coverage.height,alpha))return 0;
+    d.coverage.rgba=alpha<<24;flat_draw=d.coverage;capture_flat=1;capture_texture=0;work_counts[0]++;work_counts[1]++;work_counts[2]+=capture.bytes;
+    texture_counts[1]++;texture_counts[2]+=bytes;return 1;
+}
 static uint32_t flat_pipeline_sample(int32_t x,int32_t y){(void)x;(void)y;return geometry_rgba;}
 int gs_gx_draw_flat_pipeline(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,
     int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
@@ -958,6 +1153,6 @@ void gs_gx_shutdown(void)
     /* GX keeps references to its FIFO. Retain buffers until process exit;
      * never free a bound command FIFO or leave queued texture accesses. */
     gs_gx_set_residency_enabled(0);
-    if(initialized)GX_DrawDone();
+    if(initialized)gx_cpu_wait(3);
 }
 #endif

@@ -1,3 +1,5 @@
+#include "core/recompiler/dynarec_config.h"
+#include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/ppc_dynarec.h"
 #include "core/hw/frontend_text.h"
 #include "core/hw/frontend_logo.h"
@@ -288,6 +290,7 @@ static int   g_disc_ok = 0;
 
 /* Keep progress visible until the emulated display contains real RGB pixels. */
 static int g_first_picture;
+static uint64_t g_image_probe_attempts;
 static uint64_t g_boot_started,g_boot_log_next;
 static const char *boot_log_path(void)
 {
@@ -368,6 +371,22 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned long)timers->t[0].mode,(unsigned long)timers->t[1].mode,
             (unsigned long)timers->t[2].mode,(unsigned long)timers->t[3].mode);
     fprintf(f,"HOST budget=%lu remote_err=%d fps_overlay=%d gx_output=%d EE_PC=%08lx IOP_PC=%08lx\n",(unsigned long)g_slice_budget,g_remote_error,g_fps_default,g_gx_present,(unsigned long)ee_core_get_state()->pc,(unsigned long)iop_core_get_state()->pc);
+    ee_state_t *ee_runtime=ee_core_get_state();iop_state_t *iop_runtime=iop_core_get_state();
+    fprintf(f,"CORE_WAIT EE_idle=%u EE_halted=%u EE_Count=%08lx EE_retired=%llu IOP_idle=%u IOP_halted=%u IOP_ticks=%llu\n",
+        (unsigned)ee_runtime->idle,(unsigned)ee_runtime->halted,(unsigned long)ee_runtime->cop0[9],
+        (unsigned long long)ee_runtime->instructions_executed,(unsigned)iop_runtime->idle,
+        (unsigned)iop_runtime->halted,(unsigned long long)iop_runtime->sched_ticks);
+    const gs_state_t *scanout=gs_get_state();const gif_state_t *draw_target=gif_get_state();
+    uint64_t scanout_fb=(scanout->pmode&1u)?scanout->dispfb1:scanout->dispfb2;
+    uint64_t scanout_display=(scanout->pmode&1u)?scanout->display1:scanout->display2;
+    uint32_t scan_bp,scan_bw,scan_x,scan_y,scan_w,scan_h;
+    gs_decode_dispfb(scanout_fb,&scan_bp,&scan_bw);
+    gs_decode_display_region(scanout_fb,scanout_display,scanout->smode2,&scan_x,&scan_y,&scan_w,&scan_h);
+    fprintf(f,"GS_SCANOUT PMODE=%llx DISPFB=%llx DISPLAY=%llx bp=%lu bw=%lu origin=%lu,%lu size=%lux%lu image_probes=%llu draw_bp=%lu draw_bw=%lu draw_psm=%lu\n",
+        (unsigned long long)scanout->pmode,(unsigned long long)scanout_fb,(unsigned long long)scanout_display,
+        (unsigned long)scan_bp,(unsigned long)scan_bw,(unsigned long)scan_x,(unsigned long)scan_y,
+        (unsigned long)scan_w,(unsigned long)scan_h,(unsigned long long)g_image_probe_attempts,
+        (unsigned long)draw_target->fbp,(unsigned long)draw_target->fbw,(unsigned long)draw_target->frame_psm);
     fprintf(f,"GX requested=%d ready=%d primitives_requested=%d primitives_active=%d first=%d hud=%d attempts=%llu fallbacks=%llu pending=%lu sync_errors=%lu log=%s\n",
        g_gx_present,gs_gx_ready(),g_gx_present,
        frontend_allow_gx_primitives(g_gx_present,g_first_picture)&&gs_gx_ready(),
@@ -388,6 +407,12 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
     fprintf(f,"GX_SOURCE_CACHE hits=%llu misses=%llu decoded_bytes=%llu\n",
         (unsigned long long)gs_gx_source_cache_count(0),(unsigned long long)gs_gx_source_cache_count(1),
         (unsigned long long)gs_gx_source_cache_count(2));
+    fprintf(f,"GX_RESIDENT_PIPELINE attempts=%llu accepted=%llu depth_cpu_tests=%llu depth_failed=%llu depth_cpu_writes=%llu blend_gx=%llu avoided_compact_bytes=%llu depth_alias_rejects=%llu blend_rejects=%llu layout_rejects=%llu blend_snapshot_gpu_bytes=%llu\n",
+        (unsigned long long)gs_gx_resident_pipeline_count(0),(unsigned long long)gs_gx_resident_pipeline_count(1),
+        (unsigned long long)gs_gx_resident_pipeline_count(2),(unsigned long long)gs_gx_resident_pipeline_count(3),
+        (unsigned long long)gs_gx_resident_pipeline_count(4),(unsigned long long)gs_gx_resident_pipeline_count(5),
+        (unsigned long long)gs_gx_resident_pipeline_count(6),(unsigned long long)gs_gx_resident_pipeline_count(7),
+        (unsigned long long)gs_gx_resident_pipeline_count(8),(unsigned long long)gs_gx_resident_pipeline_count(9),(unsigned long long)gs_gx_resident_pipeline_count(10));
     fprintf(f,"GS_BLEND a=%u b=%u c=%u d=%u fix=%u colclamp=%u pabe=%u\n",
         gif_get_state()->alpha_a,gif_get_state()->alpha_b,gif_get_state()->alpha_c,gif_get_state()->alpha_d,gif_get_state()->alpha_fix,gif_get_state()->colclamp,gif_get_state()->pabe);
     fprintf(f,"GX_TEXTURE candidates=%llu draws=%llu upload_bytes=%llu layout_rejects=%llu\n",
@@ -416,7 +441,60 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long long)gif_get_render_work(6),(unsigned long long)gif_get_render_work(7),
         (unsigned long long)gif_get_render_work(8),(unsigned long long)gif_get_render_work(9),
         (unsigned long long)gif_get_render_work(10),(unsigned long long)gif_get_render_work(11));
-    fprintf(f,"EE_BLOCK runs=%llu retired=%llu native_successors=%llu\n",(unsigned long long)ee_jit_get_block_count(),(unsigned long long)ee_jit_get_block_retired(),(unsigned long long)ee_jit_get_native_successors());
+    /* R1330-K: Gouraud/triangle accounting.  submitted = degenerate + offscreen + visible;
+     * visible = gx + software.  These are NOT the legacy gouraud_tri counter above. */
+    fprintf(f,"GS_GOURAUD submitted=%llu degenerate=%llu offscreen=%llu visible=%llu gx=%llu software=%llu deg_identical3=%llu deg_two_same=%llu deg_collinear=%llu deg_origin=%llu flat_submitted=%llu flat_degenerate=%llu sw_bbox_px=%llu gx_bbox_px=%llu gx_hybrid=%llu gx_deferred=%llu gx_cpu_px=%llu\n",
+        (unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_SUBMITTED),(unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_DEGENERATE),
+        (unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_OFFSCREEN),(unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_VISIBLE),
+        (unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_GX),(unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_SOFTWARE),
+        (unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_DEG_IDENTICAL3),(unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_DEG_TWO_SAME),
+        (unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_DEG_COLLINEAR),(unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_DEG_ORIGIN),
+        (unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_FLAT_SUBMITTED),(unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_FLAT_DEGENERATE),
+        (unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_SW_BBOX_PIXELS),(unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_GX_BBOX_PIXELS),
+        (unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_GX_HYBRID),(unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_GX_DEFERRED),
+        (unsigned long long)gif_get_gouraud_stat(GIF_GOURAUD_GX_CPU_PIXELS));
+    fprintf(f,"GS_GOURAUD_SW_REASON");
+    for(unsigned r=1;r<GIF_GFB_COUNT;r++)fprintf(f," %s=%llu",gif_gouraud_fallback_name(r),(unsigned long long)gif_get_gouraud_fallback(r));
+    fprintf(f,"\n");
+    {
+        uint32_t key[64];uint64_t cnt[64];unsigned used=0;
+        while(used<64u&&gif_get_gouraud_state(used,&key[used],&cnt[used]))used++;
+        for(unsigned rank=0;rank<8u&&rank<used;rank++) { /* partial selection sort */
+            unsigned best=rank;
+            for(unsigned c=rank+1u;c<used;c++)if(cnt[c]>cnt[best])best=c;
+            uint64_t tc=cnt[rank];uint32_t tk=key[rank];cnt[rank]=cnt[best];key[rank]=key[best];cnt[best]=tc;key[best]=tk;
+            fprintf(f,"GS_GOURAUD_STATE rank=%u key=0x%04lx count=%llu\n",rank+1u,(unsigned long)key[rank],(unsigned long long)cnt[rank]);
+        }
+        fprintf(f,"GS_GOURAUD_STATE_OVERFLOW %llu\n",(unsigned long long)gif_get_gouraud_state_overflow());
+    }
+    {
+        int32_t xy[6];uint32_t prim;
+        for(unsigned i=0;i<4u&&gif_get_degenerate_sample(i,xy,&prim);i++)
+            fprintf(f,"GS_GOURAUD_DEGEN_SAMPLE i=%u prim=%lx xy=%ld,%ld %ld,%ld %ld,%ld\n",i,(unsigned long)prim,
+                (long)xy[0],(long)xy[1],(long)xy[2],(long)xy[3],(long)xy[4],(long)xy[5]);
+    }
+    fprintf(f,"BUILD checkpoint=R1331 scope=CPU-GX-options mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
+        (unsigned long)gekko2_optimization_mask,(unsigned long)gekko2_opt_requested(),
+        gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT),
+        gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS),
+        GEKKO2_SCHEDULER_QUANTA_ENABLED&&gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS));
+    fprintf(f,"CODE_ARENA enabled=%d capacity=%lu used=%lu high_water=%lu failures=%llu\n",
+        gekko2_opt_enabled(GEKKO2_OPT_CODE_ARENA),(unsigned long)ppc_code_cache_capacity(),(unsigned long)ppc_code_cache_used(),
+        (unsigned long)ppc_code_cache_high_water(),(unsigned long long)ppc_code_cache_failures());
+    fprintf(f,"FASTMEM enabled=%d ram_page_hits=%llu slow_translations=%llu invalidations=%llu hardware_MMU=0\n",
+        gekko2_opt_enabled(GEKKO2_OPT_FASTMEM),(unsigned long long)ee_fastmem_stat(0),
+        (unsigned long long)ee_fastmem_stat(1),(unsigned long long)ee_fastmem_stat(2));
+    fprintf(f,"OPT_ROUTES EE=%d IOP=%d VU=%d links=%d residency=%d word_alloc=%d GX_source_cache=%d GX_Gouraud=%d GX_disjoint_writes=%d\n",
+        gekko2_opt_enabled(GEKKO2_OPT_EE_JIT),gekko2_opt_enabled(GEKKO2_OPT_IOP_JIT),gekko2_opt_enabled(GEKKO2_OPT_VU_JIT),
+        gekko2_opt_enabled(GEKKO2_OPT_NATIVE_LINKS),gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY),gekko2_opt_enabled(GEKKO2_OPT_WORD_ALLOCATION),
+        gekko2_opt_enabled(GEKKO2_OPT_GX_SOURCE_CACHE),gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD),gekko2_opt_enabled(GEKKO2_OPT_GX_DISJOINT_WRITES));
+    fprintf(f,"GX_SYNC reuse=%llu readback=%llu present=%llu reuse_tb=%llu readback_tb=%llu present_tb=%llu\n",
+      (unsigned long long)gs_gx_sync_count(0),(unsigned long long)gs_gx_sync_count(1),(unsigned long long)gs_gx_sync_count(2),
+      (unsigned long long)gs_gx_sync_count(4),(unsigned long long)gs_gx_sync_count(5),(unsigned long long)gs_gx_sync_count(6));
+    fprintf(f,"EE_BLOCK runs=%llu retired=%llu native_successors=%llu dispatch_hits=%llu\n",(unsigned long long)ee_jit_get_block_count(),(unsigned long long)ee_jit_get_block_retired(),(unsigned long long)ee_jit_get_native_successors(),(unsigned long long)ee_jit_get_dispatch_hits());
+#ifdef GEKKO2_COUNT_BOUNDARIES
+    fprintf(f,"EE_BOUNDARY fused_mod32=%llu\n",(unsigned long long)ee_core_get_fused_boundaries());
+#endif
     fprintf(f,"IOP_JIT compiled=%u executed=%llu rejected_hits=%llu\n",
             (unsigned)iop_jit_get_cache_size(),
             (unsigned long long)iop_jit_get_executed_count(),
@@ -519,9 +597,9 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
            (unsigned long long)ee_instr, ee_halted);
     printf("    %-64s\n", ee_halted ? ee_reason : "(still executing real instructions)");
     printf("JIT: %-12llu / %-12llu EE (%3llu%%) cache=%u L0=%llu/%llu\n",
-           (unsigned long long)(ee_jit_get_executed_count()+ee_jit_get_block_retired()),
+           (unsigned long long)ee_jit_get_native_retired_count(),
            (unsigned long long)ee_instr,
-           (unsigned long long)(ee_instr ? ((ee_jit_get_executed_count()+ee_jit_get_block_retired()) * 100u / ee_instr) : 0u),
+           (unsigned long long)(ee_instr ? (ee_jit_get_native_retired_count() * 100u / ee_instr) : 0u),
            (unsigned)ee_jit_get_cache_size(),
            (unsigned long long)ee_jit_get_pc_l0_hit_count(),
            (unsigned long long)ee_jit_get_pc_l0_miss_count());
@@ -649,6 +727,11 @@ static void run_real_boot_flow(void)
            g_bios.name, (unsigned)g_bios.size, g_bios.version_string);
 
     if (!g_system_started) {
+        /* Cold boot changes code generation. Release every old code owner
+         * before applying the next options; resumed sessions retain theirs. */
+        ee_jit_reset_stats_for_test();
+        vu_jit_reset_for_test();
+        gekko2_opt_apply();
         if (system_init(&g_bios, &g_bios) != 0) {
             printf("Core initialization failed. A/B: launcher.\n");
             wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);return;
@@ -656,6 +739,8 @@ static void run_real_boot_flow(void)
         if(cdvd_config_bind_file("sd:/pcsx2/bios-config.bin")<0)printf("BIOS configuration file could not be loaded; saving disabled.\n");
         g_system_started = 1;
         g_first_picture=0;g_boot_started=gettime();g_boot_log_next=0;
+        g_image_probe_attempts=0;
+        g_gx_attempts=g_gx_fallbacks=0;
         gs_init();
         gs_mem_init();
     }
@@ -792,6 +877,7 @@ static void run_real_boot_flow(void)
             uint32_t probe_bp,probe_bw,sx,sy,sw,sh;
             decode_dispfb(current_dispfb,&probe_bp,&probe_bw);
             gs_decode_display_region(current_dispfb,current_display,gs->smode2,&sx,&sy,&sw,&sh);
+            g_image_probe_attempts++;
             if(probe_bw && gs_display_has_rgb(probe_bp,probe_bw,sx,sy,sw,sh)) {
                 g_first_picture=1;save_boot_progress("FIRST_IMAGE",0);
             }
@@ -883,7 +969,24 @@ int main(int argc, char **argv)
 {
     (void)argc;(void)argv;
     wii_console_setup();
-    int selected=0,page=0,redraw=1;
+    if (!g_fat_mounted) g_fat_mounted = fatInitDefault() ? 1 : 0;
+    if(g_fat_mounted)gekko2_opt_load("sd:/pcsx2/optimization.cfg");
+    /* Persist a fresh identity before the first launcher draw. Previous
+     * BIOS logs can survive a failed startup and must not identify this run. */
+    {
+        FILE *boot=fopen("sd:/pcsx2/Gekko2-startup.log","w");
+        if(boot) {
+            fprintf(boot,"BUILD checkpoint=R1331 stage=launcher-ready resident_pipeline=%d\n",
+#ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
+                0
+#else
+                1
+#endif
+            );
+            fclose(boot);
+        }
+    }
+    int selected=0,page=0,redraw=1,opt_selected=0;
     const char *notice="SD: pcsx2/bios/ and pcsx2/games/";
 #ifdef PCSX2WII_JIT_DISABLE
     const char *engine="INTERPRETER";
@@ -892,7 +995,8 @@ int main(int argc, char **argv)
 #endif
     for (;;) {
         if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
-            if(page==3)ui_browser_draw(launcher_rect,&g_browser,notice);
+            if(page==4)ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
+            else if(page==3)ui_browser_draw(launcher_rect,&g_browser,notice);
             else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_present,engine,notice);
             flush_screen();redraw=0;}
         VIDEO_WaitVSync();wii_input_scan();uint16_t down=g_input_down;
@@ -919,8 +1023,20 @@ int main(int argc, char **argv)
             continue;
         }
         if(page){
+            if(page==4){
+                if(down&PAD_BUTTON_B)page=1;
+                else if(down&PAD_BUTTON_UP)opt_selected=(opt_selected+GEKKO2_OPT_COUNT-1)%GEKKO2_OPT_COUNT;
+                else if(down&PAD_BUTTON_DOWN)opt_selected=(opt_selected+1)%GEKKO2_OPT_COUNT;
+                else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT)){
+                    if(gekko2_opt_toggle(opt_selected))
+                        notice=gekko2_opt_save("sd:/pcsx2/optimization.cfg")==0?"Saved. Applies to the next cold boot.":"Next cold boot. Could not save options to SD.";
+                    else notice="This option is unavailable in this build.";
+                }
+                continue;
+            }
             if(down&PAD_BUTTON_B)page=0;
             else if(page==1){if(down&PAD_BUTTON_A)g_hud_default=!g_hud_default;if(down&PAD_BUTTON_X)g_throughput=!g_throughput;if(down&PAD_BUTTON_Y)g_fps_default=!g_fps_default;
+                if(down&PAD_BUTTON_DOWN){page=4;notice="A / LEFT / RIGHT: toggle. Next cold boot.";continue;}
                 if(down&(PAD_BUTTON_RIGHT|PAD_BUTTON_LEFT)){g_gx_present=!g_gx_present;
                     notice=g_gx_present?"GX (experimental) ON: output + supported drawing.":"GX OFF; software rendering.";}}
 

@@ -1,3 +1,4 @@
+#include "core/recompiler/optimization.h"
 /*
  * gif.c - see include/core/hw/gif.h for scope notes and references.
  */
@@ -5,6 +6,8 @@
 #include "core/hw/gif.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_gx.h"
+#include "core/hw/gs.h"
+#include "core/hw/ee_intc.h"
 #include <string.h>
 #include <math.h> /* Round 28: log2() for mipmap LOD selection - see rasterize_sprite()'s mip-level logic */
 
@@ -17,6 +20,40 @@ static uint64_t g_sprite_cached_draws,g_sprite_fast_rows;
 static uint64_t g_draw_routes[10]; /* overlapping state reasons, per primitive */
 uint64_t gif_get_render_work(unsigned index)
 {if(index<10u)return g_draw_routes[index];return index==10u?g_sprite_cached_draws:index==11u?g_sprite_fast_rows:0;}
+
+/* R1330-K Gouraud accounting (see gif.h).  Pure diagnostics: nothing here feeds
+ * back into drawing decisions. */
+static uint64_t g_gst[GIF_GOURAUD_STAT_COUNT],g_gfb[GIF_GFB_COUNT];
+static struct {uint32_t key;uint64_t n;} g_gstate[64];
+static unsigned g_gstate_used;static uint64_t g_gstate_overflow;
+static struct {int32_t xy[6];uint32_t prim;} g_gdeg[16];
+uint64_t gif_get_gouraud_stat(unsigned index){return index<GIF_GOURAUD_STAT_COUNT?g_gst[index]:0;}
+uint64_t gif_get_gouraud_fallback(unsigned index){return index<GIF_GFB_COUNT?g_gfb[index]:0;}
+const char *gif_gouraud_fallback_name(unsigned index)
+{
+    static const char *const names[GIF_GFB_COUNT]={"none","gx_inactive","build_disabled","small","large",
+        "texture","alpha_test","dither_fba","fbmask","depth","blend","fog","psm","scanmsk_field","gx_rejected","alpha_varies"};
+    return index<GIF_GFB_COUNT?names[index]:"?";
+}
+unsigned gif_get_degenerate_sample(unsigned index,int32_t *xy6,uint32_t *prim)
+{
+    unsigned n=(unsigned)(g_gst[GIF_GOURAUD_DEGENERATE]<16u?g_gst[GIF_GOURAUD_DEGENERATE]:16u);
+    if(index>=n)return 0;
+    if(xy6)memcpy(xy6,g_gdeg[index].xy,sizeof(g_gdeg[index].xy));
+    if(prim)*prim=g_gdeg[index].prim;return 1;
+}
+unsigned gif_get_gouraud_state(unsigned index,uint32_t *key,uint64_t *count)
+{
+    if(index>=g_gstate_used)return 0;
+    if(key)*key=g_gstate[index].key;if(count)*count=g_gstate[index].n;return 1;
+}
+uint64_t gif_get_gouraud_state_overflow(void){return g_gstate_overflow;}
+static void gouraud_state_record(uint32_t key)
+{
+    for(unsigned i=0;i<g_gstate_used;i++)if(g_gstate[i].key==key){g_gstate[i].n++;return;}
+    if(g_gstate_used<64u){g_gstate[g_gstate_used].key=key;g_gstate[g_gstate_used].n=1;g_gstate_used++;}
+    else g_gstate_overflow++;
+}
 static int g_opaque_pixel; /* Recomputed after context activation per draw. */
 
 /* GIFtag.NLOOP is a 15-bit qword count: every legal IMAGE payload
@@ -865,6 +902,38 @@ static uint32_t gs_sample_texture(double u, double v)
     return gs_sample_texel(x,y);
 }
 
+static uint32_t gs_gx_raw_texture_sample(int32_t x,int32_t y);
+
+/* R1330-K: first reason (priority order) why a visible IIP triangle cannot use
+ * the GX path in this build.  Size heuristics come last so that the counters
+ * show structural state blockers first.  GIF_GFB_NONE means eligible. */
+#ifndef GEKKO2_GOURAUD_GX_MIN_PIXELS
+#define GEKKO2_GOURAUD_GX_MIN_PIXELS 0u
+#endif
+static unsigned gouraud_gx_block_reason(int textured,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,uint32_t a0,uint32_t a1,uint32_t a2)
+{
+    if(!gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD))return GIF_GFB_BUILD_DISABLED;
+    if(!gs_gx_render_active())return GIF_GFB_GX_INACTIVE;
+#ifdef GEKKO2_GOURAUD_GX_DISABLE
+    return GIF_GFB_BUILD_DISABLED;
+#endif
+    uint32_t attr=gs_effective_attr_prim();
+    if(textured)return GIF_GFB_TEXTURE;
+    if(g_gif.ate)return GIF_GFB_ALPHA_TEST;
+    if(g_gif.dthe||g_gif.fba)return GIF_GFB_DITHER_FBA;
+    if(g_gif.fbmask)return GIF_GFB_FBMASK;
+    if(g_gif.zbuf_configured)return GIF_GFB_DEPTH;
+    if(attr&PRIM_ABE_MASK)return GIF_GFB_BLEND;
+    if(attr&PRIM_FGE_MASK)return GIF_GFB_FOG;
+    if(g_gif.frame_psm!=TEX_PSM_PSMCT32)return GIF_GFB_PSM;
+    /* K: EFB is RGB8 (no alpha); alpha is a per-triangle constant at import.
+     * Varying alpha stays in software (traceable fallback). */
+    if(a0!=a1||a1!=a2)return GIF_GFB_ALPHA_VARIES;
+    if(maxx-minx>=640||maxy-miny>=512)return GIF_GFB_LARGE;
+    if((uint64_t)(maxx-minx+1)*(uint64_t)(maxy-miny+1)<GEKKO2_GOURAUD_GX_MIN_PIXELS)return GIF_GFB_SMALL;
+    return GIF_GFB_NONE;
+}
+
 static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
                                 int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
@@ -872,6 +941,30 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
                                 uint32_t z0, uint32_t z1, uint32_t z2,
                                 uint32_t f0, uint32_t f1, uint32_t f2)
 {
+    /* R1330-K: classify before any context work.  edge() is pure integer
+     * geometry, so the zero-area decision does not depend on the context. */
+    const int gouraud_prim = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
+    const int32_t area = edge(x0, y0, x1, y1, x2, y2);
+    if (gouraud_prim) g_gst[GIF_GOURAUD_SUBMITTED]++; else g_gst[GIF_GOURAUD_FLAT_SUBMITTED]++;
+    if (area == 0) {
+        if (gouraud_prim) {
+            uint64_t n = g_gst[GIF_GOURAUD_DEGENERATE]++;
+            unsigned same = (x0 == x1 && y0 == y1) + (x1 == x2 && y1 == y2) + (x0 == x2 && y0 == y2);
+            g_gst[same >= 3u ? GIF_GOURAUD_DEG_IDENTICAL3 : same ? GIF_GOURAUD_DEG_TWO_SAME : GIF_GOURAUD_DEG_COLLINEAR]++;
+            if (!x0 && !y0 && !x1 && !y1 && !x2 && !y2) g_gst[GIF_GOURAUD_DEG_ORIGIN]++;
+            if (n < 16u) {
+                g_gdeg[n].xy[0] = x0; g_gdeg[n].xy[1] = y0; g_gdeg[n].xy[2] = x1;
+                g_gdeg[n].xy[3] = y1; g_gdeg[n].xy[4] = x2; g_gdeg[n].xy[5] = y2;
+                g_gdeg[n].prim = g_gif.prim;
+            }
+        } else g_gst[GIF_GOURAUD_FLAT_DEGENERATE]++;
+#ifdef GEKKO2_GOURAUD_EARLY_DEGENERATE
+        /* R1330-K experiment: a zero-area triangle cannot touch a pixel, so skip
+         * the (large) context copy.  This also means g_draw_routes[] no longer
+         * counts such triangles. */
+        return;
+#endif
+    }
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
     int32_t minx = x0, maxx = x0, miny = y0, maxy = y0;
     if (x1 < minx) minx = x1;
@@ -888,8 +981,33 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
 
     /* Degenerate (zero-area) triangle - nothing to draw. Also guards
      * against divide-by-zero-shaped edge cases below. */
-    int32_t area = edge(x0, y0, x1, y1, x2, y2);
     if (area == 0) return;
+    unsigned gouraud_reason = GIF_GFB_NONE;
+    if (gouraud_prim) {
+        if (maxx < minx || maxy < miny) g_gst[GIF_GOURAUD_OFFSCREEN]++;
+        else {
+            g_gst[GIF_GOURAUD_VISIBLE]++;
+            uint32_t a = gs_effective_attr_prim(), key = 0;
+            const uint32_t psm = g_gif.frame_psm;
+            if (a & PRIM_TME_MASK) key |= 1u << 0;
+            if (a & PRIM_ABE_MASK) key |= 1u << 1;
+            if (g_gif.zbuf_configured && !g_gif.zmsk) key |= 1u << 2;
+            if (g_gif.zbuf_configured && g_gif.zte && g_gif.ztst != GS_ZTST_ALWAYS) key |= 1u << 3;
+            if (a & PRIM_FGE_MASK) key |= 1u << 4;
+            if (g_gif.ate) key |= 1u << 5;
+            if (g_gif.dthe || g_gif.fba) key |= 1u << 6;
+            if (g_gif.fbmask) key |= 1u << 7;
+            key |= (psm == TEX_PSM_PSMCT32 ? 0u : psm == TEX_PSM_PSMCT24 ? 1u :
+                    (psm == TEX_PSM_PSMCT16 || psm == TEX_PSM_PSMCT16S) ? 2u : 3u) << 8;
+            if (z0 != z1 || z1 != z2) key |= 1u << 10;
+            if (a & PRIM_TME_MASK) {
+                key |= (g_gif.tex_tfx & 3u) << 11;
+                if (g_gif.tex1_mmag == 1u && g_gif.tex1_mmin == 1u) key |= 1u << 13;
+                if (a & PRIM_FST_MASK) key |= 1u << 14;
+            }
+            gouraud_state_record(key);
+        }
+    }
 
     int gouraud = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
     int textured = (gs_effective_attr_prim() & PRIM_TME_MASK) != 0;
@@ -901,11 +1019,35 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
     uint32_t flat_r = rgba_channel(c2, 0), flat_g = rgba_channel(c2, 8);
     uint32_t flat_b = rgba_channel(c2, 16), flat_a = rgba_channel(c2, 24);
 
+    if(textured&&(gs_effective_attr_prim()&PRIM_FST_MASK)&&g_gif.tex_tfx==TEX_TFX_DECAL&&
+       !g_gif.tex_tcc&&g_gif.tex1_mmag==0u&&g_gif.tex1_mmin==0u&&!gouraud&&
+       gs_depth_is_inactive()&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !(gs_effective_attr_prim()&(PRIM_FGE_MASK|PRIM_ABE_MASK))&&g_gif.frame_psm==0u&&gs_gx_render_active()) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};float uv[6]={(float)u0,(float)v0,(float)u1,(float)v1,(float)u2,(float)v2};
+        if(gs_gx_draw_uv_decal_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,uv,
+            1u<<g_gif.tex_tw,1u<<g_gif.tex_th,c2>>24,g_gif.scanmsk,gs_gx_raw_texture_sample)) {
+            g_gif.triangles_drawn++;return;
+        }
+    }
     if(g_gx_opaque && !textured && !gouraud && gs_depth_is_inactive() &&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2};
         if(gs_gx_draw_flat_psm(g_gif.frame_psm,3,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,c2,g_gif.scanmsk)) {
             g_gif.triangles_drawn++;return;
+        }
+    }
+    if(gouraud&&maxx>=minx&&maxy>=miny) {
+        gouraud_reason=gouraud_gx_block_reason(textured,minx,miny,maxx,maxy,c0>>24,c1>>24,c2>>24);
+        if(gouraud_reason==GIF_GFB_NONE) {
+            int32_t xy[6]={x0,y0,x1,y1,x2,y2};uint32_t colors[3]={c0,c1,c2};
+            gs_gx_pipeline pipe={0};
+            if(gs_gx_draw_gouraud_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,
+                minx,miny,maxx,maxy,xy,colors,g_gif.scanmsk,&pipe)) {
+                g_gst[GIF_GOURAUD_GX]++;g_gst[GIF_GOURAUD_GX_DEFERRED]++;
+                g_gst[GIF_GOURAUD_GX_BBOX_PIXELS]+=(uint64_t)(maxx-minx+1)*(uint64_t)(maxy-miny+1);
+                g_gif.triangles_drawn++;return;
+            }
+            gouraud_reason=GIF_GFB_GX_REJECTED;
         }
     }
     if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
@@ -918,6 +1060,10 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
         if(gs_gx_draw_flat_pipeline(g_gif.frame_psm,3,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,c2,g_gif.scanmsk,&pipe)) {
             g_gif.triangles_drawn++;return;
         }
+    }
+    if(gouraud&&maxx>=minx&&maxy>=miny) {
+        g_gst[GIF_GOURAUD_SOFTWARE]++;g_gfb[gouraud_reason]++;
+        g_gst[GIF_GOURAUD_SW_BBOX_PIXELS]+=(uint64_t)(maxx-minx+1)*(uint64_t)(maxy-miny+1);
     }
     double inv_area = 1.0 / (double)area;
 
@@ -1120,6 +1266,8 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
 static int32_t g_gx_sprite_columns[640],g_gx_sprite_rows[512];
 static double g_gx_sprite_v[512];
 static unsigned g_gx_sprite_linear,g_gx_sprite_fx,g_gx_sprite_fy,g_gx_sprite_textured;
+static uint32_t gs_gx_raw_texture_sample(int32_t x,int32_t y)
+{return gs_sample_texture((double)x,(double)y);}
 static uint32_t gs_gx_sprite_sample(int32_t x,int32_t y)
 {
     if(!g_gx_sprite_textured)return g_gif.rgba;
@@ -2079,6 +2227,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * interrupt-controller wiring). */
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_sigid = (g_gif.siglblid_sigid & ~idmsk) | (id & idmsk);
+        if (gs_raise_event(0u)) ee_intc_raise(0); /* INTC_GS */
     } break;
     case GS_REG_FINISH:
         /* Round 108 (149th finding, task #254 - FINAL): FINISH -
@@ -2090,6 +2239,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * as a real, distinct register (not falling through to an
          * unknown-register path). */
         g_gif.finish_pending++;
+        if (gs_raise_event(1u)) ee_intc_raise(0); /* INTC_GS */
         break;
     case GS_REG_LABEL: {
         /* Round 108 (149th finding, task #254 - FINAL): LABEL -

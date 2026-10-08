@@ -54,6 +54,14 @@ int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,
 int gs_gx_draw_flat_pipeline(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,
     int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
     uint32_t rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline);
+/* R1330-E: native GX vertex-color interpolation for untextured Gouraud triangles.
+ * Unsupported GS tests/effects return 0 so the scalar rasterizer remains exact. */
+int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+    int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+    const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline);
+int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+    int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,
+    uint32_t tex_w,uint32_t tex_h,uint32_t alpha,uint32_t scanmsk,gs_gx_texel_fn sample);
 int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,
  const int32_t *xy,const int32_t *columns,const int32_t *rows,double du,double dv,uint32_t scanmsk,
  gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline);
@@ -62,6 +70,9 @@ int gs_gx_ready(void);
 int gs_gx_render_active(void);
 /* 0=accepted draws, 1=quads, 2=readback bytes, 3=resolve waits, 4=attempts. */
 uint64_t gs_gx_work_count(unsigned index);
+/* CPU waits: 0 source reuse, 1 readback, 2 XFB present, 3 shutdown;
+ * 4..7 corresponding Broadway time-base ticks (wrap-safe per wait). */
+uint64_t gs_gx_sync_count(unsigned index);
 /* 0 candidates, 1 accepted textured sprites, 2 uploaded bytes, 3 layout rejects. */
 uint64_t gs_gx_texture_count(unsigned index);
 /* 0 depth hardware, 1 depth hybrid, 2 blend hardware, 3 blend hybrid,
@@ -69,6 +80,11 @@ uint64_t gs_gx_texture_count(unsigned index);
 uint64_t gs_gx_pipeline_count(unsigned index);
 /* 0 opens, 1 batched draws, 2 resolves, 3 GPU snapshots, 4 resident presents, 5 seed bytes. */
 uint64_t gs_gx_surface_count(unsigned index);
+/* R1330L: 0 attempts,1 accepted,2 CPU depth tests,3 failed depth tests,
+ * 4 CPU depth writes,5 GX blend draws,6 compact readback bytes avoided,
+ * 7 depth/alias rejects,8 blend rejects,9 residency/layout rejects,
+ * 10 GPU-only destination rectangle copy bytes. */
+uint64_t gs_gx_resident_pipeline_count(unsigned index);
 /* Diagnostic escape hatch; synchronization must succeed before changing mode. */
 int gs_gx_set_residency_enabled(int enabled);
 /* Caller verifies current physical source/CLUT/state; key consumed by one draw. */
