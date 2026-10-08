@@ -9,6 +9,10 @@
 
 #include "core/hw/dma.h"
 #include "core/hw/ee_intc.h"
+#include "core/hw/ipu.h"
+extern uint32_t ipu_input_write(const uint8_t *,uint32_t) __attribute__((weak));
+extern uint32_t ipu_output_read(uint8_t *,uint32_t) __attribute__((weak));
+extern void ipu_service(void) __attribute__((weak));
 #include <string.h>
 
 /* Local alias, matching the existing per-file-local-constant convention
@@ -263,6 +267,63 @@ static int read_chain_tag(uint32_t tag_addr, uint32_t *qwc, uint32_t *id,
     return 1;
 }
 
+/* R1335: independent bounded FIFO transfers, invoked by the IPU service.
+ * Do not use the old void sink: it cannot return partial consumption. */
+int dma_ipu_service(void)
+{
+ if(!ipu_input_write||!ipu_output_read)return 0;
+ int progress=0;
+ for(int channel=DMA_CHANNEL_FROMIPU;channel<=DMA_CHANNEL_TOIPU;channel++) {
+  dma_channel_t *ch=&g_dma.chan[channel];
+  if(!(ch->chcr&0x100u))continue;
+  unsigned mod=(ch->chcr>>2)&3;
+  if(mod>1||(channel==DMA_CHANNEL_FROMIPU&&mod)) {
+   ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;continue;
+  }
+  if(channel==DMA_CHANNEL_TOIPU&&mod==1&&!g_dma.ipu_tag_pending) {
+   uint32_t qwc,id,addr,irq;
+   if(!read_chain_tag(ch->tadr,&qwc,&id,&addr,&irq))goto bad_address;
+   uint32_t next=ch->tadr+16, payload=next;
+   g_dma.ipu_tag_end=(id==DMA_TAG_REFE||id==DMA_TAG_END||((ch->chcr&0x80u)&&irq));
+   if(id==DMA_TAG_REFE||id==DMA_TAG_REF||id==DMA_TAG_REFS)payload=addr;
+   else if(id==DMA_TAG_CNT||id==DMA_TAG_END)next+=qwc*16;
+   else if(id==DMA_TAG_NEXT)next=addr;
+   else if(id==DMA_TAG_CALL){
+    unsigned asp=(ch->chcr>>4)&3;
+    if(asp>=2){ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;continue;}
+    if(asp==0)ch->asr0=payload+qwc*16;else ch->asr1=payload+qwc*16;
+    ch->chcr=(ch->chcr&~0x30u)|((asp+1)<<4);next=addr;
+   }else if(id==DMA_TAG_RET){
+    unsigned asp=(ch->chcr>>4)&3;
+    if(!asp||asp>2){g_dma.ipu_tag_end=1;next=payload+qwc*16;}
+    else{next=asp==2?ch->asr1:ch->asr0;ch->chcr=(ch->chcr&~0x30u)|((asp-1)<<4);}
+   }
+   ch->chcr=(ch->chcr&0xffffu)|((id<<28)|(irq<<31)) ;
+   ch->madr=payload;ch->qwc=qwc;ch->tadr=next;g_dma.ipu_tag_pending=1;progress=1;
+  }
+  if(ch->qwc) {
+   uint32_t wanted=ch->qwc>8?8:ch->qwc,done;uint8_t *p;
+   if(!dma_resolve_ptr(ch->madr,wanted*16,&p))goto bad_address;
+   if(channel==DMA_CHANNEL_TOIPU)done=ipu_input_write(p,wanted);
+   else {
+    done=ipu_output_read(p,wanted);
+    if(done&&g_ee_write_notify&&!(ch->madr&0x80000000u))g_ee_write_notify(ch->madr,done*16);
+   }
+   ch->madr+=done*16;ch->qwc-=done;ch->quadwords_transferred+=done;
+   progress|=done!=0;
+  }
+  if(!ch->qwc) {
+   if(channel==DMA_CHANNEL_TOIPU&&mod==1){g_dma.ipu_tag_pending=0;if(!g_dma.ipu_tag_end)continue;}
+   ch->chcr&=~0x100u;dma_channel_signal_done(channel);progress=1;
+  }
+  continue;
+ bad_address:
+  ch->last_error=DMA_ERR_OUT_OF_BOUNDS;ch->chcr&=~0x100u;
+  if(channel==DMA_CHANNEL_TOIPU)g_dma.ipu_tag_pending=0;
+ }
+ return progress;
+}
+
 void dma_channel_kick(int channel)
 {
     if (channel < 0 || channel >= DMA_CHANNEL_COUNT)
@@ -277,6 +338,7 @@ void dma_channel_kick(int channel)
         return;
     }
 
+    if ((channel==DMA_CHANNEL_TOIPU||channel==DMA_CHANNEL_FROMIPU)&&ipu_service) {ipu_service();return;}
     uint32_t mod = (ch->chcr >> 2) & 0x3u;
 #ifdef R933_DMA_KICK_TRACE
     fprintf(stderr, "[R933DMA] kick channel=%d chcr=0x%08x madr=0x%08x qwc=%u tadr=0x%08x mod=%u sink=%p\n",
@@ -686,6 +748,7 @@ int dma_mmio_write32(uint32_t addr, uint32_t val)
         if (ch < 0) return 1; /* consumed, ignored - unknown sub-register */
         uint32_t *reg = channel_reg_ptr(&g_dma.chan[ch], off);
         if (reg) {
+            if(ch==DMA_CHANNEL_TOIPU&&off==0&&!(val&0x100u))g_dma.ipu_tag_pending=g_dma.ipu_tag_end=0;
             *reg = val;
             /* Writing CHCR (offset 0x00) with STR (bit 8) set kicks off
              * a real transfer - see dma_channel_kick(). */

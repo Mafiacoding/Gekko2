@@ -46,6 +46,15 @@ if 'ee_jit_get_cache_entries' in syms:
   assert call('ee_core_step_n',8)==8
  assert reg2()==1024 and executed()==1024
  assert profile()['installed']==128 and profile()['collisions']==124
+ # R1335 compact reuse preserves four ways and exposes 1024 active owners.
+ if 'arm_worker_available' in syms:
+  word(mask_addr,(initial|8192)|(1<<17));setup()
+  assert call('ee_jit_get_cache_entries')==1024
+  for n in range(32):
+   pc=pcs[n%4];word(state+off['pc'],pc);word(state+off['next_pc'],pc+4)
+   assert call('ee_core_step_n',8)==8
+  assert reg2()==256 and profile()['installed']==4 and profile()['hits']==28
+  print('PASS compact reuse: 1024 owners, four colliding blocks retained, no replacement')
  word(mask_addr,initial&~8192);setup();assert call('ee_jit_get_cache_entries')==256
  assert call('ee_core_step_n',8)==8 and reg2()==8
  word(mask_addr,initial)

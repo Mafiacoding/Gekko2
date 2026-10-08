@@ -8,6 +8,7 @@
 #include "core/ee/ee_hle_thread.h"
 #include "core/iop/iop_core.h"
 #include "core/hw/dma.h"
+#include "core/hw/ipu.h"
 #include "core/hw/ee_intc.h"
 #include "core/hw/ee_sio.h"
 #include "core/hw/ee_timers.h"
@@ -218,6 +219,7 @@ int checkpoint_save(const char *path)
         for (unsigned n = 0; n < 8; n++) clock[n] = (unsigned char)(ticks >> (8u * n));
         if (write_block(f, "ECLK", clock, sizeof(clock)) < 0) goto fail;
     }
+    if (write_block(f,"IPUS",ipu_get_state(),sizeof(ipu_state_t))<0)goto fail;
     if (write_block(f, "END0", NULL, 0) < 0) goto fail;
 
     fclose(f);
@@ -290,7 +292,9 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     EXPECT("ERAM", era_scratch, EE_RAM_SIZE_CKPT, &era_size);
     EXPECT("IOPS", iop_scratch, sizeof(iop_state_t), &discard_size);
     EXPECT("IRAM", ira_scratch, IOP_RAM_SIZE_CKPT, &ira_size);
-    EXPECT("DMA0", generic, sizeof(generic), &size); memcpy(dma_get_state(), generic, size);
+    EXPECT("DMA0", generic, sizeof(generic), &size);
+    if(size!=sizeof(dma_state_t)&&size!=sizeof(dma_state_t)-8u)goto fail_close;
+    memset(dma_get_state(),0,sizeof(dma_state_t));memcpy(dma_get_state(),generic,size);
     EXPECT("EINT", generic, sizeof(generic), &size); memcpy(ee_intc_get_state(), generic, size);
     EXPECT("ESIO", generic, sizeof(generic), &size); memcpy(ee_sio_get_state(), generic, size);
     EXPECT("ETMR", generic, sizeof(generic), &size); { ee_timers_state_t timers;ee_timers_snapshot(&timers);memcpy(&timers,generic,size);ee_timers_restore(&timers); }
@@ -364,9 +368,10 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     ee_irq_checkpoint_t irq = {0, 0};
     uint64_t display_ticks = 0; /* Old snapshots have no recoverable independent phase. */
     uint8_t config[CDVD_CONFIG_SNAPSHOT_SIZE]={0};
+    ipu_state_t ipu={0};
     unsigned seen = 0;
     for (;;) {
-        unsigned char extra[CDVD_CONFIG_SNAPSHOT_SIZE];
+        unsigned char extra[sizeof(ipu_state_t)>CDVD_CONFIG_SNAPSHOT_SIZE?sizeof(ipu_state_t):CDVD_CONFIG_SNAPSHOT_SIZE];
         rc = read_block(f, tag, extra, sizeof(extra), &size);
         if (rc <= 0) break;
         if (memcmp(tag, "EEPD", 4) == 0 && !(seen & 1u) && size == sizeof(pad)) {
@@ -381,6 +386,8 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
         } else if (memcmp(tag,"CNFG",4)==0 && !(seen&8u) && size==sizeof config) {
             if(!cdvd_config_snapshot_valid(extra))goto fail_close;
             memcpy(config,extra,sizeof config);seen|=8u;
+        } else if(memcmp(tag,"IPUS",4)==0&&!(seen&16u)&&size==sizeof ipu){
+            memcpy(&ipu,extra,sizeof ipu);if(!ipu_state_valid(&ipu))goto fail_close;seen|=16u;
         } else goto fail_close;
     }
     if (rc != 0 || memcmp(tag, "END0", 4) != 0 || size != 0u) goto fail_close;
@@ -419,6 +426,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     ee_core_irq_checkpoint_load(&irq);
     ee_core_display_clock_load(display_ticks);
     cdvd_config_snapshot_load(config);
+    ipu_restore(&ipu);
     system_rebind_iop_bridge();
     if (iso_path) {
         iop_cdrom_legacy_rebind_iso(iso_path);

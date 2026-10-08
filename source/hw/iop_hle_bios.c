@@ -10,10 +10,13 @@
 #include "core/hw/iop_hle_bios.h"
 #include "core/hw/iop_excb.h"
 #include "core/hw/iop_hle_events.h"
+#include "core/recompiler/optimization.h"
 #include <string.h>
 #include <stdio.h>
 
 static iop_hle_bios_state_t g_hle;
+static uint64_t ram_copy_bytes,ram_set_bytes,unknown_legacy,unknown_guest;
+uint64_t iop_hle_bios_route_stat(unsigned n){return n==0?ram_copy_bytes:n==1?ram_set_bytes:n==2?unknown_legacy:n==3?unknown_guest:0;}
 
 /* The well-known real-hardware "general exception vector" trampoline
  * - see the header comment's InstallExceptionHandlers note. Fixed
@@ -33,6 +36,7 @@ static uint8_t  g_exc_template_scanned; /* 1 once we've looked, whether or not f
 void iop_hle_bios_init(void)
 {
     memset(&g_hle, 0, sizeof(g_hle));
+    ram_copy_bytes=ram_set_bytes=unknown_legacy=unknown_guest=0;
     memset(g_exc_template, 0, sizeof(g_exc_template));
     g_exc_template_scanned = 0;
     /* Round 29: B(00h) alloc_kernel_memory(size) real bump allocator -
@@ -138,10 +142,31 @@ static uint32_t iop_strlen(iop_state_t *st, uint32_t src)
     return n;
 }
 
-static void iop_memcpy_bytes(iop_state_t *st, uint32_t dst, uint32_t src, uint32_t len)
+/* No MMIO/ROM wrap, no Status.IsC bypass; aliases are resolved before
+ * checking overlap. Preserve the BIOS's documented forward-copy overlap. */
+static uint8_t *hle_ram(iop_state_t *st,uint32_t addr,uint32_t len)
 {
-    for (uint32_t i = 0; i < len; i++)
-        iop_mem_write8(st, dst + i, iop_mem_read8(st, src + i));
+ if(!gekko2_opt_enabled(GEKKO2_OPT_HLE_RAM)||!st->ram||addr>=BIOS_RESET_VECTOR||
+    st->ram_size>0x00800000u)return NULL;
+ uint32_t phys=addr&0x1fffffffu;
+ if(phys>st->ram_size||len>st->ram_size-phys)return NULL;
+ return st->ram+phys;
+}
+static void iop_memcpy_bytes(iop_state_t *st,uint32_t dst,uint32_t src,uint32_t len)
+{
+ uint8_t *d=hle_ram(st,dst,len),*q=hle_ram(st,src,len);
+ if(d&&q&&!(st->cop0[12]&0x10000u)) {
+  if(d>=q+len||q>=d+len)memcpy(d,q,len);
+  else for(uint32_t i=0;i<len;i++)d[i]=q[i];
+  ram_copy_bytes+=len;return;
+ }
+ for(uint32_t i=0;i<len;i++)iop_mem_write8(st,dst+i,iop_mem_read8(st,src+i));
+}
+static void iop_memset_bytes(iop_state_t *st,uint32_t dst,uint8_t val,uint32_t len)
+{
+ uint8_t *d=hle_ram(st,dst,len);
+ if(d&&!(st->cop0[12]&0x10000u)){memset(d,val,len);ram_set_bytes+=len;return;}
+ for(uint32_t i=0;i<len;i++)iop_mem_write8(st,dst+i,val);
 }
 
 /* Handles the A0-table function numbers this round implements for
@@ -155,12 +180,12 @@ static int try_handle_a0_real_function(iop_state_t *st, uint32_t function)
     switch (function) {
     case IOP_HLE_A0_ABS: {
         int32_t v = (int32_t)a0;
-        st->gpr[2] = (uint32_t)(v < 0 ? -v : v);
+        st->gpr[2] = v<0?0u-(uint32_t)v:(uint32_t)v;
         return 1;
     }
     case IOP_HLE_A0_LABS: {
         int32_t v = (int32_t)a0;
-        st->gpr[2] = (uint32_t)(v < 0 ? -v : v);
+        st->gpr[2] = v<0?0u-(uint32_t)v:(uint32_t)v;
         return 1;
     }
     case IOP_HLE_A0_STRLEN:
@@ -242,16 +267,14 @@ static int try_handle_a0_real_function(iop_state_t *st, uint32_t function)
         iop_memcpy_bytes(st, a1, a0, a2);
         return 1;
     case IOP_HLE_A0_BZERO:
-        for (uint32_t i = 0; i < a1; i++)
-            iop_mem_write8(st, a0 + i, 0);
+        iop_memset_bytes(st,a0,0,a1);
         return 1;
     case IOP_HLE_A0_MEMCPY:
         iop_memcpy_bytes(st, a0, a1, a2);
         st->gpr[2] = a0; /* standard memcpy contract: returns dst */
         return 1;
     case IOP_HLE_A0_MEMSET:
-        for (uint32_t i = 0; i < a2; i++)
-            iop_mem_write8(st, a0 + i, (uint8_t)a1);
+        iop_memset_bytes(st,a0,(uint8_t)a1,a2);
         st->gpr[2] = a0; /* standard memset contract: returns dst */
         return 1;
     case IOP_HLE_A0_MEMMOVE:
@@ -442,15 +465,65 @@ static void install_syscall_handler(iop_state_t *st, uint32_t priority)
     g_hle.syscall_handler_installs++;
 }
 
+static int hle_known(uint32_t pc,uint32_t function)
+{
+ if(pc==IOP_HLE_TABLE_A0)switch(function){
+ case IOP_HLE_A0_ABS:
+ case IOP_HLE_A0_LABS:
+ case IOP_HLE_A0_STRLEN:
+ case IOP_HLE_A0_STRCPY:
+ case IOP_HLE_A0_STRNCPY:
+ case IOP_HLE_A0_STRCAT:
+ case IOP_HLE_A0_STRNCAT:
+ case IOP_HLE_A0_STRCMP:
+ case IOP_HLE_A0_STRNCMP:
+ case IOP_HLE_A0_BCOPY:
+ case IOP_HLE_A0_BZERO:
+ case IOP_HLE_A0_MEMCPY:
+ case IOP_HLE_A0_MEMSET:
+ case IOP_HLE_A0_MEMMOVE:
+ case IOP_HLE_A0_INITHEAP:
+ case IOP_HLE_A0_FLUSHCACHE:
+ case IOP_HLE_A0_ADDCDROMDEVICE:
+ case IOP_HLE_A0_ADDMEMCARDDEVICE:
+ case IOP_HLE_A0_EXIT:
+ case IOP_HLE_A0__EXIT:
+ case IOP_HLE_A0_SETJMP:
+ return 1;default:return 0;}
+ if(pc==IOP_HLE_TABLE_B0)switch(function){
+ case IOP_HLE_B0_ALLOC_KERNEL_MEMORY:
+ case IOP_HLE_B0_RESET_ENTRY_INT:
+ case IOP_HLE_B0_HOOK_ENTRY_INT:
+ case IOP_HLE_B0_DELIVER_EVENT:
+ case IOP_HLE_B0_OPEN_EVENT:
+ case IOP_HLE_B0_CLOSE_EVENT:
+ case IOP_HLE_B0_WAIT_EVENT:
+ case IOP_HLE_B0_TEST_EVENT:
+ case IOP_HLE_B0_ENABLE_EVENT:
+ case IOP_HLE_B0_DISABLE_EVENT:
+ case IOP_HLE_B0_UNDELIVER_EVENT:
+ return 1;default:return 0;}
+ if(pc==IOP_HLE_TABLE_C0)switch(function){
+ case 0x07u:
+ case IOP_HLE_C0_SYSENQINTRP:
+ case IOP_HLE_C0_SYSDEQINTRP:
+ case IOP_HLE_C0_ENQUEUESYSCALLHANDLER:
+ return 1;default:return 0;}
+ return 0;
+}
 int iop_hle_bios_try_handle(iop_state_t *st, uint32_t pc)
 {
     if (pc != IOP_HLE_TABLE_A0 && pc != IOP_HLE_TABLE_B0 && pc != IOP_HLE_TABLE_C0)
         return 0;
 
-    iop_core_flush_pipeline(st);
     uint32_t function = st->gpr[9];  /* $t1 - the real PS1/PS2 BIOS call convention register */
     uint32_t ra        = st->gpr[31]; /* $ra - where to return to */
 
+    if(!hle_known(pc,function)){
+        if(gekko2_opt_enabled(GEKKO2_OPT_STRICT_HLE)){unknown_guest++;return 0;}
+        unknown_legacy++;
+    }
+    iop_core_flush_pipeline(st);
     g_hle.calls_seen++;
     g_hle.last_table    = pc;
     g_hle.last_function = function;

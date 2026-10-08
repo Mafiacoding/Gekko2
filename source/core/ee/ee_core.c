@@ -2502,6 +2502,7 @@ uint64_t ee_mem_read64(ee_state_t *st, uint32_t addr)
      * BIOS code that writes these registers yet, but a real,
      * standalone bug regardless of when it's first exercised. */
     uint64_t gs_val;
+    if (ipu_mmio_read64(ee_hw_mmio_addr(addr),&gs_val))return gs_val;
     if (gs_mmio_read64(ee_hw_mmio_addr(addr), &gs_val))
         return gs_val;
 
@@ -2659,6 +2660,7 @@ void ee_mem_write64(ee_state_t *st, uint32_t addr, uint64_t val)
 #endif
     /* Task #171/#172: same KSEG0/1 masking fix as ee_mem_read64()
      * above - see that function's comment for the full rationale. */
+    if (ipu_mmio_write64(ee_hw_mmio_addr(addr),val))return;
     if (gs_mmio_write64(ee_hw_mmio_addr(addr), val))
         return;
 
@@ -12839,8 +12841,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 * real PCSX2, so neither does this. */
         if (rt) {
             uint32_t addr = (rs32 + imm) & ~0xFu;
-            GPR(rt)  = ee_mem_read64(st, addr);
-            GPR1(rt) = ee_mem_read64(st, addr + 8);
+            uint8_t q[16];
+            if(ipu_fifo_read128(ee_hw_mmio_addr(addr),q)){GPR(rt)=guest_read_le64(q);GPR1(rt)=guest_read_le64(q+8);}
+            else {GPR(rt)=ee_mem_read64(st,addr);GPR1(rt)=ee_mem_read64(st,addr+8);}
         }
         break;
     case 0x1F: /* SQ - 128-bit store, ported from PCSX2's R5900OpcodeImpl.cpp.
@@ -12850,8 +12853,11 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 * special-case needed. */
     {
         uint32_t addr = (rs32 + imm) & ~0xFu;
-        ee_mem_write64(st, addr,     GPR(rt));
-        ee_mem_write64(st, addr + 8, GPR1(rt));
+        if(ee_hw_mmio_addr(addr)==0x10007010u) {
+            uint8_t q[16];
+            for(unsigned n=0;n<8;n++){q[n]=(uint8_t)(GPR(rt)>>(n*8));q[n+8]=(uint8_t)(GPR1(rt)>>(n*8));}
+            ipu_fifo_write128(0x10007010u,q);
+        }else{ee_mem_write64(st,addr,GPR(rt));ee_mem_write64(st,addr+8,GPR1(rt));}
     } break;
 
     case 0x3E: /* SQC2 - Store Quadword Coprocessor 2 (round 444, task

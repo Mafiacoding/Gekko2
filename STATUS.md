@@ -1,6 +1,16 @@
-# Gekko2 status — R1334
+# Gekko2 status — R1335
 
 Updated 2026-10-08. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
+
+## R1335 IPU / HLE / cache comparison
+
+Real input/output FIFO data and streaming CSC, FDEC, SETIQ/SETVQ/SETTH are wired
+to EE MMIO and bounded resumable DMA. MPEG decode/PACK remain open. Known HLE
+RAM copy/fill operations have a tested fast path; strict unknown-call fallback
+is optional. Compact reuse is an independent 1024/4096-owner cold-boot switch.
+ARM transport and worker handler are tested with mocked IPC; an IOS server and
+ARM hardware timing are still needed. No measured Wii FPS gain or Tekken title
+boot is asserted. See [R1335 evidence](docs/R1335-IPU-HLE-ARM.md).
 
 ## R1334 cache and game-diagnostic checkpoint
 
