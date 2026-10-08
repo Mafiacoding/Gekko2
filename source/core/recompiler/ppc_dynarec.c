@@ -6021,6 +6021,47 @@ int ppc_dynarec_translate_iop_one(ppc_codegen_ctx_t *ctx, uint32_t iw)
         int store=op>=0x28u;
         uint32_t helper=op==0x20u||op==0x24u?IOP_RD8:op==0x21u||op==0x25u?IOP_RD16:
                         op==0x23u?IOP_RD32:op==0x28u?IOP_WR8:op==0x29u?IOP_WR16:IOP_WR32;
+        size_t slow_edges[8],slow_count=0,fast_exit=0;
+        if(gekko2_opt_enabled(GEKKO2_OPT_FASTMEM)) {
+            /* Live RAM proof in PPC. ROM/MMIO, absent backing, alignment,
+             * bounds and IsC stores keep the original helper. This is not
+             * a hardware-MMU mapping; prepare/retire still own exceptions
+             * and the R3000 load-delay pipeline. r3 remains the state. */
+            unsigned width=(op==0x20u||op==0x24u||op==0x28u)?1u:
+                           (op==0x21u||op==0x25u||op==0x29u)?2u:4u;
+            emit(ctx,enc_lwz(4,3,(int16_t)(rs*4u)));emit(ctx,enc_addi(4,4,imm));
+            emit_load_const32(ctx,6,0xbfc00000u);emit(ctx,enc_cmplw(4,6));
+            slow_edges[slow_count++]=ctx->used_words;emit(ctx,enc_bc(4,0,0)); /* >= reset ROM */
+            if(width>1u) {
+                emit(ctx,enc_andi_dot(6,4,(uint16_t)(width-1u)));
+                slow_edges[slow_count++]=ctx->used_words;emit(ctx,enc_bc(4,2,0));
+            }
+            emit(ctx,enc_rlwinm(7,4,0,3,31)); /* physical & 0x1fffffff */
+            emit(ctx,enc_lwz(8,3,(int16_t)offsetof(iop_state_t,ram)));
+            emit(ctx,(11u<<26)|(8u<<16));
+            slow_edges[slow_count++]=ctx->used_words;emit(ctx,enc_bc(12,2,0));
+            emit(ctx,enc_lwz(9,3,(int16_t)offsetof(iop_state_t,ram_size)));
+            emit(ctx,(10u<<26)|(9u<<16)|width);
+            slow_edges[slow_count++]=ctx->used_words;emit(ctx,enc_bc(12,0,0));
+            emit(ctx,enc_addi(9,9,(int16_t)-width));emit(ctx,enc_cmplw(7,9));
+            slow_edges[slow_count++]=ctx->used_words;emit(ctx,enc_bc(12,1,0)); /* > last valid start */
+            if(store) {
+                emit(ctx,enc_lwz(9,3,(int16_t)(offsetof(iop_state_t,cop0)+12u*4u)));
+                emit(ctx,enc_rlwinm(9,9,0,15,15));emit(ctx,(11u<<26)|(9u<<16));
+                slow_edges[slow_count++]=ctx->used_words;emit(ctx,enc_bc(4,2,0));
+                emit(ctx,enc_lwz(6,3,(int16_t)(rt*4u)));
+                emit(ctx,(31u<<26)|(6u<<21)|(8u<<16)|(7u<<11)|((width==1u?215u:width==2u?918u:662u)<<1));
+            } else {
+                emit(ctx,(31u<<26)|(6u<<21)|(8u<<16)|(7u<<11)|((width==1u?87u:width==2u?790u:534u)<<1));
+                if(op==0x20u)emit(ctx,enc_extsb(6,6));
+                if(op==0x21u)emit(ctx,enc_extsh(6,6));
+                if(rt)emit(ctx,enc_stw(6,3,(int16_t)(rt*4u)));
+            }
+            fast_exit=ctx->used_words;emit(ctx,enc_b(0));
+            for(unsigned n=0;n<slow_count;n++) {
+                size_t at=slow_edges[n];ctx->code[at]|=(uint32_t)((ctx->used_words-at)*4u)&0xfffcu;
+            }
+        }
         emit_iop_memory_frame(ctx,1);
         emit(ctx,enc_lwz(4,14,(int16_t)(rs*4u)));emit(ctx,enc_addi(4,4,imm));
         if(store) {
@@ -6034,7 +6075,9 @@ int ppc_dynarec_translate_iop_one(ppc_codegen_ctx_t *ctx, uint32_t iw)
             if(op==0x21u)emit(ctx,enc_extsh(3,3));
             emit(ctx,enc_stw(3,14,(int16_t)(rt*4u)));
         }
-        emit_iop_memory_frame(ctx,0);return 0;
+        emit_iop_memory_frame(ctx,0);
+        if(fast_exit)ctx->code[fast_exit]=enc_b((int32_t)(ctx->used_words-fast_exit)*4);
+        return 0;
     }
     if(op==0x22u||op==0x26u||op==0x2au||op==0x2eu) {
         int store=op==0x2au||op==0x2eu,left=op==0x22u||op==0x2au;
@@ -6100,6 +6143,18 @@ int ppc_dynarec_translate_iop_one(ppc_codegen_ctx_t *ctx, uint32_t iw)
         }
         emit(ctx,enc_bc(bo,bi,8));
         emit(ctx,enc_stw(6,3,(int16_t)offsetof(iop_state_t,next_pc)));return 0;
+    }
+    if(op==0x10u&&(rs==0u||rs==4u)) {
+        /* The original IOP core reads/writes these raw COP0 words. Load
+         * delay and Status-triggered interrupt delivery remain in prepare
+         * and retire; no syscall/HLE/exception handler is bypassed. */
+        int16_t offset=(int16_t)(offsetof(iop_state_t,cop0)+rd*4u);
+        if(rs==0u) {
+            if(rt){emit(ctx,enc_lwz(6,3,offset));emit(ctx,enc_stw(6,3,(int16_t)(rt*4u)));}
+        } else {
+            emit(ctx,enc_lwz(6,3,(int16_t)(rt*4u)));emit(ctx,enc_stw(6,3,offset));
+        }
+        return 0;
     }
     if(iw==0x42000010u) {
         emit(ctx,enc_lwz(4,3,(int16_t)(offsetof(iop_state_t,cop0)+12u*4u)));

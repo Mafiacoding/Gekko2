@@ -3,6 +3,7 @@
 
 /* R1281: native MFC0/MTC0 transfers; single-op CPU dispatch uses inline C.
  * Full EE/IOP block JIT remains unfinished. */
+#include "core/recompiler/cache_profile.h"
 #include <stdint.h>
 #include "core/recompiler/ee_block_policy.h"
 #include "core/ee/ee_core.h"
@@ -153,4 +154,5 @@ void ee_jit_notify_mapping_change(void);
 unsigned ee_jit_try_execute_chain_fetched(ee_state_t *st,unsigned budget,uint32_t first_word);
 unsigned ee_jit_try_execute_block_fetched(ee_state_t *st,unsigned budget,uint32_t first_word);
 
+void ee_jit_get_cache_profile(jit_cache_profile *out);
 #endif

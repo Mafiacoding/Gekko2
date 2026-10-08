@@ -1,3 +1,4 @@
+#include "core/runtime_profile.h"
 #include "core/recompiler/dynarec_config.h"
 #include "core/hw/guest_endian.h"
 /*
@@ -12933,8 +12934,7 @@ static int ee_step(void){return ee_step_budget(1u,NULL);}
  * fresh GT3 checkpoint re-run, docs/STATUS.md Round 781). Exposed here
  * so ee_hle_thread.c's WaitSema park branch (the ACTUALLY-live code
  * path) can call the exact same sequence. */
-void ee_core_park_tick(ee_state_t *st)
-{
+void ee_core_park_tick_profile_impl(ee_state_t *st){
     st->cop0[9]++;
     ee_irq_tick();
     ee_latch_timer_interrupt(st);
@@ -13013,6 +13013,13 @@ void ee_core_park_tick(ee_state_t *st)
         }
     }
 }
+void ee_core_park_tick(ee_state_t *st)
+{
+ unsigned profile_previous=gp_enter(GP_IDLE);
+ ee_core_park_tick_profile_impl(st);
+ gp_leave(profile_previous);
+}
+
 
 /* Public single-instruction step, for callers (currently
  * source/core/system.c's interleaved EE/IOP scheduler) that need to
@@ -13178,7 +13185,14 @@ uint32_t ee_core_block_prepare_delay(ee_state_t *st,uint32_t pc,uint32_t instruc
  return proof;
 }
 
-void ee_core_block_commit(ee_state_t *st){ee_retire_instruction(st,0);}
+void ee_core_block_commit_profile_impl(ee_state_t *st){ee_retire_instruction(st,0);}
+void ee_core_block_commit(ee_state_t *st)
+{
+ unsigned profile_previous=gp_enter(GP_SCHEDULER);
+ ee_core_block_commit_profile_impl(st);
+ gp_leave(profile_previous);
+}
+
 static uint32_t ee_fused_boundaries;
 uint64_t ee_core_get_fused_boundaries(void){return ee_fused_boundaries;}
 /* Detailed per-instruction counters themselves cost Broadway work. Enable
@@ -13188,18 +13202,39 @@ uint64_t ee_core_get_fused_boundaries(void){return ee_fused_boundaries;}
 #else
 #define EE_COUNT_FUSED_BOUNDARY() ((void)0)
 #endif
-uint32_t ee_core_block_boundary(ee_state_t *st,uint32_t pc,uint32_t instruction)
-{
+uint32_t ee_core_block_boundary_profile_impl(ee_state_t *st,uint32_t pc,uint32_t instruction){
  /* Canonical write-through state is already published by the native body.
   * Retire first, including timers/IRQ/rescheduling, then perform the exact
   * original next-instruction proof. A failed prepare still retires once. */
  ee_retire_instruction_inline(st,0);EE_COUNT_FUSED_BOUNDARY();
  return (uint32_t)ee_core_block_prepare(st,pc,instruction);
 }
+uint32_t ee_core_block_boundary(ee_state_t *st,uint32_t pc,uint32_t instruction)
+{
+ unsigned profile_previous=gp_enter(GP_SCHEDULER);
+ uint32_t result=ee_core_block_boundary_profile_impl(st,pc,instruction);
+ gp_leave(profile_previous);
+ return result;
+}
+
+uint32_t ee_core_block_memory_boundary_profile_impl(ee_state_t *st,uint32_t pc,uint32_t instruction){ee_retire_instruction_inline(st,0);EE_COUNT_FUSED_BOUNDARY();return ee_core_block_prepare_memory_resolved(st,pc,instruction);}
 uint32_t ee_core_block_memory_boundary(ee_state_t *st,uint32_t pc,uint32_t instruction)
-{ee_retire_instruction_inline(st,0);EE_COUNT_FUSED_BOUNDARY();return ee_core_block_prepare_memory_resolved(st,pc,instruction);}
+{
+ unsigned profile_previous=gp_enter(GP_SCHEDULER);
+ uint32_t result=ee_core_block_memory_boundary_profile_impl(st,pc,instruction);
+ gp_leave(profile_previous);
+ return result;
+}
+
+uint32_t ee_core_block_delay_boundary_profile_impl(ee_state_t *st,uint32_t pc,uint32_t instruction){ee_retire_instruction_inline(st,0);EE_COUNT_FUSED_BOUNDARY();return ee_core_block_prepare_delay(st,pc,instruction);}
 uint32_t ee_core_block_delay_boundary(ee_state_t *st,uint32_t pc,uint32_t instruction)
-{ee_retire_instruction_inline(st,0);EE_COUNT_FUSED_BOUNDARY();return ee_core_block_prepare_delay(st,pc,instruction);}
+{
+ unsigned profile_previous=gp_enter(GP_SCHEDULER);
+ uint32_t result=ee_core_block_delay_boundary_profile_impl(st,pc,instruction);
+ gp_leave(profile_previous);
+ return result;
+}
+
 
 unsigned ee_core_interleave_quantum=UINT32_MAX;
 static unsigned ee_interleave_left,ee_interleave_stopped;

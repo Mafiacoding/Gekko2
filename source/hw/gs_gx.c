@@ -1,3 +1,4 @@
+#include "core/runtime_profile.h"
 #include "core/recompiler/optimization.h"
 /* Experimental GX presentation and gated flat GS triangle/sprite spans. */
 #include "core/hw/gs_gx.h"
@@ -6,9 +7,8 @@
 #include <stddef.h>
 #include <string.h>
 static uint8_t broadcast(uint32_t x) {x&=255u;return x<16u?16u:x>240u?240u:(uint8_t)x;}
-__attribute__((noinline,noclone)) uint32_t gs_gx_pack_rgba8(void *dst,uint32_t capacity,uint32_t bp,uint32_t bw,
-                        uint32_t sx,uint32_t sy,uint32_t width,uint32_t height)
-{
+__attribute__((noinline,noclone)) uint32_t gs_gx_pack_rgba8_profile_impl(void *dst,uint32_t capacity,uint32_t bp,uint32_t bw,
+                        uint32_t sx,uint32_t sy,uint32_t width,uint32_t height){
     if(!dst||!width||!height||width>1024u||height>512u)return 0;
     uint32_t tw=(width+3u)&~3u,th=(height+3u)&~3u,bytes=tw*th*4u;
     if(capacity<bytes)return 0;
@@ -30,6 +30,15 @@ __attribute__((noinline,noclone)) uint32_t gs_gx_pack_rgba8(void *dst,uint32_t c
     }
     return bytes;
 }
+__attribute__((noinline,noclone)) uint32_t gs_gx_pack_rgba8(void *dst,uint32_t capacity,uint32_t bp,uint32_t bw,
+                        uint32_t sx,uint32_t sy,uint32_t width,uint32_t height)
+{
+ unsigned profile_previous=gp_enter(GP_GX_UPLOAD);
+ uint32_t result=gs_gx_pack_rgba8_profile_impl(dst,capacity,bp,bw,sx,sy,width,height);
+ gp_leave(profile_previous);
+ return result;
+}
+
 static uint64_t target_offset(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y)
 {
     uint32_t pages=bw/64u;if(!pages)pages=1;
@@ -159,8 +168,7 @@ int gs_gx_prepare_texture(gs_gx_texture_draw *d,uint32_t psm,uint32_t bp,uint32_
 }
 static uint32_t texture_tile(uint32_t w,uint32_t x,uint32_t y)
 {return ((y/4u)*(w/4u)+x/4u)*64u+(y&3u)*8u+(x&3u)*2u;}
-uint32_t gs_gx_pack_texture(void *out,uint32_t capacity,const gs_gx_texture_draw *d,gs_gx_texel_fn sample)
-{
+uint32_t gs_gx_pack_texture_profile_impl(void *out,uint32_t capacity,const gs_gx_texture_draw *d,gs_gx_texel_fn sample){
     if(!out||!d||!sample||!d->tw||!d->th||d->tw>1024u||d->th>512u||
        (d->tw&3u)||(d->th&3u)||capacity<d->tw*d->th*4u)return 0;
     uint8_t *p=out;
@@ -170,6 +178,14 @@ uint32_t gs_gx_pack_texture(void *out,uint32_t capacity,const gs_gx_texture_draw
     }
     return d->tw*d->th*4u;
 }
+uint32_t gs_gx_pack_texture(void *out,uint32_t capacity,const gs_gx_texture_draw *d,gs_gx_texel_fn sample)
+{
+ unsigned profile_previous=gp_enter(GP_GX_UPLOAD);
+ uint32_t result=gs_gx_pack_texture_profile_impl(out,capacity,d,sample);
+ gp_leave(profile_previous);
+ return result;
+}
+
 static uint32_t raw_z(const uint8_t *vram,uint32_t off,uint32_t psm)
 {
     unsigned n=(psm==2u||psm==10u)?2u:(psm==1u?3u:4u);uint32_t value=0;
@@ -273,14 +289,20 @@ static int initialized;
 static int texture_in_flight;
 static uint64_t sync_counts[8];
 uint64_t gs_gx_sync_count(unsigned n){return n<8u?sync_counts[n]:0;}
-static void gx_cpu_wait(unsigned reason)
-{
+static void gx_cpu_wait_profile_impl(unsigned reason){
  uint32_t begin,end;__asm__ volatile("mftb %0":"=r"(begin));
  GX_DrawDone();
  __asm__ volatile("mftb %0":"=r"(end));
  sync_counts[reason]++;sync_counts[4u+reason]+=(uint32_t)(end-begin);
  texture_in_flight=0;
 }
+static void gx_cpu_wait(unsigned reason)
+{
+ unsigned profile_previous=gp_enter(GP_GX_WAIT);
+ gx_cpu_wait_profile_impl(reason);
+ gp_leave(profile_previous);
+}
+
 int gs_gx_ready(void){return initialized;}
 int gs_gx_render_active(void){return initialized&&render_enabled;}
 static uint32_t efb_width,efb_height;
@@ -333,8 +355,7 @@ uint64_t gs_gx_texture_count(unsigned n){return n<4u?texture_counts[n]:0;}
 static uint64_t work_counts[5];
 uint64_t gs_gx_work_count(unsigned index){return index<5u?work_counts[index]:0;}
 static struct {uint32_t bp,bw,x,y,width,height,alpha,bytes;} capture;
-static int resolve_capture(void *opaque,uint8_t *vram,uint32_t size)
-{
+static int resolve_capture_profile_impl(void *opaque,uint8_t *vram,uint32_t size){
     (void)opaque;
     work_counts[3]++;
     gx_cpu_wait(1); /* GPU copy must finish before invalidating CPU cache. */
@@ -344,6 +365,14 @@ static int resolve_capture(void *opaque,uint8_t *vram,uint32_t size)
     return gs_gx_unpack_psmct32(vram,size,readback,capture.bytes,capture.bp,capture.bw,
                                capture.x,capture.y,capture.width,capture.height,capture.alpha);
 }
+static int resolve_capture(void *opaque,uint8_t *vram,uint32_t size)
+{
+ unsigned profile_previous=gp_enter(GP_GX_READBACK);
+ int result=resolve_capture_profile_impl(opaque,vram,size);
+ gp_leave(profile_previous);
+ return result;
+}
+
 int gs_gx_capture_vram_psmct32(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
                              uint32_t width,uint32_t height,uint32_t alpha)
 {
@@ -411,8 +440,7 @@ static int surface_snapshot(void)
  if(!surface_texture_valid){surface_copy(surface_pixels,0,0,surface->width,surface->height);surface_texture_valid=1;surface_counts[3]++;}
  return 1;
 }
-static int resolve_surface(void *opaque,uint8_t *vram,uint32_t size)
-{
+static int resolve_surface_profile_impl(void *opaque,uint8_t *vram,uint32_t size){
  (void)opaque;
  if(!surface_snapshot())return 0;
  gx_cpu_wait(1); /* Snapshot is queued; CPU import owns it after completion. */
@@ -421,6 +449,14 @@ static int resolve_surface(void *opaque,uint8_t *vram,uint32_t size)
  if(!gs_gx_surface_import(surface,vram,size,surface_pixels,bytes))return 0;
  surface_counts[2]++;work_counts[3]++;work_counts[2]+=bytes;return 1;
 }
+static int resolve_surface(void *opaque,uint8_t *vram,uint32_t size)
+{
+ unsigned profile_previous=gp_enter(GP_GX_READBACK);
+ int result=resolve_surface_profile_impl(opaque,vram,size);
+ gp_leave(profile_previous);
+ return result;
+}
+
 static int surface_ensure(const gs_gx_flat_draw *draw)
 {
  uint32_t h=efb_height<512u?efb_height&~3u:512u;

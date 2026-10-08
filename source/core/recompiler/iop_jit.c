@@ -1,3 +1,4 @@
+#include "core/recompiler/cache_profile.h"
 #include "core/recompiler/optimization.h"
 #include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/iop_jit.h"
@@ -13,6 +14,8 @@ static uint64_t executed,rejected_hits;
 static uint32_t cache_size;
 static uint64_t block_runs,block_ticks;
 static uint32_t block_cache_size;
+static jit_cache_profile block_profile;
+void iop_jit_get_cache_profile(jit_cache_profile *out){if(out)*out=block_profile;}
 #if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
 #define CODE_SLOTS 1024u
 #define PC_SLOTS 2048u
@@ -27,8 +30,18 @@ typedef struct {
  iop_precise_block fn;
  uint8_t count;
 } precise_slot;
-static precise_slot block_cache[BLOCK_SLOTS];
+static precise_slot block_cache[BLOCK_SLOTS*4u];
+static uint8_t block_victim[BLOCK_SLOTS];
 static unsigned block_active;
+static precise_slot *block_find(uint32_t pc)
+{
+ unsigned set=((pc>>2)^(pc>>5)^(pc>>12))&(BLOCK_SLOTS-1u);
+ unsigned ways=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u;
+ for(unsigned w=0;w<ways;w++)if(block_cache[set+w*BLOCK_SLOTS].fn&&block_cache[set+w*BLOCK_SLOTS].pc==pc)
+  return &block_cache[set+w*BLOCK_SLOTS];
+ for(unsigned w=0;w<ways;w++)if(!block_cache[set+w*BLOCK_SLOTS].fn)return &block_cache[set+w*BLOCK_SLOTS];
+ return &block_cache[set+(block_victim[set]++%ways)*BLOCK_SLOTS];
+}
 /* Formation only peeks ordinary RAM/BIOS. No speculative MMIO reads. */
 static int block_peek(iop_state_t *st,uint32_t pc,uint32_t *word)
 {
@@ -91,28 +104,9 @@ int iop_jit_try_execute_one(iop_state_t *st,uint32_t pc,uint32_t iw)
  fn(st->gpr,pc);executed++;return 1;
 #endif
 }
-unsigned iop_jit_try_execute_block(iop_state_t *st,unsigned budget)
+#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
+static iop_precise_block block_build_impl(uint32_t pc,const uint32_t *words,unsigned count)
 {
-#if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
- (void)st;(void)budget;return 0;
-#else
- if(!gekko2_opt_enabled(GEKKO2_OPT_IOP_JIT)||!st||!budget||st->halted||st->idle||block_active)return 0;
- uint32_t pc=st->pc,first;
- if(!block_peek(st,pc,&first))return 0;
- precise_slot *slot=&block_cache[((pc>>2)^(pc>>5)^(pc>>12))&(BLOCK_SLOTS-1u)];
- int warm=slot->fn&&slot->pc==pc&&slot->first==first&&slot->count>0u&&slot->count<=BLOCK_WORDS;
- for(unsigned n=0;warm&&n<slot->count;n++) {
-  uint32_t live;
-  if(!block_peek(st,pc+n*4u,&live)||live!=slot->words[n])warm=0;
- }
- if(!warm) {
-  uint32_t words[BLOCK_WORDS];unsigned count=0;int delay=0;
-  for(;count<BLOCK_WORDS;count++) {
-   if(!block_peek(st,pc+count*4u,&words[count]))break;
-   if(delay){count++;break;}
-   if(block_control(words[count]))delay=1;
-  }
-  if(!count)return 0;
   ppc_codegen_ctx_t ctx;
   if(ppc_dynarec_init(&ctx,(count*100u+160u+127u)/128u))return 0;
   unsigned native;
@@ -124,6 +118,44 @@ unsigned iop_jit_try_execute_block(iop_state_t *st,unsigned budget)
   }
   iop_precise_block fn=(iop_precise_block)ppc_dynarec_finalize(&ctx);
   if(!fn){ppc_dynarec_free(&ctx);return 0;}
+ return fn;
+}
+static iop_precise_block block_build(uint32_t pc,const uint32_t *words,unsigned count)
+{
+ uint64_t begin=jit_compile_begin(&block_profile);unsigned old=gp_enter(GP_COMPILE);
+ iop_precise_block fn=block_build_impl(pc,words,count);
+ gp_leave(old);jit_compile_end(&block_profile,begin);
+ if(!fn)block_profile.failures++;else block_profile.installed++;
+ return fn;
+}
+#endif
+unsigned iop_jit_try_execute_block(iop_state_t *st,unsigned budget)
+{
+#if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
+ (void)st;(void)budget;return 0;
+#else
+ if(!gekko2_opt_enabled(GEKKO2_OPT_IOP_JIT)||!st||!budget||st->halted||st->idle||block_active)return 0;
+ uint32_t pc=st->pc,first;
+ if(!block_peek(st,pc,&first))return 0;
+ precise_slot *slot=block_find(pc);block_profile.lookups++;
+ int warm=slot->fn&&slot->pc==pc&&slot->first==first&&slot->count>0u&&slot->count<=BLOCK_WORDS;
+ for(unsigned n=0;warm&&n<slot->count;n++) {
+  uint32_t live;
+  if(!block_peek(st,pc+n*4u,&live)||live!=slot->words[n])warm=0;
+ }
+ if(warm)block_profile.hits++;
+ if(!warm) {
+  block_profile.misses++;
+  if(slot->fn){if(slot->pc!=pc)block_profile.collisions++;else block_profile.stale++;}
+  uint32_t words[BLOCK_WORDS];unsigned count=0;int delay=0;
+  unsigned limit=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)&&budget<BLOCK_WORDS?budget:BLOCK_WORDS;
+  for(;count<limit;count++) {
+   if(!block_peek(st,pc+count*4u,&words[count]))break;
+   if(delay){count++;break;}
+   if(block_control(words[count]))delay=1;
+  }
+  if(!count)return 0;
+  iop_precise_block fn=block_build(pc,words,count);if(!fn)return 0;
   if(slot->fn)ppc_code_cache_release((void*)slot->fn);else block_cache_size++;
   memset(slot,0,sizeof(*slot));
   slot->pc=pc;slot->first=first;slot->fn=fn;slot->count=(uint8_t)count;
@@ -147,10 +179,14 @@ uint32_t iop_jit_get_cache_size(void){return cache_size;}
 void iop_jit_reset_for_test(void){
 #if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
  if(block_active)return;
- for(unsigned n=0;n<BLOCK_SLOTS;n++)if(block_cache[n].fn)ppc_code_cache_release((void*)block_cache[n].fn);
+ for(unsigned n=0;n<BLOCK_SLOTS*4u;n++)if(block_cache[n].fn)ppc_code_cache_release((void*)block_cache[n].fn);
  memset(block_cache,0,sizeof block_cache);
  for(unsigned n=0;n<CODE_SLOTS;n++)if(code_cache[n].fn)ppc_code_cache_release((void*)code_cache[n].fn);
  memset(code_cache,0,sizeof code_cache);memset(pc_cache,0,sizeof pc_cache);memset(rejected_cache,0,sizeof rejected_cache);
+#endif
+ memset(&block_profile,0,sizeof block_profile);
+#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
+ memset(block_victim,0,sizeof block_victim);
 #endif
  executed=rejected_hits=block_runs=block_ticks=0;cache_size=block_cache_size=0;
 }

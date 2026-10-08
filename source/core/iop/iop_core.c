@@ -1,3 +1,5 @@
+#include "core/recompiler/optimization.h"
+#include "core/runtime_profile.h"
 #include "core/recompiler/iop_jit.h"
 /*
  * iop_core.c - R3000A (IOP) interpreter
@@ -101,6 +103,9 @@
 #define IOP_RESET_VECTOR 0xBFC00000u
 
 static iop_state_t g_iop;
+static uint64_t route_native,route_interpreter,route_recovery;
+static uint64_t ram_fast_reads,ram_fast_writes;
+uint64_t iop_core_route_stat(unsigned n){return n==0?route_native:n==1?route_interpreter:n==2?route_recovery:n==3?ram_fast_reads:n==4?ram_fast_writes:0;}
 
 iop_state_t *iop_core_get_state(void) { return &g_iop; }
 
@@ -118,10 +123,18 @@ static inline uint8_t *iop_mem_ptr(iop_state_t *st, uint32_t addr, uint32_t size
     return NULL;
 }
 
+static inline uint8_t *iop_fast_ram(iop_state_t *st,uint32_t addr,unsigned width)
+{
+ if(!gekko2_opt_enabled(GEKKO2_OPT_FASTMEM)||addr>=IOP_RESET_VECTOR||!st->ram||st->ram_size<width)return NULL;
+ uint32_t phys=addr&0x1fffffffu;
+ return phys<=st->ram_size-width?st->ram+phys:NULL;
+}
 /* Same little-endian-explicit approach as ee_core.c - IOP memory is
  * little-endian, our Wii/PowerPC build target is big-endian. */
 uint8_t iop_mem_read8(iop_state_t *st, uint32_t addr)
 {
+    uint8_t *fast=iop_fast_ram(st,addr,1);
+    if(fast){uint8_t *p=fast;ram_fast_reads++;return ((uint8_t)p[0]);}
     uint8_t cdvd_val;
     if (iop_cdvd_mmio_read8(addr, &cdvd_val))
         return cdvd_val;
@@ -148,6 +161,8 @@ uint8_t iop_mem_read8(iop_state_t *st, uint32_t addr)
 
 uint16_t iop_mem_read16(iop_state_t *st, uint32_t addr)
 {
+    uint8_t *fast=iop_fast_ram(st,addr,2);
+    if(fast){uint8_t *p=fast;ram_fast_reads++;return ((uint16_t)p[0]) | ((uint16_t)p[1] << 8);}
     uint16_t spu2_val;
     if (iop_spu2_mmio_read16(addr, &spu2_val))
         return spu2_val;
@@ -223,6 +238,8 @@ uint16_t iop_mem_read16(iop_state_t *st, uint32_t addr)
 
 uint32_t iop_mem_read32(iop_state_t *st, uint32_t addr)
 {
+    uint8_t *fast=iop_fast_ram(st,addr,4);
+    if(fast){uint8_t *p=fast;ram_fast_reads++;return ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);}
     /* IOP-side SIF mailbox mirror (0x1D000000-0x1D0000FF) - see
      * core/hw/sif.h. Checked before the RAM/BIOS path since it's
      * outside IOP RAM's range anyway, but explicit is better than
@@ -261,6 +278,8 @@ uint32_t iop_mem_read32(iop_state_t *st, uint32_t addr)
 
 void iop_mem_write8(iop_state_t *st, uint32_t addr, uint8_t val)
 {
+    uint8_t *fast=iop_fast_ram(st,addr,1);
+    if(fast){if(!(st->cop0[12]&0x10000u)){fast[0]=(uint8_t)(val>>0);ram_fast_writes++;}return;}
     if (iop_cdvd_mmio_write8(addr, val))
         return;
 
@@ -286,6 +305,8 @@ void iop_mem_write8(iop_state_t *st, uint32_t addr, uint8_t val)
 
 void iop_mem_write16(iop_state_t *st, uint32_t addr, uint16_t val)
 {
+    uint8_t *fast=iop_fast_ram(st,addr,2);
+    if(fast){if(!(st->cop0[12]&0x10000u)){fast[0]=(uint8_t)(val>>0);fast[1]=(uint8_t)(val>>8);ram_fast_writes++;}return;}
     if (iop_spu2_mmio_write16(addr, val))
         return;
     /* Round 136 (177th finding): PS1-legacy SPU - see
@@ -328,6 +349,8 @@ void iop_mem_write16(iop_state_t *st, uint32_t addr, uint16_t val)
 
 void iop_mem_write32(iop_state_t *st, uint32_t addr, uint32_t val)
 {
+    uint8_t *fast=iop_fast_ram(st,addr,4);
+    if(fast){if(!(st->cop0[12]&0x10000u)){fast[0]=(uint8_t)(val>>0);fast[1]=(uint8_t)(val>>8);fast[2]=(uint8_t)(val>>16);fast[3]=(uint8_t)(val>>24);ram_fast_writes++;}return;}
     if (sif_iop_mmio_write32(addr, val))
         return;
     if (iop_intc_mmio_write32(addr, val))
@@ -401,7 +424,7 @@ void iop_mem_write32(iop_state_t *st, uint32_t addr, uint32_t val)
 
 int iop_core_init(const bios_image_t *bios)
 {
-    iop_jit_reset_for_test();
+    iop_jit_reset_for_test();route_native=route_interpreter=route_recovery=0;ram_fast_reads=ram_fast_writes=0;
     memset(&g_iop, 0, sizeof(g_iop));
 
     iop_intc_init(); /* IOP interrupt controller register block - see core/hw/iop_intc.h */
@@ -1567,11 +1590,12 @@ static int iop_execute_prepared(uint32_t pc,uint32_t instr,int use_scalar_jit)
     /* R1283: short branch/COP0 transfer effects stay inline, including
      * the existing IOP HLE JAL/JR checks. Native APIs remain available. */
     int cheap_control=(op>=2u&&op<=7u)||(op==0x10u&&(rs==0u||rs==4u));
-    if(use_scalar_jit && !cheap && !cheap_control && iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
+    if(use_scalar_jit && !cheap && !cheap_control && iop_jit_try_execute_one(st,this_pc,instr)){route_native++;goto iop_jit_done;}
 #else
-    if(use_scalar_jit && iop_jit_try_execute_one(st,this_pc,instr))goto iop_jit_done;
+    if(use_scalar_jit && iop_jit_try_execute_one(st,this_pc,instr)){route_native++;goto iop_jit_done;}
 #endif
 
+    route_interpreter++;
     switch (op) {
     case 0x00: /* SPECIAL */
         switch (funct) {
@@ -2168,8 +2192,7 @@ static int iop_step(void)
 /* Public single-instruction step - see ee_core_step()'s comment in
  * ee_core.c for why this exists (source/core/system.c's interleaved
  * scheduler). */
-static int iop_tick(void)
-{
+static int iop_tick_profile_impl(void){
     if (g_iop.halted)
         return 1;
 
@@ -2248,6 +2271,7 @@ static int iop_tick(void)
      * execute there, running whatever real handler code the modules
      * installed before returning. */
     if (g_iop.idle) {
+        unsigned idle_profile=gp_enter(GP_IDLE);
         uint8_t pending_before = g_iop.exception_pending;
         /* Round 945: no delay-slot concept applies to the idle-check
          * path (the IOP isn't mid-fetch/decode here at all), so
@@ -2257,11 +2281,19 @@ static int iop_tick(void)
         iop_check_hw_interrupt(&g_iop, g_iop.pc, 0u);
         if (!pending_before && g_iop.exception_pending)
             g_iop.idle = 0; /* a real interrupt just vectored us - resume real execution next call */
-        return 0;
+        gp_leave(idle_profile);return 0;
     }
 
     return 2;
 }
+static int iop_tick(void)
+{
+ unsigned profile_previous=gp_enter(GP_SCHEDULER);
+ int result=iop_tick_profile_impl();
+ gp_leave(profile_previous);
+ return result;
+}
+
 
 /* Native block callbacks retain the complete pre-fetch HLE path and tick
  * service. 0 consumes nothing, 1 admits native execution, 2 consumed a
@@ -2284,9 +2316,9 @@ int iop_core_block_prepare(iop_state_t *st,uint32_t pc,uint32_t word,uint32_t pr
     if(st==&g_iop && previous_pc!=UINT32_MAX)iop_retire(st,previous_pc,st->pc);
     if(st!=&g_iop || st->halted || st->pc!=pc)return 0;
     if(iop_before_tick)iop_before_tick();
-    if(iop_tick()!=2)return 2;
+    if(iop_tick()!=2){route_recovery++;return 2;}
     uint32_t live_pc,live_word;
-    if(iop_prepare(&live_pc,&live_word)!=2)return 2;
+    if(iop_prepare(&live_pc,&live_word)!=2){route_recovery++;return 2;}
     if(live_pc!=pc || live_word!=word) {
         iop_block_stale++;
         iop_execute_prepared(live_pc,live_word,0);
@@ -2305,7 +2337,7 @@ int iop_core_block_prepare(iop_state_t *st,uint32_t pc,uint32_t word,uint32_t pr
     st->gpr[0]=0;
     st->pc=st->next_pc;
     st->next_pc=st->pc+4;
-    return 1;
+    route_native++;return 1;
 }
 void iop_core_block_retire(iop_state_t *st,uint32_t pc)
 {
@@ -2318,7 +2350,7 @@ void iop_core_block_scalar(iop_state_t *st,uint32_t pc,uint32_t word)
      * before entering the original instruction/HLE-call switch. */
     st->next_pc=st->pc;
     st->pc=pc;
-    iop_execute_prepared(pc,word,0);
+    route_native--;iop_execute_prepared(pc,word,0);
 }
 uint64_t iop_core_block_stale_count(void){return iop_block_stale;}
 __attribute__((noinline)) int iop_core_step(void)
@@ -2362,7 +2394,7 @@ void iop_core_run(void)
 
 void iop_core_shutdown(void)
 {
-    iop_jit_reset_for_test();
+    iop_jit_reset_for_test();route_native=route_interpreter=route_recovery=0;ram_fast_reads=ram_fast_writes=0;
     if (g_iop.ram) {
         free(g_iop.ram);
         g_iop.ram = NULL;
