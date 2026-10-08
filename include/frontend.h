@@ -118,7 +118,7 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  rect(36,35,4,51,67,182,255);
  if(ui_logo_renderer)ui_logo_renderer(54,8);
  else ui_text(rect,54,32,3,"GEKKO2",204,232,255);
- ui_text(rect,344,84,1,"W I I  /  R1334",78,163,229);
+ ui_text(rect,344,84,1,"W I I  /  R1335",78,163,229);
  /* Geometric 2 motif, inspired by the console's blue line art. */
  rect(526,35,72,3,55,133,225);rect(595,35,3,20,55,133,225);
  rect(526,52,72,3,55,133,225);rect(526,52,3,20,55,133,225);
@@ -159,8 +159,9 @@ static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested
  for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
  ui_text(rect,36,28,2,"CPU / GX OPTIMIZATIONS",204,232,255);
  ui_text(rect,36,65,1,"Changes apply to the next cold boot. START resumes.",106,171,223);
- for(unsigned n=0;n<GEKKO2_OPT_COUNT;n++){
-  int y=92+(int)n*19,on=(int)n==selected;char row[90];
+ unsigned first=((unsigned)selected/13u)*13u;
+ for(unsigned n=first;n<GEKKO2_OPT_COUNT&&n<first+13u;n++){
+  int y=92+(int)(n-first)*19,on=(int)n==selected;char row[90];
   rect(32,y-2,576,18,on?16:9,on?43:22,on?76:41);
   snprintf(row,sizeof(row),"%s %-28s %s",on?">":" ",gekko2_opt_name(n),
       !(available&GEKKO2_OPT_BIT(n))?"UNAVAILABLE":requested&GEKKO2_OPT_BIT(n)?"ON":"OFF");

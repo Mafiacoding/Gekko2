@@ -4,7 +4,7 @@
 /* Exclusive TB samples within the existing randomized EE/IOP sample. These
  * are sampled host costs, never guest cycles or an estimate of FPS. */
 enum { GP_EE, GP_IOP, GP_SCHEDULER, GP_IDLE, GP_COMPILE,
-       GP_GS_RASTER, GP_GX_UPLOAD, GP_GX_READBACK, GP_GX_WAIT, GP_PRESENT, GP_COUNT };
+       GP_GS_RASTER, GP_GX_UPLOAD, GP_GX_READBACK, GP_GX_WAIT, GP_PRESENT, GP_IPU, GP_COUNT };
 typedef struct { uint64_t ticks[GP_COUNT], samples, overflows; } gekko2_profile;
 #ifdef GEKKO
 #define GP_OPTIONAL

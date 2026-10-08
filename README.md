@@ -2,6 +2,15 @@
 
 # Gekko2 for Nintendo Wii
 
+## R1335 IPU / HLE / cache comparison checkpoint
+
+Real IPU FIFO data, FDEC/tables/CSC, resumable TO/FROM DMA and checkpoint state.
+Known HLE RAM copy/fill calls gain a bounded bulk path; unknown-call fallback
+is independently testable. Compact EE cache enables a 1024/4096-owner A/B.
+Optional asynchronous ARM CSC client and portable worker handler are prepared;
+no IOS server is installed and no ARM speedup is claimed. MPEG decode is open.
+See [R1335 handoff](docs/R1335-IPU-HLE-ARM.md) for defaults, verification and limits.
+
 ## R1334 cache and game-diagnostic checkpoint
 
 Block cache reuse ON now retains 4096 EE block owners; OFF retains 256.

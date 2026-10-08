@@ -13,14 +13,14 @@ clock[0]=0x30;call('gekko2_profile_leave',5)
 clock[0]=0x40;call('gekko2_profile_leave',0)
 clock[0]=0x50;call('gekko2_profile_enter',1)
 clock[0]=0x60;call('gekko2_profile_stop');call('gekko2_profile_get',dest)
-expected=[48,16,0,0,0,32,0,0,16,0,1,0]
-assert list(struct.unpack('>12Q',u.mem_read(dest,96)))==expected
+expected=[48,16,0,0,0,32,0,0,16,0,0,1,0]
+assert list(struct.unpack('>13Q',u.mem_read(dest,104)))==expected
 # Exact presentation uses a separate accumulator: never added to CPU samples.
 clock[0]=0x100;call('gekko2_profile_start_host')
 clock[0]=0x110;assert call('gekko2_profile_enter',6)==9
 clock[0]=0x120;call('gekko2_profile_leave',9)
 clock[0]=0x130;call('gekko2_profile_stop');call('gekko2_profile_get_host',dest)
-values=list(struct.unpack('>12Q',u.mem_read(dest,96)));assert values[6]==16 and values[9]==32 and values[10:]==[1,0]
-call('gekko2_profile_get',dest);assert list(struct.unpack('>12Q',u.mem_read(dest,96)))==expected
+values=list(struct.unpack('>13Q',u.mem_read(dest,104)));assert values[6]==16 and values[9]==32 and values[10:]==[0,1,0]
+call('gekko2_profile_get',dest);assert list(struct.unpack('>13Q',u.mem_read(dest,104)))==expected
 call('gekko2_profile_stop');u.hook_del(hook)
 print('PASS linked PPC exclusive nested timing, TB wrap, completed sample and separate exact presentation totals')

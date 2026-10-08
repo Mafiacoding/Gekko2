@@ -86,6 +86,9 @@ typedef struct {
      * matching PCSX2's own hwReset(), which sets both to the same
      * 0x1201 constant. */
     uint32_t d_enable_state;
+    /* R1335: resumable to-IPU chain payload; guest-visible DMA registers
+     * advance only after accepted FIFO quadwords. */
+    uint32_t ipu_tag_pending, ipu_tag_end;
 } dma_state_t;
 
 /*
@@ -206,6 +209,7 @@ void dma_set_sink(int channel, dma_sink_fn fn);
  * docs/ROADMAP.md.
  */
 void dma_channel_kick(int channel);
+int dma_ipu_service(void);
 
 /*
  * Sets DMAC_STAT's low (status) bit for `channel` - real hardware's

@@ -693,16 +693,17 @@ static uint32_t precise_chain_source_serial;
 static int precise_active;
 static unsigned precise_accounted_remaining;
 
+static inline unsigned ee_precise_cache_stride(void)
+{return gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)&&!gekko2_opt_enabled(GEKKO2_OPT_COMPACT_CACHE)?EE_PRECISE_REUSE_SETS:256u;}
+
 static inline unsigned ee_precise_cache_index(uint32_t pc)
 {
- unsigned mask=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?EE_PRECISE_REUSE_SETS-1u:255u;
+ unsigned mask=ee_precise_cache_stride()-1u;
  return ((pc>>2)^(pc>>12))&mask;
 }
 
-static inline unsigned ee_precise_cache_stride(void)
-{return gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?EE_PRECISE_REUSE_SETS:256u;}
 unsigned ee_jit_get_cache_entries(void)
-{return gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?EE_PRECISE_CACHE_SLOTS:256u;}
+{return gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u*ee_precise_cache_stride():256u;}
 
 /* Lookup never allocates or evicts; native chains pin all cache owners. */
 static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
@@ -710,16 +711,18 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
  unsigned set=ee_precise_cache_index(pc),stride=ee_precise_cache_stride(),ways=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u;
  ee_precise_slot *best=NULL;unsigned largest=0;
  for(unsigned w=0;w<ways;w++) {
-  ee_precise_slot *s=&precise_cache[set+w*stride];
-  if(!s->fn||s->pc!=pc)continue;
-  if(ways==1u)return s; /* Control retains the previous replacement policy. */
-  if(s->count>largest)largest=s->count;
-  if(s->count<=budget&&(!best||s->count>best->count))best=s;
+  unsigned index=set+w*stride;
+  const ee_precise_dispatch *tag=&precise_dispatch[index];
+  if(!tag->fn||tag->pc!=pc)continue;
+  if(ways==1u)return &precise_cache[index];
+  if(tag->count>largest)largest=tag->count;
+  if(tag->count<=budget&&(!best||tag->count>precise_dispatch[best-precise_cache].count))
+   best=&precise_cache[index];
  }
  if(best){if(install&&best->count<largest)precise_budget_stats[0]++;return best;}
  if(!install)return NULL;
  if(largest)precise_budget_stats[1]++;
- for(unsigned w=0;w<ways;w++)if(!precise_cache[set+w*stride].fn)return &precise_cache[set+w*stride];
+ for(unsigned w=0;w<ways;w++)if(!precise_dispatch[set+w*stride].fn)return &precise_cache[set+w*stride];
  unsigned w=precise_victim[set]++%ways;
  return &precise_cache[set+w*stride];
 }
@@ -753,7 +756,7 @@ static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
  next.mapping_generation=mapping_generation;next.serial=ee_precise_next_serial();
  next.fn=fn;
  if(gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)) {
-  unsigned set=ee_precise_cache_index(pc),stride=EE_PRECISE_REUSE_SETS;
+  unsigned set=ee_precise_cache_index(pc),stride=ee_precise_cache_stride();
   for(unsigned w=0;w<4u;w++) {
    ee_precise_slot *other=&precise_cache[set+w*stride];
    if(other!=slot&&other->fn&&other->pc==pc&&other->count!=count){precise_budget_stats[2]++;break;}

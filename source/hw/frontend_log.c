@@ -30,7 +30,7 @@ int frontend_log_begin(frontend_log *log,const char *directory,int disc,int gx)
  struct dirent *entry;
  while((entry=readdir(dir))) {
   unsigned long id=0;
-  if(sscanf(entry->d_name,"Gekko2-R1334-%10lu-",&id)==1&&id<=UINT32_MAX&&id>log->sequence)
+  if(sscanf(entry->d_name,"Gekko2-R1335-%10lu-",&id)==1&&id<=UINT32_MAX&&id>log->sequence)
    log->sequence=(uint32_t)id;
  }
  if(closedir(dir)!=0)return failed(log,errno);
@@ -39,7 +39,7 @@ int frontend_log_begin(frontend_log *log,const char *directory,int disc,int gx)
  for(unsigned attempts=0;attempts<100000u;attempts++) {
   if(log->sequence==UINT32_MAX)return failed(log,EOVERFLOW);
   uint32_t next=++log->sequence;char path[sizeof(log->path)];
-  int n=snprintf(path,sizeof(path),"%s/Gekko2-R1334-%010lu-%s-%s.log",directory,
+  int n=snprintf(path,sizeof(path),"%s/Gekko2-R1335-%010lu-%s-%s.log",directory,
     (unsigned long)next,disc?"disc":"bios",gx?"gx":"software");
   if(n<0||(unsigned)n>=sizeof(path))return failed(log,ENAMETOOLONG);
   int fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0666);
@@ -47,7 +47,7 @@ int frontend_log_begin(frontend_log *log,const char *directory,int disc,int gx)
   FILE *file=fdopen(fd,"w");
   if(!file){int error=errno;close(fd);return failed(log,error);}
   memcpy(log->path,path,(unsigned)n+1u);
-  fprintf(file,"SESSION checkpoint=R1334 id=%lu mode=%s GX=%d\n",
+  fprintf(file,"SESSION checkpoint=R1335 id=%lu mode=%s GX=%d\n",
     (unsigned long)next,disc?"DISC":"BIOS",!!gx);
   return frontend_log_close(log,file);
  }
