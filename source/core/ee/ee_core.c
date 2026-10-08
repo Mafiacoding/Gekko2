@@ -5119,6 +5119,7 @@ volatile uint64_t g_r1181_sbus_unblocks = 0;
 static inline __attribute__((always_inline)) void ee_retire_instruction_inline(ee_state_t *st,int r1176_sample)
 {
     uint32_t r1176_t0=0,r1176_t1=0;
+    const int service_fast=gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES);
     if (r1176_sample) r1176_t0 = r1176_tb32();
     st->gpr[0].ud0 = 0;
     st->gpr[0].ud1 = 0;
@@ -5159,11 +5160,11 @@ static inline __attribute__((always_inline)) void ee_retire_instruction_inline(e
      * we actually take an interrupt right now" decision (via
      * ee_check_intc_interrupt() below) is deferred to a genuine
      * instruction boundary. */
-    ee_check_vblank(st);
+    if(!service_fast||g_ee_display_phase==0u||g_ee_display_phase==EE_CYCLES_VBLANK_DURATION)ee_check_vblank(st);
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_vblank_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
-    ee_check_boot_unblock_selfloop(st); /* Round 161 */
+    if(!service_fast||(!g_boot_once.selfloop&&st->pc==EE_BOOT_UNBLOCK_SELFLOOP_PC))ee_check_boot_unblock_selfloop(st); /* Round 161 */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_selfloop_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
-    ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
+    if(!service_fast||(!g_boot_once.fastboot&&st->pc==EE_EELOAD_START_PC))ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_eeload_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     ee_check_browser_menu_escalation_heuristic(st); /* Round 610 (task #536) */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_escalate_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
@@ -5182,15 +5183,15 @@ static inline __attribute__((always_inline)) void ee_retire_instruction_inline(e
         }
         if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1181_prof_sbus_helper_tb += (uint32_t)(r1176_t1 - r1176_t0); g_r1179_prof_sbus_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     }
-    ee_check_gs_vsync(st); /* Round 87 (127th finding) */
+    if(!service_fast||g_ee_display_phase==0u)ee_check_gs_vsync(st); /* Round 87 (127th finding) */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_gsvsync_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     ee_timers_tick_fast(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_timers_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1177_prof_clock_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
-    ee_check_rpcinit_pending(st); /* task #187 (63rd finding) */
-    ee_check_rpc_bind_pending(st); /* task #192 (68th finding) */
-    ee_check_cdvd_ncmd_pending(st); /* Round 347 (IOP RPC re-entry architecture) */
+    if(!service_fast||g_rpcinit_pending)ee_check_rpcinit_pending(st); /* task #187 (63rd finding) */
+    if(!service_fast||g_rpc_bind_pending||g_rpc_bind_qcount)ee_check_rpc_bind_pending(st); /* task #192 (68th finding) */
+    if(!service_fast||g_ee_cdvd_ncmd_reentry.valid)ee_check_cdvd_ncmd_pending(st); /* Round 347 (IOP RPC re-entry architecture) */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1177_prof_house_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     ee_latch_intc_interrupt(st);
     if (!st->branch_pending) {
@@ -5248,6 +5249,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 {
     ee_state_t *st = &g_state;
 #if !defined(PCSX2WII_FAST) && !defined(GEKKO2_FAST_DIAGNOSTICS)
+    if(!gekko2_opt_enabled(GEKKO2_OPT_LIGHT_DIAGNOSTICS)) {
     /* R1236: arm at the proven post-Sema5 resume and keep counting indefinitely. */
     { uint32_t p=st->pc, tid=(uint32_t)ee_hle_thread_get_current_thread_id(), rg;
       if (!r1236_armed && r1190_rend_count>=3u && tid==1u && p==0x0101bb28u) {
@@ -5347,6 +5349,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         }
         r1204_trace_left--; if(!r1204_trace_left) r1205_active=0u;
     }
+    } /* Historical observational probes only; no guest state changes. */
 #endif
     /* R1176: sample only 1/4096 instructions so the profiler itself does
      * not become the bottleneck. Time Base deltas are used only to rank
@@ -5354,7 +5357,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 #if defined(PCSX2WII_FAST) || defined(GEKKO2_FAST_DIAGNOSTICS)
     const int r1176_sample = 0;
 #else
-    int r1176_sample = ((st->instructions_executed & 4095ULL) == 0);
+    int r1176_sample = !gekko2_opt_enabled(GEKKO2_OPT_LIGHT_DIAGNOSTICS)&&((st->instructions_executed & 4095ULL) == 0);
 #endif
     uint32_t r1176_t0 = 0, r1176_t1 = 0;
 
@@ -5589,6 +5592,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
     uint32_t uimm  = instr & 0xFFFF;
     uint32_t funct = instr & 0x3F;
 
+    if(!gekko2_opt_enabled(GEKKO2_OPT_LIGHT_DIAGNOSTICS)) {
     /* R1218: the next actually executed instruction is the strongest truth
      * for how the preceding HLE syscall completed. Snapshot its result now. */
     if (r1218_pending && r1218_sys_count) {
@@ -5656,6 +5660,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         r1214_row[ix][4]=(rs<<8)|rt;
     }
 
+    }
 #ifdef R1250_LQ_ALIAS_TRACE
     if (op==0x1eu && rs==rt && rt!=0u) {
         static unsigned alias_n;
@@ -13024,21 +13029,22 @@ static int ee_step(void){return ee_step_budget(1u,NULL);}
  * so ee_hle_thread.c's WaitSema park branch (the ACTUALLY-live code
  * path) can call the exact same sequence. */
 void ee_core_park_tick_profile_impl(ee_state_t *st){
+    const int service_fast=gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES);
     st->cop0[9]++;
     ee_irq_tick();
     ee_latch_timer_interrupt(st);
-    ee_check_vblank(st);
-    ee_check_boot_unblock_selfloop(st); /* Round 161 */
-    ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
+    if(!service_fast||g_ee_display_phase==0u||g_ee_display_phase==EE_CYCLES_VBLANK_DURATION)ee_check_vblank(st);
+    if(!service_fast||(!g_boot_once.selfloop&&st->pc==EE_BOOT_UNBLOCK_SELFLOOP_PC))ee_check_boot_unblock_selfloop(st); /* Round 161 */
+    if(!service_fast||(!g_boot_once.fastboot&&st->pc==EE_EELOAD_START_PC))ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
     ee_check_browser_menu_escalation_heuristic(st); /* Round 610 (task #536) */
     ee_check_browser_idle_carousel(st); /* Round 696 (task #447/#536) */
     if (EE_SBUS_WAIT_PC_MATCH(st->pc)) ee_check_boot_unblock_sbus_wait(st); /* R1180 hot reject; same R178 semantics */
-    ee_check_gs_vsync(st); /* Round 87 (127th finding) */
+    if(!service_fast||g_ee_display_phase==0u)ee_check_gs_vsync(st); /* Round 87 (127th finding) */
     ee_timers_tick_fast(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
     sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
-    ee_check_rpcinit_pending(st);
-    ee_check_rpc_bind_pending(st);
-    ee_check_cdvd_ncmd_pending(st);
+    if(!service_fast||g_rpcinit_pending)ee_check_rpcinit_pending(st);
+    if(!service_fast||g_rpc_bind_pending||g_rpc_bind_qcount)ee_check_rpc_bind_pending(st);
+    if(!service_fast||g_ee_cdvd_ncmd_reentry.valid)ee_check_cdvd_ncmd_pending(st);
     ee_latch_intc_interrupt(st);
     if (!st->branch_pending) {
         /* Round 303's real, verified fix (see the dead-code handler's

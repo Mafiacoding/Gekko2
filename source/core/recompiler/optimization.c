@@ -7,7 +7,7 @@ static const char *names[GEKKO2_OPT_COUNT]={
  "EE dynarec","IOP dynarec","VU0 / VU1 dynarec","EE native blocks",
  "Native block links","GPR residency","6 MiB code arena",
  "GX resident depth / blend","GX texture reuse","Fastmem RAM page cache",
- "GX independent VRAM writes","Native load / store reduction","GX Gouraud shading","Block cache reuse","HLE RAM bulk operations","Strict BIOS HLE fallback","ARM IPU worker (requires IOS service)","EE compact cache (1024 owners)","ARM startup IOS"};
+ "GX independent VRAM writes","Native load / store reduction","GX Gouraud shading","Block cache reuse","HLE RAM bulk operations","Strict BIOS HLE fallback","ARM IPU worker (requires IOS service)","EE compact cache (1024 owners)","ARM startup IOS","EE cached block prefixes","CPU inactive service guards","IOP alarm / delay deadlines","Light runtime diagnostics","ARM BIOS RAM jobs (experimental)"};
 static const char *descriptions[GEKKO2_OPT_COUNT]={
  "Supported EE instructions use PPC; others use interpreter.",
  "Supported IOP instructions use PPC; others use interpreter.",
@@ -27,12 +27,17 @@ static const char *descriptions[GEKKO2_OPT_COUNT]={
  "Unknown A0/B0/C0 calls execute guest code; experimental compatibility.",
  "Experimental CSC worker. ARM / IOS changes require app restart.",
  "Reuse ON: 1024 EE owners instead of 4096; compare on cold boot.",
- "Restart app. IOS222 must be installed and provide /dev/mload."};
+ "Restart app. IOS222 must be installed and provide /dev/mload.",
+ "Use existing long EE blocks for short grants; keep every boundary.",
+ "Avoid inactive EE / IOP service calls; retain all guest events.",
+ "Scan THREADMAN only at its next deadline; retain alarm ordering.",
+ "Keep session / faults / timing logs; skip historical per-PC probes.",
+ "MLOAD copy / fill for large IOP BIOS RAM helpers; verified CPU fallback."};
 uint32_t gekko2_opt_available(void)
 {
  uint32_t mask=(1u<<GEKKO2_OPT_COUNT)-1u;
 #if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
- mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_NATIVE_LINKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_RESIDENCY)|GEKKO2_OPT_BIT(GEKKO2_OPT_WORD_ALLOCATION));
+ mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_NATIVE_LINKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_RESIDENCY)|GEKKO2_OPT_BIT(GEKKO2_OPT_WORD_ALLOCATION)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_PREFIX));
 #endif
 #if defined(GEKKO2_LEGACY_SCHEDULER) || defined(PCSX2WII_LEGACY_FRAME_REPAIR)
  mask &= ~GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
@@ -66,9 +71,10 @@ int gekko2_opt_load(const char *path)
  if(!f)return -1;
  unsigned version=0,mask=0;char extra;
  int n=fscanf(f,"GEKKO2_OPTIONS %u %x %c",&version,&mask,&extra);fclose(f);
- if(n!=2||(version<1u||version>4u)||mask&~((1u<<GEKKO2_OPT_COUNT)-1u)||(version==1u&&mask>0x1fffu)||(version<4u&&(mask&GEKKO2_OPT_BIT(GEKKO2_OPT_ARM_IOS222))))return -1;
+ if(n!=2||(version<1u||version>5u)||mask&~((1u<<GEKKO2_OPT_COUNT)-1u)||(version==1u&&mask>0x1fffu)||(version<4u&&(mask&GEKKO2_OPT_BIT(GEKKO2_OPT_ARM_IOS222)))||(version<5u&&(mask&(GEKKO2_OPT_R1342_DEFAULT|GEKKO2_OPT_BIT(GEKKO2_OPT_ARM_CPU_RAM)))))return -1;
  if(version==1u)mask|=GEKKO2_OPT_CACHE_DEFAULT;
  if(version<3u)mask|=GEKKO2_OPT_BIT(GEKKO2_OPT_HLE_RAM);
+ if(version<5u)mask|=GEKKO2_OPT_R1342_DEFAULT;
  requested=mask&gekko2_opt_available();return 0;
 }
 int gekko2_opt_save(const char *path)
@@ -76,7 +82,7 @@ int gekko2_opt_save(const char *path)
  char temp[256],backup[256];
  if(snprintf(temp,sizeof(temp),"%s.tmp",path)>=(int)sizeof(temp)||snprintf(backup,sizeof backup,"%s.bak",path)>=(int)sizeof backup)return -1;
  FILE *f=fopen(temp,"w");if(!f)return -1;
- int ok=fprintf(f,"GEKKO2_OPTIONS 4 %08lx\n",(unsigned long)gekko2_opt_requested())>0;
+ int ok=fprintf(f,"GEKKO2_OPTIONS 5 %08lx\n",(unsigned long)gekko2_opt_requested())>0;
  if(fclose(f))ok=0;
  if(!ok){remove(temp);return -1;}
  if(!rename(temp,path)){remove(backup);return 0;}

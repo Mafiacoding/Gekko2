@@ -7,6 +7,7 @@
 #endif
 #include <string.h>
 #include "core/hw/iop_hle_thread.h"
+#include "core/recompiler/optimization.h"
 
 /* Thread-stack bump arena: a dedicated, honestly-labeled simplification
  * (same spirit as iop_module_loader.c's own BUMP_BASE comment - real
@@ -96,9 +97,20 @@ static struct {
     iop_hle_thread_stats_t stats;
 } g;
 
+/* Derived host-only hint; checkpoint representation stays byte-identical.
+ * Every recognized THREADMAN call invalidates it. An exposed mutable blob
+ * disables hints until reset, since its retained pointer can change later. */
+static uint64_t tick_deadline;
+static unsigned tick_hint_valid,tick_hint_has_event,tick_blob_exposed;
+static uint64_t tick_hint_skips,tick_hint_scans;
+uint64_t iop_hle_thread_deadline_stat(unsigned n)
+{return n==0?tick_hint_skips:n==1?tick_hint_scans:n==2?tick_blob_exposed:0;}
+
 void iop_hle_thread_init(void)
 {
     memset(&g, 0, sizeof(g));
+    tick_hint_valid=tick_hint_has_event=tick_blob_exposed=0;
+    tick_hint_skips=tick_hint_scans=0;
     g.stack_bump_next = THREAD_STACK_ARENA_TOP;
 }
 
@@ -111,6 +123,7 @@ void iop_hle_thread_init(void)
  * block. */
 void *iop_hle_thread_get_checkpoint_blob(uint32_t *size_out)
 {
+    tick_blob_exposed=1;tick_hint_valid=0;
     if (size_out) *size_out = (uint32_t)sizeof(g);
     return &g;
 }
@@ -560,6 +573,7 @@ int iop_hle_thread_try_handle(iop_state_t *st, uint32_t pc)
         pc == IOP_HLE_THREAD_WAITSEMA ||
         pc == IOP_HLE_THREAD_WAKEUPTHREAD;
     if (!in_range) return 0;
+    tick_hint_valid=0;
     iop_core_flush_pipeline(st);
 
     ensure_root_thread(st);
@@ -1413,6 +1427,31 @@ int iop_hle_thread_try_handle(iop_state_t *st, uint32_t pc)
 void iop_hle_thread_tick(iop_state_t *st)
 {
     if (g.thread_count == 0) return; /* no thread primitive has ever run yet */
+    if(gekko2_opt_enabled(GEKKO2_OPT_IOP_DEADLINES)&&!tick_blob_exposed) {
+        if(!tick_hint_valid) {
+            tick_hint_has_event=0;tick_deadline=UINT64_MAX;tick_hint_scans++;
+            if(!g.alarm_in_dispatch)for(int i=0;i<IOP_HLE_THREAD_MAX_ALARMS;i++) {
+                const iop_alarm_t_internal *a=&g.alarms[i];
+                if(a->in_use&&(!tick_hint_has_event||a->deadline<tick_deadline)) {
+                    tick_hint_has_event=1;tick_deadline=a->deadline;
+                }
+            }
+            for(int i=0;i<IOP_HLE_THREAD_MAX_THREADS;i++) {
+                const iop_tcb_t *t=&g.threads[i];
+                if(t->in_use&&t->status==IOP_THS_WAIT&&t->wait_type==IOP_TSW_DELAY&&
+                   (!tick_hint_has_event||t->delay_deadline<tick_deadline)) {
+                    tick_hint_has_event=1;tick_deadline=t->delay_deadline;
+                }
+            }
+            tick_hint_valid=1;
+        }
+        if(!tick_hint_has_event||st->instructions_executed<tick_deadline) {
+            tick_hint_skips++;return;
+        }
+        /* Run the unchanged scan at the original exact retirement tick:
+         * lowest due alarm slot first, one dispatch, then delayed wakes. */
+        tick_hint_valid=0;
+    } else tick_hint_valid=0; /* Conservative scan may change the derived hint. */
 
     /* Round 390: at most one due Alarm is dispatched per tick call
      * (see header's Round 390 addendum for why) - checked BEFORE the
@@ -1496,6 +1535,7 @@ static int g_root_thread_retired = 0;
 
 void iop_hle_thread_retire_root_thread(iop_state_t *st)
 {
+    tick_hint_valid=0;
     if (g_root_thread_retired) return; /* only the synthetic root thread's one-time handoff, never again */
     if (g.thread_count == 0) return; /* no thread primitive has ever run - nothing to retire */
     int cur = g.current_thread_id;

@@ -646,6 +646,7 @@ void ee_jit_reset_stats_for_test(void)
 
 /* Bounded PC/tag cache; first conservative precise EE block integration. */
 typedef unsigned (*ee_precise_fn)(ee_state_t *,unsigned,uint32_t);
+typedef unsigned (*ee_prefix_fn)(ee_state_t *,unsigned,uint32_t,unsigned);
 #define EE_PRECISE_RAM_PAGES (32u*1024u*1024u/4096u)
 #define EE_PRECISE_NON_RAM_PAGE UINT32_MAX
 typedef struct {
@@ -661,6 +662,7 @@ typedef struct {
  uint16_t link_index;
  ee_precise_fn link_fn;
  ee_precise_fn fn;
+ ee_prefix_fn prefix_fn; /* Same validated owner/source; independent bounded body. */
 } ee_precise_slot;
 /* Metadata capacity is independent of the 6 MiB executable-code arena.
  * Reuse keeps 4096 owners; Control retains 256 direct-mapped entries. */
@@ -669,11 +671,11 @@ typedef struct {
 static ee_precise_slot precise_cache[EE_PRECISE_CACHE_SLOTS];
 static uint32_t precise_recency[EE_PRECISE_CACHE_SLOTS],precise_clock;
 static jit_cache_profile precise_profile;
-static uint64_t precise_budget_stats[6];
-uint64_t ee_jit_get_budget_cache_stat(unsigned n){return n<6u?precise_budget_stats[n]:0;}
+static uint64_t precise_budget_stats[8];
+uint64_t ee_jit_get_budget_cache_stat(unsigned n){return n<8u?precise_budget_stats[n]:0;}
 /* Admission hints never bypass scalar instruction/mapping validation.
  * Any changed owner invalidates the hint for both supported layouts. */
-typedef struct { uint32_t pc,budget,stride; } ee_precise_refusal;
+typedef struct { uint32_t pc,budget,stride,owner; } ee_precise_refusal;
 static ee_precise_refusal precise_refusals[EE_PRECISE_REUSE_SETS];
 /* Exact best-way hint for this PC and budget. Never a native-code proof.
  * Set mutations clear it; execution still validates mapping/source epochs. */
@@ -731,15 +733,17 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
  if(install&&ways==4u&&refusal->budget&&refusal->pc==pc&&
     refusal->stride==stride&&budget<=refusal->budget) {
   precise_budget_stats[1]++;precise_budget_stats[3]++;
-  precise_budget_stats[4]++;return NULL;
+  precise_budget_stats[4]++;
+  return gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX)&&refusal->owner?&precise_cache[refusal->owner-1u]:NULL;
  }
- ee_precise_slot *best=NULL;unsigned largest=0;
+ ee_precise_slot *best=NULL,*prefix=NULL;unsigned largest=0;
  for(unsigned w=0;w<ways;w++) {
   unsigned index=set+w*stride;
   const ee_precise_dispatch *tag=&precise_dispatch[index];
   if(!tag->fn||tag->pc!=pc)continue;
   if(ways==1u)return &precise_cache[index];
   if(tag->count>largest)largest=tag->count;
+  if(tag->count>budget&&(!prefix||tag->count<prefix->count))prefix=&precise_cache[index];
   if(tag->count<=budget&&(!best||tag->count>precise_dispatch[best-precise_cache].count))
    best=&precise_cache[index];
  }
@@ -748,6 +752,10 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
   *lookup=(ee_precise_lookup){pc,budget,stride,(unsigned)(best-precise_cache)+1u,fit};
   if(install&&fit)precise_budget_stats[0]++;return best;
  }
+ if(install&&prefix&&gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX)) {
+  *refusal=(ee_precise_refusal){pc,budget,stride,(unsigned)(prefix-precise_cache)+1u};
+  precise_budget_stats[1]++;return prefix;
+ }
  if(!install)return NULL;
  if(largest)precise_budget_stats[1]++;
  for(unsigned w=0;w<ways;w++)if(!precise_dispatch[set+w*stride].fn)return &precise_cache[set+w*stride];
@@ -755,7 +763,7 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
   * PC just to admit another length variant. The scalar PPC JIT handles this
   * tail under the unchanged budget. Empty ways still admit warm variants. */
  if(ways>1u&&largest){
-  *refusal=(ee_precise_refusal){pc,budget,stride};
+  *refusal=(ee_precise_refusal){pc,budget,stride,0u};
   precise_budget_stats[3]++;return NULL;
  }
  unsigned victim=set;
@@ -804,11 +812,13 @@ static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
   }
  }
  ee_precise_fn old=slot->fn;
+ ee_prefix_fn old_prefix=slot->prefix_fn;
  int displaced=old&&(slot->pc!=pc||slot->count!=count||
                     memcmp(slot->words,words,count*4u)!=0);
  *slot=next;
  ee_precise_publish_dispatch(slot);
  if(old&&old!=fn){if(displaced)precise_evictions++;ppc_code_cache_release((void*)old);}
+ if(old_prefix)ppc_code_cache_release((void*)old_prefix);
  return 1;
 }
 static void ee_precise_release_slot(ee_precise_slot *slot)
@@ -818,6 +828,7 @@ static void ee_precise_release_slot(ee_precise_slot *slot)
  precise_refusals[index%1024u].budget=0u;precise_refusals[index%256u].budget=0u;
  precise_lookups[index%1024u].owner=0u;precise_lookups[index%256u].owner=0u;
  if(slot->fn)ppc_code_cache_release((void*)slot->fn);
+ if(slot->prefix_fn)ppc_code_cache_release((void*)slot->prefix_fn);
  memset(&precise_dispatch[slot-precise_cache],0,sizeof(precise_dispatch[0]));
  memset(slot,0,sizeof(*slot));
 }
@@ -962,6 +973,29 @@ static ee_precise_fn ee_precise_build(uint32_t pc,const uint32_t *words,unsigned
  if(!fn)precise_profile.failures++;else precise_profile.installed++;
  return fn;
 }
+static ee_prefix_fn ee_precise_build_prefix(const ee_precise_slot *slot)
+{
+ uint64_t begin=jit_compile_begin(&precise_profile);unsigned old=gp_enter(GP_COMPILE);
+ ppc_codegen_ctx_t c;ee_prefix_fn fn=0;
+ if(!ppc_dynarec_init(&c,slot->count*3u)) {
+#ifdef GEKKO2_LEGACY_BOUNDARIES
+  uint32_t b=0,m=0,d=0;
+#else
+  uint32_t b=(uint32_t)(uintptr_t)ee_core_block_boundary;
+  uint32_t m=(uint32_t)(uintptr_t)ee_core_block_memory_boundary;
+  uint32_t d=(uint32_t)(uintptr_t)ee_core_block_delay_boundary;
+#endif
+  if(!ppc_dynarec_translate_ee_budget_delay_block(&c,slot->pc,slot->words,slot->count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,(uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_delay,(uint32_t)(uintptr_t)ee_core_block_commit,
+    b,m,d,(uint32_t)offsetof(ee_state_t,gpr_generation)))
+   fn=(ee_prefix_fn)ppc_dynarec_finalize(&c);
+  if(!fn)ppc_dynarec_free(&c);
+ }
+ gp_leave(old);jit_compile_end(&precise_profile,begin);
+ if(!fn)precise_profile.failures++;else precise_profile.installed++;
+ return fn;
+}
 static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetched,uint32_t first_word,int native_chain)
 {
 #if GEKKO2_EE_BLOCKS_ENABLED
@@ -976,7 +1010,7 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  if(!slot){precise_profile.misses++;return 0;}
  /* The emitted prepare callback validates live mapping/encoding before
   * EACH instruction. A warm entry needs no duplicate full-block scan. */
- if(slot->fn&&slot->pc==pc&&slot->count<=quantum_budget&&
+ if(slot->fn&&slot->pc==pc&&(slot->count<=quantum_budget||gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX))&&
     ee_precise_slot_generation_current(slot)&&(!fetched||slot->words[0]==first_word)){precise_profile.hits++;goto execute_slot;}
  precise_profile.misses++;
  if(slot->fn){if(slot->pc!=pc)precise_profile.collisions++;else precise_profile.stale++;}
@@ -1007,6 +1041,12 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   ee_precise_publish_dispatch(slot);
  }
 execute_slot:;
+ int prefix=slot->count>quantum_budget;
+ if(prefix) {
+  if(!gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX))return 0;
+  if(!slot->prefix_fn)slot->prefix_fn=ee_precise_build_prefix(slot);
+  if(!slot->prefix_fn)return 0;
+ }
  ee_precise_touch((unsigned)(slot-precise_cache));
  uint32_t first_physical=0;
  if(fetched) {
@@ -1019,19 +1059,20 @@ execute_slot:;
   }
   if(!ee_core_block_prepare_fetched(st,pc))return 0;
  }
- if(native_chain&&slot->count+2u<=budget)ee_precise_make_chain();
- int use_chain=native_chain&&precise_chain_fn&&slot->count+2u<=budget;
+ if(!prefix&&native_chain&&slot->count+2u<=budget)ee_precise_make_chain();
+ int use_chain=!prefix&&native_chain&&precise_chain_fn&&slot->count+2u<=budget;
  precise_chain_source=use_chain?slot:0;
  precise_chain_source_serial=use_chain?slot->serial:0;
  precise_active=1;
  precise_accounted_remaining=budget;
- unsigned n=use_chain?
+ unsigned n=prefix?slot->prefix_fn(st,fetched,first_physical,quantum_budget):use_chain?
   precise_chain_fn(st,fetched,first_physical,budget,slot->fn,slot->count):
   slot->fn(st,fetched,first_physical);
  if(ee_core_interleave_quantum!=UINT32_MAX)ee_core_interleave_account(precise_accounted_remaining-(budget-n));
  precise_active=0;
  precise_chain_source=0;precise_chain_source_serial=0;
  precise_runs++;precise_retired+=n;
+ if(prefix){precise_budget_stats[6]++;precise_budget_stats[7]+=n;}
  /* Changed first word/mapping: release only after the native function
   * returns. The scalar path handles this instruction; later visits retry. */
  if(!n)ee_precise_release_slot(slot);

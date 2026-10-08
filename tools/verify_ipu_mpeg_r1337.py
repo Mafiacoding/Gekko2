@@ -41,7 +41,7 @@ elf=Path(__file__).resolve().parents[1]/'arm/build/Gekko2-ARM-Worker.elf'
 data=elf.read_bytes();u.mem_write(ram+0x10000,data)
 # GCC may split the trivial null/size guard into its caller. These two cases
 # provide valid pointers/sizes and exercise the emitted validation body.
-if 'arm_loader_validate' not in syms:syms['arm_loader_validate']=syms['arm_loader_validate.part.0']
+if 'arm_loader_validate' not in syms:syms['arm_loader_validate']=syms[next(n for n in syms if n.startswith('arm_loader_validate.part.'))]
 assert call('arm_loader_validate',ram+0x10000,len(data),0x13700000,65536,tmp)==1
 assert call('arm_loader_validate',ram+0x10000,len(data),0x13700000,1024,tmp)==0
 print('PASS linked PPC ARM ELF plan accepts actual worker, rejects insufficient load area')

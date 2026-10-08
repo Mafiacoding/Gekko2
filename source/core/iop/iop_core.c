@@ -1135,6 +1135,10 @@ static int iop_prepare(uint32_t *prepared_pc,uint32_t *prepared_word)
         iop_core_flush_pipeline(st);return 0;
     }
 
+    /* All five HLE gate families below match exact PCs <= 0x44c.
+     * Higher guest PCs have no side effects in those handlers. Keep the
+     * module loader's live-code checks outside this guard. */
+    if(!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)||pc<=IOP_HLE_HEAP_SYSMEM_ORDINAL10_QUERYBLOCKSIZE) {
     /* IOP BIOS syscall trap (0xA0/0xB0/0xC0) - see core/hw/iop_hle_bios.h.
      * If this is one of the three trap addresses, the "instruction"
      * there is not really interpreted at all - the call is handled
@@ -1232,6 +1236,7 @@ static int iop_prepare(uint32_t *prepared_pc,uint32_t *prepared_word)
         return 0;
     }
 #endif
+    } /* Exact low-PC HLE gates. */
 
     /* Real IOP module/IRX boot sequencer trampoline (task #92) -
      * see core/hw/iop_module_loader.h. Checked right after the A0/

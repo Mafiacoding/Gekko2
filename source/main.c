@@ -1,4 +1,5 @@
 #include "core/hw/rspu2_stream.h"
+#include "core/hw/arm_ram.h"
 #include "core/runtime_profile.h"
 #include "core/recompiler/dynarec_config.h"
 #include "core/recompiler/ppc_code_cache.h"
@@ -450,6 +451,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
     fprintf(f,"ARM_WORKER probes=%llu submitted=%llu completed=%llu errors=%llu stale=%llu enabled=%u available=%d\n",
       (unsigned long long)arm_worker_stat(0),(unsigned long long)arm_worker_stat(1),
       (unsigned long long)arm_worker_stat(2),(unsigned long long)arm_worker_stat(3),(unsigned long long)arm_worker_stat(4),gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER),arm_worker_available());
+    fprintf(f,"ARM_RAM probes=%llu chunks=%llu completed=%llu bytes=%llu errors=%llu declined=%llu enabled=%d available=%d synchronous=1 verified=1\n",
+      (unsigned long long)arm_ram_stat(0),(unsigned long long)arm_ram_stat(1),
+      (unsigned long long)arm_ram_stat(2),(unsigned long long)arm_ram_stat(3),
+      (unsigned long long)arm_ram_stat(4),(unsigned long long)arm_ram_stat(5),
+      gekko2_opt_enabled(GEKKO2_OPT_ARM_CPU_RAM),arm_ram_available());
     fprintf(f,"ARM_LOADER status=%d path=sd:/pcsx2/arm/Gekko2-ARM-Worker.elf\n",arm_loader_status());
     fprintf(f,"ARM_LOAD_DETAIL bytes=%lu base=%08lx capacity=%08lx entry=%08lx crc32=%08lx validation=%lu\n",(unsigned long)arm_loader_stat(0),(unsigned long)arm_loader_stat(1),(unsigned long)arm_loader_stat(2),(unsigned long)arm_loader_stat(3),(unsigned long)arm_loader_stat(4),(unsigned long)arm_loader_stat(5));
     fprintf(f,"ARM_TRANSFER operation=%lu result=%ld address=%08lx length=%lu\n",(unsigned long)arm_loader_stat(6),(long)(int32_t)arm_loader_stat(7),(unsigned long)arm_loader_stat(8),(unsigned long)arm_loader_stat(9));
@@ -578,7 +584,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             fprintf(f,"GS_GOURAUD_DEGEN_SAMPLE i=%u prim=%lx xy=%ld,%ld %ld,%ld %ld,%ld\n",i,(unsigned long)prim,
                 (long)xy[0],(long)xy[1],(long)xy[2],(long)xy[3],(long)xy[4],(long)xy[5]);
     }
-    fprintf(f,"BUILD checkpoint=R1341 scope=EE-cache-IPU-video-ARM-client mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
+    fprintf(f,"BUILD checkpoint=R1342 scope=EE-cache-IPU-video-ARM-client mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
         (unsigned long)gekko2_optimization_mask,(unsigned long)gekko2_opt_requested(),
         gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT),
         gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS),
@@ -600,6 +606,14 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
 #ifdef GEKKO2_COUNT_BOUNDARIES
     fprintf(f,"EE_BOUNDARY fused_mod32=%llu\n",(unsigned long long)ee_core_get_fused_boundaries());
 #endif
+    fprintf(f,"EE_PREFIX runs=%llu retired=%llu enabled=%d services=%d\n",
+            (unsigned long long)ee_jit_get_budget_cache_stat(6),
+            (unsigned long long)ee_jit_get_budget_cache_stat(7),
+            gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX),gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES));
+    fprintf(f,"IOP_DEADLINES skipped=%llu scans=%llu exposed=%llu enabled=%d\n",
+            (unsigned long long)iop_hle_thread_deadline_stat(0),
+            (unsigned long long)iop_hle_thread_deadline_stat(1),
+            (unsigned long long)iop_hle_thread_deadline_stat(2),gekko2_opt_enabled(GEKKO2_OPT_IOP_DEADLINES));
     fprintf(f,"IOP_JIT compiled=%u executed=%llu rejected_hits=%llu\n",
             (unsigned)iop_jit_get_cache_size(),
             (unsigned long long)iop_jit_get_executed_count(),
@@ -1111,7 +1125,7 @@ int main(int argc, char **argv)
 #ifdef GEKKO2_ARM_BETA
     /* Both saved ARM and explicit IOS222 selection are required for reload.
      * Restart after changing ARM: never reload IOS inside a guest session. */
-    int ios_result=wii_arm_ios_start(gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER)&&gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222)?222:0,&g_fat_mounted);
+    int ios_result=wii_arm_ios_start((gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER)||gekko2_opt_enabled(GEKKO2_OPT_ARM_CPU_RAM))&&gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222)?222:0,&g_fat_mounted);
     if(ios_result==-4){printf("IOS recovery failed. Restart Wii before using Gekko2.\n");return 1;}
 #endif
     /* Persist a fresh identity before the first launcher draw. Previous
@@ -1119,7 +1133,7 @@ int main(int argc, char **argv)
     {
         FILE *boot=fopen("sd:/pcsx2/Gekko2-startup.log","w");
         if(boot) {
-            fprintf(boot,"BUILD checkpoint=R1341 stage=launcher-ready resident_pipeline=%d\n",
+            fprintf(boot,"BUILD checkpoint=R1342 stage=launcher-ready resident_pipeline=%d\n",
 #ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
                 0
 #else
@@ -1183,7 +1197,7 @@ int main(int argc, char **argv)
                 else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT)){
                     if(gekko2_opt_toggle(opt_selected))
                         notice=gekko2_opt_save("sd:/pcsx2/optimization.cfg")==0?
-                            (opt_selected==GEKKO2_OPT_ARM_WORKER||opt_selected==GEKKO2_OPT_ARM_IOS222?"Saved. Exit to HBC and restart for ARM / IOS.":"Saved. Applies to the next cold boot."):
+                            (opt_selected==GEKKO2_OPT_ARM_WORKER||opt_selected==GEKKO2_OPT_ARM_IOS222||opt_selected==GEKKO2_OPT_ARM_CPU_RAM?"Saved. Exit to HBC and restart for ARM / IOS.":"Saved. Applies to the next cold boot."):
                             "Could not save options to SD. Check card / directory.";
                     else notice="This option is unavailable in this build.";
                 }

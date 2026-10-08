@@ -69,10 +69,11 @@ static int loader_seek(int fd,uint32_t address,unsigned length)
  transport_operation=1;transport_address=address;transport_length=length;
  transport_result=IOS_Seek(fd,address,SEEK_SET);return transport_result>=0;
 }
-/* MLOAD status-zero and byte-count interfaces: reject positive short I/O.
- * Poison reads, absolutely seek each chunk, verify every write by readback. */
+/* Hermes clients accept nonnegative status, not necessarily a byte count.
+ * Never infer completeness from that status: all-zero preflight checks every
+ * poisoned byte and complemented write readback proves every target byte. */
 static int loader_transfer_ok(int result,unsigned length)
-{return result==0||result==(int)length;}
+{(void)length;return result>=0;}
 int arm_loader_start(void)
 {
  /* Loading is opt-in twice: ARM option and this separately installed ELF.

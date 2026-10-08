@@ -1,3 +1,16 @@
+# R1342 — EE prefix reuse, CPU guards and IOP deadlines
+
+Four independently selectable optimizations reduce short EE grant overhead,
+inactive CPU service calls, repeated THREADMAN scans and historical diagnostic
+work. MLOAD status 1 is supported with complete-buffer/readback verification.
+See [implementation, source audit, measurements and limits](docs/R1342-PERFORMANCE-CPU-ARM.md).
+Warm short-grant tests improve by 21%; a mixed EE/IOP replay improves by 0.7%.
+These synthetic PPC instruction counts do not establish doubled Wii FPS.
+The four CPU options default ON and require cold boot. A separate default-OFF
+experimental ARM option delegates large IOP BIOS RAM jobs to MLOAD and verifies
+every byte. ARM/IOS changes require an app restart. Physical R1342 boot, ARM
+handshake and a RAM-job speedup remain unverified.
+
 # R1341 — cache/retirement and ARM transport test build
 
 Guarded EE lookup/admission hints, reduced duplicate IRQ/IOP fetch work,

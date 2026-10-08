@@ -9,7 +9,7 @@ def profile():
  return dict(zip(['lookups','hits','misses','collisions','stale','attempts','installed','failures','compile_tb','compile_samples'],struct.unpack('>10Q',u.mem_read(dest,80))))
 results=[]
 for reuse in [0,8192]:
- word(mask_addr,initial&~8192|reuse);setup()
+ word(mask_addr,initial&~8192&~(1<<19)|reuse);setup()
  total[0]=0;active[0]=True
  for budget in [8,2]*16:
   word(state+off['pc'],base);word(state+off['next_pc'],base+4)

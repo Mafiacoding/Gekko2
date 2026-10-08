@@ -10,6 +10,7 @@
 #include "core/hw/iop_hle_bios.h"
 #include "core/hw/iop_excb.h"
 #include "core/hw/iop_hle_events.h"
+#include "core/hw/arm_ram.h"
 #include "core/recompiler/optimization.h"
 #include <string.h>
 #include <stdio.h>
@@ -156,7 +157,7 @@ static void iop_memcpy_bytes(iop_state_t *st,uint32_t dst,uint32_t src,uint32_t 
 {
  uint8_t *d=hle_ram(st,dst,len),*q=hle_ram(st,src,len);
  if(d&&q&&!(st->cop0[12]&0x10000u)) {
-  if(d>=q+len||q>=d+len)memcpy(d,q,len);
+  if(d>=q+len||q>=d+len) {if(!gekko2_opt_enabled(GEKKO2_OPT_ARM_CPU_RAM)||!arm_ram_copy(d,q,len))memcpy(d,q,len);}
   else for(uint32_t i=0;i<len;i++)d[i]=q[i];
   ram_copy_bytes+=len;return;
  }
@@ -165,7 +166,7 @@ static void iop_memcpy_bytes(iop_state_t *st,uint32_t dst,uint32_t src,uint32_t 
 static void iop_memset_bytes(iop_state_t *st,uint32_t dst,uint8_t val,uint32_t len)
 {
  uint8_t *d=hle_ram(st,dst,len);
- if(d&&!(st->cop0[12]&0x10000u)){memset(d,val,len);ram_set_bytes+=len;return;}
+ if(d&&!(st->cop0[12]&0x10000u)){if(!gekko2_opt_enabled(GEKKO2_OPT_ARM_CPU_RAM)||!arm_ram_fill(d,val,len))memset(d,val,len);ram_set_bytes+=len;return;}
  for(uint32_t i=0;i<len;i++)iop_mem_write8(st,dst+i,val);
 }
 
