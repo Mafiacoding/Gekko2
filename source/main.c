@@ -450,6 +450,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)arm_worker_stat(0),(unsigned long long)arm_worker_stat(1),
       (unsigned long long)arm_worker_stat(2),(unsigned long long)arm_worker_stat(3),(unsigned long long)arm_worker_stat(4),gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER),arm_worker_available());
     fprintf(f,"ARM_LOADER status=%d path=sd:/pcsx2/arm/Gekko2-ARM-Worker.elf\n",arm_loader_status());
+    fprintf(f,"ARM_LOAD_DETAIL bytes=%lu base=%08lx capacity=%08lx entry=%08lx crc32=%08lx validation=%lu\n",(unsigned long)arm_loader_stat(0),(unsigned long)arm_loader_stat(1),(unsigned long)arm_loader_stat(2),(unsigned long)arm_loader_stat(3),(unsigned long)arm_loader_stat(4),(unsigned long)arm_loader_stat(5));
     fprintf(f,"ARM_IOS status=%d original=%u active=%u\n",wii_arm_ios_status(),wii_arm_ios_original(),wii_arm_ios_active());
     system_profile_t profile;system_profile_get(&profile);
     uint64_t ee_sample=profile.ee_ticks-g_profile_previous.ee_ticks;
@@ -570,7 +571,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             fprintf(f,"GS_GOURAUD_DEGEN_SAMPLE i=%u prim=%lx xy=%ld,%ld %ld,%ld %ld,%ld\n",i,(unsigned long)prim,
                 (long)xy[0],(long)xy[1],(long)xy[2],(long)xy[3],(long)xy[4],(long)xy[5]);
     }
-    fprintf(f,"BUILD checkpoint=R1338 scope=EE-cache-IPU-video-ARM-client mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
+    fprintf(f,"BUILD checkpoint=R1339 scope=EE-cache-IPU-video-ARM-client mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
         (unsigned long)gekko2_optimization_mask,(unsigned long)gekko2_opt_requested(),
         gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT),
         gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS),
@@ -1110,7 +1111,7 @@ int main(int argc, char **argv)
     {
         FILE *boot=fopen("sd:/pcsx2/Gekko2-startup.log","w");
         if(boot) {
-            fprintf(boot,"BUILD checkpoint=R1338 stage=launcher-ready resident_pipeline=%d\n",
+            fprintf(boot,"BUILD checkpoint=R1339 stage=launcher-ready resident_pipeline=%d\n",
 #ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
                 0
 #else

@@ -14,5 +14,5 @@ else
  echo 'Set DEVKITARM or ZIG to build the experimental ARM worker.' >&2
  exit 2
 fi
-"$compiler" "$@" -E -P -x c -DWORKER_BASE=${ARM_WORKER_BASE:-0x137f0000} arm/worker.ld -o arm/build/worker.ld
+"$compiler" "$@" -E -P -x c -DWORKER_BASE=${ARM_WORKER_BASE:-0x13700000} arm/worker.ld -o arm/build/worker.ld
 "$compiler" "$@" -O2 -Wall -Wextra -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -nostdlib -Iinclude arm/start.S arm/ios_syscalls.S arm/ios_service.c arm/worker.c source/hw/ipu_csc.c -Wl,-T,arm/build/worker.ld -Wl,--build-id=none -o arm/build/Gekko2-ARM-Worker.elf
