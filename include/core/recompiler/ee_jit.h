@@ -7,6 +7,8 @@
 #include <stdint.h>
 /* Fit hits, budget misses, installations preserving another PC variant. */
 uint64_t ee_jit_get_budget_cache_stat(unsigned index);
+/* Active owner capacity, independently of code arena size. */
+unsigned ee_jit_get_cache_entries(void);
 #include "core/recompiler/ee_block_policy.h"
 #include "core/ee/ee_core.h"
 

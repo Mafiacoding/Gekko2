@@ -36,6 +36,7 @@
 #include "core/hw/ee_timers.h"
 #include "core/hw/gif.h"
 #include "core/hw/iop_sio2.h"
+#include "core/hw/ipu.h"
 
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
@@ -416,12 +417,25 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)caches[n].collisions,(unsigned long long)caches[n].stale,(unsigned long long)caches[n].attempts,
       (unsigned long long)caches[n].installed,(unsigned long long)caches[n].failures,
       (unsigned long long)caches[n].compile_tb,(unsigned long long)caches[n].compile_samples);
+    fprintf(f,"EE_CACHE_LAYOUT entries=%u sets=%u ways=%u\n",ee_jit_get_cache_entries(),ee_jit_get_cache_entries()/(gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u),gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u);
     fprintf(f,"EE_CACHE_BUDGET fit_hits=%llu budget_misses=%llu variant_installs=%llu\n",
       (unsigned long long)ee_jit_get_budget_cache_stat(0),(unsigned long long)ee_jit_get_budget_cache_stat(1),
       (unsigned long long)ee_jit_get_budget_cache_stat(2));
     fprintf(f,"IOP_ROUTES native_instructions=%llu interpreter_instructions=%llu recovery_ticks=%llu RAM_helper_fast_reads=%llu RAM_helper_fast_writes=%llu\n",
       (unsigned long long)iop_core_route_stat(0),(unsigned long long)iop_core_route_stat(1),
       (unsigned long long)iop_core_route_stat(2),(unsigned long long)iop_core_route_stat(3),(unsigned long long)iop_core_route_stat(4));
+    ipu_profile_t ipu;ipu_get_profile(&ipu);
+    fprintf(f,"IPU_STATUS scope=skeleton unimplemented=%llu input_qwc=%llu accepted_qwc=%llu discarded_qwc=%llu fifo=%lu last=%08lx output_available=0\n",
+      (unsigned long long)ipu.unimplemented_commands,(unsigned long long)ipu.input_qwc,
+      (unsigned long long)ipu.accepted_qwc,(unsigned long long)ipu.discarded_qwc,
+      (unsigned long)ipu.fifo_count,(unsigned long)ipu.last_command);
+    fprintf(f,"IPU_COMMANDS BCLR=%llu IDEC=%llu BDEC=%llu VDEC=%llu FDEC=%llu SETIQ=%llu SETVQ=%llu CSC=%llu PACK=%llu SETTH=%llu unknown=%llu\n",
+      (unsigned long long)ipu.commands[0],(unsigned long long)ipu.commands[1],
+      (unsigned long long)ipu.commands[2],(unsigned long long)ipu.commands[3],
+      (unsigned long long)ipu.commands[4],(unsigned long long)ipu.commands[5],
+      (unsigned long long)ipu.commands[6],(unsigned long long)ipu.commands[7],
+      (unsigned long long)ipu.commands[8],(unsigned long long)ipu.commands[9],
+      (unsigned long long)(ipu.commands[10]+ipu.commands[11]+ipu.commands[12]+ipu.commands[13]+ipu.commands[14]+ipu.commands[15]));
     system_profile_t profile;system_profile_get(&profile);
     uint64_t ee_sample=profile.ee_ticks-g_profile_previous.ee_ticks;
     uint64_t iop_sample=profile.iop_ticks-g_profile_previous.iop_ticks;
@@ -541,7 +555,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             fprintf(f,"GS_GOURAUD_DEGEN_SAMPLE i=%u prim=%lx xy=%ld,%ld %ld,%ld %ld,%ld\n",i,(unsigned long)prim,
                 (long)xy[0],(long)xy[1],(long)xy[2],(long)xy[3],(long)xy[4],(long)xy[5]);
     }
-    fprintf(f,"BUILD checkpoint=R1333 scope=cache-profiler-IOP-RAM mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
+    fprintf(f,"BUILD checkpoint=R1334 scope=EE-cache-boot-IPU-diagnostics mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
         (unsigned long)gekko2_optimization_mask,(unsigned long)gekko2_opt_requested(),
         gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT),
         gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS),
@@ -1074,7 +1088,7 @@ int main(int argc, char **argv)
     {
         FILE *boot=fopen("sd:/pcsx2/Gekko2-startup.log","w");
         if(boot) {
-            fprintf(boot,"BUILD checkpoint=R1333 stage=launcher-ready resident_pipeline=%d\n",
+            fprintf(boot,"BUILD checkpoint=R1334 stage=launcher-ready resident_pipeline=%d\n",
 #ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
                 0
 #else

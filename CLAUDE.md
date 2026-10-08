@@ -1,6 +1,6 @@
-# Gekko2 development handoff — R1333
+# Gekko2 development handoff — R1334
 
-Read docs/R1333-COLD-BOOT-CACHE.md first for session controls, unique logs,
+Read docs/R1334-EE-CACHE-GAME-DIAGNOSTICS.md first, and docs/R1334-ARM-ROADMAP.md for future ARM work. Then read docs/R1333-COLD-BOOT-CACHE.md for session controls, unique logs,
 boot resets and measured budget-variant cache behavior. Then read
 docs/R1332-CACHE-PROFILER.md for counters/cache/IOP paths,
 then docs/R1331-BATCHES.md for CPU/GX options, six batches (Fastmem is

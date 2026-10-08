@@ -2,6 +2,17 @@
 
 # Gekko2 for Nintendo Wii
 
+## R1334 cache and game-diagnostic checkpoint
+
+Block cache reuse ON now retains 4096 EE block owners; OFF retains 256.
+The executable arena stays 6 MiB. Missing boot-local IOP masks/counters reset.
+IPU_STATUS/IPU_COMMANDS expose the existing decoder gap during game tests;
+MPEG output remains unimplemented. ARM offload is future work.
+Validation: 26 linked PPC suites, focused CPU/IOP/IPU/log checks, and both Wii cross-builds pass.
+See [R1334 handoff](docs/R1334-EE-CACHE-GAME-DIAGNOSTICS.md) and
+[ARM measurement plan](docs/R1334-ARM-ROADMAP.md). Synthetic cache replay
+improvements are not measured Wii FPS gains.
+
 ## R1333 cold boot / budget-cache checkpoint
 
 The launcher now has **COLD BOOT / NEW LOG**. Each fresh boot reserves a
@@ -118,7 +129,7 @@ Place your own BIOS dump in `sd:/pcsx2/bios/`. The loader checks `SCPH50004.bin`
 
 Optional disc images can go in `sd:/pcsx2/games/`, or be selected elsewhere on SD using the ISO/BIN browser. CHD is not currently supported by the launcher. Disc changes apply on a new boot; resume retains the mounted image.
 
-Configuration may be written to `sd:/pcsx2/bios-config.bin`. R1333 boot logs have numbered names such as `sd:/pcsx2/logs/Gekko2-R1333-0000000001-bios-gx.log`. CPU optimization options persist on SD and apply at a cold boot; resume retains active options. Startup diagnostics remain in `sd:/pcsx2/Gekko2-startup.log`. Please identify the build, controller, software/GX setting and BIOS revision when reporting an issue; never attach BIOS, disc images or guest RAM/checkpoints.
+Configuration may be written to `sd:/pcsx2/bios-config.bin`. R1334 boot logs have numbered names such as `sd:/pcsx2/logs/Gekko2-R1334-0000000001-bios-gx.log`. CPU optimization options persist on SD and apply at a cold boot; resume retains active options. Startup diagnostics remain in `sd:/pcsx2/Gekko2-startup.log`. Please identify the build, controller, software/GX setting and BIOS revision when reporting an issue; never attach BIOS, disc images or guest RAM/checkpoints.
 
 ## Controls
 

@@ -79,6 +79,16 @@
  *     nonzero count with garbage data behind it.
  */
 
+/* Cumulative per-cold-boot observations of the existing skeleton.
+ * unimplemented_commands are acknowledged commands that produce no output.
+ * These counters do not imply decoder completion or a working output FIFO. */
+typedef struct {
+    uint64_t commands[16];
+    uint64_t unimplemented_commands;
+    uint64_t input_qwc, accepted_qwc, discarded_qwc;
+    uint32_t fifo_count, last_command;
+} ipu_profile_t;
+void ipu_get_profile(ipu_profile_t *out);
 void ipu_init(void);
 
 /* Returns 1 and fills *out if addr (already KSEG0/1-masked by the

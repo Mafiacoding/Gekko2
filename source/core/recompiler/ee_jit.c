@@ -662,8 +662,12 @@ typedef struct {
  ee_precise_fn link_fn;
  ee_precise_fn fn;
 } ee_precise_slot;
-static ee_precise_slot precise_cache[1024];
-static uint8_t precise_victim[256];
+/* Metadata capacity is independent of the 6 MiB executable-code arena.
+ * Reuse keeps 4096 owners; Control retains 256 direct-mapped entries. */
+#define EE_PRECISE_REUSE_SETS 1024u
+#define EE_PRECISE_CACHE_SLOTS (4u*EE_PRECISE_REUSE_SETS)
+static ee_precise_slot precise_cache[EE_PRECISE_CACHE_SLOTS];
+static uint8_t precise_victim[EE_PRECISE_REUSE_SETS];
 static jit_cache_profile precise_profile;
 static uint64_t precise_budget_stats[3];
 uint64_t ee_jit_get_budget_cache_stat(unsigned n){return n<3u?precise_budget_stats[n]:0;}
@@ -677,7 +681,7 @@ typedef struct {
 #ifdef GEKKO
 _Static_assert(sizeof(ee_precise_dispatch)==32u,"Broadway dispatch tag must fit one cache line");
 #endif
-static ee_precise_dispatch precise_dispatch[1024] __attribute__((aligned(32)));
+static ee_precise_dispatch precise_dispatch[EE_PRECISE_CACHE_SLOTS] __attribute__((aligned(32)));
 static uint64_t precise_dispatch_hits;
 uint64_t ee_jit_get_dispatch_hits(void){return precise_dispatch_hits;}
 static uint32_t precise_page_generation[EE_PRECISE_RAM_PAGES];
@@ -691,16 +695,22 @@ static unsigned precise_accounted_remaining;
 
 static inline unsigned ee_precise_cache_index(uint32_t pc)
 {
- return ((pc>>2)^(pc>>12))&255u;
+ unsigned mask=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?EE_PRECISE_REUSE_SETS-1u:255u;
+ return ((pc>>2)^(pc>>12))&mask;
 }
+
+static inline unsigned ee_precise_cache_stride(void)
+{return gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?EE_PRECISE_REUSE_SETS:256u;}
+unsigned ee_jit_get_cache_entries(void)
+{return gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?EE_PRECISE_CACHE_SLOTS:256u;}
 
 /* Lookup never allocates or evicts; native chains pin all cache owners. */
 static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
 {
- unsigned set=ee_precise_cache_index(pc),ways=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u;
+ unsigned set=ee_precise_cache_index(pc),stride=ee_precise_cache_stride(),ways=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u;
  ee_precise_slot *best=NULL;unsigned largest=0;
  for(unsigned w=0;w<ways;w++) {
-  ee_precise_slot *s=&precise_cache[set+w*256u];
+  ee_precise_slot *s=&precise_cache[set+w*stride];
   if(!s->fn||s->pc!=pc)continue;
   if(ways==1u)return s; /* Control retains the previous replacement policy. */
   if(s->count>largest)largest=s->count;
@@ -709,9 +719,9 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
  if(best){if(install&&best->count<largest)precise_budget_stats[0]++;return best;}
  if(!install)return NULL;
  if(largest)precise_budget_stats[1]++;
- for(unsigned w=0;w<ways;w++)if(!precise_cache[set+w*256u].fn)return &precise_cache[set+w*256u];
+ for(unsigned w=0;w<ways;w++)if(!precise_cache[set+w*stride].fn)return &precise_cache[set+w*stride];
  unsigned w=precise_victim[set]++%ways;
- return &precise_cache[set+w*256u];
+ return &precise_cache[set+w*stride];
 }
 
 static void ee_precise_bump(uint32_t *generation)
@@ -743,9 +753,9 @@ static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
  next.mapping_generation=mapping_generation;next.serial=ee_precise_next_serial();
  next.fn=fn;
  if(gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)) {
-  unsigned set=ee_precise_cache_index(pc);
+  unsigned set=ee_precise_cache_index(pc),stride=EE_PRECISE_REUSE_SETS;
   for(unsigned w=0;w<4u;w++) {
-   ee_precise_slot *other=&precise_cache[set+w*256u];
+   ee_precise_slot *other=&precise_cache[set+w*stride];
    if(other!=slot&&other->fn&&other->pc==pc&&other->count!=count){precise_budget_stats[2]++;break;}
   }
  }
@@ -841,7 +851,7 @@ static uint64_t ee_precise_cached_next(ee_state_t *st,unsigned remaining)
   * while precise_active pins the chain, so the pointer remains owned. */
  if(source&&source->serial==precise_chain_source_serial&&source->link_fn&&source->link_pc==st->pc) {
   unsigned li=source->link_index;
-  if(li<1024u) {
+  if(li<EE_PRECISE_CACHE_SLOTS) {
    ee_precise_slot *linked=&precise_cache[li];
    if(linked->serial==source->link_serial&&linked->fn==source->link_fn&&linked->pc==st->pc)
     slot=linked;
@@ -1019,7 +1029,9 @@ static void ee_precise_reset_cache(void)
  if(precise_chain_fn)ppc_code_cache_release((void*)precise_chain_fn);
  precise_chain_fn=0;precise_native_successors=0;precise_direct_link_hits=0;
  precise_chain_source=0;precise_chain_source_serial=0;
- for(unsigned n=0;n<1024;n++)ee_precise_release_slot(&precise_cache[n]);
+ /* Empty entries need no individual clears; both arrays are cleared below. */
+ for(unsigned n=0;n<EE_PRECISE_CACHE_SLOTS;n++)
+  if(precise_cache[n].fn)ee_precise_release_slot(&precise_cache[n]);
  memset(precise_cache,0,sizeof(precise_cache));
  memset(precise_dispatch,0,sizeof(precise_dispatch));precise_dispatch_hits=0;
  memset(precise_page_generation,0,sizeof(precise_page_generation));

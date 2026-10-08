@@ -21,8 +21,7 @@ if fused:
  from unicorn.ppc_const import UC_PPC_REG_14,UC_PPC_REG_1,UC_PPC_REG_LR
  # The last compiled program is CVT.S.W. Enter its native function directly
  # so an enclosing C function cannot hide a damaged nonvolatile register.
- slot=((base>>2)^(base>>12))&255
- native=int.from_bytes(bytes(u.mem_read(syms['precise_cache']+slot*precise_slot_size+precise_fn_offset,4)),'big')
+ native=precise_native_for_pc(base)
  assert native
  syms['internal_native_abi']=native
  word(state+off['pc'],base);word(state+off['next_pc'],base+4)

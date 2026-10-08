@@ -105,6 +105,10 @@
 static iop_state_t g_iop;
 static uint64_t route_native,route_interpreter,route_recovery;
 static uint64_t ram_fast_reads,ram_fast_writes;
+/* Boot-local interrupt acknowledgement and low-memory diagnostic state. */
+static uint32_t g_iop_spurious_istat_mask,g_iop_spurious_istat_hi_mask;
+static uint64_t s_zero_run,iop_block_stale;
+static void (*iop_before_tick)(void);
 uint64_t iop_core_route_stat(unsigned n){return n==0?route_native:n==1?route_interpreter:n==2?route_recovery:n==3?ram_fast_reads:n==4?ram_fast_writes:0;}
 
 iop_state_t *iop_core_get_state(void) { return &g_iop; }
@@ -426,6 +430,8 @@ int iop_core_init(const bios_image_t *bios)
 {
     iop_jit_reset_for_test();route_native=route_interpreter=route_recovery=0;ram_fast_reads=ram_fast_writes=0;
     memset(&g_iop, 0, sizeof(g_iop));
+    g_iop_spurious_istat_mask=g_iop_spurious_istat_hi_mask=0;
+    s_zero_run=iop_block_stale=0;iop_before_tick=NULL;
 
     iop_intc_init(); /* IOP interrupt controller register block - see core/hw/iop_intc.h */
     iop_dma_init();  /* IOP DMA controller register block - see core/hw/iop_dma.h */
@@ -819,8 +825,7 @@ static void iop_check_vblank(iop_state_t *st)
  * registered are entirely unaffected (they already return early via
  * iop_hle_intr_dispatch_interrupt()/iop_excb_dispatch_interrupt()
  * above and never reach this fallback path at all). */
-static uint32_t g_iop_spurious_istat_mask = 0;
-static uint32_t g_iop_spurious_istat_hi_mask = 0;
+
 
 static void iop_check_hw_interrupt(iop_state_t *st, uint32_t epc, uint32_t cause_bd)
 {
@@ -1458,7 +1463,7 @@ static int iop_prepare(uint32_t *prepared_pc,uint32_t *prepared_word)
      * trampoline addresses below BUMP_BASE are excluded below), only
      * the clarity of an already-terminal failure. */
     {
-        static uint64_t s_zero_run = 0;
+
         /* Must compare the KSEG-masked PHYSICAL address, not the raw
          * pc - real IOP code (like this same low-memory crawl) is
          * routinely reached via KSEG0 (0x80000000-based) or KSEG1
@@ -2299,8 +2304,6 @@ static int iop_tick(void)
  * service. 0 consumes nothing, 1 admits native execution, 2 consumed a
  * tick through HLE/idle/scalar recovery. Source changes never execute stale
  * code and never charge the same timer tick twice. */
-static uint64_t iop_block_stale;
-static void (*iop_before_tick)(void);
 int iop_core_native_call_safe(iop_state_t *st,uint32_t pc,uint32_t word)
 {
     if(st->cop0[15]!=0x1fu)return 1;
