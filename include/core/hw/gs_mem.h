@@ -33,6 +33,7 @@ int gs_mem_sync(void);
 uint32_t gs_mem_gpu_pending(void);
 uint32_t gs_mem_sync_failures(void);
 void gs_mem_init(void);
+void gs_mem_reset_sync_stats(void); /* Call only at a resolved cold-boot boundary. */
 uint8_t *gs_mem_get(void); /* Synchronized raw buffer; NULL on failure. Do not retain across GPU work. */
 
 /* bp: base pointer, bw: buffer width in pixels, x/y: pixel

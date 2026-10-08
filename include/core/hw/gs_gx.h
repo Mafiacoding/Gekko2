@@ -107,5 +107,7 @@ int gs_gx_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
 int gs_gx_capture_vram_psmct32(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
                              uint32_t width,uint32_t height,uint32_t alpha);
 void gs_gx_shutdown(void);
+/* Resolve old VRAM ownership, retain the bound hardware FIFO, clear boot caches. */
+int gs_gx_reset_boot_state(void);
 #endif
 #endif

@@ -73,6 +73,11 @@ static uint32_t s_gif_active_path = GIF_PATH_3;
 void gif_init(void)
 {
     g_texel_cache_enabled=0;
+    g_sprite_cached_draws=g_sprite_fast_rows=0;
+    memset(g_draw_routes,0,sizeof(g_draw_routes));
+    memset(g_gst,0,sizeof(g_gst));memset(g_gfb,0,sizeof(g_gfb));
+    memset(g_gstate,0,sizeof(g_gstate));memset(g_gdeg,0,sizeof(g_gdeg));
+    g_gstate_used=0;g_gstate_overflow=0;
     memset(&g_gif, 0, sizeof(g_gif));
     g_gif.fbw = 640; /* sane default so an A+D FRAME write isn't strictly required for tests/demos */
     /* Round 27: both contexts' permanent storage gets the same guarded

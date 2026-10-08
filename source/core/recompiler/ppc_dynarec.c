@@ -6843,6 +6843,11 @@ static int ppc_allocate_emitted_body(ppc_codegen_ctx_t *ctx,size_t begin,unsigne
 }
 
 #include "ppc_residency_internal.h"
+void ppc_dynarec_reset_translation_stats(void)
+{
+ word_alloc_bodies=word_alloc_eliminated=word_alloc_spills=word_alloc_reused=0;
+ resident_blocks=resident_loads=resident_refresh_edges=0;
+}
 
 /* Precise IOP block: unsigned fn(state,budget). Every slot has a live
  * prepare guard, an inlined native body (or explicit scalar boundary),

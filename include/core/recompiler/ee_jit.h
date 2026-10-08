@@ -5,6 +5,8 @@
  * Full EE/IOP block JIT remains unfinished. */
 #include "core/recompiler/cache_profile.h"
 #include <stdint.h>
+/* Fit hits, budget misses, installations preserving another PC variant. */
+uint64_t ee_jit_get_budget_cache_stat(unsigned index);
 #include "core/recompiler/ee_block_policy.h"
 #include "core/ee/ee_core.h"
 

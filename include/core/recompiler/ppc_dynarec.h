@@ -1141,6 +1141,7 @@ int ppc_dynarec_translate_iop_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
     const uint32_t *words,unsigned count,uint32_t prepare,uint32_t retire,
     uint32_t scalar,unsigned *native_count);
 uint64_t ppc_dynarec_get_allocated_bodies(void);
+void ppc_dynarec_reset_translation_stats(void);
 uint64_t ppc_dynarec_get_eliminated_word_ops(void);
 uint64_t ppc_dynarec_get_word_spills(void);
 uint64_t ppc_dynarec_get_reused_word_loads(void);

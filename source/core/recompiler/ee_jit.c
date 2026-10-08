@@ -665,6 +665,8 @@ typedef struct {
 static ee_precise_slot precise_cache[1024];
 static uint8_t precise_victim[256];
 static jit_cache_profile precise_profile;
+static uint64_t precise_budget_stats[3];
+uint64_t ee_jit_get_budget_cache_stat(unsigned n){return n<3u?precise_budget_stats[n]:0;}
 void ee_jit_get_cache_profile(jit_cache_profile *out){if(out)*out=precise_profile;}
 /* One Broadway cache line per dispatch tag. Keep instruction arrays and
  * learned-edge bookkeeping off the common successor lookup. */
@@ -693,12 +695,20 @@ static inline unsigned ee_precise_cache_index(uint32_t pc)
 }
 
 /* Lookup never allocates or evicts; native chains pin all cache owners. */
-static ee_precise_slot *ee_precise_find(uint32_t pc,int install)
+static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
 {
  unsigned set=ee_precise_cache_index(pc),ways=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u;
- for(unsigned w=0;w<ways;w++)if(precise_cache[set+w*256u].fn&&precise_cache[set+w*256u].pc==pc)
-  return &precise_cache[set+w*256u];
+ ee_precise_slot *best=NULL;unsigned largest=0;
+ for(unsigned w=0;w<ways;w++) {
+  ee_precise_slot *s=&precise_cache[set+w*256u];
+  if(!s->fn||s->pc!=pc)continue;
+  if(ways==1u)return s; /* Control retains the previous replacement policy. */
+  if(s->count>largest)largest=s->count;
+  if(s->count<=budget&&(!best||s->count>best->count))best=s;
+ }
+ if(best){if(install&&best->count<largest)precise_budget_stats[0]++;return best;}
  if(!install)return NULL;
+ if(largest)precise_budget_stats[1]++;
  for(unsigned w=0;w<ways;w++)if(!precise_cache[set+w*256u].fn)return &precise_cache[set+w*256u];
  unsigned w=precise_victim[set]++%ways;
  return &precise_cache[set+w*256u];
@@ -732,6 +742,13 @@ static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
  next.source_page=source_page;next.source_generation=source_generation;
  next.mapping_generation=mapping_generation;next.serial=ee_precise_next_serial();
  next.fn=fn;
+ if(gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)) {
+  unsigned set=ee_precise_cache_index(pc);
+  for(unsigned w=0;w<4u;w++) {
+   ee_precise_slot *other=&precise_cache[set+w*256u];
+   if(other!=slot&&other->fn&&other->pc==pc&&other->count!=count){precise_budget_stats[2]++;break;}
+  }
+ }
  ee_precise_fn old=slot->fn;
  int displaced=old&&(slot->pc!=pc||slot->count!=count||
                     memcmp(slot->words,words,count*4u)!=0);
@@ -797,7 +814,7 @@ static uint64_t ee_precise_cached_next(ee_state_t *st,unsigned remaining)
  remaining=ee_core_interleave_limit(remaining);
  if(!precise_active||!st||remaining<2u||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u)return 0;
  ee_precise_slot *source=precise_chain_source,*slot=0;
- ee_precise_slot *found=ee_precise_find(st->pc,0);
+ ee_precise_slot *found=ee_precise_find(st->pc,0,remaining);
  if(!found)return 0;
  unsigned index=(unsigned)(found-precise_cache);
  const ee_precise_dispatch *hot=&precise_dispatch[index];
@@ -897,7 +914,7 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  unsigned quantum_budget=ee_core_interleave_limit(budget);
  if(quantum_budget<2u)return 0;
  uint32_t pc=st->pc,words[8];unsigned count=0,limit=quantum_budget<8u?quantum_budget:8u;
- ee_precise_slot *slot=ee_precise_find(pc,1);
+ ee_precise_slot *slot=ee_precise_find(pc,1,quantum_budget);
  precise_profile.lookups++;
  /* The emitted prepare callback validates live mapping/encoding before
   * EACH instruction. A warm entry needs no duplicate full-block scan. */
@@ -981,7 +998,7 @@ unsigned ee_jit_try_execute_chain_fetched(ee_state_t *st,unsigned budget,uint32_
  uint32_t start=st->pc;
  unsigned n=ee_precise_execute(st,budget,1u,first_word,1),total=n;
  while(n&&ee_core_interleave_limit(budget-total)>=2u) {
-  ee_precise_slot *previous=ee_precise_find(start,0);
+  ee_precise_slot *previous=ee_precise_find(start,0,n);
   if(!previous||previous->pc!=start||n!=previous->count||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u)break;
   uint32_t instruction;
   if(!ee_core_block_peek(st,st->pc,&instruction)||
@@ -1009,4 +1026,5 @@ static void ee_precise_reset_cache(void)
  precise_mapping_generation=0;precise_serial_source=0;
  precise_runs=precise_retired=precise_evictions=0;
  memset(precise_victim,0,sizeof precise_victim);memset(&precise_profile,0,sizeof precise_profile);
+ memset(precise_budget_stats,0,sizeof precise_budget_stats);
 }

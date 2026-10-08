@@ -69,6 +69,8 @@ static inline int cpu_write_access(uint32_t off,uint32_t bytes)
 { return gekko2_opt_enabled(GEKKO2_OPT_GX_DISJOINT_WRITES)?cpu_read_access(off,bytes):cpu_access(); }
 void gs_mem_init(void)
 { if(cpu_access())memset(g_gs_mem,0,sizeof(g_gs_mem)); }
+void gs_mem_reset_sync_stats(void)
+{ if(!g_gpu_pending&&!g_sync_active){g_sync_failures=0;g_read_guard=0;g_protected_lo=g_protected_hi=0;} }
 uint8_t *gs_mem_get(void)
 { return cpu_access()?g_gs_mem:NULL; }
 

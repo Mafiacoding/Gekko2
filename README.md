@@ -2,7 +2,25 @@
 
 # Gekko2 for Nintendo Wii
 
-## R1332 cache profiler / IOP RAM checkpoint
+## R1333 cold boot / budget-cache checkpoint
+
+The launcher now has **COLD BOOT / NEW LOG**. Each fresh boot reserves a
+separate numbered file under `sd:/pcsx2/logs/`; previous runs are preserved.
+START/PLUS pauses and resumes an existing session. CPU optimization settings
+and the master GX setting apply on a cold boot. Guest PS2 START is MINUS+A
+on Wii Remote, or Z+A on GameCube; MINUS+PLUS / Z+START toggles the HUD.
+
+With **Block cache reuse** enabled, EE cache lookup keeps different block
+lengths for the same PC and selects the largest one fitting the current
+execution budget. A synthetic alternating-budget replay reduces executed
+PPC instructions about 18%; this is not a measured Wii FPS gain.
+Both DOL/ELF builds pass structural checks; 25 linked PPC suites and 64 native
+GS tests pass, plus repeated cold-boot and log error tests. Physical Wii
+verification of R1333 and a BIOS boot fix are not established.
+
+See [R1333 controls, logging and verification](docs/R1333-COLD-BOOT-CACHE.md).
+
+### Earlier R1332 cache profiler / IOP RAM checkpoint
 
 R1332 adds the independently selectable **Block cache reuse** option,
 four-way EE/IOP block caches, budget-aware IOP compilation and exclusive
@@ -45,7 +63,7 @@ Gekko2 explores PS2 emulation on Nintendo Wii hardware. Alex has spent approxima
 
 That work now produces the Sony Computer Entertainment startup screen on a real Wii. The OSDSYS menu renders in the native development build, where entering the Browser and returning to the menu has been tested. Stable, responsive OSDSYS navigation on Wii remains a development goal.
 
-**Current development checkpoint: R1308.** This builds on R1307's precise EE/IOP blocks and audited scalar register residency. VU Q/P issue timing, WAITQ/WAITP, all 13 scalar EFU operations, lower flag queries, dual-issue VF hazards, I-literal ordering and wrapped PATH1 packets are implemented. Event-free EE peripheral timer intervals are deferred with precise IRQ boundaries and materialized MMIO/snapshots. Read [STATUS.md](STATUS.md), [the R1308 handoff](docs/R1308-HANDOFF.md) and [the completion plan](docs/DYNAREC-COMPLETION-PLAN.md). Full FMAC flag/hazard timing, asynchronous VIF/GIF scheduling, general event batching and physical-Wii performance remain unfinished.
+**Historical R1308 core baseline.** This builds on R1307's precise EE/IOP blocks and audited scalar register residency. VU Q/P issue timing, WAITQ/WAITP, all 13 scalar EFU operations, lower flag queries, dual-issue VF hazards, I-literal ordering and wrapped PATH1 packets are implemented. Event-free EE peripheral timer intervals are deferred with precise IRQ boundaries and materialized MMIO/snapshots. Read [STATUS.md](STATUS.md), [the R1308 handoff](docs/R1308-HANDOFF.md) and [the completion plan](docs/DYNAREC-COMPLETION-PLAN.md). Full FMAC flag/hazard timing, asynchronous VIF/GIF scheduling, general event batching and physical-Wii performance remain unfinished.
 
 ## Why Gekko2?
 
@@ -100,7 +118,7 @@ Place your own BIOS dump in `sd:/pcsx2/bios/`. The loader checks `SCPH50004.bin`
 
 Optional disc images can go in `sd:/pcsx2/games/`, or be selected elsewhere on SD using the ISO/BIN browser. CHD is not currently supported by the launcher. Disc changes apply on a new boot; resume retains the mounted image.
 
-Configuration may be written to `sd:/pcsx2/bios-config.bin`. Current logs use `Gekko2-R1306-software.log` and `Gekko2-R1306-gx-render.log` in `sd:/pcsx2/`. Launcher settings are session-only. Please identify the build, controller, software/GX setting and BIOS revision when reporting an issue; never attach BIOS, disc images or guest RAM/checkpoints.
+Configuration may be written to `sd:/pcsx2/bios-config.bin`. R1333 boot logs have numbered names such as `sd:/pcsx2/logs/Gekko2-R1333-0000000001-bios-gx.log`. CPU optimization options persist on SD and apply at a cold boot; resume retains active options. Startup diagnostics remain in `sd:/pcsx2/Gekko2-startup.log`. Please identify the build, controller, software/GX setting and BIOS revision when reporting an issue; never attach BIOS, disc images or guest RAM/checkpoints.
 
 ## Controls
 
@@ -108,7 +126,9 @@ Configuration may be written to `sd:/pcsx2/bios-config.bin`. Current logs use `G
 | --- | --- |
 | Navigate launcher | D-pad / Nunchuk stick |
 | Confirm / back | A / B |
-| Pause into launcher | HOME |
+| Pause / resume existing session | PLUS (HOME also pauses) |
+| Cold boot / new log | Select COLD BOOT / NEW LOG, then A |
+| Toggle HUD during emulation | MINUS + PLUS |
 | Exit to Homebrew Channel | HOME + MINUS, or EXIT TO HBC |
 | Toggle FPS in SETTINGS | 2 |
 | Toggle diagnostic HUD in SETTINGS | A |
@@ -116,7 +136,7 @@ Configuration may be written to `sd:/pcsx2/bios-config.bin`. Current logs use `G
 | Toggle GX in SETTINGS | LEFT / RIGHT |
 | PS2 Cross / Circle | A / B |
 | PS2 Square / Triangle | 1 / 2 |
-| PS2 Start / Select | PLUS / MINUS |
+| PS2 Start / Select | MINUS + A / MINUS |
 | PS2 L1 / R1 | Nunchuk C / Z |
 
 Nunchuk movement currently maps to digital directions, not a complete analog-pad protocol. GameCube controllers are supported; B + Z + START requests HBC exit.
