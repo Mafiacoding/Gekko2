@@ -12,6 +12,7 @@
 #include "core/ee/ee_core.h"
 #include "core/iop/iop_core.h"
 #include "core/hw/arm_worker.h"
+#include "core/hw/arm_ram.h"
 #include "core/hw/ipu.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -92,6 +93,7 @@ static uint32_t system_iop_read_adapter(void *ctx, uint32_t addr, int width)
 
 int system_init(const bios_image_t *ee_bios, const bios_image_t *iop_bios)
 {
+    arm_ram_reset();
     cdvd_config_reset();
     if (ee_core_init(ee_bios) != 0) {
         printf("[!] system_init: EE core init failed\n");
@@ -148,6 +150,10 @@ void system_profile_get(system_profile_t *out){if(out)*out=g_profile;}
  * native block slots, HLE interception, idle and scalar recovery. Grouping
  * host calls does not grant either guest CPU extra execution time. */
 static unsigned g_iop_sample_pending;
+/* Both core states are stable objects. Refresh per frontend invocation,
+ * including restored checkpoints; callbacks need no repeated getter calls. */
+static ee_state_t *g_scheduler_ee;
+static iop_state_t *g_scheduler_iop;
 static uint32_t g_iop_sample_begin,g_iop_sample_middle;
 static void system_finish_iop_sample(void)
 {
@@ -162,7 +168,7 @@ static void system_finish_iop_sample(void)
 static void system_before_iop_tick(void)
 {
     system_finish_iop_sample();
-    ee_state_t *ee=ee_core_get_state();
+    ee_state_t *ee=gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)?g_scheduler_ee:ee_core_get_state();
     if(--g_profile_remaining==0) {
         g_iop_sample_begin=system_profile_clock();gekko2_profile_start(GP_EE);
         if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
@@ -186,7 +192,7 @@ static void system_begin_ee_quantum(void)
 static int system_after_ee_quantum(void)
 {
  if(g_iop_sample_pending){gekko2_profile_enter(GP_IOP);g_iop_sample_middle=system_profile_clock();}
- iop_state_t *iop=iop_core_get_state();
+ iop_state_t *iop=gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)?g_scheduler_iop:iop_core_get_state();
  if(!iop->halted)iop_core_step_n(1u);
  system_finish_iop_sample();
  if(--system_quantum_grant&&!iop->halted)system_begin_ee_quantum();
@@ -198,6 +204,7 @@ int system_run_interleaved(uint64_t max_slices)
 {
     ee_state_t  *ee  = ee_core_get_state();
     iop_state_t *iop = iop_core_get_state();
+    g_scheduler_ee=ee;g_scheduler_iop=iop;
 
     uint64_t slice = 0;
     /* Wake once per frontend timeslice, outside the EE/IOP hot loop. */

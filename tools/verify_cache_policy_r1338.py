@@ -5,7 +5,7 @@ from pathlib import Path
 exec(compile(Path(__file__).with_name('ee_ppc_fixture_internal.py').read_text(),'ee_ppc_fixture_internal.py','exec'))
 mask_addr=syms['gekko2_optimization_mask']
 initial=int.from_bytes(u.mem_read(mask_addr,4),'big')
-word(mask_addr,(initial|8192)&~(1<<17))
+word(mask_addr,(initial|8192)&~(1<<17)&~(1<<19))
 def profile():
  dest=0x81760000;call('ee_jit_get_cache_profile',dest)
  return dict(zip(['lookups','hits','misses','collisions','stale','attempts','installed','failures','compile_tb','compile_samples'],struct.unpack('>10Q',u.mem_read(dest,80))))
