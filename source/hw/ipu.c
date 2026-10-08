@@ -53,6 +53,11 @@ typedef struct {
 } ipu_state_t;
 
 static ipu_state_t g_ipu;
+static ipu_profile_t g_ipu_profile;
+void ipu_get_profile(ipu_profile_t *out)
+{
+    if(out){*out=g_ipu_profile;out->fifo_count=g_ipu.in_fifo_count;}
+}
 
 static inline uint32_t rd_le32(const uint8_t *p)
 {
@@ -63,6 +68,7 @@ static inline uint32_t rd_le32(const uint8_t *p)
 void ipu_init(void)
 {
     memset(&g_ipu, 0, sizeof(g_ipu));
+    memset(&g_ipu_profile, 0, sizeof(g_ipu_profile));
 }
 
 /* Real hardware: BCLR clears the input FIFO and resets the bit-stream
@@ -86,6 +92,9 @@ static void ipu_cmd_bclr(void)
 static void ipu_dispatch_cmd(uint32_t value)
 {
     uint32_t cmd = (value >> 28) & 0xFu;
+    g_ipu_profile.commands[cmd]++;
+    g_ipu_profile.last_command=value;
+    if(cmd)g_ipu_profile.unimplemented_commands++;
 
     g_ipu.ctrl &= ~(CTRL_ECD_BIT | CTRL_SCD_BIT);
     g_ipu.cmd_data = value;
@@ -174,6 +183,13 @@ void ipu_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
     (void)data;
     (void)rd_le32; /* reserved for the real decode round - see ipu.h scope note */
 
+    uint32_t accepted=qwc;
+    if(accepted>IPU_FIFO_DEPTH_QWC-g_ipu.in_fifo_count)
+        accepted=IPU_FIFO_DEPTH_QWC-g_ipu.in_fifo_count;
+    g_ipu_profile.input_qwc+=qwc;
+    g_ipu_profile.accepted_qwc+=accepted;
+    /* Current skeleton retains no bytes, including accepted FIFO entries. */
+    g_ipu_profile.discarded_qwc+=qwc;
     for (uint32_t i = 0; i < qwc; i++) {
         if (g_ipu.in_fifo_count >= IPU_FIFO_DEPTH_QWC)
             break; /* real FIFO full - see ipu.h's honest-stall-not-modeled note */

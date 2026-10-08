@@ -1,6 +1,17 @@
-# Gekko2 status — R1333
+# Gekko2 status — R1334
 
 Updated 2026-10-08. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
+
+## R1334 cache and game-diagnostic checkpoint
+
+Block cache reuse ON now retains 4096 EE block owners; OFF retains 256.
+The executable arena stays 6 MiB. Missing boot-local IOP masks/counters reset.
+IPU_STATUS/IPU_COMMANDS expose the existing decoder gap during game tests;
+MPEG output remains unimplemented. ARM offload is future work.
+Validation: 26 linked PPC suites, focused CPU/IOP/IPU/log checks, and both Wii cross-builds pass.
+See [R1334 handoff](docs/R1334-EE-CACHE-GAME-DIAGNOSTICS.md) and
+[ARM measurement plan](docs/R1334-ARM-ROADMAP.md). Synthetic cache replay
+improvements are not measured Wii FPS gains.
 
 ## R1333 session and cache changes
 

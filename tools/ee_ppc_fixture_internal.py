@@ -20,10 +20,25 @@ with tempfile.TemporaryDirectory() as d:
  subprocess.run([oc,'-O','binary','-j','.rodata',str(obj),str(raw)],check=True)
  size,*offsets=struct.unpack('>'+str(1+len(fields))+'I',raw.read_bytes());off=dict(zip(fields,offsets))
  # Derive private slot ABI from the actual source, never a historical stride.
- src.write_text('#include <stddef.h>\n#include "core/recompiler/ee_jit.c"\nconst unsigned layout[] __attribute__((section(".test_layout")))={sizeof(ee_precise_slot),offsetof(ee_precise_slot,fn)};\n')
+ src.write_text('#include <stddef.h>\n#include "core/recompiler/ee_jit.c"\nconst unsigned layout[] __attribute__((section(".test_layout")))={sizeof(ee_precise_slot),offsetof(ee_precise_slot,fn),offsetof(ee_precise_slot,count)};\n')
  subprocess.run([cc,'-O2','-G0','-mcpu=750','-I'+str(root/'include'),'-I'+str(root/'source'),'-c',str(src),'-o',str(obj)],check=True)
  subprocess.run([oc,'-O','binary','-j','.test_layout',str(obj),str(raw)],check=True)
- precise_slot_size,precise_fn_offset=struct.unpack('>2I',raw.read_bytes())
+ precise_slot_size,precise_fn_offset,precise_count_offset=struct.unpack('>3I',raw.read_bytes())
+# Read the linked array size rather than assuming a historical cache index.
+cache_bytes=None
+for row in subprocess.check_output([a.nm,'-S',a.elf],text=True).splitlines():
+ parts=row.split()
+ if len(parts)==4 and parts[3]=='precise_cache':cache_bytes=int(parts[1],16)
+assert cache_bytes and cache_bytes%precise_slot_size==0
+precise_cache_entries=cache_bytes//precise_slot_size
+def precise_native_for_pc(pc,count=None):
+ for index in range(precise_cache_entries):
+  slot=syms['precise_cache']+index*precise_slot_size
+  if int.from_bytes(u.mem_read(slot,4),'big')!=pc:continue
+  if count is not None and int.from_bytes(u.mem_read(slot+precise_count_offset,4),'big')!=count:continue
+  fn=int.from_bytes(u.mem_read(slot+precise_fn_offset,4),'big')
+  if fn:return fn
+ return 0
 state=call('ee_core_get_state');ram=0x91000000;base=0x200000
 u.mem_map(ram,0x400000);u.reg_write(UC_PPC_REG_MSR,0x2000)
 def word(address,value):u.mem_write(address,struct.pack('>I',value))
