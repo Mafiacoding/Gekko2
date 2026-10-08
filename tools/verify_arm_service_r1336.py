@@ -8,11 +8,12 @@ p=argparse.ArgumentParser();p.add_argument('elf');a=p.parse_args();data=Path(a.e
 assert data[:7]==b'\x7fELF\x01\x02\x01' and struct.unpack_from('>H',data,18)[0]==40
 phoff=struct.unpack_from('>I',data,28)[0];phsize,phnum=struct.unpack_from('>HH',data,42)
 u=Uc(UC_ARCH_ARM,UC_MODE_ARM|UC_MODE_BIG_ENDIAN)
-u.mem_map(0x137f0000,0x20000);u.mem_map(0x10000000,0x20000)
+load_base=min(struct.unpack_from('>I',data,phoff+n*phsize+8)[0] for n in range(phnum) if struct.unpack_from('>I',data,phoff+n*phsize)[0]==1)
+u.mem_map(load_base,0x20000);u.mem_map(0x10000000,0x20000)
 for n in range(phnum):
  typ,offset,virt,phys,size,memsize,flags,align=struct.unpack_from('>8I',data,phoff+n*phsize)
  if typ==1:
-  assert virt>=0x137f0000 and virt+memsize<=0x13810000 and size<=memsize
+  assert virt>=load_base and virt+memsize<=load_base+0x20000 and size<=memsize
   u.mem_write(virt,data[offset:offset+size])
 syms={}
 for row in subprocess.check_output(['nm','-n',a.elf],text=True).splitlines():

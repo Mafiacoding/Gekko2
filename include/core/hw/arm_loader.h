@@ -12,4 +12,6 @@ int arm_loader_validate(const uint8_t *elf,unsigned size,uint32_t base,uint32_t 
 /* 1 thread started; negative status preserves CPU fallback. No IOS reload. */
 int arm_loader_start(void);
 int arm_loader_status(void);
+/* file bytes, IOS base, IOS capacity, ELF entry, file CRC32, validation stage. */
+uint32_t arm_loader_stat(unsigned n);
 #endif
