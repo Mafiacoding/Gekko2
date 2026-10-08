@@ -2,7 +2,23 @@
 
 # Gekko2 for Nintendo Wii
 
-## R1331 CPU / GX options checkpoint
+## R1332 cache profiler / IOP RAM checkpoint
+
+R1332 adds the independently selectable **Block cache reuse** option,
+four-way EE/IOP block caches, budget-aware IOP compilation and exclusive
+sampled CPU profiling. Fastmem also selects guarded direct PPC IOP RAM
+loads/stores; IOP COP0 transfers now use native PPC bodies. Device services,
+exceptions, unsupported instructions and exact guest boundaries remain.
+
+The Optimized and Control builds default cache reuse ON/OFF respectively;
+both include the same renderer, profiler and 6 MiB arena. Saved options
+override defaults. Fastmem remains experimental and default OFF.
+
+See [R1332 controls, counters and verification limits](docs/R1332-CACHE-PROFILER.md).
+The package contains both DOL/ELF pairs and the complete source checkpoint.
+No physical Wii boot, playable gameplay or FPS improvement is claimed.
+
+### Earlier R1331 CPU / GX options checkpoint
 
 The launcher exposes thirteen independent CPU/GX options under
 **Settings → Down → CPU / GX Optimizations**. Options are saved on SD and applied

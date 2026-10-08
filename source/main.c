@@ -1,3 +1,4 @@
+#include "core/runtime_profile.h"
 #include "core/recompiler/dynarec_config.h"
 #include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/ppc_dynarec.h"
@@ -290,6 +291,8 @@ static int   g_disc_ok = 0;
 
 /* Keep progress visible until the emulated display contains real RGB pixels. */
 static int g_first_picture;
+static uint64_t g_log_ticks,g_log_previous;
+static gekko2_profile g_runtime_previous,g_front_previous;
 static uint64_t g_image_probe_attempts;
 static uint64_t g_boot_started,g_boot_log_next;
 static const char *boot_log_path(void)
@@ -298,6 +301,7 @@ static const char *boot_log_path(void)
 }
 static void save_boot_progress(const char *event,int truncate)
 {
+    uint64_t log_begin=gettime();
     if(!g_fat_mounted)return;
     ee_state_t *e=ee_core_get_state();iop_state_t *i=iop_core_get_state();gs_state_t *g=gs_get_state();
     FILE *f=fopen(boot_log_path(),truncate?"w":"a");if(!f)return;
@@ -311,7 +315,7 @@ static void save_boot_progress(const char *event,int truncate)
     fprintf(f,"VIDEO circuit=%d source=%ux%u origin=%u,%u output=%ux%u SMODE2=%llx DISPLAY=%llx launcher_font=coverage\n",
         circuit,sw,sh,sx,sy,(unsigned)rmode->fbWidth,(unsigned)rmode->xfbHeight,
         (unsigned long long)g->smode2,(unsigned long long)(circuit==1?g->display1:g->display2));
-    fclose(f);
+    fclose(f);g_log_ticks+=gettime()-log_begin;
 }
 
 /* HBC supplies the loader return stub used by standard exit(0).
@@ -342,6 +346,7 @@ static void draw_fps_overlay(void)
 static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
                              uint64_t ee_ins, uint64_t core_ticks, uint64_t blit_ticks)
 {
+    uint64_t log_begin=gettime();
     if (!g_fat_mounted || !ms) return;
     FILE *f=fopen(boot_log_path(),"a");if(!f)return;
     fprintf(f,"PERF interval_ms=%llu presents_mHz=%llu guest_vblank_mHz=%llu EE_per_s=%llu core_ms=%llu blit_ms=%llu JIT=%s\n",
@@ -354,6 +359,45 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         "on"
 #endif
     );
+    gekko2_profile runtime;gekko2_profile_get(&runtime);
+    uint64_t sampled_total=0;for(unsigned n=0;n<GP_COUNT;n++)sampled_total+=runtime.ticks[n]-g_runtime_previous.ticks[n];
+    fprintf(f,"TIME_SAMPLE scope=exclusive_random_CPU TB_total=%llu samples=%llu EE=%llu IOP=%llu scheduler=%llu idle=%llu compile=%llu GS_raster=%llu GX_upload=%llu GX_readback=%llu GX_wait=%llu overflows=%llu\n",
+      (unsigned long long)sampled_total,(unsigned long long)(runtime.samples-g_runtime_previous.samples),
+      (unsigned long long)(runtime.ticks[GP_EE]-g_runtime_previous.ticks[GP_EE]),
+      (unsigned long long)(runtime.ticks[GP_IOP]-g_runtime_previous.ticks[GP_IOP]),
+      (unsigned long long)(runtime.ticks[GP_SCHEDULER]-g_runtime_previous.ticks[GP_SCHEDULER]),
+      (unsigned long long)(runtime.ticks[GP_IDLE]-g_runtime_previous.ticks[GP_IDLE]),
+      (unsigned long long)(runtime.ticks[GP_COMPILE]-g_runtime_previous.ticks[GP_COMPILE]),
+      (unsigned long long)(runtime.ticks[GP_GS_RASTER]-g_runtime_previous.ticks[GP_GS_RASTER]),
+      (unsigned long long)(runtime.ticks[GP_GX_UPLOAD]-g_runtime_previous.ticks[GP_GX_UPLOAD]),
+      (unsigned long long)(runtime.ticks[GP_GX_READBACK]-g_runtime_previous.ticks[GP_GX_READBACK]),
+      (unsigned long long)(runtime.ticks[GP_GX_WAIT]-g_runtime_previous.ticks[GP_GX_WAIT]),
+      (unsigned long long)runtime.overflows);
+    g_runtime_previous=runtime;
+    gekko2_profile front;gekko2_profile_get_host(&front);
+    uint64_t front_total=0;for(unsigned n=0;n<GP_COUNT;n++)front_total+=front.ticks[n]-g_front_previous.ticks[n];
+    fprintf(f,"TIME_PRESENT scope=exact_host TB_total=%llu calls=%llu frontend=%llu GX_upload=%llu GX_readback=%llu GX_wait=%llu overflows=%llu\n",
+      (unsigned long long)front_total,(unsigned long long)(front.samples-g_front_previous.samples),
+      (unsigned long long)(front.ticks[GP_PRESENT]-g_front_previous.ticks[GP_PRESENT]),
+      (unsigned long long)(front.ticks[GP_GX_UPLOAD]-g_front_previous.ticks[GP_GX_UPLOAD]),
+      (unsigned long long)(front.ticks[GP_GX_READBACK]-g_front_previous.ticks[GP_GX_READBACK]),
+      (unsigned long long)(front.ticks[GP_GX_WAIT]-g_front_previous.ticks[GP_GX_WAIT]),
+      (unsigned long long)front.overflows);
+    g_front_previous=front;
+    fprintf(f,"HOST_TIME core_tb=%llu presentation_tb=%llu log_tb=%llu log_ms=%llu\n",
+      (unsigned long long)core_ticks,(unsigned long long)blit_ticks,
+      (unsigned long long)(g_log_ticks-g_log_previous),(unsigned long long)ticks_to_millisecs(g_log_ticks-g_log_previous));
+    g_log_previous=g_log_ticks;
+    jit_cache_profile caches[2];ee_jit_get_cache_profile(&caches[0]);iop_jit_get_cache_profile(&caches[1]);
+    for(unsigned n=0;n<2;n++)fprintf(f,"BLOCK_CACHE cpu=%s ways=%u lookups=%llu hits=%llu misses=%llu collisions=%llu stale=%llu attempts=%llu installed=%llu failures=%llu compile_sample_tb=%llu compile_samples=%llu sample_stride=64\n",
+      n?"IOP":"EE",gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u,
+      (unsigned long long)caches[n].lookups,(unsigned long long)caches[n].hits,(unsigned long long)caches[n].misses,
+      (unsigned long long)caches[n].collisions,(unsigned long long)caches[n].stale,(unsigned long long)caches[n].attempts,
+      (unsigned long long)caches[n].installed,(unsigned long long)caches[n].failures,
+      (unsigned long long)caches[n].compile_tb,(unsigned long long)caches[n].compile_samples);
+    fprintf(f,"IOP_ROUTES native_instructions=%llu interpreter_instructions=%llu recovery_ticks=%llu RAM_helper_fast_reads=%llu RAM_helper_fast_writes=%llu\n",
+      (unsigned long long)iop_core_route_stat(0),(unsigned long long)iop_core_route_stat(1),
+      (unsigned long long)iop_core_route_stat(2),(unsigned long long)iop_core_route_stat(3),(unsigned long long)iop_core_route_stat(4));
     system_profile_t profile;system_profile_get(&profile);
     uint64_t ee_sample=profile.ee_ticks-g_profile_previous.ee_ticks;
     uint64_t iop_sample=profile.iop_ticks-g_profile_previous.iop_ticks;
@@ -473,7 +517,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             fprintf(f,"GS_GOURAUD_DEGEN_SAMPLE i=%u prim=%lx xy=%ld,%ld %ld,%ld %ld,%ld\n",i,(unsigned long)prim,
                 (long)xy[0],(long)xy[1],(long)xy[2],(long)xy[3],(long)xy[4],(long)xy[5]);
     }
-    fprintf(f,"BUILD checkpoint=R1331 scope=CPU-GX-options mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
+    fprintf(f,"BUILD checkpoint=R1332 scope=cache-profiler-IOP-RAM mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
         (unsigned long)gekko2_optimization_mask,(unsigned long)gekko2_opt_requested(),
         gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT),
         gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS),
@@ -519,7 +563,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned long long)vu_jit_get_lower_count(),
             (unsigned long long)vu_jit_get_rejected_hit_count(),
             (unsigned long long)vu_jit_get_pair_count(),
-            (unsigned long long)vu_jit_get_block_count());fclose(f);
+            (unsigned long long)vu_jit_get_block_count());fclose(f);g_log_ticks+=gettime()-log_begin;
 }
 
 /* Round 29 continued (task #126): real BIOS boot as the PRIMARY,
@@ -799,6 +843,7 @@ static void run_real_boot_flow(void)
     g_slice_budget=512;g_fps_milli=g_present_milli=0;
     memset(&g_fps_window,0,sizeof(g_fps_window));
     system_profile_reset();g_profile_previous=(system_profile_t){0};
+    g_runtime_previous=g_front_previous=(gekko2_profile){0};g_log_ticks=g_log_previous=0;
     uint64_t total_slices = 0;
     int stopped_by_user = 0;
     int show_hud = g_hud_default;g_hud_active=show_hud; /* Z+START toggles diagnosis; START alone belongs to the PS2. */
@@ -828,6 +873,7 @@ static void run_real_boot_flow(void)
         perf_core+=chunk_ticks;
         g_slice_budget=frontend_next_budget(g_slice_budget,(uint32_t)ticks_to_millisecs(chunk_ticks),g_throughput?50:20);
         stage_started=gettime();
+        gekko2_profile_start_host();
         uint64_t now_display_ms=ticks_to_millisecs(stage_started);
         uint64_t current_events=ee_core_get_vblank_events();
         int present_due=frontend_present_due(now_display_ms,last_present_ms,current_events,last_present_events);
@@ -928,6 +974,7 @@ static void run_real_boot_flow(void)
         last_present_quadwords=current_quadwords;last_dispfb=current_dispfb;last_display=current_display;
         last_pmode=gs->pmode;last_smode=gs->smode2;
         }
+        gekko2_profile_stop();
         perf_blit+=gettime()-stage_started;
         r1252_save_fault_evidence();
         if(ee->instructions_executed>=g_boot_log_next){save_boot_progress("PROGRESS",g_boot_log_next==0);g_boot_log_next=ee->instructions_executed+50000000ull;}
@@ -976,7 +1023,7 @@ int main(int argc, char **argv)
     {
         FILE *boot=fopen("sd:/pcsx2/Gekko2-startup.log","w");
         if(boot) {
-            fprintf(boot,"BUILD checkpoint=R1331 stage=launcher-ready resident_pipeline=%d\n",
+            fprintf(boot,"BUILD checkpoint=R1332 stage=launcher-ready resident_pipeline=%d\n",
 #ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
                 0
 #else

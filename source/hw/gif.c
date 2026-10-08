@@ -1,3 +1,4 @@
+#include "core/runtime_profile.h"
 #include "core/recompiler/optimization.h"
 /*
  * gif.c - see include/core/hw/gif.h for scope notes and references.
@@ -934,13 +935,12 @@ static unsigned gouraud_gx_block_reason(int textured,int32_t minx,int32_t miny,i
     return GIF_GFB_NONE;
 }
 
-static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
                                 int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
                                 float s0, float t0, float q0, float s1, float t1, float q1, float s2, float t2, float q2,
                                 uint32_t z0, uint32_t z1, uint32_t z2,
-                                uint32_t f0, uint32_t f1, uint32_t f2)
-{
+                                uint32_t f0, uint32_t f1, uint32_t f2){
     /* R1330-K: classify before any context work.  edge() is pure integer
      * geometry, so the zero-area decision does not depend on the context. */
     const int gouraud_prim = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
@@ -1240,6 +1240,18 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
     g_gif.tex_tbp0 = saved_mip_tbp0;
     g_gif.tex_tbw = saved_mip_tbw;
 }
+static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                                uint32_t c0, uint32_t c1, uint32_t c2,
+                                int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
+                                float s0, float t0, float q0, float s1, float t1, float q1, float s2, float t2, float q2,
+                                uint32_t z0, uint32_t z1, uint32_t z2,
+                                uint32_t f0, uint32_t f1, uint32_t f2)
+{
+ unsigned profile_previous=gp_enter(GP_GS_RASTER);
+ rasterize_triangle_profile_impl(x0,y0,x1,y1,x2,y2,c0,c1,c2,u0,v0,u1,v1,u2,v2,s0,t0,q0,s1,t1,q1,s2,t2,q2,z0,z1,z2,f0,f1,f2);
+ gp_leave(profile_previous);
+}
+
 
 /* SPRITE rasterizer (task #88 adds texturing here - previously
  * SPRITE was always flat-color only). Real hardware: SPRITE is a
@@ -1306,11 +1318,10 @@ static void gs_gx_sprite_key(void)
  for(unsigned k=0;k<512;k++){a=(a^g_gif.clut_cache[k])*16777619u;b=((b<<5)|(b>>27))^g_gif.clut_cache[k];}
  gs_gx_source_key(a,b,valid);
 }
-static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
+static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
                               int32_t u0, int32_t v0, int32_t u1, int32_t v1,
                               float s0, float t0, float q0, float s1, float t1, float q1,
-                              uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1)
-{
+                              uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1){
     /* GS/reference DrawSprite covers [ceil(min),ceil(max)). Keep the
      * original 12.4 positions for the texture gradient and pre-step. */
     int32_t x0=(raw_x0+15)>>4,y0=(raw_y0+15)>>4;
@@ -1520,6 +1531,16 @@ static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1
     g_gif.tex_tbp0 = saved_mip_tbp0;
     g_gif.tex_tbw = saved_mip_tbw;
 }
+static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
+                              int32_t u0, int32_t v0, int32_t u1, int32_t v1,
+                              float s0, float t0, float q0, float s1, float t1, float q1,
+                              uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1)
+{
+ unsigned profile_previous=gp_enter(GP_GS_RASTER);
+ rasterize_sprite_12_4_profile_impl(raw_x0,raw_y0,raw_x1,raw_y1,u0,v0,u1,v1,s0,t0,q0,s1,t1,q1,z0,z1,f0,f1);
+ gp_leave(profile_previous);
+}
+
 
 /* Integer-coordinate entry used by native rasterizer tests. */
 static void rasterize_sprite(int32_t x0,int32_t y0,int32_t x1,int32_t y1,
@@ -1537,8 +1558,7 @@ static void rasterize_sprite(int32_t x0,int32_t y0,int32_t x1,int32_t y1,
  * `GS_POINT_CLASS`, i.e. there's only ever one vertex to begin with,
  * no interpolation of any kind), gated behind the same Z test every
  * other primitive uses. */
-static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uint32_t fog)
-{
+static void rasterize_point_profile_impl(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uint32_t fog){
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
     if (x < 0 || y < 0) return;
     if (!scissor_test(x, y)) return;
@@ -1566,6 +1586,13 @@ static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uin
     gs_finish_draw_pixel(x, y, apply_fog(rgba, fog), z, g_gif.zbuf_configured && !g_gif.zmsk);
     g_gif.points_drawn++;
 }
+static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uint32_t fog)
+{
+ unsigned profile_previous=gp_enter(GP_GS_RASTER);
+ rasterize_point_profile_impl(x,y,rgba,z,fog);
+ gp_leave(profile_previous);
+}
+
 
 /* LINE/LINE_STRIP rasterizer (task: "GS coverage breadth"). Ported
  * from PCSX2's real `GSRasterizer::DrawEdgeLine` DDA algorithm: walk
@@ -1584,10 +1611,9 @@ static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uin
  * `GSDrawScanline::CSetupPrim`, which selects `last=1` for
  * `GS_LINE_CLASS` (the same "flat uses the last vertex" convention
  * already established for triangles/sprites in this file). */
-static void rasterize_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+static void rasterize_line_profile_impl(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                             uint32_t c0, uint32_t c1, uint32_t z0, uint32_t z1,
-                            uint32_t f0, uint32_t f1)
-{
+                            uint32_t f0, uint32_t f1){
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
     int gouraud = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
     uint32_t flat_r = rgba_channel(c1, 0), flat_g = rgba_channel(c1, 8);
@@ -1663,6 +1689,15 @@ static void rasterize_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     }
     g_gif.lines_drawn++;
 }
+static void rasterize_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                            uint32_t c0, uint32_t c1, uint32_t z0, uint32_t z1,
+                            uint32_t f0, uint32_t f1)
+{
+ unsigned profile_previous=gp_enter(GP_GS_RASTER);
+ rasterize_line_profile_impl(x0,y0,x1,y1,c0,c1,z0,z1,f0,f1);
+ gp_leave(profile_previous);
+}
+
 
 static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int do_draw_kick)
 {

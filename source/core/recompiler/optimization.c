@@ -7,7 +7,7 @@ static const char *names[GEKKO2_OPT_COUNT]={
  "EE dynarec","IOP dynarec","VU0 / VU1 dynarec","EE native blocks",
  "Native block links","GPR residency","6 MiB code arena",
  "GX resident depth / blend","GX texture reuse","Fastmem RAM page cache",
- "GX independent VRAM writes","Native load / store reduction","GX Gouraud shading"};
+ "GX independent VRAM writes","Native load / store reduction","GX Gouraud shading","Block cache reuse"};
 static const char *descriptions[GEKKO2_OPT_COUNT]={
  "Supported EE instructions use PPC; others use interpreter.",
  "Supported IOP instructions use PPC; others use interpreter.",
@@ -18,10 +18,11 @@ static const char *descriptions[GEKKO2_OPT_COUNT]={
  "Share a fixed code pool; keep generated addresses stable.",
  "Keep supported RGB targets in GX; exact GS alpha / Z rules.",
  "Reuse decoded textures when source and state keys match.",
- "Experimental: cache verified RAM TLB pages. No PPC MMU map.",
+ "Experimental: EE RAM TLB cache + direct IOP RAM. No PPC MMU.",
  "Skip color readback for writes outside the active target.",
  "Reduce redundant guest GPR accesses inside native bodies.",
- "Use GX for eligible triangles; retain exact-state fallbacks."};
+ "Use GX for eligible triangles; retain exact-state fallbacks.",
+ "Four cache ways; IOP emits only the granted instruction budget."};
 uint32_t gekko2_opt_available(void)
 {
  uint32_t mask=(1u<<GEKKO2_OPT_COUNT)-1u;
@@ -56,14 +57,15 @@ int gekko2_opt_load(const char *path)
  FILE *f=fopen(path,"r");if(!f)return -1;
  unsigned version=0,mask=0;char extra;
  int n=fscanf(f,"GEKKO2_OPTIONS %u %x %c",&version,&mask,&extra);fclose(f);
- if(n!=2||version!=1u||mask&~((1u<<GEKKO2_OPT_COUNT)-1u))return -1;
+ if(n!=2||(version!=1u&&version!=2u)||mask&~((1u<<GEKKO2_OPT_COUNT)-1u)||(version==1u&&mask>0x1fffu))return -1;
+ if(version==1u)mask|=GEKKO2_OPT_CACHE_DEFAULT;
  requested=mask&gekko2_opt_available();return 0;
 }
 int gekko2_opt_save(const char *path)
 {
  char temp[256];if(snprintf(temp,sizeof(temp),"%s.tmp",path)>=(int)sizeof(temp))return -1;
  FILE *f=fopen(temp,"w");if(!f)return -1;
- int ok=fprintf(f,"GEKKO2_OPTIONS 1 %08lx\n",(unsigned long)gekko2_opt_requested())>0;
+ int ok=fprintf(f,"GEKKO2_OPTIONS 2 %08lx\n",(unsigned long)gekko2_opt_requested())>0;
  if(fclose(f))ok=0;
  if(!ok||rename(temp,path)){remove(temp);return -1;}return 0;
 }

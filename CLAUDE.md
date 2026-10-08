@@ -1,6 +1,7 @@
-# Gekko2 development handoff — R1331
+# Gekko2 development handoff — R1332
 
-Read docs/R1331-BATCHES.md first for CPU/GX options, six batches (Fastmem is
+Read docs/R1332-CACHE-PROFILER.md first for current counters/cache/IOP paths,
+then docs/R1331-BATCHES.md for CPU/GX options, six batches (Fastmem is
 batch 6), remaining work and verification limits. The owner authorizes CPU
 and GX optimization behind independent options; Wii is the primary target.
 R1330L-HANDOFF.md describes the inherited resident renderer baseline.

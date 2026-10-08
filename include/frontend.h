@@ -158,8 +158,8 @@ static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested
  ui_text(rect,36,28,2,"CPU / GX OPTIMIZATIONS",204,232,255);
  ui_text(rect,36,65,1,"Changes apply to the next cold boot. START resumes.",106,171,223);
  for(unsigned n=0;n<GEKKO2_OPT_COUNT;n++){
-  int y=92+(int)n*20,on=(int)n==selected;char row[90];
-  rect(32,y-2,576,19,on?16:9,on?43:22,on?76:41);
+  int y=92+(int)n*19,on=(int)n==selected;char row[90];
+  rect(32,y-2,576,18,on?16:9,on?43:22,on?76:41);
   snprintf(row,sizeof(row),"%s %-28s %s",on?">":" ",gekko2_opt_name(n),
       !(available&GEKKO2_OPT_BIT(n))?"UNAVAILABLE":requested&GEKKO2_OPT_BIT(n)?"ON":"OFF");
   ui_text(rect,40,y,1,row,on?228:148,on?242:176,on?255:207);

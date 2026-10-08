@@ -1,3 +1,4 @@
+#include "core/runtime_profile.h"
 #include "core/recompiler/dynarec_config.h"
 /*
  * system.c - interleaved EE/IOP scheduler. See system.h for the
@@ -137,7 +138,7 @@ __attribute__((noinline)) uint32_t system_profile_clock(void)
 }
 void system_profile_reset(void)
 {
-    g_profile=(system_profile_t){0};g_profile_remaining=256;g_profile_rng=0x12810003u;
+    gekko2_profile_reset();g_profile=(system_profile_t){0};g_profile_remaining=256;g_profile_rng=0x12810003u;
 }
 void system_profile_get(system_profile_t *out){if(out)*out=g_profile;}
 
@@ -149,6 +150,7 @@ static uint32_t g_iop_sample_begin,g_iop_sample_middle;
 static void system_finish_iop_sample(void)
 {
     if(!g_iop_sample_pending)return;
+    gekko2_profile_stop();
     uint32_t end=system_profile_clock();
     g_profile.ee_ticks+=(uint32_t)(g_iop_sample_middle-g_iop_sample_begin);
     g_profile.iop_ticks+=(uint32_t)(end-g_iop_sample_middle);
@@ -160,9 +162,9 @@ static void system_before_iop_tick(void)
     system_finish_iop_sample();
     ee_state_t *ee=ee_core_get_state();
     if(--g_profile_remaining==0) {
-        g_iop_sample_begin=system_profile_clock();
+        g_iop_sample_begin=system_profile_clock();gekko2_profile_start(GP_EE);
         if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
-        g_iop_sample_middle=system_profile_clock();
+        gekko2_profile_enter(GP_IOP);g_iop_sample_middle=system_profile_clock();
         g_iop_sample_pending=1;
         uint32_t rng=g_profile_rng;rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
         g_profile_rng=rng;g_profile_remaining=128+(rng&255u);
@@ -174,14 +176,14 @@ static unsigned system_quantum_grant;
 static void system_begin_ee_quantum(void)
 {
  if(--g_profile_remaining==0u) {
-  g_iop_sample_begin=system_profile_clock();g_iop_sample_pending=1u;
+  g_iop_sample_begin=system_profile_clock();gekko2_profile_start(GP_EE);g_iop_sample_pending=1u;
   uint32_t rng=g_profile_rng;rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
   g_profile_rng=rng;g_profile_remaining=128u+(rng&255u);
  }
 }
 static int system_after_ee_quantum(void)
 {
- if(g_iop_sample_pending)g_iop_sample_middle=system_profile_clock();
+ if(g_iop_sample_pending){gekko2_profile_enter(GP_IOP);g_iop_sample_middle=system_profile_clock();}
  iop_state_t *iop=iop_core_get_state();
  if(!iop->halted)iop_core_step_n(1u);
  system_finish_iop_sample();

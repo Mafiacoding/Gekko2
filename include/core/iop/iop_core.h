@@ -140,4 +140,5 @@ void     iop_mem_write8(iop_state_t *st, uint32_t addr, uint8_t val);
 void     iop_mem_write16(iop_state_t *st, uint32_t addr, uint16_t val);
 void     iop_mem_write32(iop_state_t *st, uint32_t addr, uint32_t val);
 
+uint64_t iop_core_route_stat(unsigned n);
 #endif
