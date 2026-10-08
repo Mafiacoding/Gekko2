@@ -55,7 +55,9 @@ static const uint64_t EE_HBLNK_PERIOD_CYCLES = 18743ull;
 static uint64_t g_bus_tick_counter = 0;
 /* Deferred ticks never cross a compare/overflow boundary. MMIO and
  * snapshots materialize counts; legacy mutable state disables deferral. */
-static uint32_t g_deferred_ticks, g_event_distance;
+uint32_t ee_timers_batch_clock[2]={0,0};
+#define g_event_distance ee_timers_batch_clock[0]
+#define g_deferred_ticks ee_timers_batch_clock[1]
 static int g_state_exposed;
 static uint64_t g_batched_ticks, g_boundary_ticks;
 static void ee_timers_materialize(void);

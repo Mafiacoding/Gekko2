@@ -9,9 +9,9 @@ static uint8_t memory[65536];static unsigned cursor,writes,started;static int mo
 int IOS_Open(const char *p,int flags){(void)flags;assert(!strcmp(p,"/dev/mload"));return mode==1?-1:7;}
 int IOS_Close(int fd){assert(fd==7);return 0;}
 int iosCreateHeap(int n){assert(n==4096);return 2;}
-int IOS_Seek(int fd,int where,int whence){assert(fd==7&&whence==SEEK_SET);assert((unsigned)where>=0x13700000);cursor=(unsigned)where-0x13700000;assert(cursor<sizeof memory);return where;}
-int IOS_Read(int fd,void *p,int n){assert(fd==7&&cursor+n<=sizeof memory);memcpy(p,memory+cursor,n);cursor+=n;return mode==2?n-1:n;}
-int IOS_Write(int fd,const void *p,int n){assert(fd==7&&cursor+n<=sizeof memory);writes++;memcpy(memory+cursor,p,n);cursor+=n;return mode==3?n-1:n;}
+int IOS_Seek(int fd,int where,int whence){assert(fd==7&&whence==SEEK_SET);if(mode==9)return -22;assert((unsigned)where>=0x13700000);cursor=(unsigned)where-0x13700000;assert(cursor<sizeof memory);return where;}
+int IOS_Read(int fd,void *p,int n){assert(fd==7&&cursor+n<=sizeof memory);if(mode!=7)memcpy(p,memory+cursor,n);cursor+=n;return mode==2?n-1:(mode==6||mode==7)?0:n;}
+int IOS_Write(int fd,const void *p,int n){assert(fd==7&&cursor+n<=sizeof memory);writes++;memcpy(memory+cursor,p,n);if(mode==8)memory[cursor]^=1;cursor+=n;return mode==3?n-1:mode==6?0:n;}
 int IOS_IoctlvFormat(int heap,int fd,int request,const char *format,...)
 {
  assert(heap==2&&fd==7);va_list a;va_start(a,format);
@@ -41,7 +41,9 @@ int main(int argc,char **argv)
  for(unsigned i=0;i<count;i++)for(unsigned off=4;off<=20;off+=4){memcpy(copy,e,n);wr(copy+ph+i*32+off,0xffffffff);assert(!arm_loader_validate(copy,n,0x13700000,65536,&p));}
  if(mode==5)memory[0x4000]=1; /* Occupied second segment: no first-segment writes. */
  int r=arm_loader_start();
- if(!mode){assert(r==1&&writes&&started==1);assert(!memcmp(memory,e+0x10000,4));}
- else{assert(r<0&&!started);if(mode!=3)assert(!writes);}
+ if(!mode||mode==6){assert(r==1&&writes&&started==1);assert(!memcmp(memory,e+0x10000,4));}
+ else{assert(r<0&&!started);if(mode!=3&&mode!=8)assert(!writes);}
+ if(mode==8)assert(r==-11&&arm_loader_stat(6)==4);
+ if(mode==9)assert(r==-7&&(int32_t)arm_loader_stat(7)==-22&&arm_loader_stat(6)==1);
  free(e);free(copy);printf("PASS ARM loader mode=%d status=%d writes=%u started=%u\n",mode,r,writes,started);
 }

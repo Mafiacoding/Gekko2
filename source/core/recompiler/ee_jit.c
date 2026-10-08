@@ -669,8 +669,16 @@ typedef struct {
 static ee_precise_slot precise_cache[EE_PRECISE_CACHE_SLOTS];
 static uint32_t precise_recency[EE_PRECISE_CACHE_SLOTS],precise_clock;
 static jit_cache_profile precise_profile;
-static uint64_t precise_budget_stats[4];
-uint64_t ee_jit_get_budget_cache_stat(unsigned n){return n<4u?precise_budget_stats[n]:0;}
+static uint64_t precise_budget_stats[6];
+uint64_t ee_jit_get_budget_cache_stat(unsigned n){return n<6u?precise_budget_stats[n]:0;}
+/* Admission hints never bypass scalar instruction/mapping validation.
+ * Any changed owner invalidates the hint for both supported layouts. */
+typedef struct { uint32_t pc,budget,stride; } ee_precise_refusal;
+static ee_precise_refusal precise_refusals[EE_PRECISE_REUSE_SETS];
+/* Exact best-way hint for this PC and budget. Never a native-code proof.
+ * Set mutations clear it; execution still validates mapping/source epochs. */
+typedef struct {uint32_t pc,budget,stride,owner,fit;} ee_precise_lookup;
+static ee_precise_lookup precise_lookups[EE_PRECISE_REUSE_SETS];
 void ee_jit_get_cache_profile(jit_cache_profile *out){if(out)*out=precise_profile;}
 /* One Broadway cache line per dispatch tag. Keep instruction arrays and
  * learned-edge bookkeeping off the common successor lookup. */
@@ -714,6 +722,17 @@ static void ee_precise_touch(unsigned index)
 static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
 {
  unsigned set=ee_precise_cache_index(pc),stride=ee_precise_cache_stride(),ways=gekko2_opt_enabled(GEKKO2_OPT_CACHE_REUSE)?4u:1u;
+ ee_precise_lookup *lookup=&precise_lookups[set];
+ if(ways==4u&&lookup->owner&&lookup->pc==pc&&lookup->budget==budget&&lookup->stride==stride){
+  if(install&&lookup->fit)precise_budget_stats[0]++;
+  precise_budget_stats[5]++;return &precise_cache[lookup->owner-1u];
+ }
+ ee_precise_refusal *refusal=&precise_refusals[set];
+ if(install&&ways==4u&&refusal->budget&&refusal->pc==pc&&
+    refusal->stride==stride&&budget<=refusal->budget) {
+  precise_budget_stats[1]++;precise_budget_stats[3]++;
+  precise_budget_stats[4]++;return NULL;
+ }
  ee_precise_slot *best=NULL;unsigned largest=0;
  for(unsigned w=0;w<ways;w++) {
   unsigned index=set+w*stride;
@@ -724,14 +743,21 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
   if(tag->count<=budget&&(!best||tag->count>precise_dispatch[best-precise_cache].count))
    best=&precise_cache[index];
  }
- if(best){if(install&&best->count<largest)precise_budget_stats[0]++;return best;}
+ if(best){
+  unsigned fit=best->count<largest;
+  *lookup=(ee_precise_lookup){pc,budget,stride,(unsigned)(best-precise_cache)+1u,fit};
+  if(install&&fit)precise_budget_stats[0]++;return best;
+ }
  if(!install)return NULL;
  if(largest)precise_budget_stats[1]++;
  for(unsigned w=0;w<ways;w++)if(!precise_dispatch[set+w*stride].fn)return &precise_cache[set+w*stride];
  /* A short scheduler tail must not evict a reusable long block or another
   * PC just to admit another length variant. The scalar PPC JIT handles this
   * tail under the unchanged budget. Empty ways still admit warm variants. */
- if(ways>1u&&largest){precise_budget_stats[3]++;return NULL;}
+ if(ways>1u&&largest){
+  *refusal=(ee_precise_refusal){pc,budget,stride};
+  precise_budget_stats[3]++;return NULL;
+ }
  unsigned victim=set;
  for(unsigned w=1;w<ways;w++) {
   unsigned index=set+w*stride;
@@ -752,6 +778,8 @@ static uint32_t ee_precise_next_serial(void)
 static void ee_precise_publish_dispatch(const ee_precise_slot *slot)
 {
  unsigned i=(unsigned)(slot-precise_cache);
+ precise_refusals[i%1024u].budget=0u;precise_refusals[i%256u].budget=0u;
+ precise_lookups[i%1024u].owner=0u;precise_lookups[i%256u].owner=0u;
  precise_dispatch[i]=(ee_precise_dispatch){slot->pc,slot->count,slot->source_page,
   slot->source_generation,slot->mapping_generation,slot->serial,slot->words[0],slot->fn};
 }
@@ -786,6 +814,9 @@ static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
 static void ee_precise_release_slot(ee_precise_slot *slot)
 {
  if(!slot||precise_active)return;
+ unsigned index=(unsigned)(slot-precise_cache);
+ precise_refusals[index%1024u].budget=0u;precise_refusals[index%256u].budget=0u;
+ precise_lookups[index%1024u].owner=0u;precise_lookups[index%256u].owner=0u;
  if(slot->fn)ppc_code_cache_release((void*)slot->fn);
  memset(&precise_dispatch[slot-precise_cache],0,sizeof(precise_dispatch[0]));
  memset(slot,0,sizeof(*slot));
@@ -1057,4 +1088,6 @@ static void ee_precise_reset_cache(void)
  precise_runs=precise_retired=precise_evictions=0;
  memset(precise_recency,0,sizeof precise_recency);precise_clock=0;memset(&precise_profile,0,sizeof precise_profile);
  memset(precise_budget_stats,0,sizeof precise_budget_stats);
+ memset(precise_refusals,0,sizeof precise_refusals);
+ memset(precise_lookups,0,sizeof precise_lookups);
 }

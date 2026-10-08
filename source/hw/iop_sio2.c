@@ -35,6 +35,9 @@ typedef struct {
                         * (Center) each */
 } pad_t;
 static pad_t g_pad;
+static uint32_t g_pad_samples;
+uint32_t iop_sio2_pad_sample_count(void){return g_pad_samples;}
+uint16_t iop_sio2_pad_sample_buttons(void){g_pad_samples++;return g_pad.buttons;}
 static uint32_t g_pad_command_count = 0; /* Round 510 diagnostic */
 
 /* Command/reply staging buffers for the batched FIFOIN -> CTRL-start
@@ -227,6 +230,7 @@ static void pad_process_command(void)
     /* real hardware wire polarity is 0=pressed - invert our
      * pressed-polarity g_pad.buttons only at this final step. */
     uint16_t wire = (uint16_t)~g_pad.buttons;
+    if(n>=5)g_pad_samples++; /* Both digital button bytes requested. */
     g_reply_buf[g_reply_len++] = (uint8_t)(wire & 0xFFu);        /* swlo, reply to 1st MOT byte */
     if (n < 5) return;
     g_reply_buf[g_reply_len++] = (uint8_t)((wire >> 8) & 0xFFu); /* swhi, reply to 2nd MOT byte */

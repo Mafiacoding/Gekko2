@@ -139,7 +139,8 @@ unsigned iop_jit_try_execute_block(iop_state_t *st,unsigned budget)
  if(!block_peek(st,pc,&first))return 0;
  precise_slot *slot=block_find(pc);block_profile.lookups++;
  int warm=slot->fn&&slot->pc==pc&&slot->first==first&&slot->count>0u&&slot->count<=BLOCK_WORDS;
- for(unsigned n=0;warm&&n<slot->count;n++) {
+ /* first was already read and compared above. */
+ for(unsigned n=1;warm&&n<slot->count;n++) {
   uint32_t live;
   if(!block_peek(st,pc+n*4u,&live)||live!=slot->words[n])warm=0;
  }

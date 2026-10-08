@@ -119,6 +119,19 @@ int iop_timers_mmio_write32(uint32_t addr, uint32_t value);
  * execution - this is precisely the real mechanism that wakes a real
  * idle IOP thread scheduler back up). */
 void iop_timers_tick(void);
+/* Same event-safe deferred tick as the out-of-line routine. No batching
+ * crosses an IRQ boundary; MMIO/snapshot invalidates or materializes it. */
+extern uint32_t iop_timers_batch_clock[2];
+static inline void iop_timers_tick_fast(void)
+{
+#ifdef GEKKO
+ if(iop_timers_batch_clock[0]>1u){
+  --iop_timers_batch_clock[0];++iop_timers_batch_clock[1];return;
+ }
+#endif
+ iop_timers_tick();
+}
+
 
 iop_timers_state_t *iop_timers_get_state(void);
 

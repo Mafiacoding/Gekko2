@@ -1462,6 +1462,7 @@ static int iop_prepare(uint32_t *prepared_pc,uint32_t *prepared_word)
      * pc >= BUMP_BASE; the handful of already-modeled low sentinel/
      * trampoline addresses below BUMP_BASE are excluded below), only
      * the clarity of an already-terminal failure. */
+    uint32_t fetched_word=0;int have_fetched_word=0;
     {
 
         /* Must compare the KSEG-masked PHYSICAL address, not the raw
@@ -1475,7 +1476,8 @@ static int iop_prepare(uint32_t *prepared_pc,uint32_t *prepared_word)
             (phys_pc < 0x00000100u) ||                    /* project HLE trap/trampoline sentinels (A0/B0/C0, 0xE4/0xE8/0xEC/0xF0 - see iop_hle_bios.h/iop_hle_intr.h/iop_excb.h) */
             (phys_pc >= 0x0000E000u && phys_pc < 0x00010000u);  /* IOP_EXCB_ARRAY_ADDR / real "Kernel Memory" region - see iop_excb.h */
         if (phys_pc < 0x00100000u && !in_modeled_low_region) {
-            uint32_t word = iop_mem_read32(st, pc);
+            uint32_t word = fetched_word = iop_mem_read32(st, pc);
+            have_fetched_word=1;
             if (word == 0u) {
                 s_zero_run++;
                 if (s_zero_run >= 8u) {
@@ -1495,7 +1497,7 @@ static int iop_prepare(uint32_t *prepared_pc,uint32_t *prepared_word)
     }
 
     *prepared_pc = pc;
-    *prepared_word = iop_mem_read32(st, pc);
+    *prepared_word = have_fetched_word?fetched_word:iop_mem_read32(st, pc);
     return 2;
 }
 
@@ -2237,7 +2239,7 @@ static int iop_tick_profile_impl(void){
      * fires regardless of CPU activity). See iop_timers.h's own
      * extensive citation trail for the full real-hardware grounding
      * and this project's honestly-scoped-down subset of it. */
-    iop_timers_tick();
+    iop_timers_tick_fast();
 
     /* Round 389: real THREADMAN scheduler tick - wakes any thread
      * whose DelayThread() deadline has passed and, if a newly-woken

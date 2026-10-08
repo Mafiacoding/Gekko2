@@ -927,7 +927,7 @@ static void ee_latch_intc_interrupt(ee_state_t *st)
     }
 }
 
-static void ee_check_intc_interrupt(ee_state_t *st, uint32_t this_pc)
+static void ee_check_intc_interrupt_latched(ee_state_t *st, uint32_t this_pc)
 {
     const uint32_t IE  = 0x00000001u;
     const uint32_t EXL = 0x00000002u;
@@ -964,7 +964,6 @@ static void ee_check_intc_interrupt(ee_state_t *st, uint32_t this_pc)
      * ee_latch_timer_interrupt()'s own already-established pattern of
      * updating its bit unconditionally on every step, independent of
      * whether ee_check_timer_interrupt() goes on to actually raise). */
-    ee_latch_intc_interrupt(st);
 
     if (st->exc_raised_this_step)
         return;
@@ -981,6 +980,11 @@ static void ee_check_intc_interrupt(ee_state_t *st, uint32_t this_pc)
     { ee_intc_state_t *ri = ee_intc_get_state(); if ((ri->stat & ri->mask & (1u << 1)) != 0) r1190_sbus_take_count++; }
     ee_raise_exception(st, EE_EXC_CODE_INT, this_pc, 0);
 }
+
+/* General callers still sample the live line; retirement already did so
+ * immediately above its branch-pending gate, with no intervening device I/O. */
+static void ee_check_intc_interrupt(ee_state_t *st,uint32_t this_pc)
+{ee_latch_intc_interrupt(st);ee_check_intc_interrupt_latched(st,this_pc);}
 
 static void ee_check_dmac_interrupt(ee_state_t *st, uint32_t this_pc)
 {
@@ -1116,7 +1120,7 @@ void ee_core_pad_checkpoint_load(const ee_pad_checkpoint_t *in)
 static void ee_pad_new_write_slots(ee_state_t *st, uint32_t area, unsigned port, unsigned slot)
 {
     int connected = port == 0u && slot == 0u && iop_sio2_pad_is_connected();
-    uint16_t buttons = connected ? (uint16_t)~iop_sio2_pad_get_buttons() : 0xffffu;
+    uint16_t buttons = connected ? (uint16_t)~iop_sio2_pad_sample_buttons() : 0xffffu;
     uint32_t frame = (uint32_t)(st->instructions_executed / EE_CYCLES_PER_FRAME_NTSC) + 1u;
     for (unsigned k = 0; k < 2; k++) {
         uint32_t a = area + k*128u;
@@ -1205,7 +1209,7 @@ static void ee_pad_area_write_slots(ee_state_t *st, uint32_t pad_area)
     uint8_t state = connected ? 6u /* PAD_STATE_STABLE, real libpad.h enum */
                                 : 0u /* PAD_STATE_DISCONN */;
     uint8_t ok = connected ? 1u : 0u;
-    uint16_t wire = connected ? (uint16_t)~iop_sio2_pad_get_buttons() : 0xFFFFu;
+    uint16_t wire = connected ? (uint16_t)~iop_sio2_pad_sample_buttons() : 0xFFFFu;
     int analog = connected && iop_sio2_pad_is_analog_mode();
     uint8_t rx = 0x80u, ry = 0x80u, lx = 0x80u, ly = 0x80u;
     uint32_t payload_len = connected ? (analog ? 9u : 5u) : 0u;
@@ -5180,7 +5184,7 @@ static inline __attribute__((always_inline)) void ee_retire_instruction_inline(e
     }
     ee_check_gs_vsync(st); /* Round 87 (127th finding) */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_gsvsync_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
-    ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
+    ee_timers_tick_fast(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_timers_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1177_prof_clock_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
@@ -5196,7 +5200,7 @@ static inline __attribute__((always_inline)) void ee_retire_instruction_inline(e
          * (no separate "latch" step needed the way IP7's Count/Compare
          * match does; the pending condition is just read live off
          * ee_intc_pending()/dma_dmac_interrupt_pending() each time). */
-        ee_check_intc_interrupt(st, st->pc);
+        ee_check_intc_interrupt_latched(st, st->pc);
         ee_check_dmac_interrupt(st, st->pc);
         /* Round 597/598 (task #447/#536): forced preemption used to be
          * called unconditionally right here, on every single genuine
@@ -6636,7 +6640,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                         ee_check_browser_idle_carousel(st); /* Round 696 (task #447/#536) */
                         if (EE_SBUS_WAIT_PC_MATCH(st->pc)) ee_check_boot_unblock_sbus_wait(st); /* R1180 hot reject; same R178 semantics */
                         ee_check_gs_vsync(st); /* Round 87 (127th finding) */
-                        ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
+                        ee_timers_tick_fast(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
                         sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
                         ee_check_rpcinit_pending(st);
                         ee_check_rpc_bind_pending(st);
@@ -13030,7 +13034,7 @@ void ee_core_park_tick_profile_impl(ee_state_t *st){
     ee_check_browser_idle_carousel(st); /* Round 696 (task #447/#536) */
     if (EE_SBUS_WAIT_PC_MATCH(st->pc)) ee_check_boot_unblock_sbus_wait(st); /* R1180 hot reject; same R178 semantics */
     ee_check_gs_vsync(st); /* Round 87 (127th finding) */
-    ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
+    ee_timers_tick_fast(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
     sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
     ee_check_rpcinit_pending(st);
     ee_check_rpc_bind_pending(st);
