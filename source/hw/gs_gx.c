@@ -1191,4 +1191,19 @@ void gs_gx_shutdown(void)
     gs_gx_set_residency_enabled(0);
     if(initialized)gx_cpu_wait(3);
 }
+int gs_gx_reset_boot_state(void)
+{
+ if(!gs_mem_sync())return 0;
+ gs_gx_shutdown();
+ if(!gs_mem_gpu_bind(NULL,NULL))return 0;
+ if(surface)surface->active=0;
+ capture_flat=capture_texture=surface_texture_valid=0;
+ source_key_valid=source_cache.valid=0;geometry_kind=0;render_enabled=0;
+ memset(sync_counts,0,sizeof(sync_counts));memset(surface_counts,0,sizeof(surface_counts));
+ memset(resident_pipeline_counts,0,sizeof(resident_pipeline_counts));
+ memset(source_cache_counts,0,sizeof(source_cache_counts));
+ memset(texture_counts,0,sizeof(texture_counts));memset(pipeline_counts,0,sizeof(pipeline_counts));
+ memset(work_counts,0,sizeof(work_counts));gs_mem_reset_sync_stats();
+ return 1;
+}
 #endif

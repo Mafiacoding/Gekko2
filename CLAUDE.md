@@ -1,6 +1,8 @@
-# Gekko2 development handoff — R1332
+# Gekko2 development handoff — R1333
 
-Read docs/R1332-CACHE-PROFILER.md first for current counters/cache/IOP paths,
+Read docs/R1333-COLD-BOOT-CACHE.md first for session controls, unique logs,
+boot resets and measured budget-variant cache behavior. Then read
+docs/R1332-CACHE-PROFILER.md for counters/cache/IOP paths,
 then docs/R1331-BATCHES.md for CPU/GX options, six batches (Fastmem is
 batch 6), remaining work and verification limits. The owner authorizes CPU
 and GX optimization behind independent options; Wii is the primary target.

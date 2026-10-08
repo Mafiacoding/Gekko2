@@ -210,6 +210,12 @@ static uint32_t ee_sif_sysreg[3];
 #define EE_RAM_SIZE (32 * 1024 * 1024)
 
 static ee_state_t g_state;
+/* Boot-scoped one-shots must survive pause, but never a fresh RAM image. */
+static struct {
+ int selfloop,fastboot,escalation;
+ uint64_t carousel_next;
+ unsigned carousel_sequence;
+} g_boot_once;
 
 /* R1189 diagnostics live outside ee_state_t to preserve JIT layout offsets. */
 static uint64_t r1189_exc_count, r1189_nested_count, r1189_eret_count;
@@ -1363,8 +1369,7 @@ static void ee_check_vblank(ee_state_t *st)
 
 static void ee_check_boot_unblock_selfloop(ee_state_t *st)
 {
-    static int fired = 0;
-    if (fired)
+    if (g_boot_once.selfloop)
         return;
     if (st->pc != EE_BOOT_UNBLOCK_SELFLOOP_PC)
         return;
@@ -1372,7 +1377,7 @@ static void ee_check_boot_unblock_selfloop(ee_state_t *st)
     if (intc->mask != 0)
         return; /* already unmasked by real BIOS/game code - don't interfere */
     intc->mask |= (1u << EE_INTC_IRQ_VBLANK_START) | (1u << EE_INTC_IRQ_VBLANK_END);
-    fired = 1;
+    g_boot_once.selfloop = 1;
 }
 
 /*
@@ -1451,8 +1456,7 @@ static void ee_check_browser_menu_escalation_heuristic(ee_state_t *st)
     return; /* Historical SCPH-10000 state injection is not hardware emulation. */
 #else
 
-    static int fired = 0;
-    if (fired)
+    if (g_boot_once.escalation)
         return;
     if (st->instructions_executed < (uint64_t)EE_BROWSER_ESCALATION_FRAME_DELAY * EE_CYCLES_PER_FRAME_NTSC)
         return; /* not yet at the real ~2s-equivalent point */
@@ -1462,7 +1466,7 @@ static void ee_check_browser_menu_escalation_heuristic(ee_state_t *st)
     if (current != 0)
         return; /* real (or future evidenced) code already wrote something else - don't interfere */
     ee_mem_write32(st, EE_BROWSER_ESCALATION_FIELD_ADDR, EE_BROWSER_ESCALATION_REAL_VALUE);
-    fired = 1;
+    g_boot_once.escalation = 1;
 #endif
 }
 
@@ -1571,12 +1575,11 @@ static int ee_read_boot2_path_from_system_cnf(char *out, size_t out_size)
 
 static void ee_check_eeload_fastboot_patch(ee_state_t *st)
 {
-    static int attempted = 0; /* one-shot, whether or not it actually finds/patches anything */
-    if (attempted)
+    if (g_boot_once.fastboot)
         return;
     if (st->pc != EE_EELOAD_START_PC)
         return;
-    attempted = 1;
+    g_boot_once.fastboot = 1;
 
     if (iop_cdvd_get_disc_type() == IOP_CDVD_TYPE_NODISC)
         return; /* diskless boot - real BIOS's own "default to rom0:OSDSYS" behavior is already correct; never touch it (Round 607) */
@@ -1767,8 +1770,7 @@ static void ee_check_browser_idle_carousel(ee_state_t *st)
     static const uint32_t panel_sequence[] = {
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17
     };
-    static uint64_t next_tick_instr = 0;
-    static unsigned int seq_index = 0;
+    /* Same boot-local lifetime as the other one-shots above. */
 
     if (iop_cdvd_get_disc_type() != IOP_CDVD_TYPE_NODISC)
         return; /* diskless-only - never interfere with the real disc-mounted EELOAD path (Round 607) */
@@ -1796,14 +1798,14 @@ static void ee_check_browser_idle_carousel(ee_state_t *st)
         return;
     if (ee_mem_read32(st, EE_BROWSER_STATE_FIELD_ADDR) != EE_BROWSER_STATE_IDLE_VALUE)
         return; /* only once the Browser has genuinely reached its real idle state */
-    if (st->instructions_executed < next_tick_instr)
+    if (st->instructions_executed < g_boot_once.carousel_next)
         return; /* not yet time for the next carousel step */
     if (ee_mem_read32(st, EE_BROWSER_CAROUSEL_FIELD_ADDR) != 0)
         return; /* real dispatch chain hasn't consumed/reset the last value yet - don't clobber it */
 
-    ee_mem_write32(st, EE_BROWSER_CAROUSEL_FIELD_ADDR, panel_sequence[seq_index]);
-    seq_index = (seq_index + 1u) % (sizeof(panel_sequence) / sizeof(panel_sequence[0]));
-    next_tick_instr = st->instructions_executed +
+    ee_mem_write32(st, EE_BROWSER_CAROUSEL_FIELD_ADDR, panel_sequence[g_boot_once.carousel_sequence]);
+    g_boot_once.carousel_sequence = (g_boot_once.carousel_sequence + 1u) % (sizeof(panel_sequence) / sizeof(panel_sequence[0]));
+    g_boot_once.carousel_next = st->instructions_executed +
         (uint64_t)EE_BROWSER_CAROUSEL_TICK_FRAMES * EE_CYCLES_PER_FRAME_NTSC;
 #endif
 }
@@ -4289,6 +4291,10 @@ static void ee_check_cdvd_ncmd_pending(ee_state_t *st)
 
 int ee_core_init(const bios_image_t *bios)
 {
+    memset(&g_boot_once,0,sizeof(g_boot_once));
+    memset(ee_sif_sysreg,0,sizeof(ee_sif_sysreg));
+    memset(ee_fastmem_stats,0,sizeof(ee_fastmem_stats));
+    g_loadfile_reply_count=0;
     g_ee_vblank_events = 0;
     ee_core_display_clock_load(0);
     memset(r1252_fault, 0, sizeof(r1252_fault));

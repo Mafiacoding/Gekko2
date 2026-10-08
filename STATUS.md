@@ -1,6 +1,31 @@
-# Gekko2 status — R1308
+# Gekko2 status — R1333
 
-Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
+Updated 2026-10-08. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
+
+## R1333 session and cache changes
+
+Cold Boot restarts the selected BIOS/disc mode and reserves a separate numbered
+log. START/PLUS only pauses/resumes an existing session; requested CPU/GX options
+apply on a cold boot. EE boot one-shots/SIF system registers and selected render,
+translation and Fastmem counters reset. GPU ownership must resolve before a
+restart frees old guest RAM. Hardware FIFO buffers remain allocated.
+
+EE cache reuse now preserves same-PC block-length variants and selects by the
+current retirement budget. A synthetic alternating 8/2 replay reduces modeled
+PPC instructions 145,993→119,273 with identical guest results. Source/mapping
+invalidation and precise EE8/IOP1 boundaries remain.
+
+Validation: 25/25 linked PPC suites, 64/64 native GS tests, three same-process
+cold boots, unique log/resume/write-error tests, both cross-builds and DOL/ELF
+structure checks. Launcher image is a host render. No physical Wii R1333 boot
+or FPS gain is certified. See [R1333 handoff](docs/R1333-COLD-BOOT-CACHE.md).
+
+Owner-supplied R1332 Wii logs show Tekken first image near 64 million EE
+instructions and accepted native GX draws, with substantial hybrid depth work.
+The supplied fresh BIOS run ends near 203 million EE instructions before first
+image. These are historical observations, not proof that R1333 fixes BIOS
+progress or reaches playable performance. Earlier status sections below retain
+their original checkpoint scope.
 
 ## Verified progress
 

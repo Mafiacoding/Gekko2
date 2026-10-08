@@ -5,6 +5,7 @@
 #include "core/hw/frontend_text.h"
 #include "core/hw/frontend_logo.h"
 #include "core/hw/frontend_runtime.h"
+#include "core/hw/frontend_log.h"
 #include "core/recompiler/iop_jit.h"
 #include "core/recompiler/vu_jit.h"
 /* R1308: native Wii launcher followed by real EE/IOP boot. */
@@ -130,6 +131,18 @@ __attribute__((noinline)) int wii_stick_direction(int pos,int lo,int center,int 
     return 0;
 }
 static uint16_t g_input_held,g_input_down,g_remote_previous;
+/* START/PLUS pauses; Z/MINUS+A sends guest START; Z+START toggles HUD. */
+__attribute__((noinline)) unsigned wii_session_controls(uint16_t held,uint16_t down,uint16_t *guest)
+{
+ int hud=(held&(PAD_BUTTON_START|PAD_TRIGGER_Z))==(PAD_BUTTON_START|PAD_TRIGGER_Z);
+ int guest_start=(held&(PAD_BUTTON_A|PAD_TRIGGER_Z))==(PAD_BUTTON_A|PAD_TRIGGER_Z);
+ uint16_t result=held&~PAD_BUTTON_START;
+ if(hud)result&=~PAD_TRIGGER_Z;
+ if(guest_start)result=(result&~(PAD_BUTTON_A|PAD_TRIGGER_Z))|PAD_BUTTON_START;
+ if(guest)*guest=result;
+ if(hud&&(down&(PAD_BUTTON_START|PAD_TRIGGER_Z)))return 2u;
+ return (down&PAD_BUTTON_START)&&!hud?1u:0u;
+}
 static int g_input_home,g_input_exit;
 static int g_remote_error=WPAD_ERR_NOT_READY;
 static void wii_input_scan(void)
@@ -240,6 +253,7 @@ static int g_hud_active;
 static int g_fps_default = 1;
 static uint64_t g_gx_attempts,g_gx_fallbacks;
 static int g_gx_present = 0; /* One experimental option enables output and supported primitive drawing. */
+static int g_gx_requested = 0;
 static uint32_t g_fps_milli,g_present_milli;
 static frontend_fps_window g_fps_window;
 static system_profile_t g_profile_previous;
@@ -295,16 +309,20 @@ static uint64_t g_log_ticks,g_log_previous;
 static gekko2_profile g_runtime_previous,g_front_previous;
 static uint64_t g_image_probe_attempts;
 static uint64_t g_boot_started,g_boot_log_next;
+static frontend_log g_session_log;
 static const char *boot_log_path(void)
 {
-    return g_gx_present?"sd:/pcsx2/Gekko2-R1308-gx-render.log":"sd:/pcsx2/Gekko2-R1308-software.log";
+    return g_session_log.path;
 }
-static void save_boot_progress(const char *event,int truncate)
+static void save_boot_progress(const char *event)
 {
     uint64_t log_begin=gettime();
     if(!g_fat_mounted)return;
     ee_state_t *e=ee_core_get_state();iop_state_t *i=iop_core_get_state();gs_state_t *g=gs_get_state();
-    FILE *f=fopen(boot_log_path(),truncate?"w":"a");if(!f)return;
+    FILE *f=frontend_log_open(&g_session_log);if(!f)return;
+    fprintf(f,"EVENT session=%lu kind=%s active_mask=%08lx next_boot_mask=%08lx GX=%d next_GX=%d log_errors=%lu\n",
+      (unsigned long)g_session_log.sequence,event,(unsigned long)gekko2_optimization_mask,
+      (unsigned long)gekko2_opt_requested(),g_gx_present,g_gx_requested,(unsigned long)g_session_log.errors);
     fprintf(f,"%s ms=%llu BIOS=%s ROMVER=%s size=%u disc=%d EE=%llu PC=%08x IOP=%llu PC=%08x halted=%d/%d STATUS=%08x CAUSE=%08x EPC=%08x PMODE=%llx DISPFB1=%llx DISPFB2=%llx FIRST_IMAGE=%d\n",
         event,(unsigned long long)ticks_to_millisecs(gettime()-g_boot_started),g_bios.name,g_bios.version_string,(unsigned)g_bios.size,g_disc_ok,
         (unsigned long long)e->instructions_executed,e->pc,(unsigned long long)i->instructions_executed,i->pc,e->halted,i->halted,e->cop0[12],e->cop0[13],e->cop0[14],
@@ -315,14 +333,14 @@ static void save_boot_progress(const char *event,int truncate)
     fprintf(f,"VIDEO circuit=%d source=%ux%u origin=%u,%u output=%ux%u SMODE2=%llx DISPLAY=%llx launcher_font=coverage\n",
         circuit,sw,sh,sx,sy,(unsigned)rmode->fbWidth,(unsigned)rmode->xfbHeight,
         (unsigned long long)g->smode2,(unsigned long long)(circuit==1?g->display1:g->display2));
-    fclose(f);g_log_ticks+=gettime()-log_begin;
+    frontend_log_close(&g_session_log,f);g_log_ticks+=gettime()-log_begin;
 }
 
 /* HBC supplies the loader return stub used by standard exit(0).
  * SYS_RETURNTOMENU would go to the Wii System Menu instead. */
 static void wii_exit_to_loader(void)
 {
-    if(g_system_started)save_boot_progress("EXIT_HBC",0);
+    if(g_system_started)save_boot_progress("EXIT_HBC");
     gs_gx_shutdown();
     frontend_browser_release(&g_browser);
     iop_cdvd_unmount_iso();iop_cdrom_legacy_unmount_iso();
@@ -348,7 +366,10 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
 {
     uint64_t log_begin=gettime();
     if (!g_fat_mounted || !ms) return;
-    FILE *f=fopen(boot_log_path(),"a");if(!f)return;
+    FILE *f=frontend_log_open(&g_session_log);if(!f)return;
+    fprintf(f,"LOG_STATUS session=%lu ms=%llu errors=%lu last_errno=%d path=%s\n",
+      (unsigned long)g_session_log.sequence,(unsigned long long)ticks_to_millisecs(gettime()-g_boot_started),
+      (unsigned long)g_session_log.errors,g_session_log.last_error,boot_log_path());
     fprintf(f,"PERF interval_ms=%llu presents_mHz=%llu guest_vblank_mHz=%llu EE_per_s=%llu core_ms=%llu blit_ms=%llu JIT=%s\n",
         (unsigned long long)ms,(unsigned long long)(presents*1000000ull/ms),
         (unsigned long long)(events*1000000ull/ms),(unsigned long long)(ee_ins*1000ull/ms),
@@ -395,6 +416,9 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)caches[n].collisions,(unsigned long long)caches[n].stale,(unsigned long long)caches[n].attempts,
       (unsigned long long)caches[n].installed,(unsigned long long)caches[n].failures,
       (unsigned long long)caches[n].compile_tb,(unsigned long long)caches[n].compile_samples);
+    fprintf(f,"EE_CACHE_BUDGET fit_hits=%llu budget_misses=%llu variant_installs=%llu\n",
+      (unsigned long long)ee_jit_get_budget_cache_stat(0),(unsigned long long)ee_jit_get_budget_cache_stat(1),
+      (unsigned long long)ee_jit_get_budget_cache_stat(2));
     fprintf(f,"IOP_ROUTES native_instructions=%llu interpreter_instructions=%llu recovery_ticks=%llu RAM_helper_fast_reads=%llu RAM_helper_fast_writes=%llu\n",
       (unsigned long long)iop_core_route_stat(0),(unsigned long long)iop_core_route_stat(1),
       (unsigned long long)iop_core_route_stat(2),(unsigned long long)iop_core_route_stat(3),(unsigned long long)iop_core_route_stat(4));
@@ -517,7 +541,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             fprintf(f,"GS_GOURAUD_DEGEN_SAMPLE i=%u prim=%lx xy=%ld,%ld %ld,%ld %ld,%ld\n",i,(unsigned long)prim,
                 (long)xy[0],(long)xy[1],(long)xy[2],(long)xy[3],(long)xy[4],(long)xy[5]);
     }
-    fprintf(f,"BUILD checkpoint=R1332 scope=cache-profiler-IOP-RAM mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
+    fprintf(f,"BUILD checkpoint=R1333 scope=cache-profiler-IOP-RAM mask=%08lx next_boot_mask=%08lx resident_pipeline=%d EE_blocks=%d scheduler_quanta=%d\n",
         (unsigned long)gekko2_optimization_mask,(unsigned long)gekko2_opt_requested(),
         gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT),
         gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS),
@@ -563,7 +587,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned long long)vu_jit_get_lower_count(),
             (unsigned long long)vu_jit_get_rejected_hit_count(),
             (unsigned long long)vu_jit_get_pair_count(),
-            (unsigned long long)vu_jit_get_block_count());fclose(f);g_log_ticks+=gettime()-log_begin;
+            (unsigned long long)vu_jit_get_block_count());frontend_log_close(&g_session_log,f);g_log_ticks+=gettime()-log_begin;
 }
 
 /* Round 29 continued (task #126): real BIOS boot as the PRIMARY,
@@ -721,7 +745,9 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
     printf("GS display: %-58s\n",
            display_active ? "configured by BIOS/game - showing real GS memory below"
                            : "not configured yet (see docs/STATUS.md's Round 29 notes)");
-    printf("\nZ+START: GS/HUD | Hold B+Z: launcher.\n");
+    printf("\nSTART/PLUS: pause | MINUS+A: PS2 START | Z+START: HUD\n");
+    printf("LOG session=%lu errors=%lu errno=%d\033[K\n",(unsigned long)g_session_log.sequence,
+      (unsigned long)g_session_log.errors,g_session_log.last_error);
 }
 
 /* The real boot flow itself - see the top-of-file header comment and
@@ -775,18 +801,27 @@ static void run_real_boot_flow(void)
          * before applying the next options; resumed sessions retain theirs. */
         ee_jit_reset_stats_for_test();
         vu_jit_reset_for_test();
+        ppc_dynarec_reset_translation_stats();
         gekko2_opt_apply();
+        g_gx_present=g_gx_requested;
+        g_boot_started=gettime();g_boot_log_next=0;
+        if(frontend_log_begin(&g_session_log,"sd:/pcsx2/logs",g_boot_disc,g_gx_present)<0)
+            printf("Could not create session log (errno=%d).\n",g_session_log.last_error);
         if (system_init(&g_bios, &g_bios) != 0) {
+            save_boot_progress("BOOT_FAILED");ee_core_shutdown();iop_core_shutdown();
             printf("Core initialization failed. A/B: launcher.\n");
             wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);return;
         }
         if(cdvd_config_bind_file("sd:/pcsx2/bios-config.bin")<0)printf("BIOS configuration file could not be loaded; saving disabled.\n");
         g_system_started = 1;
-        g_first_picture=0;g_boot_started=gettime();g_boot_log_next=0;
+        g_first_picture=0;
         g_image_probe_attempts=0;
         g_gx_attempts=g_gx_fallbacks=0;
         gs_init();
         gs_mem_init();
+        save_boot_progress("BOOT");
+    } else {
+        save_boot_progress("RESUMED");
     }
 
     /* Round 209: real disc mount, once, best-effort. Mounted on BOTH
@@ -845,7 +880,7 @@ static void run_real_boot_flow(void)
     system_profile_reset();g_profile_previous=(system_profile_t){0};
     g_runtime_previous=g_front_previous=(gekko2_profile){0};g_log_ticks=g_log_previous=0;
     uint64_t total_slices = 0;
-    int stopped_by_user = 0;
+    int stopped_by_user = 0,exit_requested=0;
     int show_hud = g_hud_default;g_hud_active=show_hud; /* Z+START toggles diagnosis; START alone belongs to the PS2. */
 
     iop_sio2_pad_connect();
@@ -854,13 +889,13 @@ static void run_real_boot_flow(void)
 
     for (;;) {
         wii_input_scan();
-        if(g_input_exit)wii_exit_to_loader();
+        if(g_input_exit){exit_requested=1;stopped_by_user=1;break;}
         if(g_input_home){stopped_by_user=1;break;}
         uint16_t held = g_input_held;
         uint16_t down = g_input_down;
-        int hud_combo = (held & (PAD_BUTTON_START|PAD_TRIGGER_Z)) == (PAD_BUTTON_START|PAD_TRIGGER_Z);
-        if (hud_combo && (down & (PAD_BUTTON_START|PAD_TRIGGER_Z))) {show_hud = !show_hud;g_hud_active=show_hud;last_present_ms=0;}
-        uint16_t guest_held = hud_combo ? held & ~(PAD_BUTTON_START|PAD_TRIGGER_Z) : held;
+        uint16_t guest_held=0;unsigned controls=wii_session_controls(held,down,&guest_held);
+        if(controls==1u){stopped_by_user=1;break;}
+        if(controls==2u){show_hud=!show_hud;g_hud_active=show_hud;last_present_ms=0;}
         iop_sio2_pad_set_buttons(wii_pad_to_ps2_pad(guest_held));
 
         uint64_t stage_started=gettime();
@@ -925,7 +960,7 @@ static void run_real_boot_flow(void)
             gs_decode_display_region(current_dispfb,current_display,gs->smode2,&sx,&sy,&sw,&sh);
             g_image_probe_attempts++;
             if(probe_bw && gs_display_has_rgb(probe_bp,probe_bw,sx,sy,sw,sh)) {
-                g_first_picture=1;save_boot_progress("FIRST_IMAGE",0);
+                g_first_picture=1;save_boot_progress("FIRST_IMAGE");
             }
         }
         gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
@@ -977,7 +1012,7 @@ static void run_real_boot_flow(void)
         gekko2_profile_stop();
         perf_blit+=gettime()-stage_started;
         r1252_save_fault_evidence();
-        if(ee->instructions_executed>=g_boot_log_next){save_boot_progress("PROGRESS",g_boot_log_next==0);g_boot_log_next=ee->instructions_executed+50000000ull;}
+        if(ee->instructions_executed>=g_boot_log_next){save_boot_progress("PROGRESS");g_boot_log_next=ee->instructions_executed+50000000ull;}
         uint64_t perf_now=gettime(),perf_ms=ticks_to_millisecs(perf_now-perf_start);
         if(perf_ms>=5000ull){
             uint64_t now_events=ee_core_get_vblank_events();
@@ -994,7 +1029,11 @@ static void run_real_boot_flow(void)
         if (total_slices >= BOOT_TOTAL_CAP) break;
     }
 
-    save_boot_progress(stopped_by_user?"PAUSED":"STOPPED",0);
+    uint64_t final_ms=ticks_to_millisecs(gettime()-perf_start);
+    if(final_ms)save_performance(final_ms,perf_presents,ee_core_get_vblank_events()-perf_events,
+      ee->instructions_executed-perf_ee,perf_core,perf_blit);
+    save_boot_progress(exit_requested?"EXIT_REQUEST":stopped_by_user?"PAUSED":"STOPPED");
+    if(exit_requested)wii_exit_to_loader();
     if (stopped_by_user) return;
     goto_rc(16, 400);
     if (stopped_by_user)
@@ -1007,11 +1046,23 @@ static void run_real_boot_flow(void)
     wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
 }
 
-/* Menu entry point wrapper - "Re-run Boot Flow" just re-enters the
- * same real boot flow above (harmless if it already ran: system_init/
- * gs_init are only called once via the g_system_started guard, so
- * this resumes/re-displays the SAME already-running cores rather than
- * restarting them). */
+static int cold_boot_session(int disc)
+{
+ if(g_system_started)save_boot_progress("COLD_BOOT_REQUEST");
+ /* Resolve old GX ownership before disc/RAM/core owners are replaced.
+  * Failed resolution leaves the paused session available for inspection. */
+ if(!gs_gx_reset_boot_state())return -1;
+ if(g_system_started) {
+  save_boot_progress("COLD_BOOT_END");
+  iop_cdvd_unmount_iso();iop_cdrom_legacy_unmount_iso();
+  ee_core_shutdown();iop_core_shutdown();
+ }
+ g_system_started=0;g_disc_checked=0;g_disc_ok=0;g_first_picture=0;
+ r1252_evidence_written=0;g_boot_disc=disc;
+ run_real_boot_flow();return 0;
+}
+
+/* A explicitly starts a new session; START only resumes existing cores. */
 int main(int argc, char **argv)
 {
     (void)argc;(void)argv;
@@ -1023,7 +1074,7 @@ int main(int argc, char **argv)
     {
         FILE *boot=fopen("sd:/pcsx2/Gekko2-startup.log","w");
         if(boot) {
-            fprintf(boot,"BUILD checkpoint=R1332 stage=launcher-ready resident_pipeline=%d\n",
+            fprintf(boot,"BUILD checkpoint=R1333 stage=launcher-ready resident_pipeline=%d\n",
 #ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
                 0
 #else
@@ -1044,16 +1095,20 @@ int main(int argc, char **argv)
         if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
             if(page==4)ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
             else if(page==3)ui_browser_draw(launcher_rect,&g_browser,notice);
-            else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_present,engine,notice);
+            else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_requested,engine,notice);
             flush_screen();redraw=0;}
         VIDEO_WaitVSync();wii_input_scan();uint16_t down=g_input_down;
         if(g_input_exit || (g_input_home && page==0))wii_exit_to_loader();
         if(g_input_home){page=0;redraw=1;continue;}
         if(!down)continue;
         redraw=1;
+        if(down&PAD_BUTTON_START) {
+            if(g_system_started){page=0;run_real_boot_flow();notice="Paused. START resumes; COLD BOOT starts a new log.";}
+            else notice="No paused session. Choose BIOS or DISC.";
+            continue;
+        }
         if(page==3){
-            if(down&PAD_BUTTON_START){page=0;notice=g_disc_path[0]?g_disc_notice:"No disc selected.";}
-            else if(down&PAD_BUTTON_B){
+            if(down&PAD_BUTTON_B){
                 if(!strcmp(g_browser.path,g_browser.root)){page=0;notice=g_disc_path[0]?g_disc_notice:"No disc selected.";}
                 else if(frontend_browser_up(&g_browser))notice="Could not open parent folder.";
             }else if((down&PAD_TRIGGER_L)&&g_browser.count)g_browser.selected=g_browser.selected>=8?g_browser.selected-8:0;
@@ -1064,7 +1119,7 @@ int main(int argc, char **argv)
                 int rc=frontend_browser_activate(&g_browser,g_disc_path,sizeof(g_disc_path));
                 if(rc==1){const char *name=strrchr(g_disc_path,'/');
                     snprintf(g_disc_notice,sizeof(g_disc_notice),"DISC: %.62s",name?name+1:g_disc_path);
-                    notice=g_disc_notice;page=0;selected=1;
+                    notice=g_disc_notice;page=0;selected=UI_DISC;
                 }else notice=rc<0?"Could not open selection.":"Choose an ISO / BIN file.";
             }
             continue;
@@ -1084,35 +1139,28 @@ int main(int argc, char **argv)
             if(down&PAD_BUTTON_B)page=0;
             else if(page==1){if(down&PAD_BUTTON_A)g_hud_default=!g_hud_default;if(down&PAD_BUTTON_X)g_throughput=!g_throughput;if(down&PAD_BUTTON_Y)g_fps_default=!g_fps_default;
                 if(down&PAD_BUTTON_DOWN){page=4;notice="A / LEFT / RIGHT: toggle. Next cold boot.";continue;}
-                if(down&(PAD_BUTTON_RIGHT|PAD_BUTTON_LEFT)){g_gx_present=!g_gx_present;
-                    notice=g_gx_present?"GX (experimental) ON: output + supported drawing.":"GX OFF; software rendering.";}}
+                if(down&(PAD_BUTTON_RIGHT|PAD_BUTTON_LEFT)){g_gx_requested=!g_gx_requested;
+                    notice=g_gx_requested?"Next cold boot: GX ON.":"Next cold boot: GX OFF.";}}
 
             continue;
         }
-        if(down&(PAD_BUTTON_UP|PAD_BUTTON_LEFT))selected=(selected+5)%6;
-        else if(down&(PAD_BUTTON_DOWN|PAD_BUTTON_RIGHT))selected=(selected+1)%6;
-        else if((down&PAD_BUTTON_START)&&g_system_started){run_real_boot_flow();notice="Session paused. START resumes.";}
+        if(down&(PAD_BUTTON_UP|PAD_BUTTON_LEFT))selected=(selected+UI_MENU_COUNT-1)%UI_MENU_COUNT;
+        else if(down&(PAD_BUTTON_DOWN|PAD_BUTTON_RIGHT))selected=(selected+1)%UI_MENU_COUNT;
         else if(down&PAD_BUTTON_A){
-            if(selected==5)wii_exit_to_loader();
-            if(selected>=3){page=selected-2;continue;}
-            if(selected==2||(selected==1&&!g_disc_path[0])) {
+            if(selected==UI_EXIT)wii_exit_to_loader();
+            if(selected==UI_SETTINGS||selected==UI_ABOUT){page=selected==UI_SETTINGS?1:2;continue;}
+            int disc=selected==UI_COLD_BOOT?g_boot_disc:selected==UI_DISC;
+            if(selected==UI_SELECT_DISC||(disc&&!g_disc_path[0])) {
                 if(!g_fat_mounted)g_fat_mounted=fatInitDefault()?1:0;
                 if(!g_fat_mounted){notice="SD card unavailable.";continue;}
                 frontend_browser_release(&g_browser);
                 if(frontend_browser_init(&g_browser,"sd:/","sd:/pcsx2/games/")<0){notice="Could not open SD card.";continue;}
                 page=3;notice="Choose an ISO / BIN file.";continue;
             }
-            int disc=selected==1;
-            if(g_system_started){
-                /* A starts a new boot; START alone resumes the current session. */
-                iop_cdvd_unmount_iso();iop_cdrom_legacy_unmount_iso();
-                ee_core_shutdown();iop_core_shutdown();
-                g_system_started=0;g_disc_checked=0;g_disc_ok=0;
-                r1252_evidence_written=0;
-            }
-            g_boot_disc=disc;
-            run_real_boot_flow();
-            notice=(disc&&g_system_started&&!g_disc_ok)?"Selected disc failed to mount. SELECT DISC to retry.":g_system_started?"Session paused. START resumes.":"Boot failed. Check BIOS paths on SD.";
+            if(cold_boot_session(disc)<0){notice="Cold boot blocked: GX ownership could not resolve.";continue;}
+            notice=g_session_log.errors?"Log write failed. Check SD space / access.":
+              (disc&&g_system_started&&!g_disc_ok)?"Selected disc failed to mount. SELECT DISC to retry.":
+              g_system_started?"Paused. START resumes; COLD BOOT starts a new log.":"Boot failed. Check BIOS paths on SD.";
         }
     }
     return 0;
