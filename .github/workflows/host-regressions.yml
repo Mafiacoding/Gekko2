@@ -1,0 +1,26 @@
+name: Gekko2 host regressions
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native compiler dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc make python3
+      - name: Run native regression tests
+        run: python3 tools/verify_regressions.py
+      - name: Save regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-test-results
+          path: outputs/verification/
+          retention-days: 14
+          if-no-files-found: warn
