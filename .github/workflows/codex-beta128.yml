@@ -1,0 +1,70 @@
+name: Gekko2 Codex BETA12.21 (128-bit experimental)
+on:
+  push:
+    branches:
+      - beta12.21-codex-128bit-experimental
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wii-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross-compile for original Wii (128-bit ABI enabled)
+        shell: bash
+        run: |
+          set -o pipefail
+          docker run --rm -v "$PWD:/work" -w /work \
+            devkitpro/devkitppc@sha256:4c919aa26151dd43d88ca28c922d1fe2409579a8ba60ef56517baf1abdfb1a48 \
+            bash tools/build_codex_beta128.sh 2>&1 | tee codex-beta128-build.log
+      - name: Create Wii Homebrew SD ZIP
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          import hashlib
+          target = Path('Gekko2-BETA12.21-CODEX-128BIT.dol')
+          if not target.exists() or target.stat().st_size < 100000:
+              raise SystemExit('Wii DOL not built')
+          out = Path('dist')
+          out.mkdir(exist_ok=True)
+          readme = (
+              'Gekko2 BETA12.21 CODEX 128-BIT — EXPERIMENTAL\n'
+              'Based on codex/ipu-mpeg-accuracy with GEKKO2_EE_CHAIN_RESIDENCY enabled.\n'
+              'This ONLY enables native-chain register residency for validated ALU/MMI blocks.\n'
+              'Full generic 128-bit persistent residency and dirty register writeback are NOT implemented.\n'
+              'BACK UP your currently working boot.dol before replacing it.\n'
+              'Extract to SD root (apps/gekko2/boot.dol).\n'
+              'This is NOT tested on real Wii or Dolphin. No gameplay/FPS guarantee.\n'
+              'Expected SESSION checkpoint: R1389-SPEED-BETA12.21-CODEX-128BIT-EXPERIMENTAL\n'
+              'Look for EE_CHAIN_RESIDENCY enabled/runs/retired/successors in logs.\n'
+          )
+          archive = out / 'Gekko2-BETA12.21-CODEX-128BIT-SD-Paket.zip'
+          with ZipFile(archive, 'w', ZIP_DEFLATED) as z:
+              z.write(target, 'apps/gekko2/boot.dol')
+              z.write('meta.xml', 'apps/gekko2/meta.xml')
+              z.write('assets/branding/icon.png', 'apps/gekko2/icon.png')
+              z.writestr('BETA12.21-128BIT-LESEN.txt', readme)
+          (out / 'BETA12.21-128BIT-LESEN.txt').write_text(readme)
+          (out / 'SHA256SUMS.txt').write_text(
+              hashlib.sha256(target.read_bytes()).hexdigest() + '  ' + target.name + '\n' +
+              hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n'
+          )
+          print('DOL', target.stat().st_size, 'ZIP', archive.stat().st_size)
+          PY
+      - name: Upload signed-off experimental build (not hardware validated)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gekko2-Codex-BETA12.21-128BIT-experimental
+          path: |
+            Gekko2-BETA12.21-CODEX-128BIT.dol
+            Gekko2-BETA12.21-CODEX-128BIT.elf
+            codex-beta128-build.log
+            dist/
+          retention-days: 30
+          if-no-files-found: error
