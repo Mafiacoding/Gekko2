@@ -232,9 +232,9 @@ typedef struct {
     uint32_t unpack_have_bytes;
     uint8_t  unpack_buffer[4096];
 
-    /* DIRECT may span DMA links and 64-bit tag transfers. Keep every
-     * payload word until the complete GIF span is available. IMM=0
-     * represents 65536 quadwords, hence the hardware maximum below. */
+    /* DIRECT spans DMA links/tag transfers and forwards complete arriving
+     * QWCs immediately. This retained span also preserves unaccepted data
+     * and historical checkpoint layout; IMM=0 represents 65536 QWCs. */
     uint32_t register_pending_cmd, register_pending_have;
     uint32_t top, dbf; /* latched TOP and double-buffer flag */
     uint32_t direct_needed_words;

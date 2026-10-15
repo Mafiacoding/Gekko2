@@ -417,14 +417,18 @@ static void vif_latch_micro(vif_state_t *vif)
 /* DIRECT retains its own immutable payload while GIF denies PATH2.
  * DIRECTHL never interrupts an active PATH3 IMAGE packet. */
 static int vif_direct_drain(vif_state_t *vif) {
-    if(!vif->direct_needed_words||vif->direct_have_words<vif->direct_needed_words)return 1;
-    uint32_t left=(vif->direct_needed_words-vif->direct_sent_words)/4u;
+    if(!vif->direct_needed_words)return 1;
+    /* DIRECT is a stream: publish every complete arriving QWC, not only
+     * after all IMM QWCs have accumulated (Vif_Codes.cpp pass2). Keep
+     * the incomplete 1..3 words and unaccepted PATH2 data immutable. */
+    uint32_t left=(vif->direct_have_words-vif->direct_sent_words)/4u;
     uint32_t done=0;
     if(!(vif->direct_hl&&gif_get_state()->arb_owner==3u))
         done=gif_try_process_quadwords(GIF_PATH_2,vif->direct_buffer+vif->direct_sent_words*4u,left);
     vif->direct_sent_words+=done*4u;vif->direct_qwords_forwarded+=done;
     if(done<left){gif_get_state()->arb_pending|=2u;vif->stat|=1u<<3;return 0;}
     vif->stat&=~(1u<<3);
+    if(vif->direct_sent_words<vif->direct_needed_words)return 1;
     vif->direct_needed_words=vif->direct_have_words=vif->direct_sent_words=0;
     vif_complete_code(vif,vif->code);return 1;
 }
@@ -450,10 +454,10 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
         memcpy(vif->direct_buffer + vif->direct_have_words * 4u, data, take * 4u);
         vif->direct_have_words += take;
         pos += take;
-        if (vif->direct_have_words < vif->direct_needed_words) return;
         if(!vif_direct_drain(vif)||vif->irq_stalled) {
             vif_hold_words(vif,data+pos*4u,total_words-pos);return;
         }
+        if(vif->direct_needed_words)return;
     }
 
 
@@ -768,18 +772,13 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             uint32_t words = (imm ? imm : 65536u) * 4u;
             uint32_t avail = total_words - pos;
             vif->direct_sent_words=0;vif->direct_hl=cmd==VIF_CMD_DIRECTHL;
-            if (words > avail) {
-                vif->direct_needed_words = words;
-                vif->direct_have_words = avail;
-                memcpy(vif->direct_buffer, data + pos * 4u, avail * 4u);
-                pos += avail;
-            } else {
-                vif->direct_needed_words=vif->direct_have_words=words;
-                memcpy(vif->direct_buffer,data+pos*4u,words*4u);pos+=words;
-                if(!vif_direct_drain(vif)||vif->irq_stalled) {
-                    vif_hold_words(vif,data+pos*4u,total_words-pos);return;
-                }
+            uint32_t take=words<avail?words:avail;
+            vif->direct_needed_words=words;vif->direct_have_words=take;
+            memcpy(vif->direct_buffer,data+pos*4u,take*4u);pos+=take;
+            if(!vif_direct_drain(vif)||vif->irq_stalled) {
+                vif_hold_words(vif,data+pos*4u,total_words-pos);return;
             }
+            if(vif->direct_needed_words)return;
         } break;
 
         default:

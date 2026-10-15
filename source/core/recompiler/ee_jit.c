@@ -961,11 +961,10 @@ typedef unsigned (*ee_cached_chain_fn)(ee_state_t *,unsigned,uint32_t,unsigned,e
 static ee_cached_chain_fn precise_chain_fn;
 #ifdef GEKKO2_EE_CHAIN_RESIDENCY
 static ee_cached_chain_fn precise_resident_chain_fn;
-/* One immutable map for this experimental build. Three complete 128-bit
- * argument registers; HI/LO/SA remain canonical unless a future profile
- * chooses their supported offsets instead. No saved frontend option changes. */
-static const ppc_ee_chain_map precise_resident_map={
- {64,68,72,76,80,84,88,92,96,100,104,108},12,offsetof(ee_state_t,gpr_generation)};
+/* First eligible block chooses actual architectural groups. The map is
+ * then frozen for all companions/wrappers until the entire cache resets. */
+static ppc_ee_chain_map precise_resident_map;
+static unsigned precise_resident_map_ready;
 static uint64_t precise_resident_runs,precise_resident_retired,precise_resident_selected;
 #endif
 uint64_t ee_jit_get_chain_residency_stat(unsigned n)
@@ -1207,6 +1206,11 @@ static void ee_precise_make_resident(ee_precise_slot *slot)
 {
  if(precise_active||slot->resident_tested)return;
  slot->resident_tested=1;
+ if(!precise_resident_map_ready){
+  if(ppc_dynarec_plan_ee_chain_map(slot->words,slot->count,
+     offsetof(ee_state_t,gpr_generation),&precise_resident_map))return;
+  precise_resident_map_ready=1;
+ }
  ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,slot->count*2u))return;
  if(ppc_dynarec_translate_ee_chain_block(&c,slot->pc,slot->words,slot->count,
     (uint32_t)(uintptr_t)ee_core_block_prepare,0,0,
@@ -1504,6 +1508,7 @@ static void ee_precise_reset_cache(void)
 #ifdef GEKKO2_EE_CHAIN_RESIDENCY
  if(precise_resident_chain_fn)ppc_code_cache_release((void*)precise_resident_chain_fn);
  precise_resident_chain_fn=0;
+ precise_resident_map_ready=0;memset(&precise_resident_map,0,sizeof precise_resident_map);
  precise_resident_runs=precise_resident_retired=precise_resident_selected=0;
 #endif
  if(precise_event_chain_fn)ppc_code_cache_release((void*)precise_event_chain_fn);

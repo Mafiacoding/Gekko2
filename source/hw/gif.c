@@ -431,8 +431,10 @@ static uint32_t gs_framebuffer_rgb_for_blend(uint32_t x,uint32_t y)
         uint16_t packed=(g_gif.frame_psm==TEX_PSM_PSMCT16S?gs_mem_read_psmct16s:gs_mem_read_psmct16)
             (g_gif.fbp,g_gif.fbw,x,y);
         uint32_t r=packed&31u,g=(packed>>5)&31u,b=(packed>>10)&31u;
+        /* The GS expands framebuffer channels with zero low bits, not
+         * normalized 5-to-8-bit replication (GSDrawScanline AlphaBlend). */
         return ((packed&0x8000u)?0x80000000u:0u)|
-            (((b<<3)|(b>>2))<<16)|(((g<<3)|(g>>2))<<8)|((r<<3)|(r>>2));
+            (b<<19)|(g<<11)|(r<<3);
     }
     uint32_t color=gs_mem_read_psmct32(g_gif.fbp,g_gif.fbw,x,y);
     if(g_gif.frame_psm==TEX_PSM_PSMCT24)color=(color&0x00ffffffu)|0x80000000u;
@@ -511,7 +513,8 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
         return;
 
     if (color_write) {
-        uint32_t out_r = frag_r, out_g = frag_g, out_b = frag_b, out_a = frag_a;
+        int32_t out_r = (int32_t)frag_r, out_g = (int32_t)frag_g, out_b = (int32_t)frag_b;
+        uint32_t out_a = frag_a;
 
         /* Round 104 (145th finding, task #254): PABE - real GS Users
          * Manual "Alpha Blending Control in Units of Pixels". When
@@ -562,12 +565,13 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
             int32_t r = gs_blend_shift7((r_a - r_b) * (int32_t)coeff) + r_d;
             int32_t g = gs_blend_shift7((g_a - g_b) * (int32_t)coeff) + g_d;
             int32_t b = gs_blend_shift7((b_a - b_b) * (int32_t)coeff) + b_d;
-            out_r = gs_colclamp_channel(r);
-            out_g = gs_colclamp_channel(g);
-            out_b = gs_colclamp_channel(b);
+            out_r = r;
+            out_g = g;
+            out_b = b;
         }
 
-        if (g_gif.dthe) {
+        if (g_gif.dthe && (g_gif.frame_psm==TEX_PSM_PSMCT16 ||
+                          g_gif.frame_psm==TEX_PSM_PSMCT16S)) {
             /* Round 102 (143rd finding, task #254): dithering - real
              * GS Users Manual "3.6.1 Dithering" formula, applied as
              * the final RGB transform before the pixel is written
@@ -578,10 +582,13 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
              * out of [0,255] just like any other RGB-modifying stage
              * in this pipeline. */
             int32_t d = g_gif.dimx[(uint32_t)yy & 3u][(uint32_t)xx & 3u];
-            out_r = gs_colclamp_channel((int32_t)out_r + d);
-            out_g = gs_colclamp_channel((int32_t)out_g + d);
-            out_b = gs_colclamp_channel((int32_t)out_b + d);
+            out_r += d;
+            out_g += d;
+            out_b += d;
         }
+        out_r = (int32_t)gs_colclamp_channel(out_r);
+        out_g = (int32_t)gs_colclamp_channel(out_g);
+        out_b = (int32_t)gs_colclamp_channel(out_b);
 
         if (g_gif.fba) {
             /* FBA corrects the source alpha before framebuffer write

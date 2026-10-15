@@ -7484,12 +7484,8 @@ int ppc_dynarec_translate_ee_budget_delay_block(ppc_codegen_ctx_t *c,uint32_t pc
  const uint32_t *boundaries=boundary&&memory_boundary&&delay_boundary?callbacks:0;
  return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries,1,0);}
 
-int ppc_dynarec_translate_ee_chain_block(ppc_codegen_ctx_t *c,uint32_t pc,
- const uint32_t *words,unsigned count,uint32_t prepare,uint32_t memory_prepare,
- uint32_t delay_prepare,uint32_t commit,const ppc_ee_chain_map *map)
+static int ee_chain_accesses(const uint32_t *words,unsigned count,unsigned *scores)
 {
- ppc_residency check;
- if(!residency_chain_plan(&check,map))return -1;
  /* First fast-ABI stage admits only auditable straight-line bodies. An
   * opaque/helper/branch body can invalidate a subset on an early exit;
   * those blocks retain the normal ABI until per-exit maps are implemented. */
@@ -7504,10 +7500,42 @@ int ppc_dynarec_translate_ee_chain_block(ppc_codegen_ctx_t *c,uint32_t pc,
   for(size_t k=0;k<body.used_words;k++) {
    uint32_t w=body.code[k];unsigned op=w>>26;int dest=word_alloc_destination(w);
    if(op==16u||op==18u||op==19u||(dest==-2&&op!=36u)||dest==3||dest>=18){safe=0;break;}
+   int off=(int16_t)w;
+   if(scores&&(op==32u||op==36u)&&((w>>16)&31u)==3u&&off>=16&&!(off&3)){
+    unsigned group=off==552?34u:(unsigned)off/16u;
+    if((off<544||off==552)&&group<35u)scores[group]+=op==32u?2u:1u;
+   }
   }
  }
  ppc_dynarec_free(&body);
- if(!safe)return -1;
+ return safe?0:-1;
+}
+int ppc_dynarec_plan_ee_chain_map(const uint32_t *words,unsigned count,
+ unsigned generation_offset,ppc_ee_chain_map *out)
+{
+ if(!out)return -1;
+ unsigned scores[35]={0};
+ if(ee_chain_accesses(words,count,scores))return -1;
+ ppc_ee_chain_map map;memset(&map,0,sizeof map);map.generation_offset=generation_offset;
+ while(map.count<12u){
+  unsigned best=0;
+  for(unsigned g=1;g<35;g++)if(scores[g]&&map.count+(g==34?1u:4u)<=12u&&
+       (!best||scores[g]>scores[best]))best=g;
+  if(!best)break;
+  scores[best]=0;
+  for(unsigned lane=0;lane<(best==34?1u:4u);lane++)
+   map.offsets[map.count++]=(uint16_t)(best==34?552:best*16u+lane*4u);
+ }
+ ppc_residency check;
+ if(!residency_chain_plan(&check,&map))return -1;
+ *out=map;return 0;
+}
+int ppc_dynarec_translate_ee_chain_block(ppc_codegen_ctx_t *c,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t memory_prepare,
+ uint32_t delay_prepare,uint32_t commit,const ppc_ee_chain_map *map)
+{
+ ppc_residency check;
+ if(!residency_chain_plan(&check,map)||ee_chain_accesses(words,count,0))return -1;
  return ee_precise_block_emit(c,pc,words,count,prepare,commit,1,memory_prepare,delay_prepare,0,0,0,map);
 }
 

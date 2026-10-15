@@ -65,6 +65,7 @@ with tempfile.TemporaryDirectory() as directory:
     lib.ppc_dynarec_translate_ee_resident_chain.argtypes = [C.POINTER(Context), C.c_uint32, C.POINTER(Map)]
     lib.ppc_dynarec_translate_ee_chain_block.argtypes = [C.POINTER(Context), C.c_uint32, C.POINTER(C.c_uint32), C.c_uint,
                                                         C.c_uint32, C.c_uint32, C.c_uint32, C.c_uint32, C.POINTER(Map)]
+    lib.ppc_dynarec_plan_ee_chain_map.argtypes = [C.POINTER(C.c_uint32), C.c_uint, C.c_uint, C.POINTER(Map)]
     C.c_uint32.in_dll(lib, 'gekko2_optimization_mask').value = 0xffffffff
 
     def emit(address, mapping, words=None, pc=0x100000):
@@ -99,8 +100,14 @@ with tempfile.TemporaryDirectory() as directory:
     programs = [
         [mmi(1,2,3,0), mmi(3,2,1,1), mmi(1,3,2,2), mmi(2,1,3,3), mmi(2,3,1,0), mmi(1,3,2,1)],
         [(1<<21)|17, (2<<21)|19, (3<<11)|16, (1<<11)|18, (1<<21)|0x29, (2<<11)|0x28],
+        [mmi(20,21,22,0), mmi(22,21,20,1), mmi(20,22,21,2), mmi(21,20,22,3), mmi(21,22,20,0), mmi(20,22,21,1)],
     ]
     maps = [list(range(16,64,4)), [16,20,24,28,512,516,520,524,528,532,536,540], [16,20,24,28,32,36,40,44,552]]
+    for program in programs:
+        selected=Map()
+        array=(C.c_uint32*len(program))(*program)
+        assert lib.ppc_dynarec_plan_ee_chain_map(array,len(program),GEN,C.byref(selected))==0
+        maps.append(list(selected.offsets[:selected.count]))
     for offsets in maps:
         mapping = Map((C.c_uint16*12)(*offsets), len(offsets), GEN)
         wrapper = emit(CODE, mapping)

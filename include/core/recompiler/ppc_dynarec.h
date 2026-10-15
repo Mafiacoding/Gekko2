@@ -1134,6 +1134,10 @@ typedef struct {
     uint16_t offsets[12];
     unsigned count,generation_offset;
 } ppc_ee_chain_map;
+/* Select whole 128-bit GPR/HI/LO groups (plus optional scalar SA) from
+ * actual emitted accesses. Caller must freeze the map until all owners
+ * and its wrapper are released. Failure leaves the output untouched. */
+int ppc_dynarec_plan_ee_chain_map(const uint32_t *,unsigned,unsigned,ppc_ee_chain_map *);
 int ppc_dynarec_translate_ee_resident_chain(ppc_codegen_ctx_t *,uint32_t,const ppc_ee_chain_map *);
 int ppc_dynarec_translate_ee_chain_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,
     uint32_t,uint32_t,uint32_t,uint32_t,const ppc_ee_chain_map *);

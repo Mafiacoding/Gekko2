@@ -23,8 +23,10 @@ int main(void)
     slot->resident_tested=1;
     precise_resident_chain_fn=(ee_cached_chain_fn)malloc(32);assert(precise_resident_chain_fn);
     precise_resident_runs=precise_resident_retired=precise_resident_selected=3;
+    precise_resident_map_ready=1;precise_resident_map.count=12;
     ee_precise_reset_cache();
     assert(!slot->fn&&!slot->resident_fn&&!slot->resident_tested&&!precise_resident_chain_fn);
+    assert(!precise_resident_map_ready&&!precise_resident_map.count);
     assert(ee_jit_get_chain_residency_stat(0)==1);
     for(unsigned i=1;i<5;i++)assert(!ee_jit_get_chain_residency_stat(i));
     puts("PASS native-ABI cache companion ownership, active pin, replacement and reset");
