@@ -43,6 +43,29 @@ static inline int gekko2_opt_enabled(unsigned n)
 #endif
  return n<GEKKO2_OPT_COUNT && !!(mask&GEKKO2_OPT_BIT(n));
 }
+/* Separate experimental 128-bit native chain switch; NOT part of the full 32-bit option mask.
+ * Requested settings must never alter an already running guest/JIT session. */
+#ifdef GEKKO
+extern uint32_t gekko2_chain128_runtime_enabled;
+#else
+extern uint32_t gekko2_chain128_runtime_enabled __attribute__((weak));
+#endif
+void gekko2_chain128_request(int enabled);
+int gekko2_chain128_requested(void);
+int gekko2_chain128_available(void);
+void gekko2_chain128_apply_cold_boot(void);
+static inline int gekko2_chain128_active(void)
+{
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+#ifdef GEKKO
+ return gekko2_chain128_runtime_enabled != 0;
+#else
+ return &gekko2_chain128_runtime_enabled && gekko2_chain128_runtime_enabled != 0;
+#endif
+#else
+ return 0;
+#endif
+}
 uint32_t gekko2_opt_available(void);
 uint32_t gekko2_opt_requested(void);
 const char *gekko2_opt_name(unsigned n);
