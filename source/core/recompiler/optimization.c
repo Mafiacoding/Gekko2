@@ -3,6 +3,32 @@
 #include <string.h>
 uint32_t gekko2_optimization_mask=GEKKO2_OPT_DEFAULT;
 static uint32_t requested=GEKKO2_OPT_DEFAULT;
+/* Independently stored option: the 32-bit GEKKO2_OPTIONS ABI has no spare bits. */
+uint32_t gekko2_chain128_runtime_enabled;
+static uint32_t chain128_requested;
+void gekko2_chain128_request(int enabled) { chain128_requested=enabled?1u:0u; }
+int gekko2_chain128_requested(void) { return (int)chain128_requested; }
+int gekko2_chain128_available(void)
+{
+#if defined(GEKKO) && defined(GEKKO2_EE_CHAIN_RESIDENCY) && !defined(PCSX2WII_JIT_DISABLE)
+ return 1;
+#else
+ return 0;
+#endif
+}
+void gekko2_chain128_apply_cold_boot(void)
+{
+#if defined(GEKKO2_EE_CHAIN_RESIDENCY)
+ const uint32_t required=GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)
+                        |GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)
+                        |GEKKO2_OPT_BIT(GEKKO2_OPT_NATIVE_LINKS)
+                        |GEKKO2_OPT_BIT(GEKKO2_OPT_RESIDENCY);
+ gekko2_chain128_runtime_enabled=chain128_requested && (gekko2_optimization_mask&required)==required;
+#else
+ gekko2_chain128_runtime_enabled=0;
+#endif
+}
+
 static const char *names[GEKKO2_OPT_COUNT]={
  "EE dynarec","IOP dynarec","VU0 / VU1 dynarec","EE native blocks",
  "Native block links","GPR residency","6 MiB code arena",
