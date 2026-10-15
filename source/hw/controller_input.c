@@ -184,7 +184,9 @@ unsigned controller_session(const controller_focus *f,uint16_t *guest)
   g&=~IOP_PAD_BTN_START;
   if(hud)g&=~IOP_PAD_BTN_SELECT;
   if(start)g=(g&~(IOP_PAD_BTN_CROSS|IOP_PAD_BTN_SELECT))|IOP_PAD_BTN_START;
-  if((m&(CI_B|CI_SELECT|CI_START))==(CI_B|CI_SELECT|CI_START))action=3;
+  /* Button mashing on a plain Remote must not terminate the emulator.
+   * Keep the legacy three-button chord as pause; HOME+MINUS remains exit. */
+  if((m&(CI_B|CI_SELECT|CI_START))==(CI_B|CI_SELECT|CI_START))action=1;
   else if(hud&&(f->down&(CI_START|CI_SELECT)))action=2;
   else if(f->home_down||((f->down&CI_START)&&!hud))action=1;
  }

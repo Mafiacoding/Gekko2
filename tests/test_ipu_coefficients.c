@@ -7,6 +7,7 @@
 static uint8_t data[128];
 static unsigned length,position,available,calls,failures,cases;
 static int16_t captured[64];
+static unsigned precision,next_precision;
 static void put(unsigned v,unsigned n)
 {for(unsigned i=n;i;i--){if((v>>(i-1))&1)data[length>>3]|=1u<<(7-(length&7));length++;}}
 static int peek(unsigned n,int consume,uint32_t *v)
@@ -21,9 +22,10 @@ static void one(unsigned mp1,unsigned intra,unsigned alt,unsigned run,int level,
 {
  ipu_state_t s;memset(&s,0,sizeof s);memset(data,0,sizeof data);
  length=position=available=calls=0;memset(captured,0,sizeof captured);
- s.command=0x24000000u|(intra<<27)|(q<<16);s.ctrl=(mp1<<23)|(alt<<20);
+ s.command=0x24000000u|(intra<<27)|(q<<16);s.ctrl=(mp1<<23)|(alt<<20)|(precision<<16);
  for(unsigned k=0;k<64;k++)s.iq[intra?0:1][k]=(k*7+11)%255+1;
  ipu_mpeg_begin(&s);
+ s.ctrl=(s.ctrl&~0x30000u)|(next_precision<<16);
  if(intra)put(4,3);else put(10,4); /* luma DC size=0 or CBP=32 */
  put(1,6);put(run,6);
  if(mp1){
@@ -61,6 +63,10 @@ int main(void)
  for(unsigned mp=0;mp<2;mp++)for(unsigned in=0;in<2;in++)
  for(unsigned alt=0;alt<2;alt++)for(unsigned run=0;run<(in?63u:64u);run++)
  for(unsigned l=0;l<8;l++)for(unsigned q=1;q<=31;q+=15)one(mp,in,alt,run,levels[l],q);
+ /* Decoder precision is latched, even if CTRL changes while starved. */
+ for(precision=0;precision<3;precision++)for(next_precision=0;next_precision<3;next_precision++)
+  one(0,1,0,0,1,7);
+ precision=next_precision=0;
  /* Invalid CBP and an intra run beyond coefficient 63 must flag ECD
   * without IDCT/output. Repeated starvation above never consumed a token twice. */
  for(unsigned invalid=0;invalid<2;invalid++){

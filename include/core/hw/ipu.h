@@ -14,6 +14,7 @@ typedef struct {
  int32_t dc[3];
  int16_t coeff[64];
  uint32_t phase,block,index,intra,interlaced,quant,cbp;
+ uint32_t dc_precision; /* latched at IDEC/BDEC start, retained across soft reset */
 } ipu_mpeg_state_t;
 typedef struct {
  uint32_t ctrl,data,top,command,busy,bp,fp;

@@ -280,7 +280,14 @@ static void save_boot_progress(const char *event)
  * SYS_RETURNTOMENU would go to the Wii System Menu instead. */
 static void wii_exit_to_loader(void)
 {
-    if(g_system_started)save_boot_progress("EXIT_HBC");
+    if(g_system_started){
+        FILE *f=frontend_log_open(&g_session_log);
+        if(f){fprintf(f,"CONTROL_ACTION action=exit-loader held=%04x down=%04x home=%u home_down=%u controller=%s slot=%d connected=%u gx_timeouts=%llu\n",
+            g_controller.pad.menu,g_controller.down,g_controller.pad.home,g_controller.home_down,
+            controller_kind_name(g_controller.pad.kind),g_controller.active,g_controller.pad.connected,
+            (unsigned long long)gs_gx_watchdog_count(0));frontend_log_close(&g_session_log,f);}
+        save_boot_progress("EXIT_HBC");
+    }
     audio_output_stop();
     controller_host_shutdown();
     gs_gx_shutdown();
@@ -552,7 +559,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
        (unsigned long)((scanout_fb>>15)&31u),
        (unsigned)((((scanout_fb>>15)&31u)==0u)||(((scanout_fb>>15)&31u)==1u)||
                   (((scanout_fb>>15)&31u)==2u)||(((scanout_fb>>15)&31u)==10u)),
-       (((scanout_fb>>15)&31u)<=1u)?"GX-or-software":"software-CT16");
+       frontend_allow_gx_output(1,1,(unsigned)((scanout_fb>>15)&31u))?"GX-or-software":"unsupported");
     fprintf(f,"GS_SCANOUT PMODE=%llx DISPFB=%llx DISPLAY=%llx bp=%lu bw=%lu origin=%lu,%lu size=%lux%lu image_probes=%llu draw_bp=%lu draw_bw=%lu draw_psm=%lu\n",
         (unsigned long long)scanout->pmode,(unsigned long long)scanout_fb,(unsigned long long)scanout_display,
         (unsigned long)scan_bp,(unsigned long)scan_bw,(unsigned long)scan_x,(unsigned long)scan_y,
@@ -655,6 +662,16 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long)gif->prmodecont_ac,(unsigned long)gif->zbuf_configured,(unsigned long)gif->ate,
         (unsigned long)gif->fbmask,(unsigned long long)gif->triangles_drawn,(unsigned long long)gif->sprites_drawn);
     fprintf(f,"GS_DATE enabled=%d datm=%d tested=%llu rejected=%llu scope=destination-alpha-color-and-depth-rejection\n",gif->date,gif->datm,(unsigned long long)gif_date_stat(0),(unsigned long long)gif_date_stat(1));
+    fprintf(f,"GS_PALETTE cpsm=%u csm=%u csa=%u cbp=%u cld=%u cbw=%u cou=%u cov=%u\n",
+        gif_get_state()->tex_cpsm,gif_get_state()->tex_csm,gif_get_state()->tex_csa,
+        gif_get_state()->tex_cbp,gif_get_state()->tex_cld,gif_get_state()->texclut_cbw,
+        gif_get_state()->texclut_cou,gif_get_state()->texclut_cov);
+    const vu1_state_t *kick=vu1_get_state();
+    fprintf(f,"VU1_XGKICK pending=%u addr=%u packet_qwc=%u ring_qwc=%u eop=%u credit=%llu cycle=%llu stalls=%llu owner=%u pending_paths=%u\n",
+        kick->xgkick_pending,kick->xgkick_addr,kick->xgkick_packet_qwords,kick->xgkick_ring_qwords,
+        kick->xgkick_eop,(unsigned long long)kick->xgkick_cycle_credit,
+        (unsigned long long)kick->pipeline.cycle,(unsigned long long)kick->xgkick_busy_stalls,
+        gif_get_state()->arb_owner,gif_get_state()->arb_pending);
     fprintf(f,"GS_DETAIL zmsk=%lu zte=%lu ztst=%lu tex_psm=%lu tw=%lu th=%lu tcc=%lu tfx=%lu mmag=%lu mmin=%lu dthe=%lu fba=%lu\n",
         (unsigned long)gif->zmsk,(unsigned long)gif->zte,(unsigned long)gif->ztst,(unsigned long)gif->tex_psm,
         (unsigned long)gif->tex_tw,(unsigned long)gif->tex_th,(unsigned long)gif->tex_tcc,(unsigned long)gif->tex_tfx,
@@ -1047,6 +1064,7 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
  * reachable again from the launcher ("Re-run Boot Flow"). */
 static void run_real_boot_flow(void)
 {
+    if(gs_gx_faulted())return; /* Lost GPU work cannot be resumed safely. */
     draw_gradient_background(6, 6, 22, 0, 0, 6);
     flush_screen();
     goto_rc(16, 40);
@@ -1176,7 +1194,7 @@ static void run_real_boot_flow(void)
     system_profile_reset();g_profile_previous=(system_profile_t){0};
     g_runtime_previous=g_front_previous=(gekko2_profile){0};g_log_ticks=g_log_previous=0;
     uint64_t total_slices = 0;
-    int stopped_by_user = 0,exit_requested=0;
+    int stopped_by_user = 0,exit_requested=0,gx_fault_paused=0;
     int show_hud = g_hud_default;g_hud_active=show_hud;
 
     if(gekko2_opt_enabled(GEKKO2_OPT_SOUND))audio_output_start();
@@ -1203,6 +1221,7 @@ static void run_real_boot_flow(void)
             total_slices += g_slice_budget;
         }
 
+        if(gs_gx_faulted()){gx_fault_paused=1;break;}
         uint64_t chunk_ticks=gettime()-stage_started;
         perf_core+=chunk_ticks;
         g_slice_budget=frontend_next_budget(g_slice_budget,(uint32_t)ticks_to_millisecs(chunk_ticks),g_throughput?50:20);
@@ -1278,7 +1297,8 @@ static void run_real_boot_flow(void)
                 int gx_ok=0;
                 if(frontend_allow_gx_output(g_gx_present,g_first_picture,(unsigned)((active_dispfb>>15)&31u))) {
                     g_gx_attempts++;
-                    gx_ok=gs_gx_present(xfb,rmode,bp_words,bw_pixels,sx,sy,sw,sh);
+                    gx_ok=gs_gx_present_psm(xfb,rmode,bp_words,bw_pixels,sx,sy,sw,sh,(unsigned)((active_dispfb>>15)&31u));
+                    if(gs_gx_faulted()){gekko2_profile_stop();gx_fault_paused=1;break;}
                     if(!gx_ok)g_gx_fallbacks++;
                     if(gx_ok)guest_copied=1;
                 }
@@ -1295,6 +1315,7 @@ static void run_real_boot_flow(void)
             }
         }
 
+        if(gs_gx_faulted()){gekko2_profile_stop();gx_fault_paused=1;break;}
         if(present_due){
         if (show_hud || !display_active || !g_first_picture) {
         g_xfb_hud_updates++;
@@ -1344,9 +1365,9 @@ static void run_real_boot_flow(void)
     if(final_ms)save_performance(final_ms,perf_presents,ee_core_get_vblank_events()-perf_events,
       ee->instructions_executed-perf_ee,perf_core,perf_blit);
     audio_output_stop();
-    save_boot_progress(exit_requested?"EXIT_REQUEST":stopped_by_user?"PAUSED":"STOPPED");
+    save_boot_progress(gx_fault_paused?"GX_FAULT_PAUSED":exit_requested?"EXIT_REQUEST":stopped_by_user?"PAUSED":"STOPPED");
     if(exit_requested)wii_exit_to_loader();
-    if (stopped_by_user) return;
+    if (stopped_by_user||gx_fault_paused) return;
     goto_rc(16, 400);
     if (stopped_by_user)
         printf("Stopped by user (B held).                                          \n");
@@ -1459,7 +1480,7 @@ int main(int argc, char **argv)
         if(!down)continue;
         redraw=1;
         if(down&PAD_BUTTON_START) {
-            if(g_system_started){page=0;run_real_boot_flow();notice="Paused. START resumes; COLD BOOT starts a new log.";}
+            if(g_system_started){page=0;run_real_boot_flow();notice=gs_gx_faulted()?"GX fence failed. Restart app from HBC; resume blocked.":"Paused. START resumes; COLD BOOT starts a new log.";}
             else notice="No paused session. Choose BIOS or DISC.";
             continue;
         }
@@ -1525,10 +1546,10 @@ int main(int argc, char **argv)
                 if(frontend_browser_init(&g_browser,"sd:/","sd:/pcsx2/games/")<0){notice="Could not open SD card.";continue;}
                 page=3;notice="Choose an ISO / BIN / CHD file.";continue;
             }
-            if(cold_boot_session(disc)<0){notice="Cold boot blocked: GX ownership could not resolve.";continue;}
+            if(cold_boot_session(disc)<0){notice=gs_gx_faulted()?"GX fence failed. Restart app from HBC; resume blocked.":"Cold boot blocked: GX ownership could not resolve.";continue;}
             notice=g_session_log.errors?"Log write failed. Check SD space / access.":
               (disc&&g_system_started&&!g_disc_ok)?"Selected disc failed to mount. SELECT DISC to retry.":
-              g_system_started?"Paused. START resumes; COLD BOOT starts a new log.":"Boot failed. Check BIOS paths on SD.";
+              gs_gx_faulted()?"GX fence failed. Restart app from HBC; resume blocked.":g_system_started?"Paused. START resumes; COLD BOOT starts a new log.":"Boot failed. Check BIOS paths on SD.";
         }
     }
     return 0;

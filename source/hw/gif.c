@@ -254,12 +254,10 @@ static inline float u32_to_float(uint32_t v)
  * swizzle (its 16-entry palette has no sub-block structure to
  * rearrange).
  *
- * Only CPSM=PSMCT32 (32-bit RGBA CLUT entries) is supported - see
- * CLUT_ROW_WIDTH's header comment for why CPSM=PSMCT16/16S is a
- * documented, unsupported gap. An unsupported CPSM value falls back
- * to treating the raw index as if it were already a packed RGBA
- * color (better than a crash, honestly wrong rather than silently
- * "correct"). */
+ * Current logical palette cache supports CPSM CT32, CT16 and CT16S.
+ * CSA selects its destination bank in CSM1 and CSM2; TEXCLUT supplies
+ * only the CSM2 source coordinates. Cross-format temporary-storage
+ * reinterpretations still require a physical CLUT model. */
 static uint32_t gs_expand_16(uint32_t v);
 /* GS Users Manual 6.0 sections 2.7.3 and 3.4.7: source palette
  * coordinates and destination CSA in the temporary palette are distinct.
@@ -277,7 +275,7 @@ static void gs_load_clut(uint32_t psm,uint32_t cbp,uint32_t cpsm,uint32_t csm,ui
     if(cld==2u || cld==4u)g_gif.clut_cbp0=cbp;
     if(cld==3u || cld==5u)g_gif.clut_cbp1=cbp;
     unsigned mask=cpsm==0u?255u:511u;
-    unsigned dst=csm?0u:(csa&(cpsm==0u?15u:31u))*16u;
+    unsigned dst=(csa&(cpsm==0u?15u:31u))*16u;
     for(unsigned i=0;i<(is8?256u:16u);i++){
         unsigned x,y,bw;
         if(csm){x=g_gif.texclut_cou*16u+i;y=g_gif.texclut_cov;bw=g_gif.texclut_cbw*64u;if(!bw)bw=64;}
@@ -291,7 +289,7 @@ static void gs_load_clut(uint32_t psm,uint32_t cbp,uint32_t cpsm,uint32_t csm,ui
 static uint32_t gs_sample_clut(uint32_t index)
 {
     unsigned mask=g_gif.tex_cpsm==0u?255u:511u;
-    unsigned start=g_gif.tex_csm?0u:(g_gif.tex_csa&(g_gif.tex_cpsm==0u?15u:31u))*16u;
+    unsigned start=(g_gif.tex_csa&(g_gif.tex_cpsm==0u?15u:31u))*16u;
     uint32_t v=g_gif.clut_cache[(start+index)&mask];
     return g_gif.tex_cpsm==0u?v:gs_expand_16(v);
 }
@@ -304,8 +302,15 @@ static uint32_t gs_expand_16(uint32_t v)
     return rgb | (alpha << 24);
 }
 
+static int gs_is_depth_texture(uint32_t psm)
+{return psm==0x30u||psm==0x31u||psm==0x32u||psm==0x3au;}
 static uint32_t gs_sample_texel_uncached(int32_t tex_x, int32_t tex_y)
 {
+    /* Z textures share texel expansion rules, but use Z block swizzles.
+     * TEXA applies to Z24/16/16S exactly as to the corresponding color view. */
+    if(g_gif.tex_psm==0x32u||g_gif.tex_psm==0x3au)
+        return gs_expand_16(gs_mem_read_z(g_gif.tex_tbp0*64u,g_gif.tex_tbw,
+            (uint32_t)tex_x,(uint32_t)tex_y,g_gif.tex_psm&15u));
     /* Round 640: TBP0 is TEX0.TBP0 - real unit is 256 bytes (Address/64
      * words), not the plain functions' 4-byte-word assumption. */
     if (g_gif.tex_psm == 2u || g_gif.tex_psm == 10u)
@@ -316,9 +321,10 @@ static uint32_t gs_sample_texel_uncached(int32_t tex_x, int32_t tex_y)
         uint32_t idx=gs_mem_read_index(g_gif.tex_tbp0*64u,g_gif.tex_tbw,(uint32_t)tex_x,(uint32_t)tex_y,g_gif.tex_psm);
         return gs_sample_clut(idx);
     }
-    uint32_t raw = gs_mem_read_psmct32_blk(g_gif.tex_tbp0, g_gif.tex_tbw,
-                                            (uint32_t)tex_x, (uint32_t)tex_y);
-    if (g_gif.tex_psm == TEX_PSM_PSMCT24) {
+    uint32_t raw = gs_is_depth_texture(g_gif.tex_psm)?
+        gs_mem_read_z(g_gif.tex_tbp0*64u,g_gif.tex_tbw,(uint32_t)tex_x,(uint32_t)tex_y,g_gif.tex_psm&15u):
+        gs_mem_read_psmct32_blk(g_gif.tex_tbp0,g_gif.tex_tbw,(uint32_t)tex_x,(uint32_t)tex_y);
+    if (g_gif.tex_psm == TEX_PSM_PSMCT24 || g_gif.tex_psm==0x31u) {
         uint32_t rgb = raw & 0x00ffffffu;
         uint32_t alpha = g_gif.texa_aem && rgb == 0 ? 0 : g_gif.texa_ta0;
         return rgb | (alpha << 24);
@@ -442,13 +448,14 @@ static uint32_t gs_framebuffer_rgb_for_blend(uint32_t x,uint32_t y)
 }
 /* Apply FRAME.FBMSK to the physical 16-bit destination halfword; the GS
  * swizzle means two adjacent X coordinates need not share a 32-bit word. */
-static void gs_framebuffer_write16(uint32_t x,uint32_t y,uint32_t rgba)
+static void gs_framebuffer_write16(uint32_t x,uint32_t y,uint32_t rgba,int preserve_alpha)
 {
     uint32_t offset=gs_mem_framebuffer16_offset(g_gif.fbp,g_gif.fbw,x,y,g_gif.frame_psm);
     if(offset==UINT32_MAX)return;
     uint16_t packed=(uint16_t)(((rgba>>3)&31u)|(((rgba>>11)&31u)<<5)|
         (((rgba>>19)&31u)<<10)|((rgba&0x80000000u)?0x8000u:0u));
     uint16_t mask=(uint16_t)(g_gif.fbmask>>((offset&2u)?16u:0u));
+    if(preserve_alpha)mask|=0x8000u;
     uint16_t old=(g_gif.frame_psm==TEX_PSM_PSMCT16S?gs_mem_read_psmct16s:gs_mem_read_psmct16)
         (g_gif.fbp,g_gif.fbw,x,y);
     packed=(uint16_t)((packed&~mask)|(old&mask));
@@ -600,7 +607,8 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
         /* Native 16-bit framebuffer writes use the CT16/CT16S swizzle,
          * two-byte physical pixels, single-bit alpha and per-halfword FBMSK. */
         if(g_gif.frame_psm==TEX_PSM_PSMCT16||g_gif.frame_psm==TEX_PSM_PSMCT16S) {
-            gs_framebuffer_write16((uint32_t)xx,(uint32_t)yy,rgba_pack(out_r,out_g,out_b,out_a));
+            gs_framebuffer_write16((uint32_t)xx,(uint32_t)yy,rgba_pack(out_r,out_g,out_b,out_a),
+                alpha_test_failed&&g_gif.afail==GS_AFAIL_RGB_ONLY);
         } else {
         /* FRAME.FBMSK is a bit mask: protected bits retain their old value.
          * PSMCT24 additionally preserves the physical alpha byte. */
@@ -1251,7 +1259,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
         (!g_gif.tex_tcc&&(c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&
        z0==z1&&z1==z2&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&!g_gif.tex1_mxl&&
-       maxx>=minx&&maxy>=miny&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)) {
+       maxx>=minx&&maxy>=miny&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u||g_gif.frame_psm==2u||g_gif.frame_psm==10u)) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2},uv[6]={u0,v0,u1,v1,u2,v2};
         float stq[9]={s0,t0,q0,s1,t1,q1,s2,t2,q2};uint32_t colors[3]={c0,c1,c2};
         memcpy(gx_triangle.xy,xy,sizeof xy);memcpy(gx_triangle.uv,uv,sizeof uv);
@@ -1299,7 +1307,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
         }
     }
     if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
-       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&(!g_gif.date && gs_gx_render_active())) {
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u||g_gif.frame_psm==2u||g_gif.frame_psm==10u)&&(!g_gif.date && gs_gx_render_active())) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2};
         gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
             g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,z2,
@@ -1721,12 +1729,13 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     g_sprite_cached_draws+=safe_texture;
     /* BETA12.20: Sprite snapshot can evaluate ATE/DATE late in the CPU
      * importer. Resident GX depth/blend paths are independently excluded. */
-    if((!textured||safe_texture)&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
-       (g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&
+    if((!textured||safe_texture)&&!gs_dither_active()&&
+       ((g_gif.frame_psm==2u||g_gif.frame_psm==10u)||(!g_gif.fba&&!g_gif.fbmask))&&
+       (g_gif.frame_psm==0u||g_gif.frame_psm==1u||g_gif.frame_psm==2u||g_gif.frame_psm==10u)&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&gs_gx_render_active()&&
        sx1>sx0&&sy1>sy0&&sx1-sx0<=640&&sy1-sy0<=512&&
        (!textured||g_gif.tex_psm==0u||g_gif.tex_psm==1u||g_gif.tex_psm==2u||g_gif.tex_psm==10u||
-        g_gif.tex_psm==0x13u||g_gif.tex_psm==0x14u||g_gif.tex_psm==0x1bu||g_gif.tex_psm==0x24u||g_gif.tex_psm==0x2cu)) {
+        g_gif.tex_psm==0x13u||g_gif.tex_psm==0x14u||g_gif.tex_psm==0x1bu||g_gif.tex_psm==0x24u||g_gif.tex_psm==0x2cu||gs_is_depth_texture(g_gif.tex_psm))) {
         double du=textured&&x_span!=0.0?(tex_u1-tex_u0)/x_span:0.0;
         double dv=textured&&y_span!=0.0?(tex_v1-tex_v0)/y_span:0.0;
         double first_u=!textured?0.0:cached_u?g_sprite_u[0]:tex_u0;

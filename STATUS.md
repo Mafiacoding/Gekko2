@@ -1,4 +1,6 @@
-# Gekko2 SPEED BETA12.21 – 15 October 2026
+# Gekko2 SPEED BETA12.22 – 15 October 2026
+
+**BETA12.22 – GS/GX-Formate und Fehlerbehandlung:** alle 13 gültigen GS-Texturformate werden für GX nach RGBA8 dekodiert. CT32/24/16/16S sind für GX-Scanout verfügbar; CT16/16S verwenden bei geeigneten Zeichenoperationen einen GX-Snapshot mit präzisem GS-Readback. Dazu kommen Korrekturen für CSM2-Paletten, AFAIL-Alpha, XGKICK und IPU sowie eine Pause bei terminalem GX-Fehler. [Build- und Testbericht](docs/BETA12.22-GS-GX-FORMATS.md). Chain-Residenz und experimentelle lokale PSM-Konvertierung bleiben standardmäßig OFF. Crash-Schwarzbild, lila Ausgabe und BIOS-Kacheln sind auf echter Wii weiterhin nicht als behoben bestätigt.
 
 **Experimenteller Stand BETA12.21:** opt-in Native-to-Native-128-Bit-Ketten für geprüfte ALU/MMI-, LQ/SQ-/LD/SD- und Integer-Sprungblöcke; eigener gespeicherter Cold-Boot-Schalter, standardmäßig OFF. PSM ebenfalls OFF. Sichere GX-Abschluss-/Fehlerprüfung und CT32/24-DTHE-Zugang. [Bericht](docs/BETA12.21-EXPERIMENTAL-OPTIONS.md). Host-/PPC-Tests und Wii-Cross-Build ersetzen keinen realen Wii-Test; Crash-Schwarzbild und BIOS-Kacheln bleiben ohne Hardwarebestätigung. Die folgenden älteren Abschnitte sind historisch.
 

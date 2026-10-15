@@ -75,6 +75,11 @@ int main(void)
  controller_focus_update(&f,q);CHECK(controller_session(&f,&guest)==0&&guest==IOP_PAD_BTN_START);
  controller_map_remote(&q[4],0x1010,0,128,128);
  controller_focus_update(&f,q);CHECK(controller_session(&f,&guest)==2&&guest==0);
+ /* The observed multi-button state must pause, never silently exit. */
+ controller_map_remote(&q[4],0x1014,0,128,128);
+ controller_focus_update(&f,q);CHECK(controller_session(&f,&guest)==1);
+ controller_map_remote(&q[4],0x1094,0,128,128);
+ controller_focus_update(&f,q);CHECK(controller_session(&f,&guest)==3); /* explicit HOME+MINUS */
  /* Press retention still observes actual guest samples. */
  frontend_pad_latch latch={0,0,0};
  CHECK(frontend_pad_latch_update(&latch,IOP_PAD_BTN_CROSS,0)==IOP_PAD_BTN_CROSS);

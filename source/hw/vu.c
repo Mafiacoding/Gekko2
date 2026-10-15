@@ -519,23 +519,26 @@ static void vu1_service_xgkick(int flush)
     g_vu1.xgkick_last_cycle=now;
     while(g_vu1.xgkick_pending && (flush || g_vu1.xgkick_cycle_credit>=2u)) {
         uint32_t addr=g_vu1.xgkick_addr;
-        if(!g_vu1.xgkick_packet_qwords) {
+        uint32_t packet=g_vu1.xgkick_packet_qwords,eop=g_vu1.xgkick_eop;
+        int new_tag=!packet;
+        if(new_tag) {
             uint32_t lo=vu_rd_le32(g_vu1.mem+addr);
             uint32_t hi=vu_rd_le32(g_vu1.mem+addr+4u);
             uint32_t loops=lo&0x7fffu,mode=(hi>>26)&3u,nreg=hi>>28;
             if(!nreg)nreg=16u;
             uint32_t payload=mode==0u?loops*nreg:
                 mode==1u?(loops*nreg+1u)/2u:loops;
-            g_vu1.xgkick_packet_qwords=1u+payload;
-            g_vu1.xgkick_eop=!!(lo&0x8000u);
+            packet=1u+payload;
+            eop=!!(lo&0x8000u);
         }
         uint32_t take=flush?g_vu1.xgkick_ring_qwords:
             (uint32_t)(g_vu1.xgkick_cycle_credit/2u > g_vu1.xgkick_ring_qwords ?
                 g_vu1.xgkick_ring_qwords:g_vu1.xgkick_cycle_credit/2u);
-        if(take>g_vu1.xgkick_packet_qwords)take=g_vu1.xgkick_packet_qwords;
+        if(take>packet)take=packet;
         if(take>(VU1_MEM_SIZE-addr)/16u)take=(VU1_MEM_SIZE-addr)/16u;
         take=gif_try_process_quadwords(GIF_PATH_1,g_vu1.mem+addr,take);
-        if(!take)break; /* Backpressure retains live VU ring address. */
+        if(!take)break; /* Rejected tags remain live, including length/EOP. */
+        if(new_tag){g_vu1.xgkick_packet_qwords=packet;g_vu1.xgkick_eop=eop;}
         g_vu1.xgkick_addr=(addr+take*16u)&(VU1_MEM_SIZE-1u);
         g_vu1.xgkick_packet_qwords-=take;
         g_vu1.xgkick_ring_qwords-=take;

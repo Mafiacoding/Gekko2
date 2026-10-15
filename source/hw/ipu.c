@@ -19,7 +19,7 @@ int ipu_state_valid(const ipu_state_t *p)
  return p&&p->bp<128&&p->fp<=2&&p->in_head<8&&p->in_count<=8&&
  p->out_head<8&&p->out_count<=8&&p->busy<=1&&p->skip<=63&&
  p->pos<=1024&&p->blocks<=2047&&p->out_size<=1024&&
- !(p->out_size&15)&&p->out_pos<=p->out_size&&!(p->out_pos&15)&&p->th0<=511&&p->th1<=511&&p->mpeg.phase<=2&&p->mpeg.block<=6&&p->mpeg.index<=64&&p->mpeg.intra<=1&&p->mpeg.interlaced<=1&&p->mpeg.quant<=112&&p->mpeg.cbp<=63;
+ !(p->out_size&15)&&p->out_pos<=p->out_size&&!(p->out_pos&15)&&p->th0<=511&&p->th1<=511&&p->mpeg.phase<=2&&p->mpeg.block<=6&&p->mpeg.index<=64&&p->mpeg.intra<=1&&p->mpeg.interlaced<=1&&p->mpeg.quant<=112&&p->mpeg.cbp<=63&&p->mpeg.dc_precision<=3;
 }
 void ipu_restore(const ipu_state_t *p){if(ipu_state_valid(p)){s=*p;servicing=worker_pending=0;arm_worker_reset();}}
 void ipu_init(void){memset(&s,0,sizeof s);memset(&profile,0,sizeof profile);servicing=worker_pending=0;arm_worker_reset();}
@@ -97,7 +97,7 @@ static int run(void)
    if(!mba){s.pos=2;}
    else{
     advance(n);
-    if((mba&65535)>1&&(mba&65535)!=34)for(unsigned i=0;i<3;i++)s.mpeg.dc[i]=128<<((s.ctrl>>16)&3);
+    if((mba&65535)>1&&(mba&65535)!=34)for(unsigned i=0;i<3;i++)s.mpeg.dc[i]=128<<s.mpeg.dc_precision;
     if((mba&65535)>=34)return 1;
     s.pos=5;return 1;
    }
@@ -242,6 +242,10 @@ int ipu_mmio_write32(uint32_t addr,uint32_t value)
   if(((s.ctrl>>16)&3)==3)s.ctrl=(s.ctrl&~0x30000u)|0x10000u;
   if(value&0x40000000u){worker_pending=0;arm_worker_reset();s.ctrl&=0x07f33f00u;s.data=s.top=s.command=s.busy=s.bp=s.fp=0;
    s.in_head=s.in_count=s.out_head=s.out_count=s.skip=s.pos=s.blocks=s.out_pos=s.out_size=0;
+   /* Soft reset restores the default 8-bit intra DC predictors. Quantizer
+    * tables remain intact; nonzero precision retains its decoder history,
+    * matching the reference soft-reset rule rather than a full ipu_init. */
+   if(!s.mpeg.dc_precision)for(unsigned c=0;c<3;c++)s.mpeg.dc[c]=128;
    s.th0=s.th1=0;ee_intc_raise(8);}
  }
  return 1; /* BP/TOP/BUSY read-only. */
