@@ -79,3 +79,29 @@ DISPFB-Auswahl oder Syncfehlern erfordert jeweils andere Folgeuntersuchungen.
 Eine genaue EFB/XFB-Bildprüfung, Draw-Reject-Ursachen und ein vollständiger
 GS-Paketvergleich sind weiterhin offen. Keine bestätigte Blackscreenbehebung,
 Wii-Spielbarkeit oder FPS-Verbesserung. Batches 2–5 sind noch nicht umgesetzt.
+
+## Fortsetzung: geprüfte Software-Ausgabe und Transportzustand
+
+`gs_blit_scaled_psm_to_xfb_checked` verhindert eine konkret reproduzierte
+Fehlerfolge: fehlgeschlagenes GPU-Readback lieferte Nullpixel, die zuvor das
+XFB schwarz überschrieben. Vor dem ersten XFB-Schreibzugriff wird jetzt
+synchronisiert; bei Fehler bleibt das Ziel unverändert. Rückgabe: 1 kopiert,
+0 ungültige Eingabe, -1 Syncfehler. Die bisherige void-API bleibt als Wrapper.
+Die Software-Ausgabe löst einen ausstehenden GPU-Besitzer konservativ komplett
+auf; der zusätzliche Resolve-Aufwand ist auf Wii noch zu messen.
+
+`GS_PRESENT schema=1` trennt erfolgreiche Gastkopien von HUD/XFB-Updates,
+GX-/Software-Kopien sowie ungültigen Aufrufen/Syncfehlern. `GS_TRANSPORT
+schema=1` protokolliert vorhandene GIF-Arbiter-/FIFO-/PATH-Restzustände und
+VU1/XGKICK-Fortschritt ohne zusätzliche Emulationsschritte. PATH1-Aufrufe sind
+Fragmente, keine verifizierte Zahl vollständiger XGKICK-Pakete.
+
+Neue Regression `test_scanout_readback_failure`: 17 Checks PASS, darunter
+unverändertes XFB bei Fehler, genau ein Resolve-Versuch pro Aufruf,
+fehlgeschlagener void-Wrapper, erfolgreicher Retry mit tatsächlichen
+GPU-Quellbytes und keine erneuten Resolveraufrufe bei kohärenter VRAM.
+Die sechs bisherigen Host-Suites erneut ausgeführt: alle PASS.
+Wii-Cross-Build erneut PASS, ELF/DOL-Abgleich PASS, statisch **2.850.124 Bytes
+MEM1** frei. Neuer DOL-SHA-256:
+`2598c950497063dfc9d73efd2b6a63f06312537daeedbade35fba3f833983123`.
+Keine Wii-/Dolphin-Ausführung und weiterhin kein belegter Crash-E3-Fix.

@@ -179,6 +179,8 @@ static int g_hud_default = 0;
 static int g_hud_active;
 static int g_fps_default = 1;
 static uint64_t g_gx_attempts,g_gx_fallbacks;
+static uint64_t g_sw_attempts,g_sw_copies,g_sw_sync_failures,g_sw_invalid;
+static uint64_t g_xfb_updates,g_xfb_guest_copies,g_xfb_hud_updates;
 static int g_gx_present = 0; /* One experimental option enables output and supported primitive drawing. */
 static int g_gx_requested = 0;
 static uint32_t g_fps_milli,g_present_milli;
@@ -574,6 +576,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned long long)gs_gx_work_count(0),(unsigned long long)gs_gx_work_count(1),
             (unsigned long long)gs_gx_work_count(2),(unsigned long long)gs_gx_work_count(3),
             (unsigned long long)gs_gx_work_count(4));
+    fprintf(f,"GS_PRESENT schema=1 xfb_updates=%llu guest_copies=%llu hud_updates=%llu gx_copies=%llu sw_attempts=%llu sw_copies=%llu sw_sync_failures=%llu sw_invalid=%llu scope=submitted-XFB-not-hardware-display-proof\n",
+        (unsigned long long)g_xfb_updates,(unsigned long long)g_xfb_guest_copies,
+        (unsigned long long)g_xfb_hud_updates,(unsigned long long)(g_gx_attempts-g_gx_fallbacks),
+        (unsigned long long)g_sw_attempts,(unsigned long long)g_sw_copies,
+        (unsigned long long)g_sw_sync_failures,(unsigned long long)g_sw_invalid);
         fprintf(f,"GX_PIPELINE depth_hw=%llu depth_hybrid=%llu blend_hw=%llu blend_hybrid=%llu z32_split=%llu pabe_split=%llu\n",
         (unsigned long long)gs_gx_pipeline_count(0),(unsigned long long)gs_gx_pipeline_count(1),
         (unsigned long long)gs_gx_pipeline_count(2),(unsigned long long)gs_gx_pipeline_count(3),
@@ -617,6 +624,16 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long)gc->chcr,(unsigned long)gc->tadr,(unsigned long)gc->madr,
         (unsigned long)gc->qwc,(unsigned long)gc->last_error,(unsigned long)sp->madr,(unsigned long)sp->last_error);
     const gif_state_t *gif=gif_get_state();
+    const vu1_state_t *vu1=vu1_get_state();
+    fprintf(f,"GS_TRANSPORT schema=1 qwords=%llu path1_calls=%llu owner=%u pending=%u fifo=%u image_remaining=%lu,%lu,%lu vu1_running=%u vu1_tpc=%08lx vu1_pairs=%llu vu1_unknown=%llu kick_pending=%u kick_addr=%08lx kick_qwords=%lu kick_busy=%llu kick_deferred=%u kick_deferred_stalls=%llu\n",
+        (unsigned long long)gif->quadwords_seen,(unsigned long long)gif->gif_path1_transfers,
+        (unsigned)gif->arb_owner,(unsigned)gif->arb_pending,(unsigned)gif->fifo_count,
+        (unsigned long)gif->image_carry_path[0],(unsigned long)gif->image_carry_path[1],
+        (unsigned long)gif->image_carry_path[2],(unsigned)vu1->running,(unsigned long)vu1->tpc,
+        (unsigned long long)vu1->instructions_executed,(unsigned long long)vu1->unimplemented_opcodes_seen,
+        (unsigned)vu1->xgkick_pending,(unsigned long)vu1->xgkick_addr,
+        (unsigned long)vu1->xgkick_packet_qwords,(unsigned long long)vu1->xgkick_busy_stalls,
+        (unsigned)vu1->xgkick_deferred,(unsigned long long)vu1->xgkick_deferred_stalls);
     fprintf(f,"GS_STATE frame_psm=%lu prim=%lx prmode=%lx ac=%lu zcfg=%lu ate=%lu fbmask=%lx triangles=%llu sprites=%llu\n",
         (unsigned long)gif->frame_psm,(unsigned long)gif->prim,(unsigned long)gif->prmode,
         (unsigned long)gif->prmodecont_ac,(unsigned long)gif->zbuf_configured,(unsigned long)gif->ate,
@@ -1076,6 +1093,8 @@ static void run_real_boot_flow(void)
         g_first_picture=0;
         g_image_probe_attempts=0;
         g_gx_attempts=g_gx_fallbacks=0;
+        g_sw_attempts=g_sw_copies=g_sw_sync_failures=g_sw_invalid=0;
+        g_xfb_updates=g_xfb_guest_copies=g_xfb_hud_updates=0;
         gs_init();
         gs_mem_init();
         gs_mem_set_local_extended_conversion(g_extended_psm_option);
@@ -1230,6 +1249,7 @@ static void run_real_boot_flow(void)
         }
         gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
         if(present_due)VIDEO_WaitVSync();
+        int guest_copied=0;
         if (present_due && display_active && !show_hud) {
             uint64_t active_dispfb = en1 ? gs->dispfb1 : gs->dispfb2;
             uint32_t bp_words, bw_pixels;
@@ -1244,17 +1264,24 @@ static void run_real_boot_flow(void)
                     g_gx_attempts++;
                     gx_ok=gs_gx_present(xfb,rmode,bp_words,bw_pixels,sx,sy,sw,sh);
                     if(!gx_ok)g_gx_fallbacks++;
+                    if(gx_ok)guest_copied=1;
                 }
-                if(g_first_picture && !gx_ok)
-                    gs_blit_scaled_psm_to_xfb(xfb, rmode->fbWidth, blit_h,
+                if(g_first_picture && !gx_ok) {
+                    g_sw_attempts++;
+                    int copied=gs_blit_scaled_psm_to_xfb_checked(xfb, rmode->fbWidth, blit_h,
                                           bp_words, bw_pixels, sx, sy, sw, sh,
                                           (uint32_t)((active_dispfb>>15)&31u));
+                    if(copied>0){g_sw_copies++;guest_copied=1;}
+                    else if(copied<0)g_sw_sync_failures++;
+                    else g_sw_invalid++;
+                }
 
             }
         }
 
         if(present_due){
         if (show_hud || !display_active || !g_first_picture) {
+        g_xfb_hud_updates++;
         draw_boot_progress_hud(ee->instructions_executed, iop->instructions_executed,
                                 ee->halted, iop->halted, ee->halt_reason, iop->halt_reason,
                                 display_active);
@@ -1271,6 +1298,8 @@ static void run_real_boot_flow(void)
 
         if(g_fps_default && g_first_picture && !show_hud)draw_fps_overlay();
         flush_screen();
+        g_xfb_updates++;
+        if(guest_copied)g_xfb_guest_copies++;
         perf_presents++;last_present_ms=now_display_ms;last_present_events=current_events;
         last_present_quadwords=current_quadwords;last_dispfb=current_dispfb;last_display=current_display;
         last_pmode=gs->pmode;last_smode=gs->smode2;

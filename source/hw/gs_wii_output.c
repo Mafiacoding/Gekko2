@@ -140,19 +140,24 @@ static void gs_scaled_line(uint32_t *out,uint32_t dw,uint32_t bp,uint32_t bw,
         out[x/2]=gs_rgb8_pair_to_ycbcr(a,a>>8,a>>16,b,b>>8,b>>16);
     }
 }
-void gs_blit_scaled_psm_to_xfb(void *xfb,uint32_t dst_w,uint32_t dst_h,
+int gs_blit_scaled_psm_to_xfb_checked(void *xfb,uint32_t dst_w,uint32_t dst_h,
                                 uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,
                                 uint32_t sw,uint32_t sh,uint32_t psm)
 {
-    if(!xfb||!dst_w||!dst_h||!sw||!sh||(dst_w&1u)||
-       !(psm==0u||psm==1u||psm==2u||psm==10u))return;
+    if(!xfb||!dst_w||!dst_h||!bw||!sw||!sh||(dst_w&1u)||
+       sw>4096u||sh>2048u||sx>UINT32_MAX-sw||sy>UINT32_MAX-sh||
+       !(psm==0u||psm==1u||psm==2u||psm==10u))return 0;
+    /* A failed deferred readback returns zero from individual pixel reads.
+     * Resolve before the first XFB write so those zeros cannot overwrite
+     * the last valid image or be reported as a successful black scanout. */
+    if(!gs_mem_sync())return -1;
     uint32_t *out=(uint32_t*)xfb;
     /* Bounded 4KB line cache; unusual wider outputs retain the old path. */
     if(dst_w>1024u) {
         uint32_t fy=0,step=(sh<<16)/dst_h;
         for(uint32_t y=0;y<dst_h;y++,fy+=step)
             gs_scaled_line(out+y*(dst_w/2),dst_w,bp,bw,sx,sy+(fy>>16),sw,psm);
-        return;
+        return 1;
     }
     uint32_t rows[2][512],*a=rows[0],*b=rows[1];
     uint32_t ka=~0u,kb=~0u,step=(sh<<16)/dst_h;
@@ -172,6 +177,14 @@ void gs_blit_scaled_psm_to_xfb(void *xfb,uint32_t dst_w,uint32_t dst_h,
             out[y*(dst_w/2u)+x]=v;
         }
     }
+    return 1;
+}
+
+void gs_blit_scaled_psm_to_xfb(void *xfb,uint32_t dst_w,uint32_t dst_h,
+                                uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,
+                                uint32_t sw,uint32_t sh,uint32_t psm)
+{
+    (void)gs_blit_scaled_psm_to_xfb_checked(xfb,dst_w,dst_h,bp,bw,sx,sy,sw,sh,psm);
 }
 
 void gs_blit_scaled_psmct32_to_xfb(void *xfb,uint32_t dst_w,uint32_t dst_h,

@@ -66,6 +66,11 @@ uint32_t gs_scanout_read_rgb(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,uint3
 void gs_blit_scaled_psm_to_xfb(void *xfb,uint32_t dst_w,uint32_t dst_h,
                                uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,
                                uint32_t sw,uint32_t sh,uint32_t psm);
+/* Checked software presentation: 1 copied, 0 invalid input, -1 failed
+ * GPU synchronization. Failed calls leave XFB untouched. */
+int gs_blit_scaled_psm_to_xfb_checked(void *xfb,uint32_t dst_w,uint32_t dst_h,
+                               uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,
+                               uint32_t sw,uint32_t sh,uint32_t psm);
 int gs_display_has_rgb_psm(uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t sw,uint32_t sh,uint32_t psm);
 void gs_scanout_probe_rgb_psm(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
                               uint32_t w,uint32_t h,uint32_t psm,uint32_t stats[6]);
