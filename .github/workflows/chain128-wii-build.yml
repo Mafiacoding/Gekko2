@@ -1,0 +1,61 @@
+name: Gekko2 Chain128 Wii test build
+on:
+  push:
+    branches: [feature/chain128-wii-toggle]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host-toggle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test safe ON/OFF staging (feature built and absent)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for option in off on; do
+            flags=()
+            if [ "$option" = on ]; then flags=(-DGEKKO2_EE_CHAIN_RESIDENCY); fi
+            cc -std=c11 -Wall -Wextra -Werror -O2 -Iinclude "${flags[@]}" \
+              tests/test_chain128_runtime_toggle.c source/core/recompiler/optimization.c -o "/tmp/gekko2-chain128-$option"
+            "/tmp/gekko2-chain128-$option"
+          done
+  wii-cross-build:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitppc@sha256:4c919aa26151dd43d88ca28c922d1fe2409579a8ba60ef56517baf1abdfb1a48
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile experimental Wii DOL and verify memory
+        shell: bash
+        env:
+          DEVKITPRO: /opt/devkitpro
+          DEVKITPPC: /opt/devkitpro/devkitPPC
+        run: bash tools/build_chain128_toggle.sh
+      - name: Package Homebrew Channel files (no BIOS/game assets)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+          dol=Path("Gekko2-CHAIN128-TOGGLE.dol")
+          assert dol.is_file() and dol.stat().st_size>0
+          entries={"apps/gekko2/boot.dol": dol}
+          for path,dest in [("meta.xml","apps/gekko2/meta.xml"),("assets/branding/icon.png","apps/gekko2/icon.png")]:
+              p=Path(path)
+              if p.is_file(): entries[dest]=p
+          with zipfile.ZipFile("Gekko2-CHAIN128-TOGGLE-SD.zip","w",compression=zipfile.ZIP_DEFLATED) as f:
+              for dest,path in entries.items(): f.write(path,dest)
+          with zipfile.ZipFile("Gekko2-CHAIN128-TOGGLE-SD.zip") as f:
+              assert f.testzip() is None
+              assert f.read("apps/gekko2/boot.dol")==dol.read_bytes()
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Gekko2-Chain128-Experimental-Wii
+          path: |
+            Gekko2-CHAIN128-TOGGLE.dol
+            Gekko2-CHAIN128-TOGGLE-SD.zip
+          if-no-files-found: error
+          retention-days: 14
