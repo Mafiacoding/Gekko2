@@ -29,7 +29,7 @@ Framebufferwahl, JIT und Optimierungsflags bleiben unverändert.
 
 ## Reproduktion und tatsächlich ausgeführte Checks
 
-Host: GCC 12.2.0, mit dem vorhandenen `tools/build_host_core.py`:
+Host: GCC 14.2.0, mit dem vorhandenen `tools/build_host_core.py`:
 
 ```sh
 python3 tools/build_host_core.py test_scanout_grid_hash test_beta12_20_gx_alpha test_gx_pipeline_r1298 test_beta12_19_framebuffer16 test_beta12_18_scanout test_gs_display_scaling
