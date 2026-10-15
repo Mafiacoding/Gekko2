@@ -963,7 +963,7 @@ static ee_cached_chain_fn precise_chain_fn;
 static ee_cached_chain_fn precise_resident_chain_fn;
 /* One immutable map for this experimental build. Three complete 128-bit
  * argument registers; HI/LO/SA remain canonical unless a future profile
- * chooses their supported offsets instead. No saved frontend option changes. */
+ * chooses their supported offsets instead. Cold-boot switch is separately saved. */
 static const ppc_ee_chain_map precise_resident_map={
  {64,68,72,76,80,84,88,92,96,100,104,108},12,offsetof(ee_state_t,gpr_generation)};
 static uint64_t precise_resident_runs,precise_resident_retired,precise_resident_selected;
@@ -971,7 +971,7 @@ static uint64_t precise_resident_runs,precise_resident_retired,precise_resident_
 uint64_t ee_jit_get_chain_residency_stat(unsigned n)
 {
 #ifdef GEKKO2_EE_CHAIN_RESIDENCY
- return n==0?1u:n==1?precise_resident_runs:n==2?precise_resident_retired:n==3?precise_resident_selected:0;
+ return n==0?(uint64_t)gekko2_chain128_active():n==1?precise_resident_runs:n==2?precise_resident_retired:n==3?precise_resident_selected:0;
 #else
  (void)n;return 0;
 #endif
@@ -1387,7 +1387,7 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
 execute_slot:;
  int resident_chain=0;
 #ifdef GEKKO2_EE_CHAIN_RESIDENCY
- if(native_chain&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY)&&slot->count<=quantum_budget&&slot->count+2u<=budget){
+ if(gekko2_chain128_active()&&native_chain&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY)&&slot->count<=quantum_budget&&slot->count+2u<=budget){
   ee_precise_make_resident(slot);
   if(slot->resident_fn){ee_precise_make_resident_chain();resident_chain=precise_resident_chain_fn!=0;}
  }
