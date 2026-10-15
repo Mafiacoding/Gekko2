@@ -19,6 +19,8 @@
 static gif_state_t g_gif;
 const gif_state_t * const gif_scheduler_view = &g_gif;
 static uint64_t g_date_stats[2];
+static uint64_t g_signal_stalls;
+uint64_t gif_signal_stall_count(void){return g_signal_stalls;}
 uint64_t gif_date_stat(unsigned i){return i<2?g_date_stats[i]:0;}
 static int g_gx_opaque; /* CT24 GPU import preserves destination alpha. */
 static int g_texel_cache_enabled;
@@ -118,6 +120,7 @@ void gif_init(void)
     g_sprite_cached_draws=g_sprite_fast_rows=g_triangle_cached_draws=0;
     memset(g_draw_routes,0,sizeof(g_draw_routes));
     memset(g_date_stats,0,sizeof(g_date_stats));
+    g_signal_stalls=0;
     memset(g_gst,0,sizeof(g_gst));memset(g_gfb,0,sizeof(g_gfb));
     memset(g_gstate,0,sizeof(g_gstate));memset(g_gdeg,0,sizeof(g_gdeg));
     g_gstate_used=0;g_gstate_overflow=0;
@@ -2534,6 +2537,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * interrupt-controller wiring). */
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_sigid = (g_gif.siglblid_sigid & ~idmsk) | (id & idmsk);
+        gs_get_state()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
         if (gs_raise_event(0u)) ee_intc_raise(0); /* INTC_GS */
     } break;
     case GS_REG_FINISH:
@@ -2554,6 +2558,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * SIGLBLID.LBLID instead of SIGID. */
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_lblid = (g_gif.siglblid_lblid & ~idmsk) | (id & idmsk);
+        gs_get_state()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
     } break;
     case GS_REG_TEX2_1:
     case GS_REG_TEX2_2: {
@@ -3287,6 +3292,16 @@ uint32_t gif_try_process_quadwords(int path,const uint8_t *data,uint32_t qwc) {
            (path==GIF_PATH_3&&owner!=3u&&((g_gif.gif_mode&1u)||g_gif.arb_m3p||
             (g_gif.arb_pending&3u)))||
            (path==GIF_PATH_2&&owner!=2u&&(g_gif.arb_pending&1u)))break;
+        /* The synchronous consumer has no hidden borrowed-payload queue.
+         * Keep a second SIGNAL at its producer until CSR.SIGNAL is cleared.
+         * The entire qword is still unaccepted: DMA/VIF/VU may retry it
+         * without duplicate writes, lost parser position or a fake IRQ.
+         * A+D exists only in PACKED, one register per qword. */
+        const gif_register_carry_t *c=&g_gif.register_carry_path[path];
+        if(c->remaining&&c->mode==0u&&
+           regs_nibble(c->regs_lo,c->regs_hi,c->index)==GIF_REG_AD&&
+           (rd_le32(data+done*16u+8u)&255u)==GS_REG_SIGNAL&&
+           (gs_get_state()->csr&1u)) {g_signal_stalls++;break;}
         if(!owner||slice)g_gif.arb_owner=(uint8_t)(path+1);
         int tag=!g_gif.register_carry_path[path].remaining&&!g_gif.image_carry_path[path];
         if(tag)g_gif.arb_eop[path]=!!(data[done*16u+1u]&0x80u);

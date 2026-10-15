@@ -1229,6 +1229,8 @@ enum {
     GIF_GFB_GX_REJECTED, GIF_GFB_ALPHA_VARIES, GIF_GFB_COUNT
 };
 uint64_t gif_date_stat(unsigned index); /* tested, rejected */
+/* Production try-process backpressure calls on an uncleared second SIGNAL. */
+uint64_t gif_signal_stall_count(void);
 uint64_t gif_get_triangle_texture_cache_draws(void);
 uint64_t gif_get_gouraud_stat(unsigned index);
 uint64_t gif_get_gouraud_fallback(unsigned index);

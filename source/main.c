@@ -630,6 +630,8 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long)gc->qwc,(unsigned long)gc->last_error,(unsigned long)sp->madr,(unsigned long)sp->last_error);
     const gif_state_t *gif=gif_get_state();
     const vu1_state_t *vu1=vu1_get_state();
+    fprintf(f,"GIF_SIGNAL_STALL calls=%llu scope=unaccepted-producer-qword\n",
+        (unsigned long long)gif_signal_stall_count());
     fprintf(f,"GS_TRANSPORT schema=1 qwords=%llu path1_calls=%llu owner=%u pending=%u fifo=%u image_remaining=%lu,%lu,%lu vu1_running=%u vu1_tpc=%08lx vu1_pairs=%llu vu1_unknown=%llu kick_pending=%u kick_addr=%08lx kick_qwords=%lu kick_busy=%llu kick_deferred=%u kick_deferred_stalls=%llu\n",
         (unsigned long long)gif->quadwords_seen,(unsigned long long)gif->gif_path1_transfers,
         (unsigned)gif->arb_owner,(unsigned)gif->arb_pending,(unsigned)gif->fifo_count,
