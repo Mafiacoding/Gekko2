@@ -85,3 +85,9 @@ Vollständige DMA/SMC/TLB/ASID-/Eviction-/IRQ-Differentialabdeckung muss weiter
 wachsen, bevor eine Default-Aktivierung erwogen werden darf. Aktueller
 Codecache und vorbereitete Instruktionsgrenzen bleiben zwingend. Kein
 Nachweis der Crash-/Tekken-/GT3-Spielbarkeit.
+
+Abgeschlossene verlinkte Prüfung: `verify_chain_residency_linked.py` meldet
+`PASS 105 linked interpreter/native-residency complete EE/timer/display/IRQ comparisons; selected successors 126`.
+Budgets 1..128 inklusive Grenzwerten, unnotifizierte erste/innere Quellmutation,
+notifizierter innerer Write, Mapping-Generation und Compare-IRQ werden geprüft.
+Das bleibt synthetische PPC-Ausführung mit modellierten Plattformdiensten.
