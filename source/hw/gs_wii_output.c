@@ -219,3 +219,20 @@ void gs_scanout_probe_rgb_psm(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,uint
 
 void gs_scanout_probe_rgb(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,uint32_t w,uint32_t h,uint32_t stats[6])
 {gs_scanout_probe_rgb_psm(bp,bw,x,y,w,h,0u,stats);}
+
+int gs_scanout_grid_hash(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
+                         uint32_t w,uint32_t h,uint32_t psm,uint32_t *hash)
+{
+    *hash=0;
+    if(!bw||!w||!h||w>2048u||h>2048u||x>2048u-w||y>2048u-h||
+       !(psm==0u||psm==1u||psm==2u||psm==10u))return 0;
+    uint32_t failures=gs_mem_sync_failures(),v=2166136261u;
+    for(unsigned j=0;j<8;j++)for(unsigned i=0;i<8;i++) {
+        uint32_t c=gs_scanout_read_rgb(bp,bw,x+(w-1u)*i/7u,y+(h-1u)*j/7u,psm);
+        if(gs_mem_sync_failures()!=failures)return 0;
+        /* Explicit channel order makes fingerprints host-endian independent. */
+        for(unsigned b=0;b<24;b+=8)v=(v^((c>>b)&255u))*16777619u;
+    }
+    *hash=v;
+    return 1;
+}

@@ -490,6 +490,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long long)ee_runtime->instructions_executed,(unsigned)iop_runtime->idle,
         (unsigned)iop_runtime->halted,(unsigned long long)iop_runtime->sched_ticks);
     const gs_state_t *scanout=gs_get_state();const gif_state_t *draw_target=gif_get_state();
+    fprintf(f,"GS_DISPLAY_REGS schema=1 PMODE=%llx SMODE2=%llx DISPFB1=%llx DISPLAY1=%llx DISPFB2=%llx DISPLAY2=%llx BGCOLOR=%llx\n",
+        (unsigned long long)scanout->pmode,(unsigned long long)scanout->smode2,
+        (unsigned long long)scanout->dispfb1,(unsigned long long)scanout->display1,
+        (unsigned long long)scanout->dispfb2,(unsigned long long)scanout->display2,
+        (unsigned long long)scanout->bgcolor);
     uint64_t scanout_fb=(scanout->pmode&1u)?scanout->dispfb1:scanout->dispfb2;
     uint64_t scanout_display=(scanout->pmode&1u)?scanout->display1:scanout->display2;
     uint32_t scan_bp,scan_bw,scan_x,scan_y,scan_w,scan_h;
@@ -504,13 +509,23 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
      * Never substitute the other buffer: a legitimate black fade remains black. */
     if (g_first_picture && draw_target->fbp != scan_bp && draw_target->fbw) {
         uint32_t back_probe[6]={0};
-        gs_scanout_probe_rgb(draw_target->fbp,draw_target->fbw,0,0,
-                             scan_w<=640u?scan_w:640u,scan_h<=448u?scan_h:448u,back_probe);
+        gs_scanout_probe_rgb_psm(draw_target->fbp,draw_target->fbw,0,0,
+                             scan_w<=640u?scan_w:640u,scan_h<=448u?scan_h:448u,
+                             draw_target->frame_psm,back_probe);
         fprintf(f,"GS_BUFFER_COMPARE display_bp=%lu display_nonblack=%lu draw_bp=%lu draw_nonblack=%lu disp_size=%lux%lu\n",
           (unsigned long)scan_bp,(unsigned long)color_probe[5],
           (unsigned long)draw_target->fbp,(unsigned long)back_probe[5],
           (unsigned long)scan_w,(unsigned long)scan_h);
     }
+    uint32_t display_hash=0,draw_hash=0;
+    int display_valid=gs_scanout_grid_hash(scan_bp,scan_bw,scan_x,scan_y,scan_w,scan_h,
+                                           (uint32_t)((scanout_fb>>15)&31u),&display_hash);
+    int draw_valid=gs_scanout_grid_hash(draw_target->fbp,draw_target->fbw,0,0,
+                                       scan_w<=640u?scan_w:640u,scan_h<=448u?scan_h:448u,
+                                       draw_target->frame_psm,&draw_hash);
+    fprintf(f,"GS_GRID_HASH schema=1 display_valid=%d display_rgb=%08lx draw_valid=%d draw_rgb=%08lx draw_psm=%lu scope=8x8-sampled-RGB-not-full-frame\n",
+        display_valid,(unsigned long)display_hash,draw_valid,(unsigned long)draw_hash,
+        (unsigned long)draw_target->frame_psm);
     fprintf(f,"GS_PSM_CONVERT converted_pixels=%llu rejected_formats=%llu extended=%d\n",
         (unsigned long long)gs_mem_local_converted_pixels(),
         (unsigned long long)gs_mem_local_rejected_formats(),

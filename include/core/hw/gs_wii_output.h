@@ -69,4 +69,9 @@ void gs_blit_scaled_psm_to_xfb(void *xfb,uint32_t dst_w,uint32_t dst_h,
 int gs_display_has_rgb_psm(uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t sw,uint32_t sh,uint32_t psm);
 void gs_scanout_probe_rgb_psm(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
                               uint32_t w,uint32_t h,uint32_t psm,uint32_t stats[6]);
+/* Bounded 8x8 RGB fingerprint, not a full framebuffer hash. Returns zero
+ * on invalid geometry/PSM or failed GPU readback; hash is then zero.
+ * Uses the same grid as the color probe. Never hashes failed reads as black. */
+int gs_scanout_grid_hash(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
+                         uint32_t w,uint32_t h,uint32_t psm,uint32_t *hash);
 #endif
