@@ -1,12 +1,18 @@
+#include "core/hw/iop_spu2.h"
+#include "core/hw/spu2_mixer.h"
+#include "core/hw/rspu2_stream.h"
 /*
  * checkpoint.c - see include/core/checkpoint.h for full format/scope
  * notes and the leak-prevention/known-limitation citations.
  */
 #include "core/checkpoint.h"
+#include "core/hw/iop_sio2.h"
 #include "core/ee/ee_core.h"
+#include "core/recompiler/ee_jit.h" /* R1317 checkpoint source/mapping invalidation */
 #include "core/ee/ee_hle_thread.h"
 #include "core/iop/iop_core.h"
 #include "core/hw/dma.h"
+#include "core/hw/ipu.h"
 #include "core/hw/ee_intc.h"
 #include "core/hw/ee_sio.h"
 #include "core/hw/ee_timers.h"
@@ -33,6 +39,7 @@
 #include "core/hw/cdvd_config.h"
 
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -55,6 +62,7 @@ static int write_block(FILE *f, const char tag[4], const void *data, uint32_t si
 int checkpoint_save(const char *path)
 {
     if(!gs_mem_sync())return -1;
+    iop_spu2_sync_now();
     FILE *f = fopen(path, "wb");
     if (!f) return -1;
 
@@ -90,7 +98,7 @@ int checkpoint_save(const char *path)
      * buffer to zero because nothing ever wrote/read it. Saving it
      * here fixes that - draw counters and actual pixel content now
      * stay consistent across a save/resume boundary. */
-    if (write_block(f, "GSM0", gs_mem_get(), GS_MEM_SIZE) < 0) goto fail;
+    if (write_block(f, "GSM0", gs_mem_read_range(0,GS_MEM_SIZE), GS_MEM_SIZE) < 0) goto fail;
     if (write_block(f, "IDMA", iop_dma_get_state(), sizeof(*iop_dma_get_state())) < 0) goto fail;
     if (write_block(f, "IEXC", iop_excb_get_state(), sizeof(*iop_excb_get_state())) < 0) goto fail;
     if (write_block(f, "IBIO", iop_hle_bios_get_state(), sizeof(*iop_hle_bios_get_state())) < 0) goto fail;
@@ -217,6 +225,18 @@ int checkpoint_save(const char *path)
         for (unsigned n = 0; n < 8; n++) clock[n] = (unsigned char)(ticks >> (8u * n));
         if (write_block(f, "ECLK", clock, sizeof(clock)) < 0) goto fail;
     }
+    if (write_block(f,"IPUS",ipu_get_state(),sizeof(ipu_state_t))<0)goto fail;
+    {const rspu2_stream_state_t *stream=rspu2_stream_get_state();
+     if(write_block(f,"RSPU",stream,sizeof *stream)<0)goto fail;}
+    {iop_cdrom_legacy_checkpoint_t cdrom;iop_cdrom_legacy_checkpoint_save(&cdrom);
+     if(write_block(f,"CDRL",&cdrom,sizeof cdrom)<0)goto fail;}
+    {
+      uint32_t n=iop_spu2_snapshot_size();void *blob=malloc(n);if(!blob)goto fail;
+      iop_spu2_snapshot_save(blob);int result=write_block(f,"SPUS",blob,n);free(blob);
+      if(result<0||write_block(f,"SPUR",spu2_mixer_get_ram(),SPU2_MIXER_RAM_SIZE)<0)goto fail;
+    }
+    {uint8_t protocol[IOP_PAD_PROTOCOL_BYTES];iop_sio2_pad_protocol_save(protocol);
+     if(write_block(f,"PADP",protocol,sizeof protocol)<0)goto fail;}
     if (write_block(f, "END0", NULL, 0) < 0) goto fail;
 
     fclose(f);
@@ -248,6 +268,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
                      const bios_image_t *iop_bios, const char *iso_path)
 {
     if(!gs_mem_sync())return -1;
+    iop_spu2_sync_now();
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
 
@@ -264,6 +285,8 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     iop_state_t *iop_scratch = malloc(sizeof(iop_state_t));
     uint8_t *era_scratch = malloc(EE_RAM_SIZE_CKPT);
     uint8_t *ira_scratch = malloc(IOP_RAM_SIZE_CKPT);
+    uint8_t *spu_ram_scratch=NULL;
+    uint8_t *spu_state_scratch=malloc(iop_spu2_snapshot_size());
     uint8_t *gsm_scratch = malloc(GS_MEM_SIZE); /* Round 649: gs_mem.c's 4MB pixel/texture buffer - see checkpoint_save()'s citation */
     /* Peripheral scratch buffers - sized generously; read_block()
      * rejects any on-disk block that doesn't fit, so a mismatched
@@ -274,7 +297,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     uint8_t heap_blob[1 << 20];
     uint32_t era_size = 0, ira_size = 0, eeth_size = 0, heap_size = 0, gsm_size = 0;
 
-    if (!ee_scratch || !iop_scratch || !era_scratch || !ira_scratch || !gsm_scratch) goto fail_alloc;
+    if (!ee_scratch || !iop_scratch || !era_scratch || !ira_scratch || !gsm_scratch || !spu_state_scratch) goto fail_alloc;
 
     char tag[4]; uint32_t size; int rc;
 
@@ -285,18 +308,26 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
         } while (0)
 
     uint32_t discard_size;
+    memset(ee_scratch,0,sizeof(*ee_scratch));
     EXPECT("EES1", ee_scratch, sizeof(ee_state_t), &discard_size);
+    if(discard_size<=((offsetof(ee_state_t,vu0_timing)+7u)&~7u))memset(&ee_scratch->vu0_timing,0,sizeof(ee_scratch->vu0_timing));
     EXPECT("ERAM", era_scratch, EE_RAM_SIZE_CKPT, &era_size);
     EXPECT("IOPS", iop_scratch, sizeof(iop_state_t), &discard_size);
     EXPECT("IRAM", ira_scratch, IOP_RAM_SIZE_CKPT, &ira_size);
-    EXPECT("DMA0", generic, sizeof(generic), &size); memcpy(dma_get_state(), generic, size);
+    EXPECT("DMA0", generic, sizeof(generic), &size);
+    if(size!=sizeof(dma_state_t)&&size!=offsetof(dma_state_t,vif_tag_pending)&&size!=offsetof(dma_state_t,gif_tag_pending)&&size!=offsetof(dma_state_t,gif_tag_pending)-8u)goto fail_close;
+    memset(dma_get_state(),0,sizeof(dma_state_t));memcpy(dma_get_state(),generic,size);
     EXPECT("EINT", generic, sizeof(generic), &size); memcpy(ee_intc_get_state(), generic, size);
     EXPECT("ESIO", generic, sizeof(generic), &size); memcpy(ee_sio_get_state(), generic, size);
     EXPECT("ETMR", generic, sizeof(generic), &size); { ee_timers_state_t timers;ee_timers_snapshot(&timers);memcpy(&timers,generic,size);ee_timers_restore(&timers); }
     EXPECT("GIF0", generic, sizeof(generic), &size);
-    if(size!=sizeof(*gif_get_state()) && size!=sizeof(*gif_get_state())-sizeof(uint64_t))goto fail_close;
+    uint32_t old_gif_size=offsetof(gif_state_t,image_eop_path);
+    if(size!=sizeof(*gif_get_state()) && size!=offsetof(gif_state_t,gif_q_bits) && size!=offsetof(gif_state_t,arb_owner) && size!=((offsetof(gif_state_t,arb_owner)+7u)&~7u) && size!=old_gif_size &&
+       size!=old_gif_size-sizeof(uint64_t))goto fail_close;
+    memset(gif_get_state(),0,sizeof(*gif_get_state()));
     memcpy(gif_get_state(),generic,size);
-    if(size!=sizeof(*gif_get_state())) {
+    if(size<=offsetof(gif_state_t,gif_q_bits))gif_get_state()->gif_q_bits=UINT32_C(0x3f800000);
+    if(size==old_gif_size-sizeof(uint64_t)) {
         gif_state_t *gif=gif_get_state();
         gif->sprite_pos16=(uint64_t)(uint32_t)(gif->v0x*16)
             |((uint64_t)(uint32_t)(gif->v0y*16)<<32);
@@ -351,9 +382,18 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
         if (size != sifx_cap) goto fail_close; /* struct-layout mismatch - fail safely, per this file's own documented contract */
         memcpy(sifx_dest, generic, size);
     }
-    EXPECT("VIF0", generic, sizeof(generic), &size); if (size != sizeof(*vif0_get_state())) goto fail_close; memcpy(vif0_get_state(), generic, size);
-    EXPECT("VIF1", generic, sizeof(generic), &size); if (size != sizeof(*vif1_get_state())) goto fail_close; memcpy(vif1_get_state(), generic, size);
-    EXPECT("VU10", generic, sizeof(generic), &size); memcpy(vu1_get_state(), generic, size);
+    EXPECT("VIF0", generic, sizeof(generic), &size); if (size != sizeof(*vif0_get_state()) && size != offsetof(vif_state_t,direct_sent_words) && size != ((offsetof(vif_state_t,direct_sent_words)+7u)&~7u)) goto fail_close; memset(vif0_get_state(),0,sizeof(*vif0_get_state())); memcpy(vif0_get_state(), generic, size); if(size<sizeof(vif_state_t))vif0_get_state()->direct_sent_words=vif0_get_state()->direct_hl=0;
+    EXPECT("VIF1", generic, sizeof(generic), &size); if (size != sizeof(*vif1_get_state()) && size != offsetof(vif_state_t,direct_sent_words) && size != ((offsetof(vif_state_t,direct_sent_words)+7u)&~7u)) goto fail_close; memset(vif1_get_state(),0,sizeof(*vif1_get_state())); memcpy(vif1_get_state(), generic, size); if(size<sizeof(vif_state_t))vif1_get_state()->direct_sent_words=vif1_get_state()->direct_hl=0;
+    EXPECT("VU10", generic, sizeof(generic), &size);
+    if(size>sizeof(*vu1_get_state()))goto fail_close;
+    memset(vu1_get_state(),0,sizeof(*vu1_get_state()));
+    memcpy(vu1_get_state(), generic, size);
+    if(size<=((offsetof(vu1_state_t,timing)+7u)&~7u))memset(&vu1_get_state()->timing,0,sizeof(vu1_get_state()->timing));
+    if(size<=offsetof(vu1_state_t,xgkick_last_cycle) && vu1_get_state()->xgkick_pending) {
+        vu1_get_state()->xgkick_ring_qwords=VU1_MEM_SIZE/16u;
+        vu1_get_state()->xgkick_cycle_credit=1u;
+        vu1_get_state()->xgkick_last_cycle=vu1_get_state()->pipeline.cycle;
+    }
     EXPECT("EETH", eeth_blob, sizeof(eeth_blob), &eeth_size);
     EXPECT("IHP1", heap_blob, sizeof(heap_blob), &heap_size);
 
@@ -363,9 +403,27 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     ee_irq_checkpoint_t irq = {0, 0};
     uint64_t display_ticks = 0; /* Old snapshots have no recoverable independent phase. */
     uint8_t config[CDVD_CONFIG_SNAPSHOT_SIZE]={0};
+    ipu_state_t ipu={0};
+    static rspu2_stream_state_t stream;memset(&stream,0,sizeof stream);
+    iop_cdrom_legacy_checkpoint_t cdrom={0};
+    uint8_t protocol[IOP_PAD_PROTOCOL_BYTES]={0};
     unsigned seen = 0;
     for (;;) {
-        unsigned char extra[CDVD_CONFIG_SNAPSHOT_SIZE];
+        static unsigned char extra[sizeof(rspu2_stream_state_t)>sizeof(ipu_state_t)?sizeof(rspu2_stream_state_t):sizeof(ipu_state_t)];
+        long sound_pos=ftell(f);char sound_tag[4];
+        if(sound_pos<0||fread(sound_tag,1,4,f)!=4||fseek(f,sound_pos,SEEK_SET))goto fail_close;
+        if(!memcmp(sound_tag,"SPUR",4)){
+          if(seen&128u)goto fail_close;
+          spu_ram_scratch=malloc(SPU2_MIXER_RAM_SIZE);if(!spu_ram_scratch)goto fail_close;
+          rc=read_block(f,tag,spu_ram_scratch,SPU2_MIXER_RAM_SIZE,&size);
+          if(rc!=1||size!=SPU2_MIXER_RAM_SIZE)goto fail_close;seen|=128u;continue;
+        }
+        if(!memcmp(sound_tag,"SPUS",4)){
+          if(seen&256u)goto fail_close;
+          rc=read_block(f,tag,spu_state_scratch,iop_spu2_snapshot_size(),&size);
+          if(rc!=1||size!=iop_spu2_snapshot_size()||!iop_spu2_snapshot_valid(spu_state_scratch,iop_scratch->sched_ticks,ira_size))goto fail_close;
+          seen|=256u;continue;
+        }
         rc = read_block(f, tag, extra, sizeof(extra), &size);
         if (rc <= 0) break;
         if (memcmp(tag, "EEPD", 4) == 0 && !(seen & 1u) && size == sizeof(pad)) {
@@ -380,10 +438,22 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
         } else if (memcmp(tag,"CNFG",4)==0 && !(seen&8u) && size==sizeof config) {
             if(!cdvd_config_snapshot_valid(extra))goto fail_close;
             memcpy(config,extra,sizeof config);seen|=8u;
+        } else if(memcmp(tag,"IPUS",4)==0&&!(seen&16u)&&size==sizeof ipu){
+            memcpy(&ipu,extra,sizeof ipu);if(!ipu_state_valid(&ipu))goto fail_close;seen|=16u;
+        } else if(memcmp(tag,"RSPU",4)==0&&!(seen&32u)&&size==sizeof stream){
+            memcpy(&stream,extra,sizeof stream);if(!rspu2_stream_state_valid(&stream))goto fail_close;seen|=32u;
+        } else if(memcmp(tag,"CDRL",4)==0&&!(seen&64u)&&size==sizeof cdrom){
+            memcpy(&cdrom,extra,sizeof cdrom);if(!iop_cdrom_legacy_checkpoint_valid(&cdrom))goto fail_close;seen|=64u;
+        } else if(memcmp(tag,"PADP",4)==0&&!(seen&512u)&&size==sizeof protocol){
+            if(!iop_sio2_pad_protocol_valid(extra))goto fail_close;
+            memcpy(protocol,extra,sizeof protocol);seen|=512u;
         } else goto fail_close;
     }
     if (rc != 0 || memcmp(tag, "END0", 4) != 0 || size != 0u) goto fail_close;
 
+    if(!!(seen&128u)!=!!(seen&256u))goto fail_close;
+    if((seen&64u)&&cdrom.disc_mounted){iso_image_t probe;
+        if(!iso_path||iso_open(iso_path,&probe))goto fail_close;iso_close(&probe);}
     fclose(f);
 
     /* All blocks read and size-validated - now safe to apply. Order
@@ -403,6 +473,9 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     ee->ram = era_scratch; /* ownership transferred - this becomes the live EE RAM buffer */
     ee->ram_size = era_size;
     ee->bios = ee_bios;
+    /* R1317: process-local precise JIT stamps are not checkpoint state. */
+    ee_jit_notify_physical_write(0u, ee->ram_size);
+    ee_jit_notify_mapping_change();
     iop->ram = ira_scratch; /* ownership transferred - live IOP RAM buffer */
     iop->ram_size = ira_size;
     iop->bios = iop_bios;
@@ -412,12 +485,19 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     iop_dma_bind_iop_ram(iop->ram, iop->ram_size);
     ee_core_rebind_dma_sinks();
     ee_core_pad_checkpoint_load(&pad);
+    if(seen&512u)iop_sio2_pad_protocol_load(protocol);
     ee_core_irq_checkpoint_load(&irq);
     ee_core_display_clock_load(display_ticks);
     cdvd_config_snapshot_load(config);
+    ipu_restore(&ipu);
+    rspu2_stream_checkpoint_load(&stream);
+    if(seen&256u){iop_spu2_snapshot_load(spu_state_scratch);memcpy(spu2_mixer_get_ram(),spu_ram_scratch,SPU2_MIXER_RAM_SIZE);}
+    else iop_spu2_restore_legacy(iop->sched_ticks);
+    free(spu_ram_scratch);free(spu_state_scratch);
     system_rebind_iop_bridge();
     if (iso_path) {
-        iop_cdrom_legacy_rebind_iso(iso_path);
+        if(!(seen&64u)||cdrom.disc_mounted)iop_cdrom_legacy_rebind_iso(iso_path);
+        else iop_cdrom_legacy_unmount_iso();
         iop_cdvd_rebind_iso(iso_path);
     }
 
@@ -426,8 +506,9 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
         ee_hle_thread_get_checkpoint_blob(&blob, &blob_cap);
         if (blob_cap == eeth_size) memcpy(blob, eeth_blob, eeth_size);
     }
+    if(seen&64u)iop_cdrom_legacy_checkpoint_load(&cdrom);
     iop_heap_snapshot_load(heap_blob, heap_size);
-    if (gsm_size == GS_MEM_SIZE) memcpy(gs_mem_get(), gsm_scratch, GS_MEM_SIZE); /* Round 649 */
+    if (gsm_size == GS_MEM_SIZE && !gs_mem_write_range(0,gsm_scratch,GS_MEM_SIZE)) goto fail_alloc;
     free(gsm_scratch);
 
     #undef EXPECT
@@ -441,5 +522,6 @@ fail_alloc:
     free(era_scratch);
     free(ira_scratch);
     free(gsm_scratch);
+    free(spu_ram_scratch);free(spu_state_scratch);
     return -1;
 }

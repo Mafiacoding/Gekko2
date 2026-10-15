@@ -37,7 +37,7 @@ static void write_loud_block(uint8_t *ram, uint32_t byte_addr, uint8_t flags)
 
 static void set_ssa(int core, int voice, uint32_t byte_addr)
 {
-    uint32_t units = byte_addr / 8u;
+    uint32_t units = byte_addr / 2u;
     iop_spu2_mmio_write16(iop_spu2_voice_addr_reg_addr(core, voice, SPU2_VA_SSA_HI),
                            (uint16_t)(units >> 16));
     iop_spu2_mmio_write16(iop_spu2_voice_addr_reg_addr(core, voice, SPU2_VA_SSA_LO),
@@ -64,6 +64,15 @@ int main(void)
     iop_spu2_init();
     uint8_t *ram = spu2_mixer_get_ram();
 
+    for(int c=0;c<2;c++){
+      iop_spu2_mmio_write32(iop_spu2_core_reg_addr(c,SPU2_C_VMIXL),0xffffffu);
+      iop_spu2_mmio_write32(iop_spu2_core_reg_addr(c,SPU2_C_VMIXR),0xffffffu);
+      iop_spu2_mmio_write16(iop_spu2_core_reg_addr(c,SPU2_C_MMIX),0xc0cu);
+      iop_spu2_mmio_write16(IOP_SPU2_BASE+SPU2_S_MVOLL+c*0x28u,0x3fff);
+      iop_spu2_mmio_write16(IOP_SPU2_BASE+SPU2_S_MVOLR+c*0x28u,0x3fff);
+    }
+    iop_spu2_mmio_write16(IOP_SPU2_BASE+SPU2_S_EXTVOLL+0x28u,0x7fff);
+    iop_spu2_mmio_write16(IOP_SPU2_BASE+SPU2_S_EXTVOLR+0x28u,0x7fff);
     /* ---- Test A: silence before any KON ---- */
     int16_t buf[64 * 2];
     spu2_mixer_render_frames(buf, 8);
@@ -117,8 +126,8 @@ int main(void)
 
     /* ---- Test D: voice 1, self-looping block (flags=0x07: LoopStart+
      * LoopEnd+LoopRepeat), verify KOFF drives Release down to silence ---- */
-    write_loud_block(ram, 0x1000, 0x07);
-    set_ssa(0, 1, 0x1000);
+    write_loud_block(ram, 0x10000, 0x07);
+    set_ssa(0, 1, 0x10000);
     set_fast_adsr(0, 1);
     iop_spu2_mmio_write16(iop_spu2_voice_reg_addr(0, 1, SPU2_V_VOLL), 0x3FFF);
     iop_spu2_mmio_write16(iop_spu2_voice_reg_addr(0, 1, SPU2_V_VOLR), 0x3FFF);

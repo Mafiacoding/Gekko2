@@ -1,3 +1,17 @@
+#include "build_version.h"
+#ifdef GEKKO
+#include <gccore.h>
+#include <ogc/lwp_watchdog.h>
+#endif
+#include "core/hw/arm_ram.h"
+#include "core/recompiler/ee_block_policy.h"
+#include "core/hw/rspu2_stream.h"
+#include "core/recompiler/dsi_fastmem.h"
+#include "core/runtime_profile.h"
+#include "core/recompiler/dynarec_config.h"
+#ifdef GEKKO2_EE_AOT
+#include "core/recompiler/ee_aot.h"
+#endif
 #include "core/hw/guest_endian.h"
 /*
  * ee_core.c - R5900 (Emotion Engine) interpreter
@@ -114,6 +128,7 @@
 #include "core/recompiler/vu_jit.h"
 #include "core/ee/ee_hle_thread.h"
 #include "core/hw/dma.h"
+#include "core/hw/graphics_scheduler.h"
 #include "core/hw/ee_intc.h"
 #include "core/hw/ee_sio.h"
 #include "core/hw/ee_timers.h" /* Round 87 (127th finding) */
@@ -208,6 +223,14 @@ static uint32_t ee_sif_sysreg[3];
 #define EE_RAM_SIZE (32 * 1024 * 1024)
 
 static ee_state_t g_state;
+static uint64_t native_window_stats[4],vu_window_accesses[4],cpu_fifo_writes[3];
+uint32_t ee_native_window_memory[GEKKO2_EE_MAX_BLOCK_WORDS];
+/* Boot-scoped one-shots must survive pause, but never a fresh RAM image. */
+static struct {
+ int selfloop,fastboot,escalation;
+ uint64_t carousel_next;
+ unsigned carousel_sequence;
+} g_boot_once;
 
 /* R1189 diagnostics live outside ee_state_t to preserve JIT layout offsets. */
 static uint64_t r1189_exc_count, r1189_nested_count, r1189_eret_count;
@@ -475,8 +498,56 @@ ee_state_t *ee_core_get_state(void) { return &g_state; }
  * (see ee_raise_exception()/ee_raise_tlb_exception() and their call
  * sites in the ee_mem_read* / ee_mem_write* functions below), matching
  * real hardware instead of the old "just read as zero" placeholder. */
+/* Positive RAM-only translation cache. Architectural mapping writers notify
+ * before the next access. The live selected tuple and ASID are also checked
+ * so permission changes never survive a stale entry. No fault/MMIO caching. */
+typedef struct {
+ const ee_state_t *owner;
+ uint32_t epoch,vpage,asid,physical,lo,index;
+ uint32_t page_mask,entry_hi,entry_lo0,entry_lo1;
+} ee_fastmem_page;
+static ee_fastmem_page ee_fastmem_pages[128];
+static uint32_t ee_fastmem_epoch=1u;
+#ifdef GEKKO2_SPEED_STUB
+/* SPEED3: positive KUSEG load table for the generated memory stub:
+ * 256 direct-mapped {tag=vpage|1, physical page} pairs, cleared with every
+ * mapping change (TLBWI/TLBWR/TLBR/EntryHi notify ee_fastmem_invalidate). */
+uint32_t ee_quiet_tlb[512];
+uint64_t ee_quiet_tlb_fills;
+extern uint32_t ee_quiet_left;
+#endif
+static uint64_t ee_fastmem_stats[3];
+void ee_fastmem_invalidate(void)
+{
+#ifdef GEKKO2_SPEED_STUB
+ ee_quiet_left=0;
+ memset(ee_quiet_tlb,0,sizeof(ee_quiet_tlb));
+#endif
+ if(++ee_fastmem_epoch==0u){memset(ee_fastmem_pages,0,sizeof(ee_fastmem_pages));ee_fastmem_epoch=1u;}
+ ee_fastmem_stats[2]++;
+}
+uint64_t ee_fastmem_stat(unsigned n){return n<3u?ee_fastmem_stats[n]:0;}
 static inline int ee_tlb_translate_selected(const ee_state_t *st, uint32_t vaddr, uint32_t *out_phys, uint32_t *out_lo)
 {
+    uint32_t vpage=vaddr&~0xfffu;
+    uint32_t asid=st->cop0[10]&0xffu;
+    ee_fastmem_page *cached=NULL;
+    if(gekko2_opt_enabled(GEKKO2_OPT_FASTMEM)) {
+        /* Mix upper page bits: common 0x200000 code / 0x300000 data
+         * must not evict each other on every fetch/load. */
+        cached=&ee_fastmem_pages[((vpage>>12)^(vpage>>19)^asid)&127u];
+        if(cached->owner==st&&cached->epoch==ee_fastmem_epoch&&cached->vpage==vpage&&cached->asid==asid) {
+            unsigned i=cached->index;
+            if(st->tlb[i].page_mask==cached->page_mask&&st->tlb[i].entry_hi==cached->entry_hi&&
+               st->tlb[i].entry_lo0==cached->entry_lo0&&st->tlb[i].entry_lo1==cached->entry_lo1&&
+               st->ram&&st->ram_size>=4096u&&cached->physical<=st->ram_size-4096u) {
+                *out_phys=cached->physical|(vaddr&0xfffu);
+                if(out_lo)*out_lo=cached->lo;
+                ee_fastmem_stats[0]++;return 1;
+            }
+        }
+        ee_fastmem_stats[1]++;
+    }
     uint32_t want_vpn2 = (vaddr >> 13) & 0x7FFFFu;
     uint32_t want_asid = st->cop0[10] & 0xFFu; /* current ASID = current EntryHi's ASID field */
     for (uint32_t i = 0; i < 48; i++) {
@@ -539,18 +610,30 @@ static inline int ee_tlb_translate_selected(const ee_state_t *st, uint32_t vaddr
             while (doubling > 1u) { page_select_bit++; doubling >>= 1; }
         }
         uint32_t lo = (vaddr & (1u << page_select_bit)) ? st->tlb[i].entry_lo1 : st->tlb[i].entry_lo0;
+        if (out_lo) *out_lo = lo;
+        /* EntryLo.V is architectural: a matching VPN/ASID with V=0 is
+         * TLB Invalid, not a refill miss.  The caller must preserve that
+         * distinction because Invalid vectors through the general exception
+         * vector while a true miss uses the refill vector. */
+        if (!(lo & 0x2u))
+            return 2;
         uint32_t pfn = (lo >> 6) & 0xFFFFFu;
         uint32_t phys_page = (pfn & ~mask) << 12;
         uint32_t offset_mask = (1u << page_select_bit) - 1u;
         *out_phys = phys_page | (vaddr & offset_mask);
-        if (out_lo) *out_lo = lo;
+        uint32_t physical=*out_phys&~0xfffu;
+        if(cached&&st->ram&&st->ram_size>=4096u&&physical<32u*1024u*1024u&&
+           physical<=st->ram_size-4096u&&!(vaddr>=0x70000000u&&vaddr<0x70004000u)) {
+            *cached=(ee_fastmem_page){st,ee_fastmem_epoch,vpage,asid,physical,lo,i,
+                st->tlb[i].page_mask,st->tlb[i].entry_hi,st->tlb[i].entry_lo0,st->tlb[i].entry_lo1};
+        }
         return 1;
     }
     return 0;
 }
 
 static inline int ee_tlb_translate(ee_state_t *st,uint32_t addr,uint32_t *phys)
-{return ee_tlb_translate_selected(st,addr,phys,NULL);}
+{return ee_tlb_translate_selected(st,addr,phys,NULL)==1;}
 
 
 /* MIPS/R5900 exception codes (Cause register ExcCode field, bits
@@ -588,12 +671,12 @@ static inline int ee_tlb_translate(ee_state_t *st,uint32_t addr,uint32_t *phys)
  * exception override) for whenever a future change raises a different
  * ExcCode (COP unusable, overflow, address error, etc. are all still
  * unraised - see the coverage notes at the top of this file). */
-static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_pc, int in_delay_slot)
+static void ee_raise_exception_ex(ee_state_t *st, uint32_t exc_code, uint32_t this_pc, int in_delay_slot, int tlb_refill)
 {
     r1189_exc_count++; if (st->cop0[12] & 0x2u) r1189_nested_count++;
     uint32_t offset;
-    if (exc_code == EE_EXC_CODE_TLBL || exc_code == EE_EXC_CODE_TLBS)
-        offset = 0x000u; /* TLB Refill vector */
+    if (tlb_refill && (exc_code == EE_EXC_CODE_TLBL || exc_code == EE_EXC_CODE_TLBS))
+        offset = 0x000u; /* TLB Refill vector: only a true lookup miss */
     else if (exc_code == EE_EXC_CODE_INT)
         offset = 0x200u; /* Interrupt vector */
     else
@@ -602,9 +685,13 @@ static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_
     /* Cause: clear ExcCode (bits 2-6) and BD (bit 31), then set both -
      * other bits (e.g. the CE coprocessor-number field) are left
      * alone, matching real hardware/PCSX2. */
-    st->cop0[13] = (st->cop0[13] & ~(0x7Cu | 0x80000000u)) | (exc_code & 0x7Cu);
+    /* A nested exception updates ExcCode, but EPC and Cause.BD belong to
+     * the original exception until ERET.  Only an entry with EXL=0 may
+     * replace BD (the saved branch-delay context). */
+    int first_level = !(st->cop0[12] & 0x2u);
+    st->cop0[13] = (st->cop0[13] & ~(0x7Cu | (first_level ? 0x80000000u : 0u))) | (exc_code & 0x7Cu);
 
-    if (!(st->cop0[12] & 0x2u)) { /* Status.EXL == 0: not already inside a handler */
+    if (first_level) { /* Status.EXL == 0: not already inside a handler */
         st->cop0[12] |= 0x2u; /* Status.EXL = 1 */
         if (in_delay_slot) {
             st->cop0[14] = this_pc - 4u; /* EPC = the branch itself, not the delay slot */
@@ -629,6 +716,14 @@ static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_
     uint32_t base = (st->cop0[12] & 0x00400000u) ? 0xBFC00200u : 0x80000000u;
     st->pc = base + offset;
     st->next_pc = st->pc + 4u;
+    /* The exception discards the guest branch in flight; its delay slot
+     * must never be replayed at the exception vector. */
+    st->branch_pending = 0;
+}
+
+static void ee_raise_exception(ee_state_t *st, uint32_t exc_code, uint32_t this_pc, int in_delay_slot)
+{
+    ee_raise_exception_ex(st,exc_code,this_pc,in_delay_slot,0);
 }
 
 void ee_core_raise_trap(ee_state_t *st)
@@ -670,7 +765,7 @@ static uint32_t r1252_fault[112];
 void ee_core_get_r1252_fault(uint32_t out[112])
 { if (out) memcpy(out, r1252_fault, sizeof(r1252_fault)); }
 
-static void ee_raise_tlb_exception(ee_state_t *st, int is_store, uint32_t vaddr, uint32_t this_pc, int in_delay_slot)
+static void ee_raise_tlb_exception(ee_state_t *st, int is_store, uint32_t vaddr, uint32_t this_pc, int in_delay_slot, uint8_t fault)
 {
     if (st->exc_raised_this_step)
         return;
@@ -703,7 +798,11 @@ static void ee_raise_tlb_exception(ee_state_t *st, int is_store, uint32_t vaddr,
     st->cop0[4]  = (st->cop0[4] & 0xFF80000Fu) | ((vaddr >> 9) & 0x007FFFF0u); /* Context */
     st->cop0[10] = (vaddr & 0xFFFFE000u) | (st->cop0[10] & 0x1FFFu); /* EntryHi */
 
-    ee_raise_exception(st, is_store ? EE_EXC_CODE_TLBS : EE_EXC_CODE_TLBL, this_pc, in_delay_slot);
+    if (fault == EE_TLB_FAULT_MODIFIED)
+        ee_raise_exception_ex(st, 1u << 2, this_pc, in_delay_slot, 0); /* TLB Modified */
+    else
+        ee_raise_exception_ex(st, is_store ? EE_EXC_CODE_TLBS : EE_EXC_CODE_TLBL,
+                              this_pc, in_delay_slot, fault == EE_TLB_FAULT_MISS);
 }
 
 #define EE_CAUSE_IP7  0x00008000u /* Cause register: latched timer-interrupt pending bit */
@@ -849,7 +948,7 @@ static void ee_irq_tick(void)
 }
 static void ee_latch_intc_interrupt(ee_state_t *st)
 {
-    if (ee_intc_pending()) {
+    if (ee_intc_pending_fast()) {
         st->cop0[13] |= EE_CAUSE_IP2;
         if (!g_ee_irq.intc_armed) {
             g_ee_irq.intc_armed = 1;
@@ -861,7 +960,7 @@ static void ee_latch_intc_interrupt(ee_state_t *st)
     }
 }
 
-static void ee_check_intc_interrupt(ee_state_t *st, uint32_t this_pc)
+static void ee_check_intc_interrupt_latched(ee_state_t *st, uint32_t this_pc)
 {
     const uint32_t IE  = 0x00000001u;
     const uint32_t EXL = 0x00000002u;
@@ -898,7 +997,6 @@ static void ee_check_intc_interrupt(ee_state_t *st, uint32_t this_pc)
      * ee_latch_timer_interrupt()'s own already-established pattern of
      * updating its bit unconditionally on every step, independent of
      * whether ee_check_timer_interrupt() goes on to actually raise). */
-    ee_latch_intc_interrupt(st);
 
     if (st->exc_raised_this_step)
         return;
@@ -915,6 +1013,11 @@ static void ee_check_intc_interrupt(ee_state_t *st, uint32_t this_pc)
     { ee_intc_state_t *ri = ee_intc_get_state(); if ((ri->stat & ri->mask & (1u << 1)) != 0) r1190_sbus_take_count++; }
     ee_raise_exception(st, EE_EXC_CODE_INT, this_pc, 0);
 }
+
+/* General callers still sample the live line; retirement already did so
+ * immediately above its branch-pending gate, with no intervening device I/O. */
+static void ee_check_intc_interrupt(ee_state_t *st,uint32_t this_pc)
+{ee_latch_intc_interrupt(st);ee_check_intc_interrupt_latched(st,this_pc);}
 
 static void ee_check_dmac_interrupt(ee_state_t *st, uint32_t this_pc)
 {
@@ -941,7 +1044,7 @@ static void ee_check_dmac_interrupt(ee_state_t *st, uint32_t this_pc)
      * every single run now completes with zero panics, AddIntcHandler
      * still genuinely called, and the trace progressing further
      * (more AddIntcHandler-callsite visits) than before this fix. */
-    if (dma_dmac_interrupt_pending())
+    if (dma_dmac_interrupt_pending_fast())
         st->cop0[13] |= EE_CAUSE_IP3;
     else
         st->cop0[13] &= ~EE_CAUSE_IP3;
@@ -1042,34 +1145,64 @@ void ee_core_pad_checkpoint_load(const ee_pad_checkpoint_t *in)
     memcpy(g_ee_pad_area_bound, in->legacy_area, sizeof(g_ee_pad_area_bound));
     memcpy(g_ee_pad_new_bound, in->new_area, sizeof(g_ee_pad_new_bound));
     g_ee_pad_new_stat = in->new_status;
+    /* Older checkpoints retained DMA bindings but omitted negotiated SIO2
+     * mode. Recover the last guest-visible ID; PADP overrides this fallback. */
+    uint32_t area=in->new_area[0][0],offset=1u;
+    if(!area){area=in->legacy_area[0];offset=9u;}
+    uint32_t physical=area&0x1fffffffu;
+    if(area&&g_state.ram&&g_state.ram_size>offset&&physical<g_state.ram_size-offset){
+        uint8_t id=g_state.ram[physical+offset];
+        if(id==0x41u||id==0x73u||id==0x79u)iop_sio2_pad_set_analog_mode(id!=0x41u);
+    }
 }
 
 /* XPADMAN 128-byte DMA layout: ps2sdk ee/rpc/pad/src/libpad.c,
- * pad_data_new. Digital controller only; additional slots stay disconnected.
+ * pad_data_new. Digital/analog modes use the existing SIO2 pad backend;
+ * additional slots stay disconnected.
  * Do not reuse PADMAN's incompatible 64-byte layout for new RPC clients. */
 static void ee_pad_new_write_slots(ee_state_t *st, uint32_t area, unsigned port, unsigned slot)
 {
     int connected = port == 0u && slot == 0u && iop_sio2_pad_is_connected();
-    uint16_t buttons = connected ? (uint16_t)~iop_sio2_pad_get_buttons() : 0xffffu;
-    uint32_t frame = (uint32_t)(st->instructions_executed / EE_CYCLES_PER_FRAME_NTSC) + 1u;
+    uint16_t buttons = connected ? (uint16_t)~iop_sio2_pad_sample_buttons() : 0xffffu;
+    int analog = connected && iop_sio2_pad_is_analog_mode();
+    uint8_t rx=0x80,ry=0x80,lx=0x80,ly=0x80;
+    if(analog)iop_sio2_pad_get_analog_axes(&rx,&ry,&lx,&ly);
+    uint32_t frame = (uint32_t)g_ee_vblank_events + 1u;
     for (unsigned k = 0; k < 2; k++) {
         uint32_t a = area + k*128u;
         for (unsigned n = 0; n < 128; n++) ee_mem_write8(st, a+n, 0u);
         ee_mem_write8(st, a, connected ? 0u : 0xffu);
-        ee_mem_write8(st, a+1, connected ? 0x41u : 0xffu);
+        ee_mem_write8(st, a+1, connected ? (analog ? 0x73u : 0x41u) : 0xffu);
         ee_mem_write8(st, a+2, buttons & 255u);
         ee_mem_write8(st, a+3, buttons >> 8);
-        ee_mem_write16(st, a+80, 4u); /* mode table: digital */
+        if(analog){ee_mem_write8(st,a+4,rx);ee_mem_write8(st,a+5,ry);ee_mem_write8(st,a+6,lx);ee_mem_write8(st,a+7,ly);}
+        ee_mem_write16(st, a+80, 4u); /* digital */
+        ee_mem_write16(st, a+82, 7u); /* analog, implemented by SIO2 */
+        ee_mem_write8(st,a+100,connected ? 2u : 0u); /* MODE_CONFIG_READY */
+        ee_mem_write8(st,a+105,analog ? 1u : 0u); /* current table offset */
         ee_mem_write32(st, a+88, frame);
         /* BIOS XPADMAN 3.06 text+0x604 stores the normalized button
          * copy result: text+0x3ef8 returns a full 32-byte block. */
         ee_mem_write32(st, a+96, connected ? 32u : 0u);
-        ee_mem_write8(st, a+101, connected ? 0x41u : 0u);
+        ee_mem_write8(st, a+101, connected ? (analog ? 0x73u : 0x41u) : 0u);
         ee_mem_write8(st, a+103, connected ? 1u : 0u);
-        ee_mem_write8(st, a+104, connected ? 1u : 0u);
+        ee_mem_write8(st, a+104, connected ? 2u : 0u); /* nrOfModes */
+        /* R1357: ps2sdk padInfoMode requires currentTask == 1.
+         * Offset 104 is nrOfModes; currentTask is byte 114. */
+        ee_mem_write8(st, a+114, connected ? 1u : 0u);
         ee_mem_write8(st, a+112, connected ? 6u : 0u);
         /* reqState=COMPLETE, no asynchronous actuator/configuration tasks. */
     }
+}
+
+/* ps2sdk padSetMainMode: arguments at +12/+16, result at +20. */
+static void ee_pad_new_mode_rpc(ee_state_t *st,uint32_t buffer)
+{
+    uint32_t port=ee_mem_read32(st,buffer+4u),slot=ee_mem_read32(st,buffer+8u);
+    uint32_t mode=ee_mem_read32(st,buffer+12u),lock=ee_mem_read32(st,buffer+16u);
+    int valid=port==0u&&slot==0u&&mode<=1u&&lock<=3u&&iop_sio2_pad_is_connected()&&g_ee_pad_new_bound[0][0];
+    if(valid){iop_sio2_pad_set_analog_mode(mode!=0);ee_pad_new_write_slots(st,g_ee_pad_new_bound[0][0],0,0);}
+    ee_mem_write32(st,buffer+20u,valid ? 1u : 0u);
 }
 
 static void ee_pad_new_reset(void)
@@ -1132,23 +1265,23 @@ int ee_core_get_addintc_log_entry(uint32_t idx, uint32_t *cause, uint32_t *handl
  * identical content - see the PAD_BIND handler's own extensive
  * citation trail (Rounds 63/663/664/666) for the real protocol layout
  * this mirrors; nothing here changes that layout, only when it runs. */
-static void ee_pad_area_write_slots(ee_state_t *st, uint32_t pad_area)
+static void ee_pad_area_write_slots_for_port(ee_state_t *st, uint32_t pad_area, unsigned port)
 {
     int slot_i;
-    int connected = iop_sio2_pad_is_connected();
+    int connected = port == 0 && iop_sio2_pad_is_connected();
     uint8_t state = connected ? 6u /* PAD_STATE_STABLE, real libpad.h enum */
                                 : 0u /* PAD_STATE_DISCONN */;
     uint8_t ok = connected ? 1u : 0u;
-    uint16_t wire = connected ? (uint16_t)~iop_sio2_pad_get_buttons() : 0xFFFFu;
+    uint16_t wire = connected ? (uint16_t)~iop_sio2_pad_sample_buttons() : 0xFFFFu;
     int analog = connected && iop_sio2_pad_is_analog_mode();
     uint8_t rx = 0x80u, ry = 0x80u, lx = 0x80u, ly = 0x80u;
-    uint32_t payload_len = connected ? (analog ? 9u : 5u) : 0u;
+    uint32_t payload_len = connected ? (analog ? 8u : 4u) : 0u;
     if (analog) {
         iop_sio2_pad_get_analog_axes(&rx, &ry, &lx, &ly);
     }
     for (slot_i = 0; slot_i < 2; slot_i++) {
         uint32_t base = pad_area + (uint32_t)(slot_i * 64);
-        ee_mem_write32(st, base + 0u, payload_len); /* real memcpy length */
+        ee_mem_write32(st, base + 0u, (uint32_t)g_ee_vblank_events+1u); /* real frame, not payload length */
         ee_mem_write32(st, base + 40u, payload_len); /* 2nd consumer's real length field (Round 666) */
         ee_mem_write8(st, base + 4u, state);
         ee_mem_write8(st, base + 5u, 0u);   /* reqState = PAD_RSTAT_COMPLETE */
@@ -1156,17 +1289,72 @@ static void ee_pad_area_write_slots(ee_state_t *st, uint32_t pad_area)
         if (connected) {
             ee_mem_write8(st, base + 8u, 0x00u); /* dummy, real cited SIO2 byte 0 */
             ee_mem_write8(st, base + 9u, analog ? IOP_PAD_ID_ANALOG_LO : IOP_PAD_ID_LO);
-            ee_mem_write8(st, base + 10u, analog ? IOP_PAD_ID_ANALOG_HI : IOP_PAD_ID_HI);
-            ee_mem_write8(st, base + 11u, (uint8_t)(wire & 0xFFu));
-            ee_mem_write8(st, base + 12u, (uint8_t)((wire >> 8) & 0xFFu));
+            /* libpad copies pad_data_old.data directly into padButtonStatus:
+             * ok, mode, btns low/high. SIO2's 0x5A marker is not part of
+             * this normalized DMA payload (ps2sdk libpad.c/libpad.h). */
+            ee_mem_write8(st, base + 10u, (uint8_t)(wire & 0xFFu));
+            ee_mem_write8(st, base + 11u, (uint8_t)((wire >> 8) & 0xFFu));
             if (analog) {
-                ee_mem_write8(st, base + 13u, rx);
-                ee_mem_write8(st, base + 14u, ry);
-                ee_mem_write8(st, base + 15u, lx);
-                ee_mem_write8(st, base + 16u, ly);
+                ee_mem_write8(st, base + 12u, rx);
+                ee_mem_write8(st, base + 13u, ry);
+                ee_mem_write8(st, base + 14u, lx);
+                ee_mem_write8(st, base + 15u, ly);
             }
         }
     }
+}
+
+static void ee_pad_area_write_slots(ee_state_t *st, uint32_t pad_area)
+{ ee_pad_area_write_slots_for_port(st, pad_area, 0); }
+
+/* R1356: legacy libpad uses distinct payload layouts. Never interpret
+ * mode/lock/index/actuator fields as an OPEN DMA destination. Ordinals,
+ * argument and result offsets: ps2sdk ee/rpc/pad/src/libpad.c. */
+static void ee_pad_legacy_rpc(ee_state_t *st,uint32_t buffer)
+{
+ uint32_t cmd=ee_mem_read32(st,buffer),port=ee_mem_read32(st,buffer+4u),slot=ee_mem_read32(st,buffer+8u);
+ uint32_t arg=ee_mem_read32(st,buffer+12u),extra=ee_mem_read32(st,buffer+16u);
+ uint32_t result=0,offset=12u;
+ int present=port==0u&&slot==0u&&iop_sio2_pad_is_connected();
+ switch(cmd){
+ case 0x80000100u: { /* OPEN */
+  uint32_t area=extra,physical=area&0x1fffffffu;unsigned segment=area>>29;
+  if(port<2u&&!slot&&area&&!(area&15u)&&(segment==0u||segment==4u||segment==5u)&&
+     st->ram_size>=128u&&physical<=st->ram_size-128u){
+   g_ee_pad_area_bound[port]=area;
+   if(!port)ee_pad_area_write_slots(st,area);
+   else for(unsigned k=0;k<128;k++)ee_mem_write8(st,area+k,0);
+   result=1;
+  }
+  ee_mem_write32(st,buffer+20u,0);break;
+ }
+ case 0x80000104u: /* INFO_MODE: result is word 5, not word 3 */
+  offset=20u;
+  if(present){
+   int analog=iop_sio2_pad_is_analog_mode();
+   if(arg==1u)result=analog?7u:4u;
+   else if(arg==2u)result=analog?7u:4u;
+   else if(arg==3u)result=analog?1u:0u;
+   else if(arg==4u)result=extra==UINT32_MAX?2u:extra==0u?4u:extra==1u?7u:0u;
+  }break;
+ case 0x80000105u: /* SET_MAIN_MODE */
+  offset=20u;
+  if(present&&arg<=1u&&extra<=3u){
+   iop_sio2_pad_set_analog_mode(arg!=0u);result=1;
+   if(g_ee_pad_area_bound[0])ee_pad_area_write_slots(st,g_ee_pad_area_bound[0]);
+  }break;
+ case 0x8000010bu:result=2;break; /* PORT_MAX */
+ case 0x8000010cu:result=port<2u?1u:0u;break; /* SLOT_MAX */
+ case 0x8000010du: /* CLOSE */
+  if(port<2u&&!slot){g_ee_pad_area_bound[port]=0;result=1;}break;
+ case 0x8000010eu: /* END */
+  memset(g_ee_pad_area_bound,0,sizeof g_ee_pad_area_bound);result=1;break;
+ case 0x80000102u:case 0x80000103u:case 0x80000106u:case 0x80000107u:
+ case 0x80000108u:case 0x80000109u:case 0x8000010au:
+  offset=20u;break; /* No actuator/pressure implementation: decline. */
+ default:break;
+ }
+ ee_mem_write32(st,buffer+offset,result);
 }
 
 /* Round 669: called once per real VBLANK_START (ee_check_vblank()
@@ -1187,11 +1375,11 @@ static void ee_pad_area_refresh_all(ee_state_t *st)
             }
         }
         if (g_ee_pad_new_stat) for (unsigned k = 0; k < 2; k++) {
-            ee_mem_write32(st, g_ee_pad_new_stat+k*128u, (uint32_t)(st->instructions_executed / EE_CYCLES_PER_FRAME_NTSC)+1u);
+            ee_mem_write32(st, g_ee_pad_new_stat+k*128u, (uint32_t)g_ee_vblank_events+1u);
             ee_mem_write32(st, g_ee_pad_new_stat+k*128u+4u+(unsigned)port*4u, connected);
         }
         if (g_ee_pad_area_bound[port] != 0u)
-            ee_pad_area_write_slots(st, g_ee_pad_area_bound[port]);
+            ee_pad_area_write_slots_for_port(st, g_ee_pad_area_bound[port], port);
     }
 }
 
@@ -1304,8 +1492,7 @@ static void ee_check_vblank(ee_state_t *st)
 
 static void ee_check_boot_unblock_selfloop(ee_state_t *st)
 {
-    static int fired = 0;
-    if (fired)
+    if (g_boot_once.selfloop)
         return;
     if (st->pc != EE_BOOT_UNBLOCK_SELFLOOP_PC)
         return;
@@ -1313,7 +1500,7 @@ static void ee_check_boot_unblock_selfloop(ee_state_t *st)
     if (intc->mask != 0)
         return; /* already unmasked by real BIOS/game code - don't interfere */
     intc->mask |= (1u << EE_INTC_IRQ_VBLANK_START) | (1u << EE_INTC_IRQ_VBLANK_END);
-    fired = 1;
+    g_boot_once.selfloop = 1;
 }
 
 /*
@@ -1392,8 +1579,7 @@ static void ee_check_browser_menu_escalation_heuristic(ee_state_t *st)
     return; /* Historical SCPH-10000 state injection is not hardware emulation. */
 #else
 
-    static int fired = 0;
-    if (fired)
+    if (g_boot_once.escalation)
         return;
     if (st->instructions_executed < (uint64_t)EE_BROWSER_ESCALATION_FRAME_DELAY * EE_CYCLES_PER_FRAME_NTSC)
         return; /* not yet at the real ~2s-equivalent point */
@@ -1403,7 +1589,7 @@ static void ee_check_browser_menu_escalation_heuristic(ee_state_t *st)
     if (current != 0)
         return; /* real (or future evidenced) code already wrote something else - don't interfere */
     ee_mem_write32(st, EE_BROWSER_ESCALATION_FIELD_ADDR, EE_BROWSER_ESCALATION_REAL_VALUE);
-    fired = 1;
+    g_boot_once.escalation = 1;
 #endif
 }
 
@@ -1512,12 +1698,11 @@ static int ee_read_boot2_path_from_system_cnf(char *out, size_t out_size)
 
 static void ee_check_eeload_fastboot_patch(ee_state_t *st)
 {
-    static int attempted = 0; /* one-shot, whether or not it actually finds/patches anything */
-    if (attempted)
+    if (g_boot_once.fastboot)
         return;
     if (st->pc != EE_EELOAD_START_PC)
         return;
-    attempted = 1;
+    g_boot_once.fastboot = 1;
 
     if (iop_cdvd_get_disc_type() == IOP_CDVD_TYPE_NODISC)
         return; /* diskless boot - real BIOS's own "default to rom0:OSDSYS" behavior is already correct; never touch it (Round 607) */
@@ -1708,8 +1893,7 @@ static void ee_check_browser_idle_carousel(ee_state_t *st)
     static const uint32_t panel_sequence[] = {
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17
     };
-    static uint64_t next_tick_instr = 0;
-    static unsigned int seq_index = 0;
+    /* Same boot-local lifetime as the other one-shots above. */
 
     if (iop_cdvd_get_disc_type() != IOP_CDVD_TYPE_NODISC)
         return; /* diskless-only - never interfere with the real disc-mounted EELOAD path (Round 607) */
@@ -1737,14 +1921,14 @@ static void ee_check_browser_idle_carousel(ee_state_t *st)
         return;
     if (ee_mem_read32(st, EE_BROWSER_STATE_FIELD_ADDR) != EE_BROWSER_STATE_IDLE_VALUE)
         return; /* only once the Browser has genuinely reached its real idle state */
-    if (st->instructions_executed < next_tick_instr)
+    if (st->instructions_executed < g_boot_once.carousel_next)
         return; /* not yet time for the next carousel step */
     if (ee_mem_read32(st, EE_BROWSER_CAROUSEL_FIELD_ADDR) != 0)
         return; /* real dispatch chain hasn't consumed/reset the last value yet - don't clobber it */
 
-    ee_mem_write32(st, EE_BROWSER_CAROUSEL_FIELD_ADDR, panel_sequence[seq_index]);
-    seq_index = (seq_index + 1u) % (sizeof(panel_sequence) / sizeof(panel_sequence[0]));
-    next_tick_instr = st->instructions_executed +
+    ee_mem_write32(st, EE_BROWSER_CAROUSEL_FIELD_ADDR, panel_sequence[g_boot_once.carousel_sequence]);
+    g_boot_once.carousel_sequence = (g_boot_once.carousel_sequence + 1u) % (sizeof(panel_sequence) / sizeof(panel_sequence[0]));
+    g_boot_once.carousel_next = st->instructions_executed +
         (uint64_t)EE_BROWSER_CAROUSEL_TICK_FRAMES * EE_CYCLES_PER_FRAME_NTSC;
 #endif
 }
@@ -2134,7 +2318,7 @@ static void ee_check_gs_vsync(ee_state_t *st)
         ee_intc_raise(EE_INTC_IRQ_GS);
 }
 
-static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size)
+static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size, int is_store)
 {
     /* R5900 Scratchpad RAM (SPR): a real, dedicated 16KB on-chip buffer
      * hardwired to the fixed KUSEG range 0x70000000-0x70003FFF. Real
@@ -2156,6 +2340,19 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size)
         if (off + size <= sizeof(st->scratch))
             return st->scratch + off;
         return NULL; /* out-of-bounds within the 16KB window - not a TLB matter */
+    }
+
+    /* EE-visible VU local memories. VU0's 4-KiB memories mirror four
+     * times; VU1 owns the complete 16-KiB windows. A TLB-translated
+     * alias is handled below; direct device addresses share MMIO policy. */
+    uint32_t vu_phys = ((addr & 0xc0000000u) == 0x80000000u) ? addr & 0x1fffffffu : addr;
+    if (vu_phys >= 0x11000000u && vu_phys < 0x11010000u) {
+        unsigned bank=(vu_phys >> 14)&3u;vu_window_accesses[bank]++;
+        uint8_t *data=bank==0u?st->vu0_micro:bank==1u?st->vu0_mem:
+                      bank==2u?vu1_get_state()->micro:vu1_get_state()->mem;
+        unsigned bytes=bank<2u?4096u:16384u,off=vu_phys&(bytes-1u);
+        st->mem_tlb_miss=0;
+        return size<=bytes-off?data+off:NULL;
     }
 
     uint32_t phys;
@@ -2182,8 +2379,16 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size)
          * real, valid TLB translation a booted real console would use
          * for its own KSEG3-resident kernel data at this exact point in
          * boot. See docs/STATUS.md's 165th finding. */
-        if (!ee_tlb_translate(st, addr, &phys)) {
-            st->mem_tlb_miss = 1; /* real TLB Refill exception territory - see callers below */
+        uint32_t lo = 0;
+        int tlb = ee_tlb_translate_selected(st, addr, &phys, &lo);
+        if (tlb != 1) {
+            st->mem_tlb_miss = (uint8_t)(tlb == 2 ? EE_TLB_FAULT_INVALID : EE_TLB_FAULT_MISS);
+            return NULL;
+        }
+        /* EntryLo.D controls stores. A valid matching clean page raises
+         * TLB Modified (ExcCode 1); loads remain legal. */
+        if (is_store && !(lo & 0x4u)) {
+            st->mem_tlb_miss = EE_TLB_FAULT_MODIFIED;
             return NULL;
         }
     } else {
@@ -2209,6 +2414,13 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size)
     st->mem_tlb_miss = 0; /* reached past the TLB-miss check above (translated OK, or kseg0/1) -
                             * any NULL returned below is a bounds/backing-store miss, not a TLB
                             * fault, and should keep failing silently (reads-as-zero/no-op) as before */
+    if (phys >= 0x11000000u && phys < 0x11010000u) {
+        unsigned bank=(phys >> 14)&3u;vu_window_accesses[bank]++;
+        uint8_t *data=bank==0u?st->vu0_micro:bank==1u?st->vu0_mem:
+                      bank==2u?vu1_get_state()->micro:vu1_get_state()->mem;
+        unsigned bytes=bank<2u?4096u:16384u,off=phys&(bytes-1u);
+        return size<=bytes-off?data+off:NULL;
+    }
     if (phys >= 0x1FC00000u) {
         uint32_t off = phys - 0x1FC00000u;
         if (st->bios && off + size <= st->bios->size)
@@ -2239,7 +2451,7 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size)
 static inline void ee_mem_check_tlb_fault(ee_state_t *st, uint32_t addr, int is_store)
 {
     if (st->mem_tlb_miss)
-        ee_raise_tlb_exception(st, is_store, addr, st->exc_this_pc, st->exc_in_delay_slot);
+        ee_raise_tlb_exception(st, is_store, addr, st->exc_this_pc, st->exc_in_delay_slot, st->mem_tlb_miss);
 }
 
 /* Real hardware/game code always accesses the 0x10000000-0x1FFFFFFF
@@ -2298,7 +2510,7 @@ uint8_t ee_mem_read8(ee_state_t *st, uint32_t addr)
     if (ee_sio_mmio_read32(ee_hw_mmio_addr(addr), &sio_val))
         return (uint8_t)(sio_val & 0xFFu);
 
-    uint8_t *p = ee_mem_ptr(st, addr, 1);
+    uint8_t *p = ee_mem_ptr(st, addr, 1, 0);
     if (p) return *p;
     ee_mem_check_tlb_fault(st, addr, 0);
     return 0;
@@ -2325,7 +2537,7 @@ uint16_t ee_mem_read16(ee_state_t *st, uint32_t addr)
     if (ee_dve_mmio_read16(ee_hw_mmio_addr(addr), &dve_val))
         return dve_val;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 2);
+    uint8_t *p = ee_mem_ptr(st, addr, 2, 0);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 0); return 0; }
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
@@ -2358,7 +2570,7 @@ uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
     /* R1293: retain real TLB translation for low mapped RAM words while
      * avoiding device dispatch. Debug watch hooks above still execute. */
     if(addr<0x10000000u) {
-        const uint8_t *p=ee_mem_ptr(st,addr,4u);
+        const uint8_t *p=ee_mem_ptr(st, addr, 4u, 0);
         if(p)return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
                     ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
         ee_mem_check_tlb_fault(st,addr,0);
@@ -2386,18 +2598,23 @@ uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
     }
     if (mch_mmio_read32(hw_addr, &hw_val))
         return hw_val;
-    if (ee_intc_mmio_read32(hw_addr, &hw_val)) /* task #176 */
+    if (ee_intc_mmio_read32(hw_addr, &hw_val)) { /* task #176 */
+        if (hw_addr == 0x1000f000u)
+            ee_intc_note_guest_stat_read(st->pc, hw_val);
         return hw_val;
+    }
     if (ee_timers_mmio_read32(hw_addr, &hw_val)) /* Round 87 (127th finding) */
         return hw_val;
     if (ee_sio_mmio_read32(hw_addr, &hw_val)) /* Round 392 */
         return hw_val;
     if (ipu_mmio_read32(hw_addr, &hw_val)) /* Round 521/522 (task #487) */
         return hw_val;
+    if (vif_mmio_read32(hw_addr, &hw_val)) /* R1330-G */
+        return hw_val;
     if (gif_mmio_read32(hw_addr, &hw_val)) /* Round 542 (task #510) */
         return hw_val;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 4);
+    uint8_t *p = ee_mem_ptr(st, addr, 4, 0);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 0); return 0; }
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -2431,12 +2648,38 @@ uint64_t ee_mem_read64(ee_state_t *st, uint32_t addr)
      * BIOS code that writes these registers yet, but a real,
      * standalone bug regardless of when it's first exercised. */
     uint64_t gs_val;
+    if (ipu_mmio_read64(ee_hw_mmio_addr(addr),&gs_val))return gs_val;
     if (gs_mmio_read64(ee_hw_mmio_addr(addr), &gs_val))
         return gs_val;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 8);
+    uint8_t *p = ee_mem_ptr(st, addr, 8, 0);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 0); return 0; }
     return guest_read_le64(p);
+}
+
+void ee_mem_read128(ee_state_t *st,uint32_t addr,ee_reg128_t *out)
+{
+    uint8_t q[16];
+    if(ipu_fifo_read128(ee_hw_mmio_addr(addr),q)) {
+        out->ud0=guest_read_le64(q);out->ud1=guest_read_le64(q+8);
+    } else {
+        /* Read both halves before publishing: LQ may alias its base register. */
+        uint64_t lo=ee_mem_read64(st,addr),hi=ee_mem_read64(st,addr+8);
+        out->ud0=lo;out->ud1=hi;
+    }
+}
+void ee_mem_write128(ee_state_t *st,uint32_t addr,const ee_reg128_t *value)
+{
+    uint64_t lo=value->ud0,hi=value->ud1;
+    uint32_t hw=ee_hw_mmio_addr(addr),page=hw&0xfffff000u;
+    if(page==0x10004000u||page==0x10005000u||page==0x10006000u||hw==0x10007010u) {
+        uint8_t q[16];
+        for(unsigned n=0;n<8;n++){q[n]=(uint8_t)(lo>>(n*8));q[n+8]=(uint8_t)(hi>>(n*8));}
+        if(page==0x10004000u){cpu_fifo_writes[0]++;vif0_process_quadwords(0,q,1);}
+        else if(page==0x10005000u){cpu_fifo_writes[1]++;vif1_process_quadwords(0,q,1);}
+        else if(page==0x10006000u){cpu_fifo_writes[2]++;gif_fifo_write(q);}
+        else ipu_fifo_write128(0x10007010u,q);
+    } else {ee_mem_write64(st,addr,lo);ee_mem_write64(st,addr+8,hi);}
 }
 
 #ifdef R1132_WRITE_WATCH
@@ -2488,6 +2731,16 @@ static void r1242_watch_write(ee_state_t *st, uint32_t addr, uint32_t size, uint
     w[5]=(uint32_t)st->gpr[29].ud0; w[6]=(uint32_t)st->gpr[31].ud0; w[7]=(uint32_t)ee_hle_thread_get_current_thread_id();
 }
 
+/* R1316: only writes into the bound main-RAM allocation can mutate a
+ * precise block's source page. MMIO, BIOS and scratchpad writes do not. */
+static void ee_jit_notify_ram_write(ee_state_t *st,const uint8_t *p,uint32_t len)
+{
+    if(!st||!st->ram||!p||!len)return;
+    uintptr_t q=(uintptr_t)p,b=(uintptr_t)st->ram;
+    if(q>=b && (uint64_t)(q-b)<st->ram_size)
+        ee_jit_notify_physical_write((uint32_t)(q-b),len);
+}
+
 void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)
 {
     r1246_watch_write(st, addr, 1u, (uint64_t)val);
@@ -2503,8 +2756,8 @@ void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)
     if (ee_sio_mmio_write32(ee_hw_mmio_addr(addr), (uint32_t)val))
         return;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 1);
-    if (p) { *p = val; return; }
+    uint8_t *p = ee_mem_ptr(st, addr, 1, 1);
+    if (p) { ee_jit_notify_ram_write(st,p,1u); *p = val; return; }
     ee_mem_check_tlb_fault(st, addr, 1);
 }
 
@@ -2520,8 +2773,9 @@ void ee_mem_write16(ee_state_t *st, uint32_t addr, uint16_t val)
     if (ee_dve_mmio_write16(ee_hw_mmio_addr(addr), val))
         return;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 2);
+    uint8_t *p = ee_mem_ptr(st, addr, 2, 1);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }
+    ee_jit_notify_ram_write(st,p,2u);
     p[0] = (uint8_t)(val & 0xFF);
     p[1] = (uint8_t)((val >> 8) & 0xFF);
 }
@@ -2554,11 +2808,14 @@ void ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val)
         return;
     if (ipu_mmio_write32(hw_addr_w, val)) /* Round 521/522 (task #487) */
         return;
+    if (vif_mmio_write32(hw_addr_w, val)) /* R1330-G */
+        return;
     if (gif_mmio_write32(hw_addr_w, val)) /* Round 542 (task #510) */
         return;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 4);
+    uint8_t *p = ee_mem_ptr(st, addr, 4, 1);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }
+    ee_jit_notify_ram_write(st,p,4u);
     p[0] = (uint8_t)(val & 0xFF);
     p[1] = (uint8_t)((val >> 8) & 0xFF);
     p[2] = (uint8_t)((val >> 16) & 0xFF);
@@ -2574,11 +2831,13 @@ void ee_mem_write64(ee_state_t *st, uint32_t addr, uint64_t val)
 #endif
     /* Task #171/#172: same KSEG0/1 masking fix as ee_mem_read64()
      * above - see that function's comment for the full rationale. */
+    if (ipu_mmio_write64(ee_hw_mmio_addr(addr),val))return;
     if (gs_mmio_write64(ee_hw_mmio_addr(addr), val))
         return;
 
-    uint8_t *p = ee_mem_ptr(st, addr, 8);
+    uint8_t *p = ee_mem_ptr(st, addr, 8, 1);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 1); return; }
+    ee_jit_notify_ram_write(st,p,8u);
     for (int i = 0; i < 8; i++)
         p[i] = (uint8_t)((val >> (8 * i)) & 0xFF);
 }
@@ -2867,8 +3126,36 @@ static void sif_loadfile_ram_write8_delta(ee_state_t *st, uint32_t vaddr, int64_
     int64_t phys64 = (int64_t)vaddr + delta;
     if (phys64 < 0) return;
     uint32_t phys = (uint32_t)phys64;
-    if (st->ram && phys < st->ram_size)
+    if (st->ram && phys < st->ram_size) {
+        ee_jit_notify_physical_write(phys, 1u);
         st->ram[phys] = val;
+    }
+}
+
+/* BETA12 continuation: disc ELF streaming used to invalidate the same
+ * EE JIT page once *per byte* (millions of invalidations for a single
+ * game ELF).  Existing loader semantics are a raw, once-translated
+ * physical RAM write, so a bounded contiguous copy/clear is equivalent.
+ * Keep the byte fallback for an overflowing/noncontiguous address range.
+ * This only accelerates LOADFILE's synchronous guest ELF load; it does
+ * not change instruction scheduling, PS2 memory mappings or disc data. */
+static void sif_loadfile_ram_write_span_delta(ee_state_t *st, uint32_t vaddr,
+                                                int64_t delta, const uint8_t *data,
+                                                uint32_t len)
+{
+    if (!len) return;
+    int64_t phys64=(int64_t)vaddr+delta;
+    if (st->ram && phys64>=0 && (uint64_t)phys64 < st->ram_size &&
+        (uint64_t)vaddr+len <= (uint64_t)UINT32_MAX+1u &&
+        (uint64_t)phys64+len <= st->ram_size) {
+        uint32_t phys=(uint32_t)phys64;
+        ee_jit_notify_physical_write(phys,len);
+        if (data) memcpy(st->ram+phys,data,len);
+        else memset(st->ram+phys,0,len);
+        return;
+    }
+    for (uint32_t k=0;k<len;k++)
+        sif_loadfile_ram_write8_delta(st,vaddr+k,delta,data?data[k]:0u);
 }
 
 static int romdir_lookup(const bios_image_t *bios, const char *name, uint32_t *out_off, uint32_t *out_size)
@@ -3003,6 +3290,59 @@ typedef struct {
     uint32_t cursor;    /* real byte read position within this file, 0 at open */
 } ee_fio_rom_fd_t;
 static ee_fio_rom_fd_t g_ee_fio_rom_fds[EE_FIO_ROM_FD_MAX];
+/* Diagnostic state is separate from guest registers and RPC reply buffers. */
+static ee_fileio_trace_t g_fileio_trace;
+static uint8_t g_fileio_font_fd[EE_FIO_ROM_FD_MAX];
+void ee_core_fileio_trace(ee_fileio_trace_t *out)
+{
+    if (out) *out=g_fileio_trace;
+}
+static int trace_name_is_font(const char *name)
+{
+    static const char target[]="ariel32";
+    for (unsigned pos=0;name[pos];pos++) {
+        unsigned j=0;
+        while (target[j] && name[pos+j]) {
+            unsigned char c=(unsigned char)name[pos+j];
+            if (c>='A' && c<='Z') c=(unsigned char)(c+('a'-'A'));
+            if (c!=(unsigned char)target[j]) break;
+            j++;
+        }
+        if (!target[j]) return 1;
+    }
+    return 0;
+}
+/* BETA12.6: the real Crash E3 (FILEIO 2110) Wii trace shows its
+ * FIO_F_OPEN device string at +8, after TWO 32-bit metadata words.
+ * Earlier clients use +0 or +4. Check only four word-aligned ABI
+ * layouts, and require an anchored, known PS2 device prefix; do not
+ * search arbitrarily through guest memory or invent a successful open.
+ * A caller without a recognizable prefix keeps the previous +4
+ * fallback (and will receive the real lookup failure). */
+static uint32_t ee_fileio_open_name_offset(const uint8_t head[24])
+{
+    static const uint8_t offsets[] = {0u, 4u, 8u, 12u};
+    for (unsigned n=0; n<sizeof offsets; n++) {
+        const char *p=(const char *)head+offsets[n];
+        if (!memcmp(p,"cdrom0:",7) || !memcmp(p,"cdrom1:",7) ||
+            !memcmp(p,"rom0:",5) || !memcmp(p,"mc0:",4) ||
+            !memcmp(p,"mc1:",4) || !memcmp(p,"host:",5))
+            return offsets[n];
+    }
+    return 4u;
+}
+
+static void trace_copy_path(char *dest, size_t cap, const char *name)
+{
+    size_t i=0;
+    if (!cap) return;
+    for (;i+1u<cap && name[i];i++) {
+        unsigned char c=(unsigned char)name[i];
+        dest[i]=(c>=32 && c<=126 && c!='"')?(char)c:'?';
+    }
+    dest[i]=0;
+}
+
 
 /* Returns a real, later-lookupable fd (>=1) on success, -1 if the
  * table is full (an honest capacity gap, not expected to be hit given
@@ -3180,6 +3520,21 @@ static int ee_rspu2_disc_profile(void)
         if(image && sif_loadfile_disc_read_raw(lba,0,image,size)==size) {
             for(uint32_t k=0;k<size;k++)hash=(hash^image[k])*16777619u;
             match=hash==0xe16bba10u;
+            if(match) {
+                uint32_t file_lba,file_bytes,films[3],audio[3];
+                if(!iop_cdvd_disc_find_file("TEKKEN.BIN;1",&file_lba,&file_bytes))match=0;
+                else {
+                    for(unsigned k=0;k<3;k++) {
+                        const uint8_t *t=image+160u+0x9ea4u+k*12u;
+                        films[k]=(uint32_t)t[0]|(uint32_t)t[1]<<8|(uint32_t)t[2]<<16|(uint32_t)t[3]<<24;
+                        audio[k]=(uint32_t)t[4]|(uint32_t)t[5]<<8|(uint32_t)t[6]<<16|(uint32_t)t[7]<<24;
+                    }
+                    const rspu2_stream_state_t *current=rspu2_stream_get_state();
+                    if(!current->configured||current->file_lba!=file_lba||current->file_bytes!=file_bytes||
+                       memcmp(current->film_bytes,films,sizeof films)||memcmp(current->audio_bytes,audio,sizeof audio))
+                        rspu2_stream_configure(file_lba,file_bytes,films,audio);
+                }
+            }
         }
     }
     free(image);g_rspu2_disc_profile=match?1:-1;return match;
@@ -3188,8 +3543,25 @@ static int ee_rspu2_disc_profile(void)
 static int ee_rspu2_disc_rpc(ee_state_t *st,uint32_t command,uint32_t payload,
                             uint32_t send_size,uint32_t reply,uint32_t recv_size)
 {
-    if(command!=0x204eu && command!=0x2045u)return 0;
+    if(command!=0x204eu&&command!=0x2045u&&command!=0x2000u&&command!=0x2030u&&
+       command!=0x2050u&&command!=0x2051u&&command!=0x2058u&&command!=0x2059u&&
+       command!=0x205au&&command!=0x205eu)return 0;
     if(!ee_rspu2_disc_profile())return 0;
+    if(command!=0x204eu&&command!=0x2045u) {
+        uint32_t words[16]={0};uint32_t physical=payload&0x1fffffffu;
+        unsigned count=send_size/4u;if(count>16u)count=16u;
+        int32_t answer=-1;
+        if(payload&&physical<st->ram_size&&send_size<=st->ram_size-physical&&reply&&recv_size>=4u) {
+            for(unsigned k=0;k<count;k++)words[k]=ee_mem_read32(st,payload+k*4u);
+            rspu2_stream_rpc(command,words,count,st->ram,st->ram_size,&answer);
+        }
+        if(reply&&recv_size>=4u)ee_mem_write32(st,reply,(uint32_t)answer);
+        {static unsigned logs;unsigned n=command==0x2030u?0u:++logs;
+         if(n&&(n<=40u||(answer<0&&!(n&(n-1u)))))
+            printf("[" GEKKO2_RELEASE "-RSPU2] cmd=%04x arg=%08x/%08x status=%02x result=%d\n",
+                   (unsigned)command,(unsigned)words[1],(unsigned)words[2],(unsigned)rspu2_stream_status(),(int)answer);}
+        return 1;
+    }
     int32_t result=-1;uint32_t lba=0,file_size=0,sector=0,dst=0,n=0,copied=0;
     uint32_t physical=payload&0x1fffffffu;
     if(!payload || send_size<20u || physical>=st->ram_size ||
@@ -3212,12 +3584,15 @@ static int ee_rspu2_disc_rpc(ee_state_t *st,uint32_t command,uint32_t payload,
         if(chunk>sizeof(bytes))chunk=sizeof(bytes);
         if(iop_cdvd_disc_read_sector(lba+sector+copied/2048u,bytes))goto done;
         /* SIF DMA destinations are RAM bus addresses, not EE TLB loads. */
-        if(command==0x204eu)memcpy(st->ram+physical+copied,bytes,chunk);
-        else memcpy(spu2_mixer_get_ram()+physical+copied,bytes,chunk);
+        if(command==0x204eu) {
+            memcpy(st->ram+physical+copied,bytes,chunk);
+            ee_jit_notify_physical_write(physical+copied,chunk);
+        } else memcpy(spu2_mixer_get_ram()+physical+copied,bytes,chunk);
         copied+=chunk;
     }
     result=0;
 done:
+    rspu2_stream_resource_result(result);
     if(reply && recv_size>=4u)ee_mem_write32(st,reply,(uint32_t)result);
     { static unsigned logs; if(logs++<32u || result<0)
         printf("[R1297-RSPU2] cmd=%04x lba=%u+%u dst=%08x bytes=%u copied=%u result=%d\n",
@@ -3243,6 +3618,21 @@ static void sif_loadfile_note_mc_module(ee_state_t *st,const char *path)
     free(owned);
 }
 
+/* Consume the selected real IOP image's LOADFILE provider metadata. */
+static void sif_note_loadfile_image(ee_state_t *st,const bios_image_t *image)
+{
+    uint32_t off,size,version;
+    if(romdir_lookup(image,"LOADFILE",&off,&size) && (uint64_t)off+size<=image->size &&
+       iop_loadfile_protocol(image->data+off,size,&version))st->loadfile_rpc_version=version;
+}
+/* Consume FILEIO's actual 4-byte protocol marker from the selected ROMDIR.
+ * Keep it independent of LOADFILE's separate 0xff response. */
+static void sif_note_fileio_image(ee_state_t *st,const bios_image_t *image)
+{
+    uint32_t off,size,version;
+    if(romdir_lookup(image,"FILEIO",&off,&size) && (uint64_t)off+size<=image->size &&
+       iop_fileio_protocol(image->data+off,size,&version))st->fileio_rpc_version=version;
+}
 /* R1264: consume the real SifCmdResetData request for the existing RPC HLE.
  * ps2sdk ee/kernel/src/iopcontrol.c: header, arglen, mode, arg[80].
  * UDNL's requested ROM config is itself a small ROM image containing
@@ -3259,17 +3649,34 @@ static void sif_iop_reset_note_mc_config(ee_state_t *st,uint32_t packet,uint32_t
         if(!args[k])return; /* arglen excludes its terminating NUL */
     }
     args[length]=0;
+    g_rspu2_disc_profile=0;rspu2_stream_reset();
     /* A valid reboot replaces the previous service configuration. Unsupported
      * targets leave versions unknown, rather than retaining stale providers. */
     st->mcserv_module_version=st->mcman_module_version=0;
+    st->loadfile_rpc_version=0;
+    st->fileio_rpc_version=0;
     cdvd_config_reset_session();
     if(ee_mem_read32(st,packet+20u)!=0u || strncmp(args,"rom0:UDNL ",10))return;
     const char *config=args+10;
-    if(strncmp(config,"rom0:",5) || !config[5] || strchr(config,' ') || strchr(config,'\t'))return;
+    if(!*config || strchr(config,' ') || strchr(config,'\t'))return;
     uint32_t off,size,inner_off,inner_size;
+    if(!strncmp(config,"cdrom",5)) {
+        uint32_t lba;
+        if(iop_cdvd_disc_find_file(config,&lba,&size) && size && size<=2u*1024u*1024u) {
+            uint8_t *data=malloc(size);
+            if(data && sif_loadfile_disc_read_raw(lba,0,data,size)==size) {
+                bios_image_t image={0};image.data=data;image.size=size;sif_note_loadfile_image(st,&image);sif_note_fileio_image(st,&image);
+            }
+            free(data);
+        }
+        return;
+    }
+    if(strncmp(config,"rom0:",5) || !config[5])return;
     if(!romdir_lookup(st->bios,config+5,&off,&size) ||
        (uint64_t)off+size>st->bios->size)return;
     bios_image_t nested={0};nested.data=st->bios->data+off;nested.size=size;
+    sif_note_loadfile_image(st,&nested);
+    sif_note_fileio_image(st,&nested);
     if(!romdir_lookup(&nested,"IOPBTCONF",&inner_off,&inner_size) ||
        (uint64_t)inner_off+inner_size>size)return;
     const uint8_t *text=nested.data+inner_off;
@@ -3283,6 +3690,8 @@ static void sif_iop_reset_note_mc_config(ee_state_t *st,uint32_t packet,uint32_t
         if(!n || n>10u || text[start]=='@')continue;
         char path[16];memcpy(path,"rom0:",5);memcpy(path+5,text+start,n);path[5+n]=0;
         sif_loadfile_note_mc_module(st,path);
+        if(!strcmp(path,"rom0:LOADFILE"))sif_note_loadfile_image(st,st->bios);
+        if(!strcmp(path,"rom0:FILEIO"))sif_note_fileio_image(st,st->bios);
     }
 }
 
@@ -3386,7 +3795,7 @@ static int sif_loadfile_elf_load_disc(ee_state_t *st, const char *discname, uint
          * FIO_F_OPEN handler above) - same ";1" fallback established
          * there, kept here for consistency even though real EELOAD
          * path strings observed so far already include it. */
-        char with_ver[64];
+        char with_ver[224];
         int vk;
         for (vk = 0; vk < 58 && discname[vk]; vk++) with_ver[vk] = discname[vk];
         with_ver[vk] = 0;
@@ -3405,6 +3814,11 @@ static int sif_loadfile_elf_load_disc(ee_state_t *st, const char *discname, uint
     uint16_t e_phentsize = elfld_rd_le16(hdr + 42u);
     uint16_t e_phnum = elfld_rd_le16(hdr + 44u);
     uint32_t i;
+    /* Never treat a truncated or overflowing ELF program-header table
+     * as a successful boot. This covers raw 2352-byte CD images too. */
+    if (hdr[4]!=1u || hdr[5]!=1u || elfld_rd_le16(hdr+18u)!=8u ||
+        !e_phnum || e_phentsize<32u ||
+        (uint64_t)e_phoff+(uint64_t)e_phentsize*e_phnum>file_size) return 0;
 
     for (i = 0; i < (uint32_t)e_phnum; i++) {
         uint8_t phbuf[32];
@@ -3414,13 +3828,15 @@ static int sif_loadfile_elf_load_disc(ee_state_t *st, const char *discname, uint
         uint32_t phys_base;
         int64_t delta;
         uint32_t copied;
-        if (got < 32u) break;
+        if (got < 32u) return 0;
         p_type = elfld_rd_le32(phbuf + 0u);
         p_offset = elfld_rd_le32(phbuf + 4u);
         p_vaddr = elfld_rd_le32(phbuf + 8u);
         p_filesz = elfld_rd_le32(phbuf + 16u);
         p_memsz = elfld_rd_le32(phbuf + 20u);
         if (p_type != 1u) continue; /* PT_LOAD only, matches sif_loadfile_elf_load() above */
+        if (p_filesz>p_memsz || (uint64_t)p_offset+p_filesz>file_size ||
+            (uint64_t)p_vaddr+p_memsz > (uint64_t)UINT32_MAX+1u) return 0;
 
         phys_base = sif_loadfile_translate_base(st, p_vaddr);
         delta = (int64_t)phys_base - (int64_t)p_vaddr;
@@ -3433,15 +3849,17 @@ static int sif_loadfile_elf_load_disc(ee_state_t *st, const char *discname, uint
             uint32_t sector_off = abs_byte % ISO_SECTOR_SIZE;
             uint32_t chunk = ISO_SECTOR_SIZE - sector_off;
             uint32_t remaining = p_filesz - copied;
-            uint32_t k;
             if (chunk > remaining) chunk = remaining;
-            if (iop_cdvd_disc_read_sector(base_lba + sector_index, sbuf) != 0) break; /* honest partial on real read failure */
-            for (k = 0; k < chunk; k++)
-                sif_loadfile_ram_write8_delta(st, p_vaddr + copied + k, delta, sbuf[sector_off + k]);
+            if (iop_cdvd_disc_read_sector(base_lba + sector_index, sbuf) != 0) return 0;
+            sif_loadfile_ram_write_span_delta(st,p_vaddr+copied,delta,sbuf+sector_off,chunk);
             copied += chunk;
         }
-        for (; copied < p_memsz; copied++)
-            sif_loadfile_ram_write8_delta(st, p_vaddr + copied, delta, 0u); /* BSS zero-fill, same fixed delta */
+        while (copied < p_memsz) {
+            uint32_t zero_len=p_memsz-copied;
+            if (zero_len>ISO_SECTOR_SIZE) zero_len=ISO_SECTOR_SIZE;
+            sif_loadfile_ram_write_span_delta(st,p_vaddr+copied,delta,NULL,zero_len);
+            copied+=zero_len;
+        }
     }
 
     *out_epc = e_entry;
@@ -4199,13 +4617,36 @@ static void ee_check_cdvd_ncmd_pending(ee_state_t *st)
     g_ee_cdvd_ncmd_reentry.valid = 0;
 }
 
+uint64_t ee_event_deadline_stats[8];
+uint64_t ee_core_event_deadline_stat(unsigned reason){return reason<8u?ee_event_deadline_stats[reason]:0;}
+
+static uint64_t ee_arm_boot_stats[4];
+uint64_t ee_core_arm_boot_stat(unsigned n){return n<4u?ee_arm_boot_stats[n]:0;}
+static void ee_speed_session_reset(void);
 int ee_core_init(const bios_image_t *bios)
 {
+    ee_speed_session_reset();
+    memset(&g_fileio_trace,0,sizeof g_fileio_trace);
+    memset(g_fileio_font_fd,0,sizeof g_fileio_font_fd);
+    memset(ee_arm_boot_stats,0,sizeof ee_arm_boot_stats);
+    memset(ee_event_deadline_stats,0,sizeof ee_event_deadline_stats);
+    memset(&g_boot_once,0,sizeof(g_boot_once));
+    memset(ee_sif_sysreg,0,sizeof(ee_sif_sysreg));
+    memset(ee_fastmem_stats,0,sizeof(ee_fastmem_stats));
+    memset(native_window_stats,0,sizeof native_window_stats);memset(vu_window_accesses,0,sizeof vu_window_accesses);memset(cpu_fifo_writes,0,sizeof cpu_fifo_writes);memset(ee_native_window_memory,0,sizeof ee_native_window_memory);
+    g_loadfile_reply_count=0;
     g_ee_vblank_events = 0;
     ee_core_display_clock_load(0);
     memset(r1252_fault, 0, sizeof(r1252_fault));
     g_rspu2_disc_profile=0;
+    rspu2_stream_reset();
     memset(&g_state, 0, sizeof(g_state));
+    /* VF00 is a hardware constant, including before ResetEE is called. */
+    g_state.vu0_vf[0][3] = 0x3f800000u;
+    /* A cold boot resets both vector units. Otherwise VU1 can retain
+     * RUN, a pending XGKICK and timing/source data from the last session;
+     * first-process startup also lacks its hardwired VF00.w value. */
+    vu1_init();
 
     dma_init(); /* EE DMA controller register block - see core/hw/dma.h */
     ee_intc_init(); /* task #176: EE interrupt controller (INTC_STAT/MASK) - see core/hw/ee_intc.h */
@@ -4228,16 +4669,47 @@ int ee_core_init(const bios_image_t *bios)
     mch_init(); /* EE-side MCH_RICM/MCH_DRD RDRAM auto-init registers - see core/hw/mch.h */
     g_addintc_log_count = 0; /* Round 736: reset AddIntcHandler observation log on (re-)init */
 
-    g_state.ram = memalign(32, EE_RAM_SIZE);
+    dsi_fastmem_reserve();
+    /* Both toolchain comparison builds use identical page alignment. */
+    g_state.ram = memalign(4096, EE_RAM_SIZE);
     if (!g_state.ram) {
         printf("[!] Could not allocate %u MB of EE RAM (out of memory)\n",
                EE_RAM_SIZE / (1024 * 1024));
         return -1;
     }
+#ifdef GEKKO
+    /* Calibrate the actual verified bulk path against a native PPC clear.
+     * Only boot-initialization memory is touched; no guest clocks are skipped. */
+    if(gekko2_opt_enabled(GEKKO2_OPT_ARM_CPU_RAM)) {
+        uint64_t start=gettime();memset(g_state.ram,0,65536u);
+        DCFlushRange(g_state.ram,65536u);uint64_t cpu=gettime()-start;
+        memset(g_state.ram,0xa5,65536u);start=gettime();
+        int ok=arm_ram_worker_fill(g_state.ram,0,65536u);uint64_t arm=gettime()-start;
+        int use=ok&&arm<cpu;
+        ee_arm_boot_stats[0]=ok;ee_arm_boot_stats[1]=use;ee_arm_boot_stats[2]=cpu;ee_arm_boot_stats[3]=arm;
+        printf("ARM_EE_BOOT verified=%d selected=%d PPC_ticks=%llu ARM_ticks=%llu scope=cold-boot-RAM-clear\n",ok,use,(unsigned long long)cpu,(unsigned long long)arm);
+        if(!ok)memset(g_state.ram,0,65536u);
+        for(unsigned off=65536u;off<EE_RAM_SIZE;){
+            unsigned n=EE_RAM_SIZE-off;if(n>1048576u)n=1048576u;
+            if(!use||!arm_ram_worker_fill(g_state.ram+off,0,n))memset(g_state.ram+off,0,n);
+            off+=n;
+        }
+    }else memset(g_state.ram,0,EE_RAM_SIZE);
+#else
     memset(g_state.ram, 0, EE_RAM_SIZE);
+#endif
     g_state.ram_size = EE_RAM_SIZE;
+    dsi_fastmem_init(g_state.ram,g_state.ram_size);
+#ifdef GEKKO2_DSI_FASTMEM
+    printf("[" GEKKO2_RELEASE "C] DSI Fastmem LW: status=%d enabled=%d probes=%lu\n",
+           dsi_fastmem_status(),dsi_fastmem_enabled(),(unsigned long)dsi_fastmem_stat(4));
+#endif
 
     dma_bind_ee_ram(g_state.ram, g_state.ram_size); /* chain-mode DMA reads tags/data from here */
+    dma_set_ee_write_notify(ee_jit_notify_physical_write); /* R1316 code-page generations */
+    /* R1317: same-process EE re-init replaces the prior RAM/TLB image. */
+    ee_jit_notify_physical_write(0u, g_state.ram_size);
+    ee_jit_notify_mapping_change();
     ee_pad_new_reset();
     memset(&g_ee_irq, 0, sizeof(g_ee_irq));
     memset(g_ee_pad_area_bound, 0, sizeof(g_ee_pad_area_bound));
@@ -4269,6 +4741,8 @@ int ee_core_init(const bios_image_t *bios)
      * applies equally to the new SIF1 sink - see that function below.) */
 
     g_state.bios = bios;
+    sif_note_loadfile_image(&g_state,bios);
+    sif_note_fileio_image(&g_state,bios);
     g_state.pc = BIOS_RESET_VECTOR;
     g_state.next_pc = BIOS_RESET_VECTOR + 4;
 
@@ -4447,7 +4921,8 @@ static uint32_t vu0_mem_read32(const ee_state_t *st, uint32_t addr)
  * shared one-pair scheduler. Entry selection avoids branch-loop scans. */
 static inline int vu0_block_candidate(const ee_state_t *st)
 {
-    if(st->vu0_branch_delay||st->vu0_ebit_delay||st->vu0_pipeline.q_pending)return 0;
+    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT))return 0;
+    if(st->vu0_branch_delay||st->vu0_ebit_delay)return 0;
     for(unsigned n=0;n<2;n++) {
         uint32_t off=(st->cop2_ctrl[26]+n*8u)&(sizeof(st->vu0_micro)-1u);
         uint32_t up=elfld_rd_le32(st->vu0_micro+off+4u);
@@ -4462,14 +4937,16 @@ static inline int vu0_block_candidate(const ee_state_t *st)
 static void vu0_run_pairs(ee_state_t *st)
 {
     for (uint32_t i = 0; i < VU0_EXEC_STEP_CAP; i++) {
-        int stopped = vu_micro_step_pipeline(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
+        int stopped = vu_micro_step_timed(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
                                      st->vu0_mem, (uint32_t)(sizeof(st->vu0_mem) - 1u),
                                      st->vu0_micro, (uint32_t)(sizeof(st->vu0_micro) - 1u),
                                      &st->cop2_ctrl[26], &st->vu0_branch_delay, &st->vu0_branch_target,
                                      &st->vu0_ebit_delay,
-                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline);
-        if (stopped)
-            break;
+                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing);
+        if (stopped) {
+            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;break;
+        }
+        if(st->vu0_timing.m_yield)break;
     }
 
 }
@@ -4477,20 +4954,27 @@ static void vu0_run_blocks(ee_state_t *st)
 {
     for (uint32_t i = 0; i < VU0_EXEC_STEP_CAP; i++) {
         unsigned ran=0;
-        if(vu0_block_candidate(st))ran=vu_jit_try_block(st->vu0_vf,st->cop2_ctrl,st->vu0_acc,
-            st->vu0_mem,(uint32_t)(sizeof(st->vu0_mem)-1u),
-            st->vu0_micro,(uint32_t)(sizeof(st->vu0_micro)-1u),&st->cop2_ctrl[26],
-            &st->vu0_branch_delay,&st->vu0_branch_target,&st->vu0_ebit_delay,
-            &st->vu0_instructions_executed,VU0_EXEC_STEP_CAP-i);
-        if(ran){st->vu0_pipeline.cycle+=ran;i+=ran-1u;continue;}
-        int stopped = vu_micro_step_pipeline(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
+        vu_jit_timed_context c={st->vu0_vf,st->cop2_ctrl,st->vu0_acc,st->vu0_mem,
+            st->vu0_micro,sizeof(st->vu0_mem)-1u,sizeof(st->vu0_micro)-1u,
+            &st->cop2_ctrl[26],&st->vu0_branch_delay,&st->vu0_branch_target,
+            &st->vu0_ebit_delay,&st->vu0_instructions_executed,
+            &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing,0,0};
+        if(vu0_block_candidate(st))ran=vu_jit_try_timed_block(&c,VU0_EXEC_STEP_CAP-i);
+        if(ran){
+            if(c.stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;break;}
+            if(st->vu0_timing.m_yield)break;
+            i+=ran-1u;continue;
+        }
+        int stopped = vu_micro_step_timed(st->vu0_vf, st->cop2_ctrl, st->vu0_acc,
                                      st->vu0_mem, (uint32_t)(sizeof(st->vu0_mem) - 1u),
                                      st->vu0_micro, (uint32_t)(sizeof(st->vu0_micro) - 1u),
                                      &st->cop2_ctrl[26], &st->vu0_branch_delay, &st->vu0_branch_target,
                                      &st->vu0_ebit_delay,
-                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline);
-        if (stopped)
-            break;
+                                     &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing);
+        if (stopped) {
+            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;break;
+        }
+        if(st->vu0_timing.m_yield)break;
     }
 
 }
@@ -4502,11 +4986,12 @@ void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
      * a sensible live value, same real register slot round 12's
      * generic CTC2/CFC2 dispatch already exposes. */
     st->cop2_ctrl[26] = (start_addr << 3) & (uint32_t)(sizeof(st->vu0_micro) - 1u);
-    st->vu0_running = 1;
+    st->vu0_running = 1;st->cop2_ctrl[29]|=1u;st->vu0_timing.m_yield=0;
 
-    if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
+    /* Re-enter native batching after a branch/Q/P boundary clears. */
+    if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu0_run_blocks(st);
+    else if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
 
-    st->vu0_running = 0;
 }
 
 /* Round 576 (task #551): real MSCNT semantics for VU0 macro mode - see
@@ -4517,11 +5002,30 @@ void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
  * does for MSCAL/MSCALF. */
 void vu0_exec_micro_continue(ee_state_t *st)
 {
-    st->vu0_running = 1;
+    st->vu0_running = 1;st->cop2_ctrl[29]|=1u;st->vu0_timing.m_yield=0;
 
-    if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
+    /* Re-enter native batching after a branch/Q/P boundary clears. */
+    if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu0_run_blocks(st);
+    else if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
 
-    st->vu0_running = 0;
+}
+
+/* Advance a still-running VU0 at the common EE retirement boundary, used
+ * by scalar and precise native EE blocks. M yields retain TPC and RUN. */
+static void vu0_tick(ee_state_t *st) {
+    if(!st->vu0_running)return;
+    if(st->vu0_timing.m_yield){st->vu0_timing.m_yield=0;return;}
+    int stopped=vu_micro_step_timed(st->vu0_vf,st->cop2_ctrl,st->vu0_acc,
+        st->vu0_mem,4095u,st->vu0_micro,4095u,&st->cop2_ctrl[26],
+        &st->vu0_branch_delay,&st->vu0_branch_target,&st->vu0_ebit_delay,
+        &st->vu0_instructions_executed,&st->vu0_unimplemented_opcodes_seen,
+        &st->vu0_pipeline,&st->vu0_timing);
+    if(stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;}
+}
+/* COP2 synchronization runs to a real M or end boundary. It does not
+ * fabricate a STOP when a runaway microprogram reaches the host cap. */
+void vu0_sync_macro(ee_state_t *st) {
+    if(st->vu0_running&&!st->vu0_timing.m_yield)vu0_run_pairs(st);
 }
 
 
@@ -4883,7 +5387,7 @@ static inline uint32_t ee_fetch32_backing(ee_state_t *st,uint32_t addr,const uin
      * handler. No cached mapping: ASID/TLB/SMC changes are seen each fetch.
      * Failed translations keep the established fault/MMIO fallback. */
     if(addr<0x10000000u) {
-        const uint8_t *p=ee_mem_ptr(st,addr,4u);
+        const uint8_t *p=ee_mem_ptr(st, addr, 4u, 0);
         if(p){if(backing)*backing=p;return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
                     ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
     }
@@ -4932,13 +5436,17 @@ volatile uint64_t g_r1181_sbus_guard_match = 0;
 volatile uint64_t g_r1181_sbus_helper_calls = 0;
 volatile uint64_t g_r1181_sbus_unblocks = 0;
 
-static void ee_retire_instruction(ee_state_t *st,int r1176_sample)
+static inline __attribute__((always_inline)) void ee_retire_instruction_inline(ee_state_t *st,int r1176_sample)
 {
     uint32_t r1176_t0=0,r1176_t1=0;
+    const int service_fast=gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES);
     if (r1176_sample) r1176_t0 = r1176_tb32();
     st->gpr[0].ud0 = 0;
     st->gpr[0].ud1 = 0;
     st->instructions_executed++;
+#ifdef GEKKO2_PCPROF
+    { extern uint32_t ee_pcprof[1u<<23]; uint32_t pp=st->exc_this_pc; if(pp<0x2000000u)ee_pcprof[pp>>2]++; }
+#endif
 
     /* COP0 Count (register 9): a real, free-running counter compared
      * against Compare (register 11) by real hardware/BIOS delay loops
@@ -4956,6 +5464,9 @@ static void ee_retire_instruction(ee_state_t *st,int r1176_sample)
      * COP0 Count/Compare mechanism), just without precise bus-clock-
      * rate fidelity, which isn't verifiable without a real timing
      * model and isn't needed just to let a delay loop terminate. */
+    vu0_tick(st);
+    if(!service_fast||vu1_work_pending_fast())vu1_tick();
+    if(!service_fast||dma_graphics_work_pending_fast())dma_gif_service();
     st->cop0[9]++;
     ee_irq_tick();
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1177_prof_base_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
@@ -4975,11 +5486,11 @@ static void ee_retire_instruction(ee_state_t *st,int r1176_sample)
      * we actually take an interrupt right now" decision (via
      * ee_check_intc_interrupt() below) is deferred to a genuine
      * instruction boundary. */
-    ee_check_vblank(st);
+    if(!service_fast||g_ee_display_phase==0u||g_ee_display_phase==EE_CYCLES_VBLANK_DURATION)ee_check_vblank(st);
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_vblank_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
-    ee_check_boot_unblock_selfloop(st); /* Round 161 */
+    if(!service_fast||(!g_boot_once.selfloop&&st->pc==EE_BOOT_UNBLOCK_SELFLOOP_PC))ee_check_boot_unblock_selfloop(st); /* Round 161 */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_selfloop_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
-    ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
+    if(!service_fast||(!g_boot_once.fastboot&&st->pc==EE_EELOAD_START_PC))ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_eeload_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     ee_check_browser_menu_escalation_heuristic(st); /* Round 610 (task #536) */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1179_prof_escalate_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
@@ -4998,15 +5509,15 @@ static void ee_retire_instruction(ee_state_t *st,int r1176_sample)
         }
         if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1181_prof_sbus_helper_tb += (uint32_t)(r1176_t1 - r1176_t0); g_r1179_prof_sbus_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     }
-    ee_check_gs_vsync(st); /* Round 87 (127th finding) */
+    if(!service_fast||g_ee_display_phase==0u)ee_check_gs_vsync(st); /* Round 87 (127th finding) */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_gsvsync_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
-    ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
+    ee_timers_tick_fast(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1178_prof_timers_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1177_prof_clock_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
-    ee_check_rpcinit_pending(st); /* task #187 (63rd finding) */
-    ee_check_rpc_bind_pending(st); /* task #192 (68th finding) */
-    ee_check_cdvd_ncmd_pending(st); /* Round 347 (IOP RPC re-entry architecture) */
+    if(!service_fast||g_rpcinit_pending)ee_check_rpcinit_pending(st); /* task #187 (63rd finding) */
+    if(!service_fast||g_rpc_bind_pending||g_rpc_bind_qcount)ee_check_rpc_bind_pending(st); /* task #192 (68th finding) */
+    if(!service_fast||g_ee_cdvd_ncmd_reentry.valid)ee_check_cdvd_ncmd_pending(st); /* Round 347 (IOP RPC re-entry architecture) */
     if (r1176_sample) { r1176_t1 = r1176_tb32(); g_r1177_prof_house_tb += (uint32_t)(r1176_t1 - r1176_t0); r1176_t0 = r1176_t1; }
     ee_latch_intc_interrupt(st);
     if (!st->branch_pending) {
@@ -5016,7 +5527,7 @@ static void ee_retire_instruction(ee_state_t *st,int r1176_sample)
          * (no separate "latch" step needed the way IP7's Count/Compare
          * match does; the pending condition is just read live off
          * ee_intc_pending()/dma_dmac_interrupt_pending() each time). */
-        ee_check_intc_interrupt(st, st->pc);
+        ee_check_intc_interrupt_latched(st, st->pc);
         ee_check_dmac_interrupt(st, st->pc);
         /* Round 597/598 (task #447/#536): forced preemption used to be
          * called unconditionally right here, on every single genuine
@@ -5055,10 +5566,18 @@ static void ee_retire_instruction(ee_state_t *st,int r1176_sample)
     }
  }
 
+/* Keep the ordinary scalar/commit path shared. Fused boundaries inline
+ * just this retirement sequence, avoiding an extra saved-argument frame. */
+static void ee_retire_instruction(ee_state_t *st,int sample)
+{ee_retire_instruction_inline(st,sample);}
+
+#include "core/ee/ee_aot_complex_generated.inc"
+
 static int ee_step_budget(unsigned budget,unsigned *block_retired)
 {
     ee_state_t *st = &g_state;
-#ifndef PCSX2WII_FAST
+#if !defined(PCSX2WII_FAST) && !defined(GEKKO2_FAST_DIAGNOSTICS)
+    if(!gekko2_opt_enabled(GEKKO2_OPT_LIGHT_DIAGNOSTICS)) {
     /* R1236: arm at the proven post-Sema5 resume and keep counting indefinitely. */
     { uint32_t p=st->pc, tid=(uint32_t)ee_hle_thread_get_current_thread_id(), rg;
       if (!r1236_armed && r1190_rend_count>=3u && tid==1u && p==0x0101bb28u) {
@@ -5158,14 +5677,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         }
         r1204_trace_left--; if(!r1204_trace_left) r1205_active=0u;
     }
+    } /* Historical observational probes only; no guest state changes. */
 #endif
     /* R1176: sample only 1/4096 instructions so the profiler itself does
      * not become the bottleneck. Time Base deltas are used only to rank
      * the three hot regions; emulated timing/state is untouched. */
-#ifdef PCSX2WII_FAST
+#if defined(PCSX2WII_FAST) || defined(GEKKO2_FAST_DIAGNOSTICS)
     const int r1176_sample = 0;
 #else
-    int r1176_sample = ((st->instructions_executed & 4095ULL) == 0);
+    int r1176_sample = !gekko2_opt_enabled(GEKKO2_OPT_LIGHT_DIAGNOSTICS)&&((st->instructions_executed & 4095ULL) == 0);
 #endif
     uint32_t r1176_t0 = 0, r1176_t1 = 0;
 
@@ -5350,9 +5870,10 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
     st->exc_raised_this_step = 0;
 
     if (r1176_sample) r1176_t0 = r1176_tb32();
-#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE) && !defined(PCSX2WII_LEGACY_FRAME_REPAIR)
-    const uint8_t *code_backing;
-    uint32_t instr = ee_fetch32_backing(st,pc,&code_backing);
+#if GEKKO2_EE_BLOCKS_ENABLED && !defined(PCSX2WII_LEGACY_FRAME_REPAIR)
+    const uint8_t *code_backing=NULL;
+    int block_mode=gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)&&gekko2_opt_enabled(GEKKO2_OPT_EE_JIT);
+    uint32_t instr = block_mode?ee_fetch32_backing(st,pc,&code_backing):ee_fetch32(st,pc);
 #else
     uint32_t instr = ee_fetch32(st,pc);
 #endif
@@ -5370,10 +5891,40 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         return 0;
     }
 
-#if defined(GEKKO) && defined(PCSX2WII_FAST) && !defined(PCSX2WII_JIT_DISABLE) && !defined(PCSX2WII_LEGACY_FRAME_REPAIR)
+    /* SQ to a full GIF FIFO stalls before PC, delay state or any guest
+     * destination is changed. Native/AOT memory proofs reject this MMIO. */
+    if((instr>>26)==0x1fu) {
+        uint32_t address=(uint32_t)st->gpr[(instr>>21)&31u].ud0+(uint32_t)(int32_t)(int16_t)instr;
+        if((address&0x1ffff000u)==0x10006000u&&gif_get_state()->fifo_count==16u) {
+            gif_fifo_service();
+            if(gif_get_state()->fifo_count==16u) {
+                st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
+            }
+        }
+    }
+    if((instr>>26)==0x12u&&st->vu0_running) {
+        vu0_sync_macro(st);
+        if(st->vu0_running&&!st->vu0_timing.m_yield) {
+            st->branch_pending=(uint8_t)in_delay_slot;
+            ee_core_park_tick(st);return 0; /* host cap is a stall, never STOP */
+        }
+    }
+
+#if defined(GEKKO2_EE_AOT) && !defined(PCSX2WII_LEGACY_FRAME_REPAIR)
+    if(block_retired &&
+#ifdef GEKKO2_IDLE_SKIP
+       !ee_core_idle_pc(st->pc) &&
+#endif
+       gekko2_opt_enabled(GEKKO2_OPT_EE_JIT) &&
+       gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)) {
+        unsigned n=ee_aot_try_execute_fetched(st,budget,instr);
+        if(n||st->halted){*block_retired=n;return st->halted?1:0;}
+    }
+#endif
+#if GEKKO2_EE_BLOCKS_ENABLED && !defined(PCSX2WII_LEGACY_FRAME_REPAIR)
     /* Use the already-fetched word to reject memory/control instructions;
      * failed block formation must not add a second fetch to every opcode. */
-    if(block_retired && budget>=2u && !in_delay_slot) {
+    if(block_mode&&block_retired && budget>=2u && !in_delay_slot) {
         int candidate=ee_jit_block_candidate(instr)||ee_jit_block_terminal(instr);
         uintptr_t ram_offset=(uintptr_t)code_backing-(uintptr_t)st->ram;
         int backed_candidate=code_backing &&
@@ -5391,6 +5942,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 #endif
 
     uint32_t op    = (instr >> 26) & 0x3F;
+    if(op==0u&&(instr&63u)==12u)ee_core_event_notify();
     uint32_t rs    = (instr >> 21) & 0x1F;
     uint32_t rt    = (instr >> 16) & 0x1F;
     uint32_t rd    = (instr >> 11) & 0x1F;
@@ -5399,6 +5951,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
     uint32_t uimm  = instr & 0xFFFF;
     uint32_t funct = instr & 0x3F;
 
+    if(!gekko2_opt_enabled(GEKKO2_OPT_LIGHT_DIAGNOSTICS)) {
     /* R1218: the next actually executed instruction is the strongest truth
      * for how the preceding HLE syscall completed. Snapshot its result now. */
     if (r1218_pending && r1218_sys_count) {
@@ -5466,6 +6019,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         r1214_row[ix][4]=(rs<<8)|rt;
     }
 
+    }
 #ifdef R1250_LQ_ALIAS_TRACE
     if (op==0x1eu && rs==rt && rt!=0u) {
         static unsigned alias_n;
@@ -5501,6 +6055,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             const uint64_t ra = st->gpr[31].ud0;
             unsigned k;
             for (k = 0; k < 8; k++) q[k] = (uint8_t)(ra >> (8u * k));
+            ee_jit_notify_physical_write(0x01045a00u, 8u);
             r1249_repairs++;
             r1249_last[0]=(uint32_t)ee_hle_thread_get_current_thread_id();
         }
@@ -5952,23 +6507,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
              *     already no-ops elsewhere in this file), so doing
              *     nothing and returning is CORRECT emulated behavior,
              *     not just a stand-in.
-             *   61 (0x3D) SetupHeap: real kernel-internal libc
-             *     heap bookkeeping call with no externally-observable
-             *     effect this project currently models (no EE-side
-             *     libc heap is emulated) - matching this project's
-             *     established generic-default-return precedent for
-             *     unimplemented-but-non-blocking real kernel calls
-             *     (IOP tasks #164/#165's syscall 0x10/0x08/0x14
-             *     handling, iop_hle_bios.c's A0/B0/C0 convention).
-             *     NOTE: 60 (0x3C) SetupThread used to be grouped here
-             *     too, but Round 171 (task #172 continuation) found
-             *     that treatment WRONG - see the dedicated "sysnum ==
-             *     60" block below, which replaces it with a real,
-             *     citable implementation (its return value is
-             *     directly consumed as $sp by every real ps2sdk-built
-             *     ELF's own crt0, so a bare 0 return is not a safe
-             *     no-op the way it is for the calls actually listed
-             *     above).
+             *   SetupHeap(61) is deliberately excluded: it mutates the
+             *   kernel heap bounds later queried by EndOfHeap(62). Both
+             *   execute their real BIOS handlers (R1336 KOF regression).
              *   120 (0x78) sceSifSetDChain/SifSetDChain: real EE-side
              *     SIF0 DMAC-channel (DMAC_SIF0_CHCR, 0x1000c000)
              *     chain-mode setup - confirmed by cross-referencing
@@ -6077,8 +6618,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                 r1218_pending=1u;
             }
             if (ee_hle_thread_try_handle(st, sysnum, this_pc, in_delay_slot)) return 1; /* Round 569: real EE thread/sema scheduler - see include/core/ee/ee_hle_thread.h */
-            if (sysnum == 100 || sysnum == 61 ||
-                sysnum == 120 || sysnum == -120) {
+            if(sysnum==61) {
+                /* SetupHeap changes kernel state queried by EndOfHeap(62).
+                 * KOF's first real allocation fails when this is a no-op.
+                 * Execute the selected BIOS handler, as SetupThread does;
+                 * retain its bounds and -1-size convention without guessing. */
+                ee_raise_exception(st,EE_EXC_CODE_SYS,this_pc,in_delay_slot);
+                break;
+            }
+            if (sysnum == 100 || sysnum == 120 || sysnum == -120) {
                 GPR(2) = 0; /* generic default return, matching established precedent */
                 st->pc = this_pc + 4u;
                 st->next_pc = this_pc + 8u;
@@ -6192,6 +6740,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                     memset(st->vu0_mem, 0, sizeof(st->vu0_mem));
                     memset(st->vu0_micro, 0, sizeof(st->vu0_micro));
                     memset(&st->vu0_pipeline,0,sizeof(st->vu0_pipeline));
+                    memset(&st->vu0_timing,0,sizeof(st->vu0_timing));
                     memset(st->vu0_acc,0,sizeof(st->vu0_acc));
                     st->vu0_branch_delay=st->vu0_branch_target=st->vu0_ebit_delay=0;
                     st->vu0_running=0;
@@ -6456,7 +7005,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                         ee_check_browser_idle_carousel(st); /* Round 696 (task #447/#536) */
                         if (EE_SBUS_WAIT_PC_MATCH(st->pc)) ee_check_boot_unblock_sbus_wait(st); /* R1180 hot reject; same R178 semantics */
                         ee_check_gs_vsync(st); /* Round 87 (127th finding) */
-                        ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
+                        ee_timers_tick_fast(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
                         sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
                         ee_check_rpcinit_pending(st);
                         ee_check_rpc_bind_pending(st);
@@ -7783,6 +8332,12 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                      * miss / bad ELF) is left un-replied - an honest
                                      * gap, not a fabricated success. */
                                 }
+                            } else if (call_sid == SIF_SID_LOADFILE && rpc_number == 0xffu) {
+                                /* Legacy client's provider check. Reply is the real
+                                 * selected module's getter constant; unknown remains 0. */
+                                if(call_recvbuf && ee_mem_read32(st,src+0x2cu)>=4u)
+                                    ee_mem_write32(st,call_recvbuf,st->loadfile_rpc_version);
+                                ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_LOADFILE && rpc_number == 0u && call_recvbuf != 0u && i >= 1u) {
                                 /* task #201 (77th finding): real
                                  * LF_F_MOD_LOAD (=0, see the already-
@@ -7839,158 +8394,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if ((call_sid == SIF_SID_PAD_BIND_ID1_OLD || call_sid == SIF_SID_PAD_BIND_ID2_OLD)
                                        && call_recvbuf != 0u) {
-                                /* task #202 (79th finding): real
-                                 * PADMAN RPC call, confirmed via the
-                                 * cd->sid tracking table above (task
-                                 * #202) - the 78th finding's trace
-                                 * showed this call's own path bytes
-                                 * read empty, which puzzled this
-                                 * project until re-reading the fetched
-                                 * ee/rpc/pad/src/libpad.c: unlike
-                                 * LOADFILE, EVERY real libpad call site
-                                 * (padPortInit/padEnd/padRead/etc.)
-                                 * sends its sceSifCallRpc() with a
-                                 * FIXED, literal fno=1 regardless of
-                                 * the actual pad operation - the real
-                                 * operation is instead encoded as a
-                                 * "command" field INSIDE the call's
-                                 * own payload (byte offset 0, not the
-                                 * LOADFILE-style path-string-at-offset-
-                                 * 8 layout this project's rpc_number==1
-                                 * branch above assumes), which is why
-                                 * this project's earlier, sid-blind
-                                 * dispatch read it as an empty path.
-                                 * The real IOP-side reply (see the
-                                 * fetched iop/input/padman/src/
-                                 * rpcserver.c's RpcPadOpen():
-                                 * "data[3] = padPortOpen(...)" - a
-                                 * small non-negative port handle on
-                                 * success - "&data[5]" for extra
-                                 * output) writes back into the SAME
-                                 * call buffer, matching every libpad
-                                 * call site's own
-                                 * "sceSifCallRpc(&padsif[i], 1, 0,
-                                 * &buffer, sizeof(buffer), &buffer,
-                                 * sizeof(buffer), NULL, NULL)"
-                                 * convention (recvbuf == the same
-                                 * buffer as the request). This project
-                                 * does NOT yet decode which specific
-                                 * pad command was requested (would
-                                 * need the real per-command struct
-                                 * layouts for open/init/read/etc. - a
-                                 * real, separate feature, not yet
-                                 * built) nor does it model real
-                                 * controller presence/state - an
-                                 * honest, explicitly-labeled gap.
-                                 * Writing a plausible, cited-offset
-                                 * "success, handle=1" reply (word
-                                 * offset 3 = byte 12, per RpcPadOpen()
-                                 * above; word offset 5 = byte 20, left
-                                 * 0) is a best-effort, real-protocol-
-                                 * shaped synthesis - not a guess at
-                                 * unknown structure semantics, since
-                                 * both written offsets are directly
-                                 * cited from the real IOP-side
-                                 * handler's own source. */
-                                ee_mem_write32(st, call_recvbuf + 12u, 1u); /* data[3]: synthetic pad handle (placeholder) */
-                                ee_mem_write32(st, call_recvbuf + 20u, 0u); /* data[5]: synthetic extra output = 0 */
-
-                                /* Round 63 (95th finding, task #172
-                                 * continued): the reply above unblocks
-                                 * padPortOpen()'s OWN RPC return value,
-                                 * but real padPortOpen() (fetched
-                                 * ee/rpc/pad/src/libpad.c) does its
-                                 * REAL "is a controller connected"
-                                 * work entirely differently: it
-                                 * pre-fills the CALLER-supplied
-                                 * "padArea" buffer with
-                                 * "pdata->state = PAD_STATE_EXECCMD"
-                                 * (5, "still detecting") BEFORE even
-                                 * sending this RPC, and real IOP-side
-                                 * PADMAN (rom0:padman) subsequently
-                                 * DMAs fresh status into that SAME
-                                 * buffer in the background as pad
-                                 * hardware is polled - eventually
-                                 * settling `state` at
-                                 * PAD_STATE_DISCONN (0, per libpad.h's
-                                 * real, cited enum) once it determines
-                                 * no controller is present, or
-                                 * PAD_STATE_STABLE (6) once one is
-                                 * found. padGetState()'s own doc
-                                 * comment: "Wait until state == 6
-                                 * (Ready) before trying to access the
-                                 * pad" - any caller (libpad's own
-                                 * padGetState(), or this real BIOS/
-                                 * OSDSYS's lower-level equivalent
-                                 * polling the same real, DMA'd buffer
-                                 * directly) that busy-polls this field
-                                 * waiting for it to LEAVE EXECCMD would
-                                 * spin forever if nothing ever updates
-                                 * it - exactly the resting loop this
-                                 * project traced in the 94th finding
-                                 * (pc=0x8000F810 area, checking several
-                                 * fixed-offset flags including one
-                                 * that never changes). This project
-                                 * does not model a real, continuous
-                                 * IOP->EE PADMAN DMA stream (a real,
-                                 * separate feature - genuine periodic
-                                 * pad-hardware polling - not yet
-                                 * built), but CAN perform the single,
-                                 * real, well-cited step real PADMAN
-                                 * would have completed almost
-                                 * immediately with no controller
-                                 * physically present (this project's
-                                 * own Wii port has no PS2 controller
-                                 * to report either way): settle the
-                                 * caller's padArea buffer straight to
-                                 * PAD_STATE_DISCONN, matching real
-                                 * pad_data_old's exact, cited 64-byte
-                                 * layout ("rom0:padman has only 64
-                                 * byte of pad data" - libpad.c comment
-                                 * - frame:u32@0, state:u8@4,
-                                 * reqState:u8@5, ok:u8@6) for BOTH
-                                 * double-buffered copies (real
-                                 * padGetDmaStrOld() picks whichever of
-                                 * the two 64-byte slots has the
-                                 * higher `frame` count - writing both
-                                 * identically at frame=1 makes the
-                                 * choice immaterial). padArea itself
-                                 * is read from the request's own real,
-                                 * cited struct padOpenArgs layout
-                                 * (command@0, port@4, slot@8,
-                                 * unknown@12, padArea@16) - the same
-                                 * buffer this branch already reads/
-                                 * writes at other offsets, per the
-                                 * comment above (recvbuf == request
-                                 * buffer). Only touches memory when
-                                 * padArea is non-NULL and non-zero, to
-                                 * avoid writing through a bad pointer
-                                 * on any call shape this project
-                                 * hasn't verified. */
-                                {
-                                    uint32_t pad_area = ee_mem_read32(st, call_recvbuf + 16u);
-                                    if (pad_area != 0u) {
-                                        /* Round 663-666 (task #447/#623): see
-                                         * ee_pad_area_write_slots()'s own citation trail
-                                         * (defined near ee_check_vblank(), far above) for
-                                         * the full real-protocol rationale behind every
-                                         * byte this writes - unchanged behavior, just
-                                         * factored into a shared helper.
-                                         *
-                                         * Round 669 addition: remember this port's real
-                                         * pad_area address (libpad's own padOpenArgs.port
-                                         * field, request-buffer offset +4) so
-                                         * ee_pad_area_refresh_all() can keep re-publishing
-                                         * live button state into it every VBLANK_START,
-                                         * fixing Round 638's "pad-mailbox starvation" -
-                                         * this initial write was the ONLY write that ever
-                                         * happened before this round. */
-                                        uint32_t port = ee_mem_read32(st, call_recvbuf + 4u);
-                                        if (port < 2u)
-                                            g_ee_pad_area_bound[port] = pad_area;
-                                        ee_pad_area_write_slots(st, pad_area);
-                                    }
-                                }
+                                ee_pad_legacy_rpc(st,call_recvbuf);
                                 ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_LOADFILE && rpc_number == 3u && call_recvbuf != 0u && i >= 1u) {
                                 /* Round 1042 (task #447/#536, discovered via the Round
@@ -8917,6 +9321,17 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                     ee_mem_write32(st, call_recvbuf + 4u, 0u); /* real secondary output word - unmodeled, neutral 0 placeholder, same as CD_SCMD_FORBID_DVDP's own */
                                 }
                                 ee_arm_rpc_call_pending(call_cd);
+                            } else if (call_sid == SIF_SID_FILEIO && rpc_number == 0xffu) {
+                                g_fileio_trace.version_calls++;
+                                /* Sony legacy sceFsInit/_fs_version performs this
+                                 * four-character provider check before any OPEN.
+                                 * A blanket zero here sends Crash E3 to its own
+                                 * failure path even when its fonts exist on CD.
+                                 * The constant was recovered from the selected
+                                 * IOP FILEIO module, not from the EE executable. */
+                                if(call_recvbuf && ee_mem_read32(st,src+0x2cu)>=4u)
+                                    ee_mem_write32(st,call_recvbuf,st->fileio_rpc_version);
+                                ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_FILEIO && rpc_number == 0u) {
                                 /* Round 303 (new finding), UPGRADED in
                                  * Round 345: real SIF_SID_FILEIO
@@ -9008,7 +9423,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                  * found" reply (Round 303's own
                                  * citation - memory cards/host FS are
                                  * still honestly unmodeled). */
-                                char open_name[64];
+                                char open_name[224];
 /* Round 456 (task #276): real, cited errno correction. This
                                  * blanket reply was -4 since Round 303 - an
                                  * honestly-labeled placeholder, but -4 is
@@ -9027,13 +9442,23 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                     uint32_t open_payload_base = dmat_ptr + (i - 1u) * 16u;
                                     uint32_t open_payload_src = ee_mem_read32(st, open_payload_base + 0u);
                                     if (open_payload_src != 0u) {
+                                        /* Old Sony FILEIO OPEN places the device
+                                         * pathname at +0; modern ps2sdk uses +4;
+                                         * captured Crash E3 FILEIO 2110 packets
+                                         * use +8. Probe only fixed, aligned
+                                         * layouts with real device prefixes. */
+                                        uint8_t head[24];
+                                        for (unsigned k=0;k<sizeof head;k++)
+                                            head[k]=ee_mem_read8(st,open_payload_src+k);
+                                        uint32_t path_off=ee_fileio_open_name_offset(head);
+                                        g_fileio_trace.last_open_offset=path_off;
                                         int ok;
-                                        for (ok = 0; ok < 63; ok++) {
-                                            uint8_t b = ee_mem_read8(st, open_payload_src + 4u + (uint32_t)ok);
+                                        for (ok = 0; ok < 223; ok++) {
+                                            uint8_t b = ee_mem_read8(st, open_payload_src + path_off + (uint32_t)ok);
                                             open_name[ok] = (char)b;
                                             if (!b) break;
                                         }
-                                        open_name[ok < 63 ? ok : 63] = 0;
+                                        open_name[ok < 223 ? ok : 223] = 0;
 #ifdef EE_FILEIO_DEBUG
                                         fprintf(stderr, "[EE_FILEIO_DEBUG] FIO_F_OPEN name=\"%s\"\n", open_name);
 #endif
@@ -9077,11 +9502,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                             uint32_t disc_lba, disc_size;
                                             int found = iop_cdvd_disc_find_file(iso_name, &disc_lba, &disc_size);
                                             if (!found) {
-                                                char with_ver[64];
-                                                int vk;
-                                                for (vk = 0; vk < 58 && iso_name[vk]; vk++) with_ver[vk] = iso_name[vk];
-                                                with_ver[vk] = 0;
-                                                if (vk > 0 && !strchr(with_ver, ';')) {
+                                                char with_ver[224];
+                                                size_t vk=0;
+                                                /* Leave room for ;1 and NUL. Never use a
+                                                 * truncated name as a different disc file. */
+                                                while (vk<sizeof(with_ver)-3u && iso_name[vk]) {
+                                                    with_ver[vk]=iso_name[vk]; vk++;
+                                                }
+                                                with_ver[vk]=0;
+                                                if (vk>0 && !iso_name[vk] && !strchr(with_ver, ';')) {
                                                     with_ver[vk] = ';'; with_ver[vk+1] = '1'; with_ver[vk+2] = 0;
                                                     found = iop_cdvd_disc_find_file(with_ver, &disc_lba, &disc_size);
                                                 }
@@ -9121,6 +9550,20 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                         }
                                     }
                                 }
+                                /* Trace the observed request and real reply, never override it. */
+                                g_fileio_trace.open_calls++;
+                                g_fileio_trace.last_open_result=open_reply;
+                                trace_copy_path(g_fileio_trace.last_open_path,sizeof g_fileio_trace.last_open_path,open_name);
+                                if (open_reply>=0) g_fileio_trace.open_success++;
+                                else g_fileio_trace.open_fail++;
+                                if (trace_name_is_font(open_name)) {
+                                    g_fileio_trace.font_open_calls++;
+                                    trace_copy_path(g_fileio_trace.last_font_path,sizeof g_fileio_trace.last_font_path,open_name);
+                                    if (open_reply>=0) g_fileio_trace.font_open_success++;
+                                    else g_fileio_trace.font_open_fail++;
+                                }
+                                if (open_reply>=1 && open_reply<EE_FIO_ROM_FD_MAX)
+                                    g_fileio_font_fd[open_reply]=(uint8_t)trace_name_is_font(open_name);
                                 if (call_recvbuf != 0u) {
                                     ee_mem_write32(st, call_recvbuf + 0u, (uint32_t)open_reply); /* real fd (>=0, rom0: ROMDIR hit) or real IOP errno-style -4 "not found" (see comment) */
                                 }
@@ -9196,6 +9639,18 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                             bytes_read = n;
                                         }
                                     }
+                                    g_fileio_trace.read_calls++;
+                                    g_fileio_trace.read_bytes+=bytes_read;
+                                    if (read_payload_src) {
+                                        uint32_t rfd=ee_mem_read32(st,read_payload_src+0u);
+                                        g_fileio_trace.last_read_fd=rfd;
+                                        g_fileio_trace.last_read_requested=ee_mem_read32(st,read_payload_src+8u);
+                                        g_fileio_trace.last_read_returned=bytes_read;
+                                        if (rfd<EE_FIO_ROM_FD_MAX && g_fileio_font_fd[rfd]) {
+                                            g_fileio_trace.font_read_calls++;
+                                            g_fileio_trace.font_read_bytes+=bytes_read;
+                                        }
+                                    }
                                     ee_mem_write32(st, call_recvbuf + 0u, bytes_read); /* real byte count actually delivered (0 for an unknown/unservable fd - honest, not fabricated) */
                                 }
                                 ee_arm_rpc_call_pending(call_cd);
@@ -9222,6 +9677,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                  * closely enough for this project's
                                  * honest scope. */
                                 int32_t close_fd = (int32_t)ee_mem_read32(st, call_recvbuf + 0u);
+                                g_fileio_trace.close_calls++;
+                                if (close_fd>=1 && close_fd<EE_FIO_ROM_FD_MAX) g_fileio_font_fd[close_fd]=0;
                                 ee_fio_rom_fd_close(close_fd);
                                 ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real result: 0 = success */
                                 ee_arm_rpc_call_pending(call_cd);
@@ -9418,6 +9875,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                     }
                                     ee_mem_write32(st, call_recvbuf+12u, valid ? 1u : 0u);
                                     if (cmd == 1u) ee_mem_write32(st, call_recvbuf+20u, 0u);
+                                } else if (cmd == 0x06u && ps) {
+                                    ee_pad_new_mode_rpc(st,ps);
+                                    ee_mem_write32(st,call_recvbuf+20u,ee_mem_read32(st,ps+20u));
                                 } else if (cmd == 0x0cu || cmd == 0x0du) {
                                     ee_mem_write32(st, call_recvbuf+12u, cmd == 0x0cu ? 2u : 1u);
                                 } else {
@@ -10158,8 +10618,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         }
         break;
 
-    case 0x02: /* J */   BRANCH_TO((this_pc & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
-    case 0x03: /* JAL */  LINK(31); BRANCH_TO((this_pc & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
+    case 0x02: /* J */   BRANCH_TO(((this_pc + 4u) & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
+    case 0x03: /* JAL */  LINK(31); BRANCH_TO(((this_pc + 4u) & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
     case 0x04: /* BEQ */  st->branch_pending = 1; if (GPR(rs) == GPR(rt)) BRANCH_TO(this_pc + 4 + (imm << 2)); break;
     case 0x05: /* BNE */  st->branch_pending = 1; if (GPR(rs) != GPR(rt)) BRANCH_TO(this_pc + 4 + (imm << 2)); break;
     case 0x06: /* BLEZ */ st->branch_pending = 1; if ((int64_t)GPR(rs) <= 0) BRANCH_TO(this_pc + 4 + (imm << 2)); break;
@@ -10198,2584 +10658,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
     case 0x0E: /* XORI */  if (rt) GPR(rt) = GPR(rs) ^ (uint64_t)uimm; break;
     case 0x0F: /* LUI */   if (rt) GPR(rt) = sext32(uimm << 16); break;
 
-    case 0x10: /* COP0 */
-        switch (rs) {
-        case 0x00: /* MFC0 */
-            if (rt) GPR(rt) = sext32(st->cop0[rd]);
-            break;
-        case 0x04: /* MTC0 */
-            if (rd == 16) { /* Config: preserve read-only IC/DC bits like PCSX2's WriteCP0Config */
-                st->cop0[16] = (rt32 & ~0xFC0u) | 0x440u;
-            } else if (rd == 11) { /* Compare: writing it clears the latched
-                 * timer-interrupt pending bit (Cause.IP7) - see
-                 * ee_latch_timer_interrupt()'s comment above (round 9). */
-                st->cop0[11] = rt32;
-                st->cop0[13] &= ~EE_CAUSE_IP7;
-            } else {
-                st->cop0[rd] = rt32;
-            }
-            break;
-        case 0x08: { /* BC0F/T/FL/TL: real DMA completion condition. */
-            /* PCSX2 COP0.cpp::CPCOND0 and Dmac.h: CIS and CPC both
-             * occupy bits 0..9. Every selected completion must be set. */
-            dma_state_t *d = dma_get_state();
-            int condition = ((d->d_stat | ~d->d_pcr) & 0x3ffu) == 0x3ffu;
-            unsigned kind = rt & 3u;
-            int taken = condition == (int)(kind & 1u);
-            if (taken) BRANCH_TO(this_pc + 4u + (uint32_t)(imm * 4));
-            else if (kind & 2u) {
-                st->pc = fallthrough_pc + 4u;
-                st->next_pc = fallthrough_pc + 8u;
-            } else st->branch_pending = 1u;
-            break;
-        }
-        default:
-            if (rs & 0x10) {
-                /* "CO" format: rs's top bit set means the real
-                 * operation is selected by the 6-bit funct field
-                 * (bits 0-5), not by rs itself - matches PCSX2's own
-                 * tbl_COP0_C0[64] dispatch table in
-                 * R5900OpcodeTables.cpp. */
-                uint32_t co_funct = instr & 0x3F;
-                switch (co_funct) {
-                case 0x10: /* RFE - "Return From Exception".
-                     * NOTE: real PCSX2's EE (R5900) opcode table does
-                     * NOT implement this (tbl_COP0_C0[0x10] is
-                     * COP0_Unknown there) - RFE is the ORIGINAL MIPS I
-                     * exception-return instruction, superseded by
-                     * ERET (funct 0x18, below) on MIPS III+. It shows
-                     * up here because this real BIOS dump's early
-                     * boot code includes PS1-backward-compatibility-
-                     * mode boot code (this file's own header bytes
-                     * contain the ASCII string "PS compatible mode"),
-                     * which runs in a MIPS-I-compatible execution
-                     * context where RFE is meaningful. Implemented
-                     * with RFE's standard, unambiguous MIPS I
-                     * semantics (restore the 3-level interrupt-
-                     * enable/kernel-mode bit stack by shifting it
-                     * right by 2) rather than skipped/faked, since
-                     * that's well-defined regardless of the exact
-                     * execution mode question above. RFE does NOT
-                     * itself change PC (unlike ERET) - the caller
-                     * separately jumps to EPC, typically via JR. */
-                    st->cop0[12] = (st->cop0[12] & ~0x0Fu) | ((st->cop0[12] >> 2) & 0x0Fu);
-                    break;
-                case 0x18: /* ERET - ported from PCSX2's COP0::ERET().
-                     * No branch delay slot (unlike ordinary jumps/
-                     * branches) - takes effect immediately, so this
-                     * sets st->pc/next_pc directly rather than going
-                     * through the BRANCH_TO() delay-slot convention. */
-                {
-                    uint32_t target;
-                    r1189_eret_count++;
-                    uint32_t r1126_epc = st->cop0[14];
-                    uint32_t r1126_status_before = st->cop0[12];
-                    if (st->cop0[12] & 0x4u) { /* Status.ERL */
-                        target = st->cop0[30]; /* ErrorEPC */
-                        st->cop0[12] &= ~0x4u;
-                    } else {
-                        target = st->cop0[14]; /* EPC */
-                        st->cop0[12] &= ~0x2u; /* Status.EXL */
-                    }
-                    st->pc = target;
-                    st->next_pc = target + 4;
-                    /* Round 598 (task #447/#536): forced preemption now
-                     * fires here, right after a real interrupt/exception
-                     * return, instead of on every instruction (see the
-                     * long comment at this function's other former call
-                     * site in ee_step()'s epilogue for the full Round 598
-                     * regression writeup). This is the one point where
-                     * real EE hardware's own kernel-level forced
-                     * preemption genuinely happens - the interrupt-return
-                     * path re-checking the ready queue before restoring
-                     * a thread's context - so this is a strictly more
-                     * hardware-faithful integration point, not just a
-                     * regression workaround. */
-#ifdef R1126_ERET_TRACE
-                    {
-                        int r1126_old_tid = ee_hle_thread_get_current_thread_id();
-                        ee_hle_thread_check_preempt(st);
-                        int r1126_new_tid = ee_hle_thread_get_current_thread_id();
-                        uint32_t r1126_new_status = ee_hle_thread_get_status(r1126_new_tid);
-                        fprintf(stderr, "[R1126ERET] EPC=0x%08x target_pc=0x%08x old_tid=%d next_tid=%d next_pc=0x%08x status_before=0x%08x status_after=0x%08x next_status=0x%08x\n",
-                                r1126_epc, target, r1126_old_tid, r1126_new_tid, st->pc,
-                                r1126_status_before, st->cop0[12], r1126_new_status);
-                    }
-#else
-                    ee_hle_thread_check_preempt(st);
-#endif
-                    break;
-                }
-                case 0x38: /* EI - ported from PCSX2's COP0::EI(). Gated
-                     * the same way real hardware/PCSX2 gates it:
-                     * only takes effect if _EDI, EXL, ERL are set, or
-                     * KSU==0 (kernel mode) - i.e. code running in
-                     * user mode without the right permission bit
-                     * can't enable interrupts via this instruction. */
-                    if ((st->cop0[12] & 0x20000u) ||      /* _EDI  (bit 17) */
-                        (st->cop0[12] & 0x2u) ||           /* EXL   (bit 1)  */
-                        (st->cop0[12] & 0x4u) ||           /* ERL   (bit 2)  */
-                        ((st->cop0[12] & 0x18u) == 0))      /* KSU==0 (bits 3-4) */
-                    {
-                        st->cop0[12] |= 0x10000u; /* Status.EIE = 1 (bit 16) */
-                    }
-                    break;
-                case 0x39: /* DI - ported from PCSX2's COP0::DI(), same gating as EI. */
-                    if ((st->cop0[12] & 0x20000u) ||
-                        (st->cop0[12] & 0x2u) ||
-                        (st->cop0[12] & 0x4u) ||
-                        ((st->cop0[12] & 0x18u) == 0))
-                    {
-                        st->cop0[12] &= ~0x10000u; /* Status.EIE = 0 */
-                    }
-                    break;
-                case 0x01: /* TLBR - Read Indexed TLB Entry. Ported from
-                     * PCSX2's COP0::TLBR(). Loads the TLB entry at
-                     * Index (cop0[0], masked to 6 bits/48 entries)
-                     * back into PageMask/EntryHi/EntryLo0/EntryLo1
-                     * (cop0[5]/[10]/[2]/[3]), applying the same
-                     * read-back masking real hardware does (G is only
-                     * set in the read-back copies if BOTH EntryLo0 and
-                     * EntryLo1 have G set in the stored entry - see
-                     * PCSX2's comment on this exact quirk). */
-                {
-                    uint32_t i = st->cop0[0] & 0x3Fu;
-                    if (i > 47) break; /* real hardware/PCSX2 both just warn and no-op past entry 47 */
-                    uint32_t lo0 = st->tlb[i].entry_lo0, lo1 = st->tlb[i].entry_lo1;
-                    uint32_t g = (lo0 & 1u) & (lo1 & 1u);
-                    st->cop0[5]  = st->tlb[i].page_mask;
-                    st->cop0[10] = st->tlb[i].entry_hi & ~((st->tlb[i].page_mask) | 0x1F00u);
-                    st->cop0[2]  = (lo0 & ~0xFC000000u & ~1u) | g;
-                    st->cop0[3]  = (lo1 & ~0x7C000000u & ~1u) | g;
-                    break;
-                }
-                case 0x02: /* TLBWI - Write Indexed TLB Entry. Ported
-                     * from PCSX2's COP0::TLBWI()/WriteTLB(). Stores
-                     * the current PageMask/EntryHi/EntryLo0/EntryLo1
-                     * into the TLB at Index. NOTE: this project does
-                     * not wire TLB lookups into actual address
-                     * translation (ee_mem_ptr() still treats kuseg/
-                     * kseg0/kseg1 as flat physical-masked mappings) -
-                     * this stores the entry faithfully so MFC0/TLBR/
-                     * TLBP round-trip correctly, matching real
-                     * hardware's register-level behavior, without
-                     * claiming to model the MMU's actual page-walk. */
-                {
-                    uint32_t j = st->cop0[0] & 0x3Fu;
-                    if (j > 47) break;
-                    st->tlb[j].page_mask = st->cop0[5];
-                    st->tlb[j].entry_hi  = st->cop0[10];
-                    st->tlb[j].entry_lo0 = st->cop0[2];
-                    st->tlb[j].entry_lo1 = st->cop0[3];
-                    break;
-                }
-                case 0x06: /* TLBWR - Write Random TLB Entry. Same as
-                     * TLBWI but indexed by Random (cop0[1]) instead of
-                     * Index. Real hardware/PCSX2 decrement Random
-                     * every cycle between Wired and 47; this project
-                     * does not model that decay (Random is just
-                     * whatever value software last wrote via MTC0, or
-                     * 0) - a documented simplification, not a
-                     * fabricated behavior, since we don't claim
-                     * cycle-accurate Random decay. */
-                {
-                    uint32_t j = st->cop0[1] & 0x3Fu;
-                    if (j > 47) break;
-                    st->tlb[j].page_mask = st->cop0[5];
-                    st->tlb[j].entry_hi  = st->cop0[10];
-                    st->tlb[j].entry_lo0 = st->cop0[2];
-                    st->tlb[j].entry_lo1 = st->cop0[3];
-                    r1191_tlbwr_count++;
-                    break;
-                }
-                case 0x08: /* TLBP - Probe TLB for Matching Entry.
-                     * Ported from PCSX2's COP0::TLBP(). Searches all
-                     * 48 entries for one whose (masked) VPN2 and
-                     * ASID/Global match the current EntryHi, sets
-                     * Index to the match (or 0x80000000, i.e. sign bit
-                     * set, if none found - the real "not found"
-                     * convention, checked via MFC0 $rt,$0 returning a
-                     * negative value). */
-                {
-                    uint32_t eh = st->cop0[10];
-                    uint32_t want_vpn2 = (eh >> 13) & 0x7FFFFu;
-                    uint32_t want_asid = eh & 0xFFu;
-                    uint32_t found = 0xFFFFFFFFu;
-                    for (uint32_t i = 0; i < 48; i++) {
-                        uint32_t mask = (st->tlb[i].page_mask >> 13) & 0xFFFu;
-                        uint32_t entry_vpn2 = (st->tlb[i].entry_hi >> 13) & 0x7FFFFu;
-                        int is_global = (st->tlb[i].entry_lo0 & 1u) && (st->tlb[i].entry_lo1 & 1u);
-                        uint32_t entry_asid = st->tlb[i].entry_hi & 0xFFu;
-                        if ((entry_vpn2 & ~mask) == (want_vpn2 & ~mask) &&
-                            (is_global || entry_asid == want_asid)) {
-                            found = i;
-                            break;
-                        }
-                    }
-                    st->cop0[0] = (found == 0xFFFFFFFFu) ? 0x80000000u : found;
-                    break;
-                }
-                default:
-                {
-                    char buf[96];
-                    snprintf(buf, sizeof(buf),
-                             "unimplemented COP0 CO-format funct 0x%02X (pc=0x%08X)",
-                             (unsigned int)co_funct, (unsigned int)this_pc);
-                    halt(buf);
-                    return 1;
-                }
-                }
-            } else {
-                char buf[96];
-                snprintf(buf, sizeof(buf),
-                         "unimplemented COP0 sub-opcode (rs=0x%02X, pc=0x%08X)",
-                         (unsigned int)rs, (unsigned int)this_pc);
-                halt(buf);
-                return 1;
-            }
-            break;
-        }
-        break;
+#include "ee_cop0_switch.inc"
 
-    case 0x11: /* COP1 (FPU, single-precision only) */
-        switch (rs) {
-        case 0x00: /* MFC1 */ if (rt) GPR(rt) = sext32(st->fpr[rd]); break;
-        case 0x02: /* CFC1 */
-            if (rt) {
-                if (rd == 31) GPR(rt) = sext32(st->fcr31);
-                else if (rd == 0) GPR(rt) = sext32(0x2E00u);
-                else GPR(rt) = 0;
-            }
-            break;
-        case 0x04: /* MTC1 */ st->fpr[rd] = rt32; break;
-        case 0x06: /* CTC1 */ if (rd == 31) st->fcr31 = rt32; break;
-        case 0x10: { /* COP1.S - single-precision arithmetic, fd=sa fs=rd ft=rt */
-            uint32_t fd = sa, fs = rd, ft = rt;
-            switch (funct) {
-            case 0x00: /* ADD.S */ {
-                float r = fpu_double(st->fpr[fs]) + fpu_double(st->fpr[ft]);
-                st->fpr[fd] = float_to_bits(r);
-                if (!fpu_check_overflow(&st->fpr[fd])) fpu_check_underflow(&st->fpr[fd]);
-            } break;
-            case 0x01: /* SUB.S */ {
-                float r = fpu_double(st->fpr[fs]) - fpu_double(st->fpr[ft]);
-                st->fpr[fd] = float_to_bits(r);
-                if (!fpu_check_overflow(&st->fpr[fd])) fpu_check_underflow(&st->fpr[fd]);
-            } break;
-            case 0x02: /* MUL.S */ {
-                float r = fpu_double(st->fpr[fs]) * fpu_double(st->fpr[ft]);
-                st->fpr[fd] = float_to_bits(r);
-                if (!fpu_check_overflow(&st->fpr[fd])) fpu_check_underflow(&st->fpr[fd]);
-            } break;
-            case 0x03: /* DIV.S */ {
-                uint32_t divisor = st->fpr[ft], dividend = st->fpr[fs];
-                if ((divisor & 0x7F800000u) == 0) {
-                    /* divide-by-zero (denormal counts as zero too): result is
-                     * signed +/-Fmax, sign = XOR of operand signs. */
-                    st->fpr[fd] = ((divisor ^ dividend) & 0x80000000u) | FPU_POS_FMAX;
-                } else {
-                    float r = fpu_double(dividend) / fpu_double(divisor);
-                    st->fpr[fd] = float_to_bits(r);
-                    fpu_check_overflow(&st->fpr[fd]);
-                    fpu_check_underflow(&st->fpr[fd]);
-                }
-            } break;
-            case 0x05: /* ABS.S */ st->fpr[fd] = st->fpr[fs] & 0x7fffffffu; break;
-            case 0x06: /* MOV.S */ st->fpr[fd] = st->fpr[fs]; break;
-            case 0x07: /* NEG.S */ st->fpr[fd] = st->fpr[fs] ^ 0x80000000u; break;
-            case 0x24: /* CVT.W.S (float -> int32) */
-                if ((st->fpr[fs] & 0x7F800000u) <= 0x4E800000u) {
-                    st->fpr[fd] = (uint32_t)(int32_t)bits_to_float(st->fpr[fs]);
-                } else {
-                    st->fpr[fd] = (st->fpr[fs] & 0x80000000u) ? 0x80000000u : 0x7fffffffu;
-                }
-                break;
-            case 0x04: /* SQRT.S - real hardware/PCSX2 quirk: the source
-                        * operand is Ft (rt field), NOT Fs, and Fs
-                        * (rd field) is unused - ported exactly from
-                        * PCSX2's SQRT_S(), not a typo. Documented
-                        * simplification, matching this file's
-                        * existing FPU scope: the D/I exception-cause
-                        * control-register flags PCSX2 also sets here
-                        * are NOT modeled (nothing in this project
-                        * raises FPU exceptions from them yet - same
-                        * simplification already in place for every
-                        * other FPU op above, which also skip the
-                        * O/U/SO/SU flags). */
-                if ((st->fpr[ft] & 0x7F800000u) == 0) {
-                    st->fpr[fd] = st->fpr[ft] & 0x80000000u; /* +/-0 */
-                } else if (st->fpr[ft] & 0x80000000u) {
-                    float r = sqrtf(fabsf(fpu_double(st->fpr[ft])));
-                    st->fpr[fd] = float_to_bits(r);
-                } else {
-                    float r = sqrtf(fpu_double(st->fpr[ft]));
-                    st->fpr[fd] = float_to_bits(r);
-                }
-                break;
-            case 0x16: /* RSQRT.S: fd = fs / sqrt(ft) - ported from
-                        * PCSX2's RSQRT_S(). Same documented flag
-                        * simplification as SQRT.S above. */
-                if ((st->fpr[ft] & 0x7F800000u) == 0) {
-                    /* ft is +/-0 (denormals-are-zero): result is
-                     * +/-Fmax, sign taken from ft. */
-                    st->fpr[fd] = (st->fpr[ft] & 0x80000000u) | FPU_POS_FMAX;
-                } else if (st->fpr[ft] & 0x80000000u) {
-                    float denom = sqrtf(fabsf(fpu_double(st->fpr[ft])));
-                    float r = fpu_double(st->fpr[fs]) / denom;
-                    st->fpr[fd] = float_to_bits(r);
-                    fpu_check_overflow(&st->fpr[fd]);
-                    fpu_check_underflow(&st->fpr[fd]);
-                } else {
-                    float r = fpu_double(st->fpr[fs]) / sqrtf(fpu_double(st->fpr[ft]));
-                    st->fpr[fd] = float_to_bits(r);
-                    fpu_check_overflow(&st->fpr[fd]);
-                    fpu_check_underflow(&st->fpr[fd]);
-                }
-                break;
-            case 0x28: /* MAX.S - ported from PCSX2's MAX_S()/fp_max():
-                        * a bit-level signed-int max/min, not a float
-                        * compare - see fp_max()'s comment. No
-                        * overflow/underflow clamping needed (result
-                        * is always one of the two original values). */
-                st->fpr[fd] = fp_max(st->fpr[fs], st->fpr[ft]);
-                break;
-            case 0x29: /* MIN.S - ported from PCSX2's MIN_S()/fp_min(). */
-                st->fpr[fd] = fp_min(st->fpr[fs], st->fpr[ft]);
-                break;
-            case 0x18: /* ADDA.S - ACC = fs + ft, ported from PCSX2's
-                        * ADDA_S(). */
-            {
-                float r = fpu_double(st->fpr[fs]) + fpu_double(st->fpr[ft]);
-                st->acc = float_to_bits(r);
-                if (!fpu_check_overflow(&st->acc)) fpu_check_underflow(&st->acc);
-            } break;
-            case 0x19: /* SUBA.S - ACC = fs - ft, ported from SUBA_S(). */
-            {
-                float r = fpu_double(st->fpr[fs]) - fpu_double(st->fpr[ft]);
-                st->acc = float_to_bits(r);
-                if (!fpu_check_overflow(&st->acc)) fpu_check_underflow(&st->acc);
-            } break;
-            case 0x1A: /* MULA.S - ACC = fs * ft, ported from MULA_S(). */
-            {
-                float r = fpu_double(st->fpr[fs]) * fpu_double(st->fpr[ft]);
-                st->acc = float_to_bits(r);
-                if (!fpu_check_overflow(&st->acc)) fpu_check_underflow(&st->acc);
-            } break;
-            case 0x1C: /* MADD.S - fd = ACC + (fs * ft), ported from
-                        * PCSX2's MADD_S(). Real hardware/PCSX2 quirk
-                        * worth preserving exactly: the intermediate
-                        * product is run through fpuDouble() a SECOND
-                        * time when it's read back for the addition
-                        * (PCSX2's own FPRreg temp; temp.f = fpuDouble
-                        * (fs)*fpuDouble(ft); then fpuDouble(temp.UL)
-                        * again) - unlike MADDA.S below, which doesn't
-                        * do this second pass. Not an oversight to
-                        * "simplify away" - ported as-is. */
-            {
-                float prod = fpu_double(st->fpr[fs]) * fpu_double(st->fpr[ft]);
-                uint32_t prod_bits = float_to_bits(prod);
-                float r = fpu_double(st->acc) + fpu_double(prod_bits);
-                st->fpr[fd] = float_to_bits(r);
-                if (!fpu_check_overflow(&st->fpr[fd])) fpu_check_underflow(&st->fpr[fd]);
-            } break;
-            case 0x1D: /* MSUB.S - fd = ACC - (fs * ft), same
-                        * double-fpuDouble()-pass quirk as MADD.S
-                        * above, ported from PCSX2's MSUB_S(). */
-            {
-                float prod = fpu_double(st->fpr[fs]) * fpu_double(st->fpr[ft]);
-                uint32_t prod_bits = float_to_bits(prod);
-                float r = fpu_double(st->acc) - fpu_double(prod_bits);
-                st->fpr[fd] = float_to_bits(r);
-                if (!fpu_check_overflow(&st->fpr[fd])) fpu_check_underflow(&st->fpr[fd]);
-            } break;
-            case 0x1E: /* MADDA.S - ACC += fs * ft, ported from PCSX2's
-                        * MADDA_S(). NOTE: no intermediate
-                        * fpuDouble()-of-the-product pass here, unlike
-                        * MADD.S above - that asymmetry is real,
-                        * ported exactly as PCSX2 has it. */
-            {
-                float r = fpu_double(st->acc) + (fpu_double(st->fpr[fs]) * fpu_double(st->fpr[ft]));
-                st->acc = float_to_bits(r);
-                if (!fpu_check_overflow(&st->acc)) fpu_check_underflow(&st->acc);
-            } break;
-            case 0x1F: /* MSUBA.S - ACC -= fs * ft, ported from MSUBA_S(). */
-            {
-                float r = fpu_double(st->acc) - (fpu_double(st->fpr[fs]) * fpu_double(st->fpr[ft]));
-                st->acc = float_to_bits(r);
-                if (!fpu_check_overflow(&st->acc)) fpu_check_underflow(&st->acc);
-            } break;
-            case 0x32: /* C.EQ.S */
-                if (fpu_double(st->fpr[fs]) == fpu_double(st->fpr[ft])) st->fcr31 |= 0x00800000u;
-                else st->fcr31 &= ~0x00800000u;
-                break;
-            case 0x34: /* C.LT.S */
-                if (fpu_double(st->fpr[fs]) < fpu_double(st->fpr[ft])) st->fcr31 |= 0x00800000u;
-                else st->fcr31 &= ~0x00800000u;
-                break;
-            case 0x36: /* C.LE.S */
-                if (fpu_double(st->fpr[fs]) <= fpu_double(st->fpr[ft])) st->fcr31 |= 0x00800000u;
-                else st->fcr31 &= ~0x00800000u;
-                break;
-            default:
-                halt("unimplemented COP1.S funct (SQRT/RSQRT/MADD/MAX/MIN family not implemented)");
-                return 1;
-            }
-        } break;
-        case 0x14: /* COP1.W - only CVT.S.W (int32 -> float) */
-            if (funct == 0x20) {
-                uint32_t fd = sa, fs = rd;
-                st->fpr[fd] = float_to_bits((float)(int32_t)st->fpr[fs]);
-            } else {
-                halt("unimplemented COP1.W funct");
-                return 1;
-            }
-            break;
-        case 0x08: /* COP1 BC (branch on FP condition flag) - sub-selected
-                    * by the rt field (matches PCSX2's tbl_COP1_BC1[32],
-                    * indexed 0=BC1F, 1=BC1T, 2=BC1FL, 3=BC1TL). All
-                    * four variants implemented as of Round 400 - see
-                    * the BC1FL/BC1TL cases below for the "likely"
-                    * nullify-delay-slot semantics and citation. */
-            switch (rt) {
-            case 0x00: /* BC1F - branch if the FP condition flag (fcr31
-                        * bit 0x00800000, set by C.EQ/LT/LE.S) is
-                        * CLEAR. Ported from PCSX2's BC1()/BC1F(). */
-                st->branch_pending = 1; /* regular branch: delay slot always executes */
-                if (!(st->fcr31 & 0x00800000u)) BRANCH_TO(this_pc + 4 + (imm << 2));
-                break;
-            case 0x01: /* BC1T - branch if the flag is SET. */
-                st->branch_pending = 1;
-                if ((st->fcr31 & 0x00800000u)) BRANCH_TO(this_pc + 4 + (imm << 2));
-                break;
-            case 0x02: /* BC1FL - "branch likely" variant of BC1F
-                        * (Round 400/task GAP-1). This project's
-                        * earlier comment here claiming "no likely-
-                        * branch infrastructure for ANY branch" was
-                        * stale by the time of this fix - the integer
-                        * likely family (BEQL/BNEL/BLEZL/BGTZL, primary
-                        * 0x14-0x17, and BLTZL/BGEZL/BLTZALL/BGEZALL,
-                        * REGIMM 0x02/0x03/0x12/0x13) was already
-                        * implemented elsewhere in this same file,
-                        * using the exact nullify-delay-slot-on-not-
-                        * taken pattern reused here verbatim: `st->pc =
-                        * fallthrough_pc + 4; st->next_pc =
-                        * fallthrough_pc + 8;` skips straight past the
-                        * delay slot instead of letting it execute,
-                        * matching real MIPS II+ "likely" semantics
-                        * (ported from PCSX2's Interpreter.cpp
-                        * tbl_COP1_BC1[32] convention, same real source
-                        * already cited for BC1F/BC1T immediately
-                        * above). Only the branch CONDITION differs
-                        * from BC1F (fcr31 bit 0x00800000 clear). */
-                if (!(st->fcr31 & 0x00800000u)) BRANCH_TO(this_pc + 4 + (imm << 2));
-                else { st->pc = fallthrough_pc + 4; st->next_pc = fallthrough_pc + 8; }
-                break;
-            case 0x03: /* BC1TL - "branch likely" variant of BC1T; same
-                        * nullify-on-not-taken semantics as BC1FL
-                        * above, condition is fcr31 bit 0x00800000 SET
-                        * (matches BC1T). */
-                if ((st->fcr31 & 0x00800000u)) BRANCH_TO(this_pc + 4 + (imm << 2));
-                else { st->pc = fallthrough_pc + 4; st->next_pc = fallthrough_pc + 8; }
-                break;
-            default:
-                halt("unimplemented COP1 BC variant");
-                return 1;
-            }
-            break;
-        default:
-            halt("unimplemented COP1 sub-opcode");
-            return 1;
-        }
-        break;
+#include "ee_cop1_switch.inc"
 
-    case 0x12: /* COP2 (VU0 macro mode). Round 12 added the 32-bit
-                * control-register transfers (MFC2/CFC2/MTC2/CTC2).
-                * Round 13 adds the actual VU0 vector datapath: 128-bit
-                * QMFC2/QMTC2 transfers, plus the specific "CO"-format
-                * (rs bit 0x10 set) vector ops a real BIOS VU0 init/
-                * self-test sequence needs (VSUB, VISWR, VSQI). Round
-                * 29 continued (10th change) adds VADD/VMUL (same
-                * 3-operand full-vector shape as VSUB) and VIADDI
-                * (closing a previously-flagged gap next to VIADD/
-                * VISUB/VIAND/VIOR) - not yet exercised by the current
-                * boot trace (the EE is steady-state polling SIF, not
-                * halted on a missing COP2 op - see docs/STATUS.md's
-                * "Round 29 continued (10th change)" section), but
-                * real, tested, roadmap-directed forward progress on
-                * docs/ROADMAP.md section 5 item 3. Field
-                * encodings (rs=destmask|0x10, FT/FS/FD positions, the
-                * SPECIAL2 sub-index formula) were derived by decoding
-                * the exact raw instruction words from a live PCSX2
-                * disassembly and cross-checked against PCSX2's own
-                * R5900OpcodeTables.cpp Int_COP2PrintTable/
-                * Int_COP2SPECIAL1PrintTable/Int_COP2SPECIAL2PrintTable
-                * decode tables - see docs/STATUS.md's "round 13"
-                * section for the full derivation. Any other CO-format
-                * op (the rest of the VU macro arithmetic family, and
-                * the rest of the memory-access family - VILWR/VLQI/
-                * VLQD/VSQD/VDIV/etc) halts honestly rather than
-                * silently doing nothing. */
-        if (rs < 0x10) {
-            switch (rs) {
-            case 0x00: /* MFC2 */ if (rt) GPR(rt) = sext32(vu0_vi_read(st, rd)); break;
-            case 0x01: /* QMFC2 - 128-bit GPR <- VF, raw bit copy (no
-                        * float conversion): lanes x,y pack into the
-                        * low 64 bits (ud0), z,w into the high 64 bits
-                        * (ud1) - matches PCSX2's VECTOR union layout
-                        * (pcsx2/VU.h). */
-                if (rt) {
-                    uint64_t x = vu0_vf_read_lane(st, rd, 0);
-                    uint64_t y = vu0_vf_read_lane(st, rd, 1);
-                    uint64_t z = vu0_vf_read_lane(st, rd, 2);
-                    uint64_t w = vu0_vf_read_lane(st, rd, 3);
-                    st->gpr[rt].ud0 = x | (y << 32);
-                    st->gpr[rt].ud1 = z | (w << 32);
-                }
-                break;
-            case 0x02: /* CFC2 */ if (rt) GPR(rt) = sext32(vu0_vi_read(st, rd)); break;
-            case 0x04: /* MTC2 */ vu0_vi_write(st, rd, rt32); break;
-            case 0x05: /* QMTC2 - 128-bit VF <- GPR, raw bit copy. */
-                vu0_vf_write_lane(st, rd, 0, (uint32_t)(st->gpr[rt].ud0 & 0xFFFFFFFFu));
-                vu0_vf_write_lane(st, rd, 1, (uint32_t)(st->gpr[rt].ud0 >> 32));
-                vu0_vf_write_lane(st, rd, 2, (uint32_t)(st->gpr[rt].ud1 & 0xFFFFFFFFu));
-                vu0_vf_write_lane(st, rd, 3, (uint32_t)(st->gpr[rt].ud1 >> 32));
-                break;
-            case 0x06: /* CTC2 */
-                /* Real FBRST (control reg 28) semantics - ported from
-                 * PCSX2's own VU0.cpp CTC2(): bit 0x1 = VU0 force-break,
-                 * bit 0x2 = VU0 reset, bit 0x100 = VU1 force-break,
-                 * bit 0x200 = VU1 reset. Not modeled beyond plain
-                 * storage - no VU0/VU1 execution state exists yet for
-                 * these bits to actually act on. */
-                vu0_vi_write(st, rd, rt32);
-                break;
-            default:
-                halt("unimplemented COP2 sub-opcode (VU0 vector datapath not implemented)");
-                return 1;
-            }
-        } else {
-            /* CO-format: rs = 0x10 | destmask (destmask bit3=X,
-             * bit2=Y, bit1=Z, bit0=W - confirmed via viswr's rs=0x18,
-             * mask 0x8 = X only, matching its ".x" mnemonic suffix;
-             * and vsub.xyzw/vsqi's rs=0x1F, mask 0xF = all lanes).
-             * 3-operand arithmetic field layout: bits 20-16=FT (2nd
-             * source), bits 15-11=FS (1st source), bits 10-6=FD
-             * (dest) - confirmed against vsub.xyzw vf01,vf00,vf00's
-             * raw fields (FT=FS=0=vf00, FD=1=vf01). */
-            uint32_t destmask = rs & 0xFu;
-            uint32_t ft = (instr >> 16) & 0x1Fu;
-            uint32_t fs = (instr >> 11) & 0x1Fu;
-            uint32_t fd = (instr >> 6) & 0x1Fu;
+#include "ee_cop2_switch.inc"
 
-            if (funct == 0x28 || funct == 0x2A || funct == 0x2B || funct == 0x2C || funct == 0x2F) {
-                /* VADD(0x28)/VMUL(0x2A)/VMAX(0x2B)/VSUB(0x2C)/
-                 * VMINI(0x2F): FD[lane] = FS[lane] OP FT[lane], real
-                 * float arithmetic/comparison on the reinterpreted
-                 * bit patterns, for each lane selected by destmask.
-                 * Round 13 implemented VSUB only; VADD/VMUL (Round 29
-                 * continued, 10th change) and VMAX/VMINI (Round 29
-                 * continued, 16th change) are the same 3-operand
-                 * full-vector shape (confirmed against PCSX2's own
-                 * R5900OpcodeTables.cpp SPECIAL1 table row: funct
-                 * 0x28=VADD, 0x2A=VMUL, 0x2B=VMAX, 0x2C=VSUB,
-                 * 0x2F=VMINI - VMAX/VMINI ported from PCSX2's own
-                 * VUops.cpp _vuMAX/_vuMINI, which use a plain fp_max/
-                 * fp_min comparison - a straightforward C ternary
-                 * comparison here, consistent with this project not
-                 * modeling any NaN/signed-zero edge cases anywhere
-                 * else in its float datapath either). VMADD(0x29)/
-                 * VMSUB(0x2D)/VOPMSUB(0x2E), this same row's three
-                 * accumulator-based siblings, are handled separately
-                 * below (Round 29 continued, 17th change). */
-                for (int lane = 0; lane < 4; lane++) {
-                    if (!(destmask & (0x8u >> lane))) continue;
-                    uint32_t ua = vu0_vf_read_lane(st, fs, (uint32_t)lane);
-                    uint32_t ub = vu0_vf_read_lane(st, ft, (uint32_t)lane);
-                    if(funct==0x2bu||funct==0x2fu) {
-                        vu0_vf_write_lane(st,fd,(uint32_t)lane,vu_minmax_bits(ua,ub,funct==0x2fu));
-                        continue;
-                    }
-                    float a, b, r; uint32_t ur;
-                    memcpy(&a, &ua, 4);
-                    memcpy(&b, &ub, 4);
-                    if (funct == 0x28) r = a + b;
-                    else if (funct == 0x2A) r = a * b;
-                    else if (funct == 0x2B) r = (a > b) ? a : b;
-                    else if (funct == 0x2F) r = (a < b) ? a : b;
-                    else r = a - b;
-                    memcpy(&ur, &r, 4);
-                    vu0_vf_write_lane(st, fd, (uint32_t)lane, ur);
-                }
-            } else if (funct <= 0x1F) {
-                /* Full broadcast row (funct 0x00-0x1F), completed
-                 * across two rounds (Round 29 continued's 18th
-                 * change added 0x00-0x07/0x10-0x1B; this 19th change
-                 * adds the remaining 0x08-0x0F and 0x1C-0x1F).
-                 * Confirmed against PCSX2's R5900OpcodeTables.cpp
-                 * SPECIAL1 table's first 4 rows (funct 0-31 laid out
-                 * as 8 columns x 4 rows):
-                 *   0x00-0x03 VADDx/y/z/w    0x04-0x07 VSUBx/y/z/w
-                 *   0x08-0x0B VMADDx/y/z/w   0x0C-0x0F VMSUBx/y/z/w
-                 *   0x10-0x13 VMAXx/y/z/w    0x14-0x17 VMINIx/y/z/w
-                 *   0x18-0x1B VMULx/y/z/w    0x1C VMULq, 0x1D VMAXi,
-                 *   0x1E VMULi, 0x1F VMINIi
-                 * VADDx/y/z/w/VSUBx/y/z/w/VMAXx/y/z/w/VMINIx/y/z/w/
-                 * VMULx/y/z/w: FD[lane] = FS[lane] OP FT.<bc-lane>,
-                 * where <bc-lane> is fixed by the opcode (funct&0x3),
-                 * per PCSX2's VUops.cpp applyBinaryMACOpBroadcast.
-                 * VMADDx/y/z/w/VMSUBx/y/z/w: same shape but reads a
-                 * third operand from the VU0 macro-mode accumulator
-                 * (vu0_acc[4]), per applyTernaryMACOpBroadcast:
-                 * FD[lane] = ACC[lane] +- FS[lane]*FT.<bc-lane>.
-                 * VMULq/VMAXi/VMULi/VMINIi (0x1C-0x1F): no FT operand
-                 * at all (confirmed against DisR5900asm.cpp's
-                 * P_VMULq/P_VMAXi/P_VMULi/P_VMINIi, which only print
-                 * FD/FS - "vmulq.xyzw vf1,vf2,Q" etc) - instead
-                 * broadcast the scalar Q or I control register
-                 * (cop2_ctrl[22]/cop2_ctrl[21] per PCSX2's VU.h
-                 * REG_Q=22/REG_I=21) to every destmask lane:
-                 * FD[lane] = FS[lane] OP scalar. */
-                uint32_t bc_lane = funct & 0x3u;
-                uint32_t base_op = (funct >> 2) & 0x7u; /* 0=VADD,1=VSUB,2=VMADD,3=VMSUB,4=VMAX,5=VMINI,6=VMUL,7=Q/I-row */
-                /* op_kind: 0=ADD,1=SUB,2=MADD(acc),3=MSUB(acc),
-                 * 4=MAX,5=MINI,6=MUL. For base_op 0-6 this is just
-                 * base_op itself; for base_op==7 (the Q/I row) the
-                 * real operator is selected by bc_lane instead:
-                 * bc_lane 0=VMULq(MUL), 1=VMAXi(MAX), 2=VMULi(MUL),
-                 * 3=VMINIi(MINI). */
-                uint32_t op_kind;
-                float b; uint32_t ub;
-                if (base_op == 7) {
-                    if (bc_lane == 0) { op_kind = 6; ub = vu0_vi_read(st, 22); }      /* VMULq: Q = cop2_ctrl[22] */
-                    else if (bc_lane == 1) { op_kind = 4; ub = vu0_vi_read(st, 21); } /* VMAXi: I = cop2_ctrl[21] */
-                    else if (bc_lane == 2) { op_kind = 6; ub = vu0_vi_read(st, 21); } /* VMULi */
-                    else { op_kind = 5; ub = vu0_vi_read(st, 21); }                    /* VMINIi */
-                } else {
-                    op_kind = base_op;
-                    ub = vu0_vf_read_lane(st, ft, bc_lane);
-                }
-                memcpy(&b, &ub, 4);
-                for (int lane = 0; lane < 4; lane++) {
-                    if (!(destmask & (0x8u >> lane))) continue;
-                    uint32_t ua = vu0_vf_read_lane(st, fs, (uint32_t)lane);
-                    if(op_kind==4u||op_kind==5u) {
-                        vu0_vf_write_lane(st,fd,(uint32_t)lane,vu_minmax_bits(ua,ub,op_kind==5u));
-                        continue;
-                    }
-                    float a, r; uint32_t ur;
-                    memcpy(&a, &ua, 4);
-                    if (op_kind == 0) r = a + b;                     /* VADDx/y/z/w */
-                    else if (op_kind == 1) r = a - b;                 /* VSUBx/y/z/w */
-                    else if (op_kind == 2) {                          /* VMADDx/y/z/w */
-                        uint32_t uacc = st->vu0_acc[lane]; float acc; memcpy(&acc, &uacc, 4);
-                        r = acc + a * b;
-                    } else if (op_kind == 3) {                        /* VMSUBx/y/z/w */
-                        uint32_t uacc = st->vu0_acc[lane]; float acc; memcpy(&acc, &uacc, 4);
-                        r = acc - a * b;
-                    } else if (op_kind == 4) r = (a > b) ? a : b; /* raw MIN/MAX handled before FP below */
-                    else if (op_kind == 5) r = (a < b) ? a : b;      /* VMINIx/y/z/w or VMINIi */
-                    else r = a * b;                                  /* VMULx/y/z/w or VMULq/VMULi */
-                    memcpy(&ur, &r, 4);
-                    vu0_vf_write_lane(st, fd, (uint32_t)lane, ur);
-                }
-            } else if (funct == 0x29 || funct == 0x2D) {
-                /* VMADD(0x29)/VMSUB(0x2D): FD[lane] = ACC[lane] +-
-                 * FS[lane]*FT[lane], per destmask lane - the same
-                 * SPECIAL1 row as VADD/VMUL/VMAX/VSUB/VMINI above
-                 * (confirmed against PCSX2's R5900OpcodeTables.cpp:
-                 * ..., VADD, VMADD, VMUL, VMAX, VSUB, VMSUB, VOPMSUB,
-                 * VMINI, ... = funct 0x28..0x2F sequential), but
-                 * reading a third operand from the VU0 macro-mode
-                 * accumulator (st->vu0_acc[4], lane order x=0/y=1/
-                 * z=2/w=3 - the same convention source/hw/vu.c's own
-                 * ACC handling already uses for VU microcode).
-                 * Ported from PCSX2's own VUops.cpp _vuOpMADD/
-                 * _vuOpMSUB (applyTernaryMACOp<..., MACOpDst::Fd>):
-                 * writes FD, does NOT write back into ACC (that's the
-                 * separate VMADDA/VMSUBA accumulator-dest opcodes,
-                 * not modeled here - not seen in the traced boot path,
-                 * a scoped future gap like the broadcast/VMADDbc
-                 * forms). No MAC-flag modeling, consistent with this
-                 * project's existing float datapath elsewhere. */
-                for (int lane = 0; lane < 4; lane++) {
-                    if (!(destmask & (0x8u >> lane))) continue;
-                    uint32_t uacc = st->vu0_acc[lane];
-                    uint32_t ua = vu0_vf_read_lane(st, fs, (uint32_t)lane);
-                    uint32_t ub = vu0_vf_read_lane(st, ft, (uint32_t)lane);
-                    float acc, a, b, r; uint32_t ur;
-                    memcpy(&acc, &uacc, 4);
-                    memcpy(&a, &ua, 4);
-                    memcpy(&b, &ub, 4);
-                    if (funct == 0x29) r = acc + a * b;
-                    else r = acc - a * b;
-                    memcpy(&ur, &r, 4);
-                    vu0_vf_write_lane(st, fd, (uint32_t)lane, ur);
-                }
-            } else if (funct == 0x2E) {
-                /* VOPMSUB: outer-product multiply-subtract, the
-                 * cross-product-shaped sibling in the same row -
-                 * ALWAYS writes exactly xyz (never w - there is no
-                 * destmask field for this op; confirmed against
-                 * PCSX2's own VUops.cpp _vuOPMSUB, which has no _W
-                 * branch at all): FD.x=ACC.x-FS.y*FT.z,
-                 * FD.y=ACC.y-FS.z*FT.x, FD.z=ACC.z-FS.x*FT.y. */
-                uint32_t uaccx = st->vu0_acc[0], uaccy = st->vu0_acc[1], uaccz = st->vu0_acc[2];
-                uint32_t ufsx = vu0_vf_read_lane(st, fs, 0), ufsy = vu0_vf_read_lane(st, fs, 1), ufsz = vu0_vf_read_lane(st, fs, 2);
-                uint32_t uftx = vu0_vf_read_lane(st, ft, 0), ufty = vu0_vf_read_lane(st, ft, 1), uftz = vu0_vf_read_lane(st, ft, 2);
-                float accx, accy, accz, fsx, fsy, fsz, ftx, fty, ftz;
-                memcpy(&accx, &uaccx, 4); memcpy(&accy, &uaccy, 4); memcpy(&accz, &uaccz, 4);
-                memcpy(&fsx, &ufsx, 4); memcpy(&fsy, &ufsy, 4); memcpy(&fsz, &ufsz, 4);
-                memcpy(&ftx, &uftx, 4); memcpy(&fty, &ufty, 4); memcpy(&ftz, &uftz, 4);
-                float rx = accx - fsy * ftz;
-                float ry = accy - fsz * ftx;
-                float rz = accz - fsx * fty;
-                uint32_t urx, ury, urz;
-                memcpy(&urx, &rx, 4); memcpy(&ury, &ry, 4); memcpy(&urz, &rz, 4);
-                vu0_vf_write_lane(st, fd, 0, urx);
-                vu0_vf_write_lane(st, fd, 1, ury);
-                vu0_vf_write_lane(st, fd, 2, urz);
-            } else if ((funct & 0x3Cu) == 0x3Cu) {
-                /* SPECIAL2 sub-dispatch - index formula confirmed
-                 * against PCSX2's R5900OpcodeTables.cpp comment:
-                 * (code & 0x3) | ((code >> 4) & 0x7c). */
-                uint32_t idx = (instr & 0x3u) | ((instr >> 4) & 0x7Cu);
-                if (idx == 63) {
-                    /* VISWR: store VI[ft] (data source, "is") into VU0
-                     * mem at quadword index VI[fs] (address, "it"),
-                     * single lane selected by destmask (a single bit
-                     * for this op - ".x"/".y"/".z"/".w" only). */
-                    int lane = (destmask == 0x8u) ? 0 : (destmask == 0x4u) ? 1 : (destmask == 0x2u) ? 2 : 3;
-                    uint32_t addr_vi = vu0_vi_read(st, fs);
-                    uint32_t data = vu0_vi_read(st, ft);
-                    uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                    vu0_mem_write32(st, off, data);
-                } else if (idx == 53) {
-                    /* VSQI: store VF[fs] (data source) lanes selected
-                     * by destmask to VU0 mem at quadword index VI[ft]
-                     * (address), then post-increment VI[ft] by 1
-                     * quadword. BUGFIX (Round 29 continued, 22nd
-                     * change): this previously ignored destmask and
-                     * always stored all 4 lanes - confirmed via a real
-                     * PCSX2 upstream reference clone's
-                     * DisR5900asm.cpp (`P_VSQI` prints `dest_string()`,
-                     * proving VSQI genuinely has an xyzw suffix like
-                     * every other CO-format op) that this was a real
-                     * gap, not a simplification; fixed here alongside
-                     * VLQI/VLQD/VSQD, which share the exact same
-                     * destmask-respecting shape. */
-                    uint32_t addr_vi = vu0_vi_read(st, ft);
-                    for (int lane = 0; lane < 4; lane++) {
-                        if (!(destmask & (0x8u >> lane))) continue;
-                        uint32_t val = vu0_vf_read_lane(st, fs, (uint32_t)lane);
-                        uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                        vu0_mem_write32(st, off, val);
-                    }
-                    vu0_vi_write(st, ft, addr_vi + 1);
-                } else if (idx == 52) {
-                    /* VLQI (Round 29 continued, 22nd change): load all
-                     * destmask-selected lanes of VF[ft] (data dest)
-                     * from VU0 mem at quadword index VI[fs] (address,
-                     * using the CURRENT value), then post-increment
-                     * VI[fs] by 1 quadword. Confirmed against PCSX2's
-                     * own VUops.cpp _vuLQI - the address register
-                     * lives in the same field position ("Is"/"Fs" in
-                     * PCSX2's naming) this decoder already calls
-                     * `fs`; the dest VF register is the same field
-                     * this decoder calls `ft` (matching VLQD/VSQD/
-                     * VSQI's shared convention: address reg = fs
-                     * field for loads/ft field for stores, dest/data
-                     * reg = the other field). */
-                    uint32_t addr_vi = vu0_vi_read(st, fs);
-                    for (int lane = 0; lane < 4; lane++) {
-                        if (!(destmask & (0x8u >> lane))) continue;
-                        uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                        uint32_t val = vu0_mem_read32(st, off);
-                        vu0_vf_write_lane(st, ft, (uint32_t)lane, val);
-                    }
-                    vu0_vi_write(st, fs, (addr_vi + 1) & 0xFFFFu);
-                } else if (idx == 54) {
-                    /* VLQD: pre-decrement VI[fs] by 1 quadword FIRST,
-                     * then load all destmask-selected lanes of VF[ft]
-                     * from VU0 mem at the NEW (decremented) VI[fs]
-                     * index - ported from PCSX2's _vuLQD. VI is a
-                     * real 16-bit register (matching VIADD/VISUB's
-                     * existing 0xFFFF masking), so decrementing from 0
-                     * wraps to 0xFFFF rather than underflowing. */
-                    uint32_t addr_vi = (vu0_vi_read(st, fs) - 1u) & 0xFFFFu;
-                    vu0_vi_write(st, fs, addr_vi);
-                    for (int lane = 0; lane < 4; lane++) {
-                        if (!(destmask & (0x8u >> lane))) continue;
-                        uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                        uint32_t val = vu0_mem_read32(st, off);
-                        vu0_vf_write_lane(st, ft, (uint32_t)lane, val);
-                    }
-                } else if (idx == 55) {
-                    /* VSQD: pre-decrement VI[ft] (address reg, the
-                     * SAME field VSQI/VISWR already use for their own
-                     * address) by 1 quadword FIRST, then store all
-                     * destmask-selected lanes of VF[fs] (data source)
-                     * to VU0 mem at the NEW (decremented) index -
-                     * ported from PCSX2's _vuSQD, the pre-decrement
-                     * mirror image of VSQI's post-increment. */
-                    uint32_t addr_vi = (vu0_vi_read(st, ft) - 1u) & 0xFFFFu;
-                    vu0_vi_write(st, ft, addr_vi);
-                    for (int lane = 0; lane < 4; lane++) {
-                        if (!(destmask & (0x8u >> lane))) continue;
-                        uint32_t val = vu0_vf_read_lane(st, fs, (uint32_t)lane);
-                        uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                        vu0_mem_write32(st, off, val);
-                    }
-                } else if (idx == 29 || (idx >= 16 && idx <= 23) || idx == 48 || idx == 49) {
-                    /* Unary/data-movement cluster (Round 29 continued,
-                     * 20th change): VABS(idx=29), VITOF0/4/12/15
-                     * (idx=16-19), VFTOI0/4/12/15(idx=20-23),
-                     * VMOVE(idx=48), VMR32(idx=49). IMPORTANT: unlike
-                     * every arithmetic op above (dest=FD), a real
-                     * PCSX2 upstream reference clone's DisR5900asm.cpp
-                     * disassembly formatters (P_VABS/P_VITOF0/
-                     * P_VFTOI0/etc: "vabs.%s FT, FS") confirm these
-                     * ops encode the DESTINATION in the FT field
-                     * position and the SOURCE in FS - the opposite of
-                     * the arithmetic row's FD/FS/FT roles (VUops.cpp's
-                     * _vuABS, _vuITOFn, _vuFTOIn, _vuMOVE, _vuMR32 all
-                     * write VU->VF[_Ft_] from VU->VF[_Fs_], guarded by
-                     * "if (_Ft_ == 0) return"). This decoder already
-                     * extracts ft/fs at the same bit positions for
-                     * every CO-format instruction, so no new field
-                     * extraction was needed - just using them with
-                     * their roles swapped for this cluster. fd (the
-                     * bits-6-10 field) is unused/ignored here, per
-                     * real hardware. */
-                    if (ft == 0) {
-                        /* writes to VF00 are discarded, same rule as
-                         * every other VF write in this file */
-                    } else if (idx == 29) {
-                        /* VABS: FT[lane] = |FS[lane]| (bit-level abs -
-                         * clear the sign bit - ported from PCSX2's
-                         * vuOpABS: "fs & 0x7fffffff"), per destmask
-                         * lane. */
-                        for (int lane = 0; lane < 4; lane++) {
-                            if (!(destmask & (0x8u >> lane))) continue;
-                            uint32_t v = vu0_vf_read_lane(st, fs, (uint32_t)lane) & 0x7FFFFFFFu;
-                            vu0_vf_write_lane(st, ft, (uint32_t)lane, v);
-                        }
-                    } else if (idx == 48) {
-                        /* VMOVE: FT[lane] = FS[lane], plain per-lane
-                         * copy, per destmask lane. */
-                        for (int lane = 0; lane < 4; lane++) {
-                            if (!(destmask & (0x8u >> lane))) continue;
-                            vu0_vf_write_lane(st, ft, (uint32_t)lane, vu0_vf_read_lane(st, fs, (uint32_t)lane));
-                        }
-                    } else if (idx == 49) {
-                        /* VMR32: 32-bit lane rotate - FT.x=FS.y,
-                         * FT.y=FS.z, FT.z=FS.w, FT.w=FS.x (ported from
-                         * PCSX2's _vuMR32, which reads FS.x into a
-                         * temporary FIRST so a VMOVE-to-self (Ft==Fs)
-                         * still rotates correctly even though the
-                         * lanes are written in x/y/z/w order). Per
-                         * destmask lane, same as every other op. */
-                        uint32_t tx = vu0_vf_read_lane(st, fs, 0);
-                        uint32_t ty = vu0_vf_read_lane(st, fs, 1);
-                        uint32_t tz = vu0_vf_read_lane(st, fs, 2);
-                        uint32_t tw = vu0_vf_read_lane(st, fs, 3);
-                        if (destmask & 0x8u) vu0_vf_write_lane(st, ft, 0, ty);
-                        if (destmask & 0x4u) vu0_vf_write_lane(st, ft, 1, tz);
-                        if (destmask & 0x2u) vu0_vf_write_lane(st, ft, 2, tw);
-                        if (destmask & 0x1u) vu0_vf_write_lane(st, ft, 3, tx);
-                    } else {
-                        /* VITOF0/4/12/15(idx16-19)/VFTOI0/4/12/15
-                         * (idx20-23) - fixed-point <-> float
-                         * conversion, ported bit-exact from PCSX2's
-                         * VUops.cpp intToFloat<Offset>/
-                         * floatToInt<Offset> templates (including the
-                         * denormal-range saturation floatToInt
-                         * applies) rather than a plain C cast, since
-                         * the real hardware quirk (scaling by a
-                         * bit-constructed power-of-two float constant
-                         * before/after the int<->float conversion,
-                         * and saturating to INT32_MIN/MAX above a
-                         * fixed exponent threshold) is directly
-                         * portable and not worth re-deriving. */
-                        int is_ftoi = (idx >= 20);
-                        uint32_t offset_n = (idx & 0x3u) == 0 ? 0u : (idx & 0x3u) == 1 ? 4u : (idx & 0x3u) == 2 ? 12u : 15u;
-                        for (int lane = 0; lane < 4; lane++) {
-                            if (!(destmask & (0x8u >> lane))) continue;
-                            uint32_t uval = vu0_vf_read_lane(st, fs, (uint32_t)lane);
-                            uint32_t uresult;
-                            if (!is_ftoi) {
-                                /* intToFloat<Offset> */
-                                int32_t ival; memcpy(&ival, &uval, 4);
-                                float fval = (float)ival;
-                                if (offset_n) {
-                                    uint32_t scale_bits = 0x3F800000u - (offset_n << 23);
-                                    float scale; memcpy(&scale, &scale_bits, 4);
-                                    fval *= scale;
-                                }
-                                memcpy(&uresult, &fval, 4);
-                            } else {
-                                /* floatToInt<Offset> */
-                                float fval; memcpy(&fval, &uval, 4);
-                                if (offset_n) {
-                                    uint32_t scale_bits = 0x3F800000u + (offset_n << 23);
-                                    float scale; memcpy(&scale, &scale_bits, 4);
-                                    fval *= scale;
-                                }
-                                uint32_t fbits; memcpy(&fbits, &fval, 4);
-                                if ((fbits & 0x7F800000u) >= 0x4F000000u) {
-                                    uresult = (fbits & 0x80000000u) ? 0x80000000u : 0x7FFFFFFFu;
-                                } else {
-                                    int32_t iv = (int32_t)fval;
-                                    memcpy(&uresult, &iv, 4);
-                                }
-                            }
-                            vu0_vf_write_lane(st, ft, (uint32_t)lane, uresult);
-                        }
-                    }
-                } else if (idx <= 15 || (idx >= 24 && idx <= 28) || idx == 30
-                           || (idx >= 32 && idx <= 42) || idx == 44 || idx == 45
-                           || idx == 46 || idx == 47) {
-                    /* Accumulator-writing family (Round 29 continued,
-                     * 21st change) - every one of these ops writes
-                     * VU->ACC (this project's vu0_acc[4]) instead of
-                     * VF[fd], confirmed against a real PCSX2 upstream
-                     * reference clone's VUops.cpp (applyBinaryMACOp/
-                     * applyTernaryMACOp/their Broadcast variants, all
-                     * templated on MACOpDst::Acc instead of ::Fd - the
-                     * exact same underlying arithmetic already
-                     * implemented for the FD-writing rows above, just
-                     * redirected). Full-vector forms (idx 40=VADDA,
-                     * 41=VMADDA, 42=VMULA, 44=VSUBA, 45=VMSUBA) read
-                     * both operands from FS/FT directly, same shape
-                     * as VADD/VMADD/VMUL/VSUB/VMSUB. Broadcast forms
-                     * (idx 0-15, 24-28, 30, 32-39) read the second
-                     * operand from a single FT lane, or from Q
-                     * (cop2_ctrl[22]) / I (cop2_ctrl[21]), exactly
-                     * like the funct<=0x1F broadcast row. idx 46
-                     * (VOPMULA) is the outer-product multiply variant
-                     * of VOPMSUB - writes ACC directly (no existing-
-                     * ACC read, no destmask, xyz only, w untouched),
-                     * ported from PCSX2's _vuOPMULA. idx 47 (VNOP) is
-                     * a true no-op. idx 43 is COP2_Unknown on real
-                     * hardware and correctly falls through to the
-                     * halt below. */
-                    if (idx == 47) {
-                        /* VNOP: no operation. */
-                    } else if (idx == 46) {
-                        uint32_t ufsx = vu0_vf_read_lane(st, fs, 0), ufsy = vu0_vf_read_lane(st, fs, 1), ufsz = vu0_vf_read_lane(st, fs, 2);
-                        uint32_t uftx = vu0_vf_read_lane(st, ft, 0), ufty = vu0_vf_read_lane(st, ft, 1), uftz = vu0_vf_read_lane(st, ft, 2);
-                        float fsx, fsy, fsz, ftx, fty, ftz;
-                        memcpy(&fsx, &ufsx, 4); memcpy(&fsy, &ufsy, 4); memcpy(&fsz, &ufsz, 4);
-                        memcpy(&ftx, &uftx, 4); memcpy(&fty, &ufty, 4); memcpy(&ftz, &uftz, 4);
-                        float rx = fsy * ftz, ry = fsz * ftx, rz = fsx * fty;
-                        uint32_t urx, ury, urz;
-                        memcpy(&urx, &rx, 4); memcpy(&ury, &ry, 4); memcpy(&urz, &rz, 4);
-                        st->vu0_acc[0] = urx; st->vu0_acc[1] = ury; st->vu0_acc[2] = urz;
-                    } else {
-                        int is_broadcast = idx <= 15 || (idx >= 24 && idx <= 28) || idx == 30 || (idx >= 32 && idx <= 39);
-                        uint32_t op_kind = 0; /* 0=ADD,1=SUB,2=MADD(acc read+write),3=MSUB,6=MUL */
-                        if (is_broadcast) {
-                            float b; uint32_t ub;
-                            if (idx <= 7) { op_kind = (idx >= 4) ? 1u : 0u; ub = vu0_vf_read_lane(st, ft, idx & 0x3u); }
-                            else if (idx <= 15) { op_kind = (idx >= 12) ? 3u : 2u; ub = vu0_vf_read_lane(st, ft, idx & 0x3u); }
-                            else if (idx <= 27) { op_kind = 6u; ub = vu0_vf_read_lane(st, ft, idx & 0x3u); } /* VMULAx/y/z/w */
-                            else if (idx == 28) { op_kind = 6u; ub = vu0_vi_read(st, 22); } /* VMULAq */
-                            else if (idx == 30) { op_kind = 6u; ub = vu0_vi_read(st, 21); } /* VMULAi */
-                            else {
-                                switch (idx) {
-                                case 32: op_kind = 0u; ub = vu0_vi_read(st, 22); break; /* VADDAq */
-                                case 33: op_kind = 2u; ub = vu0_vi_read(st, 22); break; /* VMADDAq */
-                                case 34: op_kind = 0u; ub = vu0_vi_read(st, 21); break; /* VADDAi */
-                                case 35: op_kind = 2u; ub = vu0_vi_read(st, 21); break; /* VMADDAi */
-                                case 36: op_kind = 1u; ub = vu0_vi_read(st, 22); break; /* VSUBAq */
-                                case 37: op_kind = 3u; ub = vu0_vi_read(st, 22); break; /* VMSUBAq */
-                                case 38: op_kind = 1u; ub = vu0_vi_read(st, 21); break; /* VSUBAi */
-                                default: op_kind = 3u; ub = vu0_vi_read(st, 21); break; /* VMSUBAi (idx=39) */
-                                }
-                            }
-                            memcpy(&b, &ub, 4);
-                            for (int lane = 0; lane < 4; lane++) {
-                                if (!(destmask & (0x8u >> lane))) continue;
-                                uint32_t ua = vu0_vf_read_lane(st, fs, (uint32_t)lane);
-                                float a, r; uint32_t ur;
-                                memcpy(&a, &ua, 4);
-                                if (op_kind == 0) r = a + b;
-                                else if (op_kind == 1) r = a - b;
-                                else if (op_kind == 2) { uint32_t uacc = st->vu0_acc[lane]; float acc; memcpy(&acc, &uacc, 4); r = acc + a * b; }
-                                else if (op_kind == 3) { uint32_t uacc = st->vu0_acc[lane]; float acc; memcpy(&acc, &uacc, 4); r = acc - a * b; }
-                                else r = a * b;
-                                memcpy(&ur, &r, 4);
-                                st->vu0_acc[lane] = ur;
-                            }
-                        } else {
-                            switch (idx) {
-                            case 40: op_kind = 0u; break; /* VADDA */
-                            case 41: op_kind = 2u; break; /* VMADDA */
-                            case 42: op_kind = 6u; break; /* VMULA */
-                            case 44: op_kind = 1u; break; /* VSUBA */
-                            default: op_kind = 3u; break; /* VMSUBA (idx=45) */
-                            }
-                            for (int lane = 0; lane < 4; lane++) {
-                                if (!(destmask & (0x8u >> lane))) continue;
-                                uint32_t ua = vu0_vf_read_lane(st, fs, (uint32_t)lane);
-                                uint32_t ub2 = vu0_vf_read_lane(st, ft, (uint32_t)lane);
-                                float a, bb, r; uint32_t ur;
-                                memcpy(&a, &ua, 4); memcpy(&bb, &ub2, 4);
-                                if (op_kind == 0) r = a + bb;
-                                else if (op_kind == 1) r = a - bb;
-                                else if (op_kind == 2) { uint32_t uacc = st->vu0_acc[lane]; float acc; memcpy(&acc, &uacc, 4); r = acc + a * bb; }
-                                else if (op_kind == 3) { uint32_t uacc = st->vu0_acc[lane]; float acc; memcpy(&acc, &uacc, 4); r = acc - a * bb; }
-                                else r = a * bb;
-                                memcpy(&ur, &r, 4);
-                                st->vu0_acc[lane] = ur;
-                            }
-                        }
-                    }
-                } else if (idx == 60) {
-                    /* VMTIR (Round 29 continued, 23rd change): VI[ft]
-                     * = low 16 bits of the RAW bit pattern of
-                     * VF[fs][Fsf] (a plain truncation of the 32-bit
-                     * float's bit pattern, NOT a numeric conversion -
-                     * ported from PCSX2's own VUops.cpp _vuMTIR:
-                     * "VI[_It_].US[0] = *(u16*)&VF[_Fs_].F[_Fsf_]",
-                     * which reads the low 16 bits of the selected
-                     * lane's 32-bit storage on a little-endian
-                     * machine). Fsf is NOT a new field - confirmed
-                     * against a real PCSX2 upstream reference clone's
-                     * DisR5900asm.cpp dest_fsf() macro
-                     * ("(disasmOpcode>>21)&3"), Fsf lives in the exact
-                     * same two bits as this decoder's own destmask
-                     * value's low 2 bits, just reinterpreted as a lane
-                     * INDEX here instead of a per-lane bitmask. */
-                    if (ft != 0) {
-                        uint32_t fsf_lane = destmask & 0x3u;
-                        uint32_t raw = vu0_vf_read_lane(st, fs, fsf_lane);
-                        vu0_vi_write(st, ft, raw & 0xFFFFu);
-                    }
-                } else if (idx == 61) {
-                    /* VMFIR: broadcasts the sign-extended 16-bit
-                     * VI[fs] value (raw bit pattern, not a float
-                     * conversion) into every destmask-selected lane of
-                     * VF[ft] - ported from PCSX2's _vuMFIR
-                     * ("VF[_Ft_].SL[i] = (s32)VI[_Is_].SS[0]" - a
-                     * signed 16-to-32 sign-extension of the RAW
-                     * bits). */
-                    if (ft != 0) {
-                        int16_t vi16 = (int16_t)(vu0_vi_read(st, fs) & 0xFFFFu);
-                        uint32_t sval = (uint32_t)(int32_t)vi16;
-                        for (int lane = 0; lane < 4; lane++) {
-                            if (!(destmask & (0x8u >> lane))) continue;
-                            vu0_vf_write_lane(st, ft, (uint32_t)lane, sval);
-                        }
-                    }
-                } else if (idx == 62) {
-                    /* VILWR: VI[ft] = the low 16 bits of VU0 mem at
-                     * quadword index VI[fs], single lane selected by
-                     * destmask (the same single-bit-only convention
-                     * VISWR already uses - X=0x8,Y=0x4,Z=0x2,W=0x1) -
-                     * ported from PCSX2's _vuILWR (reads a u16* at
-                     * byte offsets 0/4/8/12, i.e. the low half-word of
-                     * each 32-bit lane). */
-                    if (ft != 0) {
-                        int lane = (destmask == 0x8u) ? 0 : (destmask == 0x4u) ? 1 : (destmask == 0x2u) ? 2 : 3;
-                        uint32_t addr_vi = vu0_vi_read(st, fs);
-                        uint32_t off = vu0_mem_addr(addr_vi, (uint32_t)lane);
-                        uint32_t lo16 = (uint32_t)st->vu0_mem[off] | ((uint32_t)st->vu0_mem[off + 1] << 8);
-                        vu0_vi_write(st, ft, lo16);
-                    }
-                } else if (idx == 56 || idx == 57 || idx == 58) {
-                    /* VDIV(56)/VSQRT(57)/VRSQRT(58) (Round 29
-                     * continued, 25th change): the division/sqrt
-                     * family that produces the Q register value.
-                     * Fsf/Ftf are independent 2-bit lane selectors
-                     * living in destmask's low/high 2 bits
-                     * respectively (destmask&3 = Fsf, (destmask>>2)&3
-                     * = Ftf - confirmed against PCSX2's own
-                     * DisR5900asm.cpp dest_fsf()/dest_ftf() macros,
-                     * "(disasmOpcode>>21)&3" / "(disasmOpcode>>23)&3"
-                     * - the same 4-bit field this decoder already
-                     * calls destmask, just split in half and
-                     * reinterpreted as two lane indices here instead
-                     * of a per-lane bitmask). VSQRT only uses Ftf (no
-                     * FS operand at all - confirmed via
-                     * DisR5900asm.cpp's P_VSQRT, which prints only
-                     * FT). Divide-by-zero produces a signed FLT_MAX
-                     * bit pattern (real PS2 hardware has no true IEEE
-                     * infinity) rather than a real float inf/nan,
-                     * ported from PCSX2's own VUops.cpp _vuDIV/
-                     * _vuRSQRT (the sign is the XOR of FT's and FS's
-                     * sign bits). Result is written directly into
-                     * cop2_ctrl[22] - this project's single source of
-                     * truth for Q (already read by VMULq/VADDq/etc
-                     * above); real PCSX2 keeps a separate VU->q field
-                     * and mirrors it into VI[22] via its own
-                     * SYNCFDIV() after every Q-producing op purely for
-                     * its broadcast helpers' convenience, so no
-                     * second piece of state is needed in this
-                     * project's simpler model. No status-flag
-                     * modeling, consistent with this project's
-                     * existing float datapath not tracking MAC/status
-                     * flags anywhere else either. */
-                    uint32_t fsf_lane = destmask & 0x3u;
-                    uint32_t ftf_lane = (destmask >> 2) & 0x3u;
-                    uint32_t uft = vu0_vf_read_lane(st, ft, ftf_lane);
-                    float ftv; memcpy(&ftv, &uft, 4);
-                    uint32_t qbits;
-                    if (idx == 57) {
-                        /* VSQRT: Q = sqrt(|FT|), no FS operand. */
-                        float r = sqrtf(fabsf(ftv));
-                        memcpy(&qbits, &r, 4);
-                    } else {
-                        uint32_t ufs = vu0_vf_read_lane(st, fs, fsf_lane);
-                        float fsv; memcpy(&fsv, &ufs, 4);
-                        if (ftv == 0.0f) {
-                            uint32_t sign_diff = (uft ^ ufs) & 0x80000000u;
-                            if (idx == 56) {
-                                /* VDIV: x/0 or 0/0 both produce the
-                                 * signed FLT_MAX clamp on real
-                                 * hardware - the distinction only
-                                 * affects the (unmodeled) status
-                                 * flag. */
-                                qbits = sign_diff ? 0xFF7FFFFFu : 0x7F7FFFFFu;
-                            } else {
-                                /* VRSQRT (idx58): fs!=0 clamps to
-                                 * signed FLT_MAX like VDIV; fs==0 (a
-                                 * genuine 0/sqrt(0)) clamps to signed
-                                 * zero instead. */
-                                if (fsv != 0.0f) qbits = sign_diff ? 0xFF7FFFFFu : 0x7F7FFFFFu;
-                                else qbits = sign_diff ? 0x80000000u : 0x00000000u;
-                            }
-                        } else if (idx == 56) {
-                            float r = fsv / ftv;
-                            memcpy(&qbits, &r, 4);
-                        } else {
-                            float temp = sqrtf(fabsf(ftv));
-                            float r = fsv / temp;
-                            memcpy(&qbits, &r, 4);
-                        }
-                    }
-                    vu0_vi_write(st, 22, qbits);
-                } else if (idx == 59) {
-                    /* VWAITQ: a true no-op - confirmed against real
-                     * PCSX2 upstream's own _vuWAITQ, which has an
-                     * empty body even there (PCSX2 itself computes Q
-                     * synchronously with no latency to wait on), so
-                     * this project needs no Q "busy" timing model at
-                     * all, resolving the concern flagged in earlier
-                     * rounds' docs. */
-                } else if (idx == 64 || idx == 65) {
-                    /* VRNEXT(64)/VRGET(65) (Round 29 continued, 24th
-                     * change): the VU0 "R register" - a real 24-bit
-                     * LFSR pseudo-random generator, always kept in
-                     * float-bit-pattern range [1.0,2.0) (exponent/sign
-                     * fixed at 0x3F800000, only the low 23 mantissa
-                     * bits actually vary). REG_R is control register
-                     * index 20 (PCSX2's VU.h REG_R=20) - no new state
-                     * needed, already reachable via the existing
-                     * vu0_vi_read/write helpers this file already uses
-                     * for I(21)/Q(22). VRGET just broadcasts R's
-                     * CURRENT value into every destmask-selected lane
-                     * of VF[ft] (guarded ft!=0); VRNEXT advances the
-                     * LFSR FIRST (ported bit-exact from PCSX2's
-                     * AdvanceLFSR: x=bit4, y=bit22, shift left 1, xor
-                     * bit0 with x^y, then re-clamp to the [1.0,2.0)
-                     * bit pattern), then broadcasts the NEW value the
-                     * same way. */
-                    if (idx == 64) {
-                        uint32_t r = vu0_vi_read(st, 20);
-                        uint32_t x = (r >> 4) & 1u;
-                        uint32_t y = (r >> 22) & 1u;
-                        r <<= 1;
-                        r ^= (x ^ y);
-                        r = (r & 0x7FFFFFu) | 0x3F800000u;
-                        vu0_vi_write(st, 20, r);
-                    }
-                    if (ft != 0) {
-                        uint32_t r = vu0_vi_read(st, 20);
-                        for (int lane = 0; lane < 4; lane++) {
-                            if (!(destmask & (0x8u >> lane))) continue;
-                            vu0_vf_write_lane(st, ft, (uint32_t)lane, r);
-                        }
-                    }
-                } else if (idx == 66) {
-                    /* VRINIT: R = 0x3F800000 | (VF[fs][Fsf] &
-                     * 0x7FFFFF) - seeds R's mantissa from a single VF
-                     * lane's raw bits. Fsf reuses destmask's low 2
-                     * bits as a lane index, the same convention
-                     * VMTIR/VRXOR use. */
-                    uint32_t fsf_lane = destmask & 0x3u;
-                    uint32_t raw = vu0_vf_read_lane(st, fs, fsf_lane);
-                    vu0_vi_write(st, 20, 0x3F800000u | (raw & 0x7FFFFFu));
-                } else if (idx == 67) {
-                    /* VRXOR: R = 0x3F800000 | ((R ^ VF[fs][Fsf]) &
-                     * 0x7FFFFF) - XORs R's mantissa with a single VF
-                     * lane's raw bits. */
-                    uint32_t fsf_lane = destmask & 0x3u;
-                    uint32_t raw = vu0_vf_read_lane(st, fs, fsf_lane);
-                    uint32_t r = vu0_vi_read(st, 20);
-                    vu0_vi_write(st, 20, 0x3F800000u | ((r ^ raw) & 0x7FFFFFu));
-                } else if (idx == 31) {
-                    /* VCLIPw (Round 29 continued, 26th change): judges
-                     * |VF[fs].x|,|VF[fs].y|,|VF[fs].z| against
-                     * |VF[ft].w|, treating the raw 32-bit bit patterns
-                     * as SIGNED INTEGERS with a sign-flip XOR trick
-                     * (NOT a float comparison) - ported bit-exact from
-                     * a real PCSX2 upstream reference clone's
-                     * VUops.cpp _vuCLIP. No Fsf/Ftf lane selector at
-                     * all - xyz vs w is hardwired, confirmed via
-                     * DisR5900asm.cpp's P_VCLIPw formatter ("vclip
-                     * %sxyz, %sw"). Shifts 6 new judgment bits into
-                     * the CLIP flag register each call (this project's
-                     * cop2_ctrl[18], reusing the existing generic VI
-                     * array the same way R(20)/I(21)/Q(22) already do
-                     * - REG_CLIP_FLAG=18 in PCSX2's VU.h, and just
-                     * like the Q-register unification decision in the
-                     * 25th change, this project writes directly into
-                     * that single slot rather than modeling PCSX2's
-                     * separate clipflag/SYNCCLIPFLAG() split), masked
-                     * to the low 24 bits (4 calls' worth of judgment
-                     * history, matching real hardware). This is the
-                     * only VU0 macro-mode op this session that needed
-                     * genuinely new reachable state - resolved by
-                     * reusing control-register slot 18, which this
-                     * decoder's CFC2/MTC2/QMTC2 paths already handle
-                     * generically for any register index. */
-                    uint32_t ftw = vu0_vf_read_lane(st, ft, 3);
-                    int32_t value = (int32_t)ftw;
-                    value = (ftw & 0x7f800000u) ? (value & 0x7fffffff) : 0x007fffff;
-                    uint32_t fsx = vu0_vf_read_lane(st, fs, 0);
-                    uint32_t fsy = vu0_vf_read_lane(st, fs, 1);
-                    uint32_t fsz = vu0_vf_read_lane(st, fs, 2);
-                    uint32_t clip = vu0_vi_read(st, 18);
-                    clip <<= 6;
-                    if ((int32_t)(fsx ^ 0x00000000u) > value) clip |= 0x01u;
-                    if ((int32_t)(fsx ^ 0x80000000u) > value) clip |= 0x02u;
-                    if ((int32_t)(fsy ^ 0x00000000u) > value) clip |= 0x04u;
-                    if ((int32_t)(fsy ^ 0x80000000u) > value) clip |= 0x08u;
-                    if ((int32_t)(fsz ^ 0x00000000u) > value) clip |= 0x10u;
-                    if ((int32_t)(fsz ^ 0x80000000u) > value) clip |= 0x20u;
-                    clip &= 0xFFFFFFu;
-                    vu0_vi_write(st, 18, clip);
-                } else {
-                    halt("unimplemented COP2 SPECIAL2 sub-opcode (VU0 vector datapath not implemented)");
-                    return 1;
-                }
-            } else if (funct == 0x32) {
-                /* VIADDI: VI[ft] = VI[fs] + sign_extend(imm), where
-                 * imm is the raw 5-bit field at the SAME bit position
-                 * (6-10) as FD in the other CO-format arithmetic ops
-                 * above, reused here as an immediate rather than a
-                 * register index - and unlike VIADD/VISUB/VIAND/VIOR
-                 * (dest=FD, confirmed via a live "viadd vi02,vi00,vi00"
-                 * disassembly), VIADDI's real operand order is
-                 * dest=FT, src=FS, imm=SA (confirmed against PCSX2's
-                 * own DisR5900asm.cpp P_VIADDI: "viaddi FT, FS,
-                 * 0x%x(SA)"). The sign-extension itself is ported
-                 * verbatim from PCSX2's VUops.cpp _vuIADDI rather than
-                 * reinvented: imm = (code>>6)&0x1f, then
-                 * (imm&0x10 ? 0xfff0 : 0) | (imm&0xf) - a real-hardware
-                 * quirk (effectively a signed 4-bit magnitude with a
-                 * separate sign bit, not a plain 5-bit two's-complement
-                 * sign-extend), closing the gap this project's own
-                 * VIADD/VISUB/VIAND/VIOR comment already flagged as a
-                 * "scoped future gap". */
-                uint32_t imm5 = fd; /* raw bits 6-10, reused as SA/imm here */
-                uint32_t imm = ((imm5 & 0x10u) ? 0xFFF0u : 0u) | (imm5 & 0xFu);
-                if (ft != 0) {
-                    uint32_t a = vu0_vi_read(st, fs);
-                    vu0_vi_write(st, ft, (a + imm) & 0xFFFFu);
-                }
-            } else if (funct == 0x30 || funct == 0x31 || funct == 0x34 || funct == 0x35) {
-                /* VIADD/VISUB/VIAND/VIOR - plain integer ALU on VI
-                 * registers (VI[fd] = VI[fs] op VI[ft]), found right
-                 * after the VSUB.xyzw sequence above in a real BIOS
-                 * "clear every VU0 register" init routine (VF0-31
-                 * cleared via self-subtract, VI0-15 cleared via
-                 * self-add-of-zero: viadd viN,vi00,vi00). Confirmed
-                 * against R5900OpcodeTables.cpp's SPECIAL1 table
-                 * (funct 0x30=VIADD,0x31=VISUB,0x34=VIAND,0x35=VIOR;
-                 * FD/FS/FT field roles carried over unchanged from
-                 * VSUB's, confirmed via a live PCSX2 disassembly of
-                 * "viadd vi02,vi00,vi00" - fd=2,fs=0,ft=0). Real VI
-                 * registers are 16-bit (PCSX2's REG_VI union), so
-                 * VIADD/VISUB results are masked to 16 bits; VIAND/
-                 * VIOR operate on already-16-bit-clean values so no
-                 * extra masking is needed there. VIADDI (immediate
-                 * form) and VIAND/VIOR's less common siblings aren't
-                 * implemented - not seen yet, a scoped future gap. */
-                uint32_t a = vu0_vi_read(st, fs);
-                uint32_t b = vu0_vi_read(st, ft);
-                uint32_t r;
-                switch (funct) {
-                case 0x30: r = (a + b) & 0xFFFFu; break; /* VIADD */
-                case 0x31: r = (a - b) & 0xFFFFu; break; /* VISUB */
-                case 0x34: r = a & b; break;              /* VIAND */
-                default:   r = a | b; break;              /* VIOR  */
-                }
-                vu0_vi_write(st, fd, r);
-            } else if (funct >= 0x20 && funct <= 0x27) {
-                /* VADDq/VMADDq/VADDi/VMADDi/VSUBq/VMSUBq/VSUBi/VMSUBi
-                 * (funct 0x20-0x27) - Round 446 (task #242) originally
-                 * added ONLY funct==0x20 (VADDq) as an empirically-
-                 * tested fix for a real observed halt; task #249
-                 * (Round 455) completes the full row, since this
-                 * file's own Round 446 comment already correctly
-                 * identified and named all 8 real siblings but left
-                 * 7 of them unimplemented as a "scoped future gap,
-                 * not guessed at". Round 455 closes that gap using
-                 * real, directly-fetched PCSX2 source (pcsx2/
-                 * VUops.cpp, fetched this round from the live GitHub
-                 * repo, not guessed): each sibling is a thin wrapper
-                 * calling the SAME applyBinaryMACOpBroadcast/
-                 * applyTernaryMACOpBroadcast templates this file's
-                 * own funct<=0x1F row already ports from (see that
-                 * row's own comment) - real, cited definitions:
-                 *   static __fi void _vuADDq(VURegs* VU)   { vuADDbc(VU, VU->VI[REG_Q].UL); }
-                 *   static __fi void _vuMADDq(VURegs* VU)  { vuMADDbc(VU, VU->VI[REG_Q].UL); }
-                 *   static __fi void _vuADDi(VURegs* VU)   { vuADDbc_addsubhack(VU, VU->VI[REG_I].UL); }
-                 *   static __fi void _vuMADDi(VURegs* VU)  { vuMADDbc(VU, VU->VI[REG_I].UL); }
-                 *   static __fi void _vuSUBq(VURegs* VU)   { vuSUBbc(VU, VU->VI[REG_Q].UL); }
-                 *   static __fi void _vuMSUBq(VURegs* VU)  { vuMSUBbc(VU, VU->VI[REG_Q].UL); }
-                 *   static __fi void _vuSUBi(VURegs* VU)   { vuSUBbc(VU, VU->VI[REG_I].UL); }
-                 *   static __fi void _vuMSUBi(VURegs* VU)  { vuMSUBbc(VU, VU->VI[REG_I].UL); }
-                 * where vuADDbc/vuSUBbc = applyBinaryMACOpBroadcast
-                 * (dst=FD, FD[lane]=FS[lane] OP bc) and vuMADDbc/
-                 * vuMSUBbc = applyTernaryMACOpBroadcast (dst=FD,
-                 * FD[lane]=ACC[lane] OP FS[lane]*bc) - i.e. the MADD/
-                 * MSUB variants here write FD, reading ACC as a THIRD
-                 * operand (st->vu0_acc[4], the same accumulator array
-                 * this file's own funct<=0x1F VMADDx/y/z/w block
-                 * already uses) - never writing back into ACC itself
-                 * (that's the separate VMADDA/VMSUBA family, same
-                 * asymmetry this file's own existing ACC-family
-                 * comment already documents for the non-broadcast
-                 * VMADD/VMSUB at funct 0x29/0x2D below). _vuADDi uses
-                 * "vuADDbc_addsubhack" in real PCSX2 (a TriAce-games
-                 * float-rounding compatibility hack, CHECK_VUADDSUBHACK-
-                 * gated) - not ported here, matching this project's
-                 * existing, already-stated policy of not modeling
-                 * per-game compatibility hacks; the un-hacked path
-                 * (plain float add) is what CHECK_VUADDSUBHACK's own
-                 * disabled branch already falls back to, so this is a
-                 * faithful "hack disabled" real-hardware-equivalent
-                 * implementation, not an approximation. REG_Q=22,
-                 * REG_I=21 (PCSX2's VU.h, same mapping this file's
-                 * own funct<=0x1F Q/I-row already uses). Untested
-                 * against a NEW real halt-site disassembly (unlike
-                 * 0x20 itself, which was) - these 7 siblings are
-                 * implemented from the real, cited PCSX2 semantics on
-                 * the well-evidenced expectation (same opcode row,
-                 * same operand shape, real hardware/PCSX2-confirmed
-                 * ordering) that they'll be needed next; verified via
-                 * the full host-native regression suite before being
-                 * kept, and confirmed to introduce no regression
-                 * against the Round 446 EE-progress baseline. */
-                uint32_t op_idx = funct - 0x20u; /* 0=ADDq,1=MADDq,2=ADDi,3=MADDi,4=SUBq,5=MSUBq,6=SUBi,7=MSUBi */
-                int is_i = (op_idx & 0x2u) != 0;      /* 2,3,6,7 use I; 0,1,4,5 use Q */
-                int is_mac = (op_idx & 0x1u) != 0;    /* 1,3,5,7 are MADD/MSUB (read ACC) */
-                int is_sub = (op_idx & 0x4u) != 0;    /* 4,5,6,7 are SUB-family */
-                uint32_t ubc = vu0_vi_read(st, is_i ? 21u : 22u);
-                float bc; memcpy(&bc, &ubc, 4);
-                for (int lane = 0; lane < 4; lane++) {
-                    if (!(destmask & (0x8u >> lane))) continue;
-                    uint32_t ua = vu0_vf_read_lane(st, fs, (uint32_t)lane);
-                    float a, r; uint32_t ur;
-                    memcpy(&a, &ua, 4);
-                    if (is_mac) {
-                        uint32_t uacc = st->vu0_acc[lane]; float acc; memcpy(&acc, &uacc, 4);
-                        r = is_sub ? (acc - a * bc) : (acc + a * bc);
-                    } else {
-                        r = is_sub ? (a - bc) : (a + bc);
-                    }
-                    memcpy(&ur, &r, 4);
-                    vu0_vf_write_lane(st, fd, (uint32_t)lane, ur);
-                }
-            } else {
-                halt("unimplemented COP2 CO-format sub-opcode (VU0 vector datapath not implemented)");
-                return 1;
-            }
-        }
-        break;
+#include "ee_mmi_switch.inc"
 
-    case 0x1C: /* MMI */
-        switch (funct) {
-        case 0x00: /* MADD */ {
-            int64_t acc = (int64_t)((uint64_t)st->lo.ud0 & 0xFFFFFFFFu) | ((int64_t)(int32_t)(uint32_t)st->hi.ud0 << 32);
-            int64_t res = acc + (int64_t)(int32_t)rs32 * (int64_t)(int32_t)rt32;
-            st->lo.ud0 = sext32((uint32_t)(res & 0xFFFFFFFFu));
-            st->hi.ud0 = sext32((uint32_t)(res >> 32));
-            if (rd) GPR(rd) = st->lo.ud0;
-        } break;
-        case 0x01: /* MADDU */ {
-            uint64_t acc = ((uint64_t)(uint32_t)st->lo.ud0) | ((uint64_t)(uint32_t)st->hi.ud0 << 32);
-            uint64_t res = acc + (uint64_t)rs32 * (uint64_t)rt32;
-            st->lo.ud0 = sext32((uint32_t)(res & 0xFFFFFFFFu));
-            st->hi.ud0 = sext32((uint32_t)(res >> 32));
-            if (rd) GPR(rd) = st->lo.ud0;
-        } break;
-        case 0x04: /* PLZCW */
-            if (rd) {
-                for (int n = 0; n < 2; n++) {
-                    int32_t v = (int32_t)lane_w(st->gpr[rs], n);
-                    int count = 0;
-                    /* count leading bits equal to the sign bit, excluding it */
-                    uint32_t sign = (uint32_t)v >> 31;
-                    uint32_t x = (uint32_t)v;
-                    for (int b = 30; b >= 0; b--) {
-                        if (((x >> b) & 1) != sign) break;
-                        count++;
-                    }
-                    set_lane_w(&st->gpr[rd], n, (uint32_t)count);
-                }
-            }
-            break;
-        case 0x10: /* MFHI1 */ if (rd) GPR(rd) = st->hi.ud1; break;
-        case 0x11: /* MTHI1 */ st->hi.ud1 = GPR(rs); break;
-        case 0x12: /* MFLO1 */ if (rd) GPR(rd) = st->lo.ud1; break;
-        case 0x13: /* MTLO1 */ st->lo.ud1 = GPR(rs); break;
-        case 0x18: /* MULT1 */ {
-            int64_t res = (int64_t)(int32_t)rs32 * (int64_t)(int32_t)rt32;
-            st->lo.ud1 = sext32((uint32_t)(res & 0xFFFFFFFFu));
-            st->hi.ud1 = sext32((uint32_t)(res >> 32));
-            if (rd) GPR(rd) = st->lo.ud1;
-        } break;
-        case 0x19: /* MULTU1 */ {
-            uint64_t res = (uint64_t)rs32 * (uint64_t)rt32;
-            st->lo.ud1 = sext32((uint32_t)(res & 0xFFFFFFFFu));
-            st->hi.ud1 = sext32((uint32_t)(res >> 32));
-            if (rd) GPR(rd) = st->lo.ud1;
-        } break;
-        case 0x1A: /* DIV1: R5900 zero/overflow results; no host UB. */
-            if (rs32 == 0x80000000u && rt32 == 0xffffffffu) {
-                st->lo.ud1 = sext32(0x80000000u);
-                st->hi.ud1 = 0;
-            } else if (rt32 != 0) {
-                st->lo.ud1 = sext32((uint32_t)((int32_t)rs32 / (int32_t)rt32));
-                st->hi.ud1 = sext32((uint32_t)((int32_t)rs32 % (int32_t)rt32));
-            } else {
-                st->lo.ud1 = (int32_t)rs32 < 0 ? 1 : UINT64_MAX;
-                st->hi.ud1 = sext32(rs32);
-            }
-            break;
-        case 0x1B: /* DIVU1 */
-            st->lo.ud1 = rt32 ? sext32(rs32 / rt32) : UINT64_MAX;
-            st->hi.ud1 = sext32(rt32 ? rs32 % rt32 : rs32);
-            break;
-        case 0x34: /* PSLLH */ if (rd) for (int n = 0; n < 8; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)(lane_h(st->gpr[rt], n) << (sa & 0xF))); break;
-        case 0x36: /* PSRLH */ if (rd) for (int n = 0; n < 8; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)(lane_h(st->gpr[rt], n) >> (sa & 0xF))); break;
-        case 0x37: /* PSRAH */ if (rd) for (int n = 0; n < 8; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)((int16_t)lane_h(st->gpr[rt], n) >> (sa & 0xF))); break;
-        case 0x3C: /* PSLLW */ if (rd) for (int n = 0; n < 4; n++) set_lane_w(&st->gpr[rd], n, lane_w(st->gpr[rt], n) << sa); break;
-        case 0x3E: /* PSRLW */ if (rd) for (int n = 0; n < 4; n++) set_lane_w(&st->gpr[rd], n, lane_w(st->gpr[rt], n) >> sa); break;
-        case 0x3F: /* PSRAW */ if (rd) for (int n = 0; n < 4; n++) set_lane_w(&st->gpr[rd], n, (uint32_t)((int32_t)lane_w(st->gpr[rt], n) >> sa)); break;
-
-        /* Round 64 (task #172 aside, 19 remaining real MMI opcodes):
-         * MADD1/MADDU1/PMFHL/PMTHL, ported directly from PCSX2 v1.6.0's
-         * pcsx2/MMI.cpp (fetched from
-         * raw.githubusercontent.com/PCSX2/pcsx2/v1.6.0/pcsx2/MMI.cpp -
-         * current PCSX2 master has moved this logic into x86 recompiler
-         * emission and no longer carries a plain interpreter reference,
-         * so the last version with clean C++ semantics was used
-         * instead), cross-checked against the real sa/funct encoding in
-         * the same tag's pcsx2/R5900OpcodeTables.cpp (tbl_MMI[64]/
-         * tbl_MMI1[32]/tbl_MMI2[32]/tbl_MMI3[32]) rather than guessed -
-         * this also corrected this project's own prior "~23 remaining"
-         * estimate to the real, precise count of 19. */
-        case 0x20: /* MADD1 - pipe-1 32x32->64 signed multiply-add,
-                     * ported from MADD1(). Same 64-bit HI:LO accumulator
-                     * convention as MADD (case 0x00 above) but using the
-                     * SECOND pipe (.ud1) throughout - real hardware has
-                     * two independent HI:LO pipes for exactly this kind
-                     * of dual-issue MMI arithmetic. */
-        {
-            int64_t acc = (int64_t)((uint64_t)st->lo.ud1 & 0xFFFFFFFFu) | ((int64_t)(int32_t)(uint32_t)st->hi.ud1 << 32);
-            int64_t res = acc + (int64_t)(int32_t)rs32 * (int64_t)(int32_t)rt32;
-            st->lo.ud1 = sext32((uint32_t)(res & 0xFFFFFFFFu));
-            st->hi.ud1 = sext32((uint32_t)(res >> 32));
-            if (rd) GPR(rd) = st->lo.ud1;
-        } break;
-        case 0x21: /* MADDU1 - unsigned pipe-1 variant, ported from
-                     * MADDU1(). */
-        {
-            uint64_t acc = ((uint64_t)(uint32_t)st->lo.ud1) | ((uint64_t)(uint32_t)st->hi.ud1 << 32);
-            uint64_t res = acc + (uint64_t)rs32 * (uint64_t)rt32;
-            st->lo.ud1 = sext32((uint32_t)(res & 0xFFFFFFFFu));
-            st->hi.ud1 = sext32((uint32_t)(res >> 32));
-            if (rd) GPR(rd) = st->lo.ud1;
-        } break;
-        case 0x30: /* PMFHL - move from HI:LO, sub-mode selected by the
-                     * `sa` field (LW=0, UW=1, SLW=2, LH=3, SH=4), ported
-                     * from PMFHL()/PMFHL_CLAMP(). SLW/SH saturate to a
-                     * 32-bit/16-bit signed range respectively; LW/UW/LH
-                     * are plain bit extraction with no saturation. */
-            if (rd) {
-                switch (sa) {
-                case 0x00: /* LW */
-                    set_lane_w(&st->gpr[rd], 0, (uint32_t)st->lo.ud0);
-                    set_lane_w(&st->gpr[rd], 1, (uint32_t)st->hi.ud0);
-                    set_lane_w(&st->gpr[rd], 2, (uint32_t)st->lo.ud1);
-                    set_lane_w(&st->gpr[rd], 3, (uint32_t)st->hi.ud1);
-                    break;
-                case 0x01: /* UW */
-                    set_lane_w(&st->gpr[rd], 0, (uint32_t)(st->lo.ud0 >> 32));
-                    set_lane_w(&st->gpr[rd], 1, (uint32_t)(st->hi.ud0 >> 32));
-                    set_lane_w(&st->gpr[rd], 2, (uint32_t)(st->lo.ud1 >> 32));
-                    set_lane_w(&st->gpr[rd], 3, (uint32_t)(st->hi.ud1 >> 32));
-                    break;
-                case 0x02: /* SLW - saturate the 64-bit HI:LO pipe value
-                             * to signed 32-bit range before truncating. */
-                {
-                    int64_t v0 = (int64_t)(((uint64_t)(uint32_t)st->hi.ud0 << 32) | (uint32_t)st->lo.ud0);
-                    int64_t v1 = (int64_t)(((uint64_t)(uint32_t)st->hi.ud1 << 32) | (uint32_t)st->lo.ud1);
-                    uint64_t r0, r1;
-                    if (v0 >= 0x7fffffffLL) r0 = 0x7fffffffu;
-                    else if (v0 <= -0x80000000LL) r0 = 0xffffffff80000000ULL;
-                    else r0 = sext32((uint32_t)st->lo.ud0);
-                    if (v1 >= 0x7fffffffLL) r1 = 0x7fffffffu;
-                    else if (v1 <= -0x80000000LL) r1 = 0xffffffff80000000ULL;
-                    else r1 = sext32((uint32_t)st->lo.ud1);
-                    st->gpr[rd].ud0 = r0;
-                    st->gpr[rd].ud1 = r1;
-                } break;
-                case 0x03: /* LH */
-                    set_lane_h(&st->gpr[rd], 0, (uint16_t)st->lo.ud0);
-                    set_lane_h(&st->gpr[rd], 1, (uint16_t)(st->lo.ud0 >> 32));
-                    set_lane_h(&st->gpr[rd], 2, (uint16_t)st->hi.ud0);
-                    set_lane_h(&st->gpr[rd], 3, (uint16_t)(st->hi.ud0 >> 32));
-                    set_lane_h(&st->gpr[rd], 4, (uint16_t)st->lo.ud1);
-                    set_lane_h(&st->gpr[rd], 5, (uint16_t)(st->lo.ud1 >> 32));
-                    set_lane_h(&st->gpr[rd], 6, (uint16_t)st->hi.ud1);
-                    set_lane_h(&st->gpr[rd], 7, (uint16_t)(st->hi.ud1 >> 32));
-                    break;
-                case 0x04: /* SH - saturate each 32-bit LO/HI lane to a
-                             * signed 16-bit range, ported from
-                             * PMFHL_CLAMP() (strict >/< bounds, unlike
-                             * SLW's >=/<=). */
-                {
-                    int32_t vals[8];
-                    vals[0] = (int32_t)(uint32_t)st->lo.ud0;       vals[1] = (int32_t)(uint32_t)(st->lo.ud0 >> 32);
-                    vals[2] = (int32_t)(uint32_t)st->hi.ud0;       vals[3] = (int32_t)(uint32_t)(st->hi.ud0 >> 32);
-                    vals[4] = (int32_t)(uint32_t)st->lo.ud1;       vals[5] = (int32_t)(uint32_t)(st->lo.ud1 >> 32);
-                    vals[6] = (int32_t)(uint32_t)st->hi.ud1;       vals[7] = (int32_t)(uint32_t)(st->hi.ud1 >> 32);
-                    for (int n = 0; n < 8; n++) {
-                        uint16_t r;
-                        if (vals[n] > 0x7fff) r = 0x7fffu;
-                        else if (vals[n] < -0x8000) r = 0x8000u;
-                        else r = (uint16_t)vals[n];
-                        set_lane_h(&st->gpr[rd], n, r);
-                    }
-                } break;
-                default: break; /* real hardware: other sa values are reserved/no-op, matching PMFHL()'s own switch with no default case */
-                }
-            }
-            break;
-        case 0x31: /* PMTHL - move to HI:LO, sa must be 0 (LW mode is
-                     * the only one real hardware implements for the
-                     * "to" direction). Ported from PMTHL(): note it
-                     * only overwrites the LOW 32 bits of each 64-bit
-                     * pipe half, leaving the upper 32 bits of .ud0/.ud1
-                     * untouched - a genuine hardware quirk, not a bug,
-                     * preserved exactly rather than "cleaned up". */
-            if (sa == 0) {
-                st->lo.ud0 = (st->lo.ud0 & 0xFFFFFFFF00000000ULL) | (uint64_t)lane_w(st->gpr[rs], 0);
-                st->hi.ud0 = (st->hi.ud0 & 0xFFFFFFFF00000000ULL) | (uint64_t)lane_w(st->gpr[rs], 1);
-                st->lo.ud1 = (st->lo.ud1 & 0xFFFFFFFF00000000ULL) | (uint64_t)lane_w(st->gpr[rs], 2);
-                st->hi.ud1 = (st->hi.ud1 & 0xFFFFFFFF00000000ULL) | (uint64_t)lane_w(st->gpr[rs], 3);
-            }
-            break;
-
-        case 0x08: /* MMI0 */
-            switch (sa) {
-            case 0x00: /* PADDW */ if (rd) for (int n = 0; n < 4; n++) set_lane_w(&st->gpr[rd], n, lane_w(st->gpr[rs], n) + lane_w(st->gpr[rt], n)); break;
-            case 0x01: /* PSUBW */ if (rd) for (int n = 0; n < 4; n++) set_lane_w(&st->gpr[rd], n, lane_w(st->gpr[rs], n) - lane_w(st->gpr[rt], n)); break;
-            case 0x04: /* PADDH */ if (rd) for (int n = 0; n < 8; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)(lane_h(st->gpr[rs], n) + lane_h(st->gpr[rt], n))); break;
-            case 0x05: /* PSUBH */ if (rd) for (int n = 0; n < 8; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)(lane_h(st->gpr[rs], n) - lane_h(st->gpr[rt], n))); break;
-            case 0x08: /* PADDB */ if (rd) for (int n = 0; n < 16; n++) set_lane_b(&st->gpr[rd], n, (uint8_t)(lane_b(st->gpr[rs], n) + lane_b(st->gpr[rt], n))); break;
-            case 0x09: /* PSUBB */ if (rd) for (int n = 0; n < 16; n++) set_lane_b(&st->gpr[rd], n, (uint8_t)(lane_b(st->gpr[rs], n) - lane_b(st->gpr[rt], n))); break;
-            case 0x02: /* PCGTW - per-lane signed 32-bit compare, ported
-                        * from PCSX2's _PCGTW(): result is an all-1s
-                        * (0xFFFFFFFF) or all-0s mask, not a boolean 0/1,
-                        * matching real hardware's SIMD-compare convention. */
-                if (rd) for (int n = 0; n < 4; n++)
-                    set_lane_w(&st->gpr[rd], n, ((int32_t)lane_w(st->gpr[rs], n) > (int32_t)lane_w(st->gpr[rt], n)) ? 0xFFFFFFFFu : 0x00000000u);
-                break;
-            case 0x03: /* PMAXW - per-lane signed 32-bit max, ported from _PMAXW(). */
-                if (rd) for (int n = 0; n < 4; n++) {
-                    int32_t a = (int32_t)lane_w(st->gpr[rs], n), b = (int32_t)lane_w(st->gpr[rt], n);
-                    set_lane_w(&st->gpr[rd], n, (uint32_t)((a > b) ? a : b));
-                }
-                break;
-            case 0x06: /* PCGTH - per-lane signed 16-bit compare, ported from _PCGTH(). */
-                if (rd) for (int n = 0; n < 8; n++)
-                    set_lane_h(&st->gpr[rd], n, ((int16_t)lane_h(st->gpr[rs], n) > (int16_t)lane_h(st->gpr[rt], n)) ? 0xFFFFu : 0x0000u);
-                break;
-            case 0x07: /* PMAXH - per-lane signed 16-bit max, ported from _PMAXH(). */
-                if (rd) for (int n = 0; n < 8; n++) {
-                    int16_t a = (int16_t)lane_h(st->gpr[rs], n), b = (int16_t)lane_h(st->gpr[rt], n);
-                    set_lane_h(&st->gpr[rd], n, (uint16_t)((a > b) ? a : b));
-                }
-                break;
-            case 0x0A: /* PCGTB - per-lane signed 8-bit compare, ported from _PCGTB(). */
-                if (rd) for (int n = 0; n < 16; n++)
-                    set_lane_b(&st->gpr[rd], n, ((int8_t)lane_b(st->gpr[rs], n) > (int8_t)lane_b(st->gpr[rt], n)) ? 0xFFu : 0x00u);
-                break;
-            case 0x12: /* PEXTLW */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    set_lane_w(&out, 0, lane_w(Rt, 0)); set_lane_w(&out, 1, lane_w(Rs, 0));
-                    set_lane_w(&out, 2, lane_w(Rt, 1)); set_lane_w(&out, 3, lane_w(Rs, 1));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x13: /* PPACW */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    set_lane_w(&out, 0, lane_w(Rt, 0)); set_lane_w(&out, 1, lane_w(Rt, 2));
-                    set_lane_w(&out, 2, lane_w(Rs, 0)); set_lane_w(&out, 3, lane_w(Rs, 2));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x16: /* PEXTLH */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    set_lane_h(&out, 0, lane_h(Rt, 0)); set_lane_h(&out, 1, lane_h(Rs, 0));
-                    set_lane_h(&out, 2, lane_h(Rt, 1)); set_lane_h(&out, 3, lane_h(Rs, 1));
-                    set_lane_h(&out, 4, lane_h(Rt, 2)); set_lane_h(&out, 5, lane_h(Rs, 2));
-                    set_lane_h(&out, 6, lane_h(Rt, 3)); set_lane_h(&out, 7, lane_h(Rs, 3));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x17: /* PPACH */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    set_lane_h(&out, 0, lane_h(Rt, 0)); set_lane_h(&out, 1, lane_h(Rt, 2));
-                    set_lane_h(&out, 2, lane_h(Rt, 4)); set_lane_h(&out, 3, lane_h(Rt, 6));
-                    set_lane_h(&out, 4, lane_h(Rs, 0)); set_lane_h(&out, 5, lane_h(Rs, 2));
-                    set_lane_h(&out, 6, lane_h(Rs, 4)); set_lane_h(&out, 7, lane_h(Rs, 6));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1A: /* PEXTLB */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    for (int n = 0; n < 8; n++) {
-                        set_lane_b(&out, n * 2,     lane_b(Rt, n));
-                        set_lane_b(&out, n * 2 + 1, lane_b(Rs, n));
-                    }
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1B: /* PPACB */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    for (int n = 0; n < 8; n++) {
-                        set_lane_b(&out, n,     lane_b(Rt, n * 2));
-                        set_lane_b(&out, n + 8, lane_b(Rs, n * 2));
-                    }
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x10: /* PADDSW - saturated per-lane signed 32-bit
-                        * add, ported from PCSX2's _PADDSW(): computes
-                        * the sum in 64-bit to detect over/underflow,
-                        * then clamps to INT32_MAX/INT32_MIN instead
-                        * of wrapping - the "S" in the name is for
-                        * "saturated", not "signed" (all PMMI arithmetic
-                        * here is signed either way). */
-                if (rd) for (int n = 0; n < 4; n++) {
-                    int64_t sum = (int64_t)(int32_t)lane_w(st->gpr[rs], n) + (int64_t)(int32_t)lane_w(st->gpr[rt], n);
-                    uint32_t r;
-                    if (sum > 0x7FFFFFFFLL) r = 0x7FFFFFFFu;
-                    else if (sum < -0x80000000LL) r = 0x80000000u;
-                    else r = (uint32_t)(int32_t)sum;
-                    set_lane_w(&st->gpr[rd], n, r);
-                }
-                break;
-            case 0x11: /* PSUBSW - saturated per-lane signed 32-bit
-                        * subtract, ported from _PSUBSW(). */
-                if (rd) for (int n = 0; n < 4; n++) {
-                    int64_t diff = (int64_t)(int32_t)lane_w(st->gpr[rs], n) - (int64_t)(int32_t)lane_w(st->gpr[rt], n);
-                    uint32_t r;
-                    if (diff >= 0x7FFFFFFFLL) r = 0x7FFFFFFFu;
-                    else if (diff < -0x80000000LL) r = 0x80000000u;
-                    else r = (uint32_t)(int32_t)diff;
-                    set_lane_w(&st->gpr[rd], n, r);
-                }
-                break;
-            case 0x14: /* PADDSH - saturated per-lane signed 16-bit
-                        * add, ported from _PADDSH(). */
-                if (rd) for (int n = 0; n < 8; n++) {
-                    int32_t sum = (int32_t)(int16_t)lane_h(st->gpr[rs], n) + (int32_t)(int16_t)lane_h(st->gpr[rt], n);
-                    uint16_t r;
-                    if (sum > 0x7FFF) r = 0x7FFFu;
-                    else if (sum < -0x8000) r = 0x8000u;
-                    else r = (uint16_t)(int16_t)sum;
-                    set_lane_h(&st->gpr[rd], n, r);
-                }
-                break;
-            case 0x15: /* PSUBSH - saturated per-lane signed 16-bit
-                        * subtract, ported from _PSUBSH(). */
-                if (rd) for (int n = 0; n < 8; n++) {
-                    int32_t diff = (int32_t)(int16_t)lane_h(st->gpr[rs], n) - (int32_t)(int16_t)lane_h(st->gpr[rt], n);
-                    uint16_t r;
-                    if (diff >= 0x7FFF) r = 0x7FFFu;
-                    else if (diff < -0x8000) r = 0x8000u;
-                    else r = (uint16_t)(int16_t)diff;
-                    set_lane_h(&st->gpr[rd], n, r);
-                }
-                break;
-            case 0x18: /* PADDSB - saturated per-lane signed 8-bit
-                        * add, ported from _PADDSB(). */
-                if (rd) for (int n = 0; n < 16; n++) {
-                    int16_t sum = (int16_t)(int8_t)lane_b(st->gpr[rs], n) + (int16_t)(int8_t)lane_b(st->gpr[rt], n);
-                    uint8_t r;
-                    if (sum > 0x7F) r = 0x7Fu;
-                    else if (sum < -128) r = 0x80u;
-                    else r = (uint8_t)(int8_t)sum;
-                    set_lane_b(&st->gpr[rd], n, r);
-                }
-                break;
-            case 0x19: /* PSUBSB - saturated per-lane signed 8-bit
-                        * subtract, ported from _PSUBSB(). */
-                if (rd) for (int n = 0; n < 16; n++) {
-                    int16_t diff = (int16_t)(int8_t)lane_b(st->gpr[rs], n) - (int16_t)(int8_t)lane_b(st->gpr[rt], n);
-                    uint8_t r;
-                    if (diff >= 0x7F) r = 0x7Fu;
-                    else if (diff < -128) r = 0x80u;
-                    else r = (uint8_t)(int8_t)diff;
-                    set_lane_b(&st->gpr[rd], n, r);
-                }
-                break;
-            case 0x1E: /* PEXT5 - unpacks a GS 16-bit 5551 pixel format
-                        * (5 bits R, 5 bits G, 5 bits B, 1 bit A, packed
-                        * in the low 16 bits of each 32-bit lane) up
-                        * into a 32-bit lane with each channel
-                        * left-aligned in its own byte (R in bits 3-7,
-                        * G in bits 11-15, B in bits 19-23, A in bit
-                        * 31) - ported exactly from PCSX2's _PEXT5().
-                        * Uses only Rt; Rs is unused (matches real
-                        * hardware/PCSX2 - this is a unary unpack, not
-                        * a binary op). */
-                if (rd) for (int n = 0; n < 4; n++) {
-                    uint32_t v = lane_w(st->gpr[rt], n);
-                    uint32_t r = ((v & 0x0000001Fu) << 3)  |
-                                 ((v & 0x000003E0u) << 6)  |
-                                 ((v & 0x00007C00u) << 9)  |
-                                 ((v & 0x00008000u) << 16);
-                    set_lane_w(&st->gpr[rd], n, r);
-                }
-                break;
-            case 0x1F: /* PPAC5 - inverse of PEXT5: packs a 32-bit lane
-                        * (as produced by PEXT5's layout) back down to
-                        * a 16-bit 5551 pixel. Ported from _PPAC5().
-                        * Also Rt-only, Rs unused. */
-                if (rd) for (int n = 0; n < 4; n++) {
-                    uint32_t v = lane_w(st->gpr[rt], n);
-                    uint32_t r = ((v >> 3)  & 0x0000001Fu) |
-                                 ((v >> 6)  & 0x000003E0u) |
-                                 ((v >> 9)  & 0x00007C00u) |
-                                 ((v >> 16) & 0x00008000u);
-                    set_lane_w(&st->gpr[rd], n, r);
-                }
-                break;
-            default:
-                halt("unimplemented MMI0 sub-opcode");
-                return 1;
-            }
-            break;
-
-        case 0x28: /* MMI1 */
-            switch (sa) {
-            case 0x01: /* PABSW - per-lane 32-bit absolute value, ported
-                        * from PCSX2's _PABSW(): real hardware quirk
-                        * preserved exactly - INT32_MIN (0x80000000) has
-                        * no positive 32-bit representation, so it's
-                        * clamped to INT32_MAX (0x7FFFFFFF) instead of
-                        * overflowing/wrapping. */
-                if (rd) for (int n = 0; n < 4; n++) {
-                    uint32_t v = lane_w(st->gpr[rt], n);
-                    uint32_t r;
-                    if (v == 0x80000000u) r = 0x7FFFFFFFu;
-                    else if ((int32_t)v < 0) r = (uint32_t)(-(int32_t)v);
-                    else r = v;
-                    set_lane_w(&st->gpr[rd], n, r);
-                }
-                break;
-            case 0x02: /* PCEQW - per-lane 32-bit equality compare (mask
-                        * result), ported from _PCEQW(). */
-                if (rd) for (int n = 0; n < 4; n++)
-                    set_lane_w(&st->gpr[rd], n, (lane_w(st->gpr[rs], n) == lane_w(st->gpr[rt], n)) ? 0xFFFFFFFFu : 0x00000000u);
-                break;
-            case 0x03: /* PMINW - per-lane signed 32-bit min, ported from _PMINW(). */
-                if (rd) for (int n = 0; n < 4; n++) {
-                    int32_t a = (int32_t)lane_w(st->gpr[rs], n), b = (int32_t)lane_w(st->gpr[rt], n);
-                    set_lane_w(&st->gpr[rd], n, (uint32_t)((a < b) ? a : b));
-                }
-                break;
-            case 0x04: /* PADSBH - "add/subtract halfword", ported from
-                        * PCSX2's PADSBH(): NOT a uniform op across all 8
-                        * lanes - the low 4 lanes get PSUBH (fs-ft), the
-                        * high 4 lanes get PADDH (fs+ft). A real,
-                        * deliberately asymmetric instruction, not a typo. */
-                if (rd) {
-                    for (int n = 0; n < 4; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)(lane_h(st->gpr[rs], n) - lane_h(st->gpr[rt], n)));
-                    for (int n = 4; n < 8; n++) set_lane_h(&st->gpr[rd], n, (uint16_t)(lane_h(st->gpr[rs], n) + lane_h(st->gpr[rt], n)));
-                }
-                break;
-            case 0x05: /* PABSH - per-lane 16-bit absolute value, same
-                        * INT16_MIN-clamps-to-INT16_MAX quirk as PABSW,
-                        * ported from _PABSH(). */
-                if (rd) for (int n = 0; n < 8; n++) {
-                    uint16_t v = lane_h(st->gpr[rt], n);
-                    uint16_t r;
-                    if (v == 0x8000u) r = 0x7FFFu;
-                    else if ((int16_t)v < 0) r = (uint16_t)(-(int16_t)v);
-                    else r = v;
-                    set_lane_h(&st->gpr[rd], n, r);
-                }
-                break;
-            case 0x06: /* PCEQH - per-lane 16-bit equality compare, ported from _PCEQH(). */
-                if (rd) for (int n = 0; n < 8; n++)
-                    set_lane_h(&st->gpr[rd], n, (lane_h(st->gpr[rs], n) == lane_h(st->gpr[rt], n)) ? 0xFFFFu : 0x0000u);
-                break;
-            case 0x07: /* PMINH - per-lane signed 16-bit min, ported from _PMINH(). */
-                if (rd) for (int n = 0; n < 8; n++) {
-                    int16_t a = (int16_t)lane_h(st->gpr[rs], n), b = (int16_t)lane_h(st->gpr[rt], n);
-                    set_lane_h(&st->gpr[rd], n, (uint16_t)((a < b) ? a : b));
-                }
-                break;
-            case 0x0A: /* PCEQB - per-lane 8-bit equality compare, ported from _PCEQB(). */
-                if (rd) for (int n = 0; n < 16; n++)
-                    set_lane_b(&st->gpr[rd], n, (lane_b(st->gpr[rs], n) == lane_b(st->gpr[rt], n)) ? 0xFFu : 0x00u);
-                break;
-            case 0x10: /* PADDUW: unsigned saturation, primary MMI.cpp _PADDUW. */ if (rd) for (int n = 0; n < 4; n++) { uint64_t sum=(uint64_t)lane_w(st->gpr[rs],n)+lane_w(st->gpr[rt],n);set_lane_w(&st->gpr[rd],n,sum>UINT32_MAX?UINT32_MAX:(uint32_t)sum); } break;
-            case 0x11: /* PSUBUW */ if (rd) for (int n = 0; n < 4; n++) { uint32_t a = lane_w(st->gpr[rs], n), b = lane_w(st->gpr[rt], n); set_lane_w(&st->gpr[rd], n, (a > b) ? a - b : 0); } break;
-            case 0x12: /* PEXTUW */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    set_lane_w(&out, 0, lane_w(Rt, 2)); set_lane_w(&out, 1, lane_w(Rs, 2));
-                    set_lane_w(&out, 2, lane_w(Rt, 3)); set_lane_w(&out, 3, lane_w(Rs, 3));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x14: /* PADDUH */ if (rd) for (int n = 0; n < 8; n++) { uint32_t sum=(uint32_t)lane_h(st->gpr[rs],n)+lane_h(st->gpr[rt],n);set_lane_h(&st->gpr[rd],n,sum>UINT16_MAX?UINT16_MAX:(uint16_t)sum); } break;
-            case 0x15: /* PSUBUH */ if (rd) for (int n = 0; n < 8; n++) { uint16_t a = lane_h(st->gpr[rs], n), b = lane_h(st->gpr[rt], n); set_lane_h(&st->gpr[rd], n, (a > b) ? (uint16_t)(a - b) : 0); } break;
-            case 0x16: /* PEXTUH */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    set_lane_h(&out, 0, lane_h(Rt, 4)); set_lane_h(&out, 1, lane_h(Rs, 4));
-                    set_lane_h(&out, 2, lane_h(Rt, 5)); set_lane_h(&out, 3, lane_h(Rs, 5));
-                    set_lane_h(&out, 4, lane_h(Rt, 6)); set_lane_h(&out, 5, lane_h(Rs, 6));
-                    set_lane_h(&out, 6, lane_h(Rt, 7)); set_lane_h(&out, 7, lane_h(Rs, 7));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x18: /* PADDUB */ if (rd) for (int n = 0; n < 16; n++) { uint32_t sum=(uint32_t)lane_b(st->gpr[rs],n)+lane_b(st->gpr[rt],n);set_lane_b(&st->gpr[rd],n,sum>UINT8_MAX?UINT8_MAX:(uint8_t)sum); } break;
-            case 0x19: /* PSUBUB */ if (rd) for (int n = 0; n < 16; n++) { uint8_t a = lane_b(st->gpr[rs], n), b = lane_b(st->gpr[rt], n); set_lane_b(&st->gpr[rd], n, (a > b) ? (uint8_t)(a - b) : 0); } break;
-            case 0x1A: /* PEXTUB */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    for (int n = 0; n < 8; n++) {
-                        set_lane_b(&out, n * 2,     lane_b(Rt, n + 8));
-                        set_lane_b(&out, n * 2 + 1, lane_b(Rs, n + 8));
-                    }
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1B: /* QFSRV - "quadword funnel shift right variable":
-                        * treats {Rs:Rt} as a 256-bit value (Rs in the
-                        * upper 128 bits, Rt in the lower 128), shifts it
-                        * right by a BYTE count taken from the dedicated
-                        * SA register (task #177's MFSA/MTSA - NOT the
-                        * instruction's own `sa` field bits, a real and
-                        * easy-to-miss distinction), and keeps the low
-                        * 128 bits as Rd. Ported from QFSRV(); sa_amt==0
-                        * is a pure copy of Rt, sa_amt<64 and >=64 are
-                        * separate cases because a plain C shift by >=64
-                        * bits on a 64-bit value is undefined behavior. */
-                if (rd) {
-                    uint32_t sa_amt = (st->sa_reg & 0xFu) << 3;
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    if (sa_amt == 0) {
-                        out = Rt;
-                    } else if (sa_amt < 64) {
-                        out.ud0 = (Rt.ud0 >> sa_amt) | (Rt.ud1 << (64 - sa_amt));
-                        out.ud1 = (Rt.ud1 >> sa_amt) | (Rs.ud0 << (64 - sa_amt));
-                    } else {
-                        uint32_t sh = sa_amt - 64u;
-                        out.ud0 = Rt.ud1 >> sh;
-                        out.ud1 = Rs.ud0 >> sh;
-                        if (sa_amt != 64u) {
-                            out.ud0 |= Rs.ud0 << (128u - sa_amt);
-                            out.ud1 |= Rs.ud1 << (128u - sa_amt);
-                        }
-                    }
-                    st->gpr[rd] = out;
-                }
-                break;
-            default:
-                halt("unimplemented MMI1 sub-opcode");
-                return 1;
-            }
-            break;
-
-        case 0x09: /* MMI2 */
-            switch (sa) {
-            case 0x08: /* PMFHI */ if (rd) st->gpr[rd] = st->hi; break;
-            case 0x09: /* PMFLO */ if (rd) st->gpr[rd] = st->lo; break;
-            case 0x0E: /* PCPYLD */
-                if (rd) {
-                    ee_reg128_t out;
-                    out.ud1 = st->gpr[rs].ud0;
-                    out.ud0 = st->gpr[rt].ud0;
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x12: /* PAND */ if (rd) { st->gpr[rd].ud0 = st->gpr[rs].ud0 & st->gpr[rt].ud0; st->gpr[rd].ud1 = st->gpr[rs].ud1 & st->gpr[rt].ud1; } break;
-            case 0x13: /* PXOR */ if (rd) { st->gpr[rd].ud0 = st->gpr[rs].ud0 ^ st->gpr[rt].ud0; st->gpr[rd].ud1 = st->gpr[rs].ud1 ^ st->gpr[rt].ud1; } break;
-            case 0x02: /* PSLLVW - variable logical-left-shift of two
-                        * word lanes (Rt's lanes 0/2), each shifted by
-                        * its OWN shift amount taken from the
-                        * corresponding lane of Rs (lane 0's amount
-                        * from Rs lane 0, lane 2's amount from Rs lane
-                        * 2 - masked to 5 bits, standard MIPS variable-
-                        * shift convention), sign-extended to 64 bits
-                        * into gpr.ud0/ud1. Ported from PCSX2's
-                        * PSLLVW(). */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt];
-                    st->gpr[rd].ud0 = sext32(lane_w(Rt, 0) << (lane_w(Rs, 0) & 0x1F));
-                    st->gpr[rd].ud1 = sext32(lane_w(Rt, 2) << (lane_w(Rs, 2) & 0x1F));
-                }
-                break;
-            case 0x03: /* PSRLVW - same as PSLLVW but a variable
-                        * LOGICAL right shift (not arithmetic), ported
-                        * from PCSX2's PSRLVW(). */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt];
-                    st->gpr[rd].ud0 = sext32(lane_w(Rt, 0) >> (lane_w(Rs, 0) & 0x1F));
-                    st->gpr[rd].ud1 = sext32(lane_w(Rt, 2) >> (lane_w(Rs, 2) & 0x1F));
-                }
-                break;
-            case 0x0A: /* PINTH - interleaves the low halfword lanes of
-                        * Rt with the HIGH halfword lanes of Rs, ported
-                        * from PCSX2's PINTH(). Note it's Rs's UPPER 4
-                        * lanes (US[4..7]) that get interleaved in, not
-                        * the lower ones - a real, easy-to-get-backwards
-                        * detail worth preserving exactly. */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    set_lane_h(&out, 0, lane_h(Rt, 0)); set_lane_h(&out, 1, lane_h(Rs, 4));
-                    set_lane_h(&out, 2, lane_h(Rt, 1)); set_lane_h(&out, 3, lane_h(Rs, 5));
-                    set_lane_h(&out, 4, lane_h(Rt, 2)); set_lane_h(&out, 5, lane_h(Rs, 6));
-                    set_lane_h(&out, 6, lane_h(Rt, 3)); set_lane_h(&out, 7, lane_h(Rs, 7));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1A: /* PEXEH - swaps halfword lanes 0 and 2 within
-                        * each 64-bit half (Rt only; Rs unused), ported
-                        * from PEXEH(). */
-                if (rd) {
-                    ee_reg128_t Rt = st->gpr[rt], out;
-                    set_lane_h(&out, 0, lane_h(Rt, 2)); set_lane_h(&out, 1, lane_h(Rt, 1));
-                    set_lane_h(&out, 2, lane_h(Rt, 0)); set_lane_h(&out, 3, lane_h(Rt, 3));
-                    set_lane_h(&out, 4, lane_h(Rt, 6)); set_lane_h(&out, 5, lane_h(Rt, 5));
-                    set_lane_h(&out, 6, lane_h(Rt, 4)); set_lane_h(&out, 7, lane_h(Rt, 7));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1B: /* PREVH - fully reverses the halfword lanes
-                        * within each 64-bit half (Rt only), ported
-                        * from PREVH(). */
-                if (rd) {
-                    ee_reg128_t Rt = st->gpr[rt], out;
-                    set_lane_h(&out, 0, lane_h(Rt, 3)); set_lane_h(&out, 1, lane_h(Rt, 2));
-                    set_lane_h(&out, 2, lane_h(Rt, 1)); set_lane_h(&out, 3, lane_h(Rt, 0));
-                    set_lane_h(&out, 4, lane_h(Rt, 7)); set_lane_h(&out, 5, lane_h(Rt, 6));
-                    set_lane_h(&out, 6, lane_h(Rt, 5)); set_lane_h(&out, 7, lane_h(Rt, 4));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1E: /* PEXEW - swaps word lanes 0 and 2 (Rt only),
-                        * ported from PEXEW(). */
-                if (rd) {
-                    ee_reg128_t Rt = st->gpr[rt], out;
-                    set_lane_w(&out, 0, lane_w(Rt, 2)); set_lane_w(&out, 1, lane_w(Rt, 1));
-                    set_lane_w(&out, 2, lane_w(Rt, 0)); set_lane_w(&out, 3, lane_w(Rt, 3));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1F: /* PROT3W - rotates word lanes 0,1,2 left by one
-                        * (lane 3 untouched), Rt only. Ported from
-                        * PROT3W(). */
-                if (rd) {
-                    ee_reg128_t Rt = st->gpr[rt], out;
-                    set_lane_w(&out, 0, lane_w(Rt, 1)); set_lane_w(&out, 1, lane_w(Rt, 2));
-                    set_lane_w(&out, 2, lane_w(Rt, 0)); set_lane_w(&out, 3, lane_w(Rt, 3));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x00: /* PMADDW - pipe-paired 32x32->64 signed
-                        * multiply-add (ss=0/2 select Rs/Rt's lane 0 or
-                        * 2; dd=0/1 select which HI:LO pipe half gets
-                        * the result), ported from _PMADDW()/PMADDW().
-                        * Real hardware "division voodoo" quirk
-                        * preserved verbatim: for the LOW pipe only
-                        * (ss==0), if Rt's lane is 0 or INT32_MAX (its
-                        * low 31 bits are all-0 or all-1) AND Rs!=Rt, a
-                        * fixed correction constant (0x70000000) is
-                        * added before the final divide-by-2^32-1 step -
-                        * an actual, cited real-hardware rounding
-                        * anomaly, not a simplification. */
-            {
-                for (int k = 0; k < 2; k++) {
-                    int ss = (k == 0) ? 0 : 2;
-                    int64_t temp = (int64_t)(int32_t)lane_w(st->gpr[rs], ss) * (int64_t)(int32_t)lane_w(st->gpr[rt], ss);
-                    uint64_t bits = (uint64_t)temp + ((uint64_t)(uint32_t)(k == 0 ? st->hi.ud0 : st->hi.ud1) << 32);
-                    if (ss == 0) {
-                        int32_t rtl = (int32_t)lane_w(st->gpr[rt], ss);
-                        if (((rtl & 0x7FFFFFFF) == 0 || (rtl & 0x7FFFFFFF) == 0x7FFFFFFF) &&
-                            (int32_t)lane_w(st->gpr[rs], ss) != rtl)
-                            bits += 0x70000000u;
-                    }
-                    int32_t hi_new = (int32_t)((int64_t)bits / 4294967295LL);
-                    uint32_t lo_new = (uint32_t)temp + (uint32_t)(k == 0 ? st->lo.ud0 : st->lo.ud1);
-                    if (k == 0) { st->lo.ud0 = sext32((uint32_t)lo_new); st->hi.ud0 = sext32((uint32_t)hi_new); if (rd) GPR(rd) = ((uint64_t)(uint32_t)hi_new << 32) | lo_new; }
-                    else        { st->lo.ud1 = sext32((uint32_t)lo_new); st->hi.ud1 = sext32((uint32_t)hi_new); if (rd) GPR1(rd) = ((uint64_t)(uint32_t)hi_new << 32) | lo_new; }
-                }
-            } break;
-            case 0x04: /* PMSUBW - pipe-paired 32x32->64 signed
-                        * multiply-subtract, ported from
-                        * _PMSUBW()/PMSUBW(). Same off-by-one
-                        * divide-by-2^32-1 rounding as PMADDW but no
-                        * "division voodoo" correction term (real
-                        * hardware only applies that quirk to PMADDW). */
-            {
-                for (int k = 0; k < 2; k++) {
-                    int ss = (k == 0) ? 0 : 2;
-                    int64_t temp = (int64_t)(int32_t)lane_w(st->gpr[rs], ss) * (int64_t)(int32_t)lane_w(st->gpr[rt], ss);
-                    uint64_t bits = ((uint64_t)(uint32_t)(k == 0 ? st->hi.ud0 : st->hi.ud1) << 32) - (uint64_t)temp;
-                    int32_t hi_new = (int32_t)((int64_t)bits / 4294967295LL);
-                    uint32_t lo_new = (uint32_t)(k == 0 ? st->lo.ud0 : st->lo.ud1) - (uint32_t)temp;
-                    if (k == 0) { st->lo.ud0 = sext32((uint32_t)lo_new); st->hi.ud0 = sext32((uint32_t)hi_new); if (rd) GPR(rd) = ((uint64_t)(uint32_t)hi_new << 32) | lo_new; }
-                    else        { st->lo.ud1 = sext32((uint32_t)lo_new); st->hi.ud1 = sext32((uint32_t)hi_new); if (rd) GPR1(rd) = ((uint64_t)(uint32_t)hi_new << 32) | lo_new; }
-                }
-            } break;
-            case 0x0C: /* PMULTW - pipe-paired 32x32->64 signed
-                        * multiply (no accumulate), ported from
-                        * _PMULTW()/PMULTW(). */
-            {
-                int64_t t0 = (int64_t)(int32_t)lane_w(st->gpr[rs], 0) * (int64_t)(int32_t)lane_w(st->gpr[rt], 0);
-                int64_t t1 = (int64_t)(int32_t)lane_w(st->gpr[rs], 2) * (int64_t)(int32_t)lane_w(st->gpr[rt], 2);
-                st->lo.ud0 = (uint64_t)(int64_t)(int32_t)(t0 & 0xFFFFFFFFu); st->hi.ud0 = (uint64_t)(t0 >> 32);
-                st->lo.ud1 = (uint64_t)(int64_t)(int32_t)(t1 & 0xFFFFFFFFu); st->hi.ud1 = (uint64_t)(t1 >> 32);
-                if (rd) { st->gpr[rd].ud0 = (uint64_t)t0; st->gpr[rd].ud1 = (uint64_t)t1; }
-            } break;
-            case 0x0D: /* PDIVW - pipe-paired 32-bit signed divide,
-                        * ported from _PDIVW()/PDIVW(). Real hardware
-                        * special-cases INT32_MIN/-1 (would overflow a
-                        * plain division) and division-by-zero (real
-                        * MIPS-style sign-of-dividend convention),
-                        * unlike this project's existing simpler
-                        * DIV/DIV1 which silently no-op on rt==0. */
-            {
-                for (int k = 0; k < 2; k++) {
-                    int ss = (k == 0) ? 0 : 2;
-                    uint32_t rsv = lane_w(st->gpr[rs], ss), rtv = lane_w(st->gpr[rt], ss);
-                    int64_t qlo, qhi;
-                    if (rsv == 0x80000000u && rtv == 0xFFFFFFFFu) { qlo = (int32_t)0x80000000; qhi = 0; }
-                    else if ((int32_t)rtv != 0) { qlo = (int32_t)rsv / (int32_t)rtv; qhi = (int32_t)rsv % (int32_t)rtv; }
-                    else { qlo = ((int32_t)rsv < 0) ? 1 : -1; qhi = (int32_t)rsv; }
-                    if (k == 0) { st->lo.ud0 = sext32((uint32_t)qlo); st->hi.ud0 = sext32((uint32_t)qhi); }
-                    else        { st->lo.ud1 = sext32((uint32_t)qlo); st->hi.ud1 = sext32((uint32_t)qhi); }
-                }
-            } break;
-            case 0x10: /* PMADDH - 8-way 16x16->32 signed
-                        * multiply-add across all 8 halfword lanes,
-                        * ported from PMADDH(). Unlike PMADDW's
-                        * dd/ss-paired 64-bit halves, PMADDH addresses
-                        * all four 32-bit LO/HI lanes directly. */
-            {
-                uint32_t r[4];
-                r[0] = (uint32_t)st->lo.ud0        + (int32_t)(int16_t)lane_h(st->gpr[rs], 0) * (int32_t)(int16_t)lane_h(st->gpr[rt], 0);
-                uint32_t r_lo1 = (uint32_t)(st->lo.ud0 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], 1);
-                uint32_t r_hi0 = (uint32_t)st->hi.ud0        + (int32_t)(int16_t)lane_h(st->gpr[rs], 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], 2);
-                uint32_t r_hi1 = (uint32_t)(st->hi.ud0 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], 3);
-                uint32_t r2_lo0 = (uint32_t)st->lo.ud1        + (int32_t)(int16_t)lane_h(st->gpr[rs], 4) * (int32_t)(int16_t)lane_h(st->gpr[rt], 4);
-                uint32_t r2_lo1 = (uint32_t)(st->lo.ud1 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 5) * (int32_t)(int16_t)lane_h(st->gpr[rt], 5);
-                uint32_t r2_hi0 = (uint32_t)st->hi.ud1        + (int32_t)(int16_t)lane_h(st->gpr[rs], 6) * (int32_t)(int16_t)lane_h(st->gpr[rt], 6);
-                uint32_t r2_hi1 = (uint32_t)(st->hi.ud1 >> 32) + (int32_t)(int16_t)lane_h(st->gpr[rs], 7) * (int32_t)(int16_t)lane_h(st->gpr[rt], 7);
-                st->lo.ud0 = ((uint64_t)(uint32_t)r_lo1 << 32) | (uint32_t)r[0];
-                st->hi.ud0 = ((uint64_t)(uint32_t)r_hi1 << 32) | (uint32_t)r_hi0;
-                st->lo.ud1 = ((uint64_t)(uint32_t)r2_lo1 << 32) | (uint32_t)r2_lo0;
-                st->hi.ud1 = ((uint64_t)(uint32_t)r2_hi1 << 32) | (uint32_t)r2_hi0;
-                if (rd) {
-                    set_lane_w(&st->gpr[rd], 0, (uint32_t)r[0]); set_lane_w(&st->gpr[rd], 1, (uint32_t)r_hi0);
-                    set_lane_w(&st->gpr[rd], 2, (uint32_t)r2_lo0); set_lane_w(&st->gpr[rd], 3, (uint32_t)r2_hi0);
-                }
-            } break;
-            case 0x11: /* PHMADH - "horizontal" multiply-add: pairs
-                        * ADJACENT halfword lanes (n, n+1) instead of
-                        * matching lane indices, ported from
-                        * _PHMADH_LO()/_PHMADH_HI()/PHMADH(). */
-            {
-                uint32_t lo_words[2], hi_words[2];
-                for (int half = 0; half < 2; half++) {
-                    int base = half * 4;
-                    int32_t first_lo = (int32_t)(int16_t)lane_h(st->gpr[rs], base + 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 1);
-                    uint32_t sum_lo = (uint32_t)first_lo + (int32_t)(int16_t)lane_h(st->gpr[rs], base) * (int32_t)(int16_t)lane_h(st->gpr[rt], base);
-                    int32_t first_hi = (int32_t)(int16_t)lane_h(st->gpr[rs], base + 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 3);
-                    uint32_t sum_hi = (uint32_t)first_hi + (int32_t)(int16_t)lane_h(st->gpr[rs], base + 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 2);
-                    lo_words[half] = (uint32_t)sum_lo; hi_words[half] = (uint32_t)sum_hi;
-                    if (half == 0) { st->lo.ud0 = (uint64_t)(uint32_t)first_lo << 32 | (uint32_t)sum_lo; st->hi.ud0 = (uint64_t)(uint32_t)first_hi << 32 | (uint32_t)sum_hi; }
-                    else           { st->lo.ud1 = (uint64_t)(uint32_t)first_lo << 32 | (uint32_t)sum_lo; st->hi.ud1 = (uint64_t)(uint32_t)first_hi << 32 | (uint32_t)sum_hi; }
-                }
-                if (rd) {
-                    set_lane_w(&st->gpr[rd], 0, lo_words[0]); set_lane_w(&st->gpr[rd], 1, hi_words[0]);
-                    set_lane_w(&st->gpr[rd], 2, lo_words[1]); set_lane_w(&st->gpr[rd], 3, hi_words[1]);
-                }
-            } break;
-            case 0x14: /* PMSUBH - like PMADDH but subtracting, ported
-                        * from PMSUBH(). */
-            {
-                uint32_t r0 = (uint32_t)st->lo.ud0        - (int32_t)(int16_t)lane_h(st->gpr[rs], 0) * (int32_t)(int16_t)lane_h(st->gpr[rt], 0);
-                uint32_t r1 = (uint32_t)(st->lo.ud0 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], 1);
-                uint32_t r2 = (uint32_t)st->hi.ud0        - (int32_t)(int16_t)lane_h(st->gpr[rs], 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], 2);
-                uint32_t r3 = (uint32_t)(st->hi.ud0 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], 3);
-                uint32_t r4 = (uint32_t)st->lo.ud1        - (int32_t)(int16_t)lane_h(st->gpr[rs], 4) * (int32_t)(int16_t)lane_h(st->gpr[rt], 4);
-                uint32_t r5 = (uint32_t)(st->lo.ud1 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 5) * (int32_t)(int16_t)lane_h(st->gpr[rt], 5);
-                uint32_t r6 = (uint32_t)st->hi.ud1        - (int32_t)(int16_t)lane_h(st->gpr[rs], 6) * (int32_t)(int16_t)lane_h(st->gpr[rt], 6);
-                uint32_t r7 = (uint32_t)(st->hi.ud1 >> 32) - (int32_t)(int16_t)lane_h(st->gpr[rs], 7) * (int32_t)(int16_t)lane_h(st->gpr[rt], 7);
-                st->lo.ud0 = ((uint64_t)(uint32_t)r1 << 32) | (uint32_t)r0;
-                st->hi.ud0 = ((uint64_t)(uint32_t)r3 << 32) | (uint32_t)r2;
-                st->lo.ud1 = ((uint64_t)(uint32_t)r5 << 32) | (uint32_t)r4;
-                st->hi.ud1 = ((uint64_t)(uint32_t)r7 << 32) | (uint32_t)r6;
-                if (rd) { set_lane_w(&st->gpr[rd], 0, (uint32_t)r0); set_lane_w(&st->gpr[rd], 1, (uint32_t)r2);
-                          set_lane_w(&st->gpr[rd], 2, (uint32_t)r4); set_lane_w(&st->gpr[rd], 3, (uint32_t)r6); }
-            } break;
-            case 0x15: /* PHMSBH - horizontal multiply-subtract; the
-                        * "first" (odd-lane) product's COMPLEMENT is
-                        * stored in the adjacent LO/HI word - a real,
-                        * documented-as-"undocumented behaviour" hardware
-                        * quirk in PCSX2's own source, preserved exactly
-                        * (~firsttemp, not a sign-flip or fabrication).
-                        * Ported from _PHMSBH_LO()/_PHMSBH_HI()/
-                        * PHMSBH(). */
-            {
-                uint32_t lo_words[2], hi_words[2];
-                for (int half = 0; half < 2; half++) {
-                    int base = half * 4;
-                    int32_t first_lo = (int32_t)(int16_t)lane_h(st->gpr[rs], base + 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 1);
-                    uint32_t diff_lo = (uint32_t)first_lo - (int32_t)(int16_t)lane_h(st->gpr[rs], base) * (int32_t)(int16_t)lane_h(st->gpr[rt], base);
-                    int32_t first_hi = (int32_t)(int16_t)lane_h(st->gpr[rs], base + 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 3);
-                    uint32_t diff_hi = (uint32_t)first_hi - (int32_t)(int16_t)lane_h(st->gpr[rs], base + 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], base + 2);
-                    lo_words[half] = (uint32_t)diff_lo; hi_words[half] = (uint32_t)diff_hi;
-                    if (half == 0) { st->lo.ud0 = (uint64_t)(uint32_t)(~first_lo) << 32 | (uint32_t)diff_lo; st->hi.ud0 = (uint64_t)(uint32_t)(~first_hi) << 32 | (uint32_t)diff_hi; }
-                    else           { st->lo.ud1 = (uint64_t)(uint32_t)(~first_lo) << 32 | (uint32_t)diff_lo; st->hi.ud1 = (uint64_t)(uint32_t)(~first_hi) << 32 | (uint32_t)diff_hi; }
-                }
-                if (rd) {
-                    set_lane_w(&st->gpr[rd], 0, lo_words[0]); set_lane_w(&st->gpr[rd], 1, hi_words[0]);
-                    set_lane_w(&st->gpr[rd], 2, lo_words[1]); set_lane_w(&st->gpr[rd], 3, hi_words[1]);
-                }
-            } break;
-            case 0x1C: /* PMULTH - 8-way 16x16->32 signed multiply (no
-                        * accumulate), ported from PMULTH(). */
-            {
-                int32_t r0 = (int32_t)(int16_t)lane_h(st->gpr[rs], 0) * (int32_t)(int16_t)lane_h(st->gpr[rt], 0);
-                int32_t r1 = (int32_t)(int16_t)lane_h(st->gpr[rs], 1) * (int32_t)(int16_t)lane_h(st->gpr[rt], 1);
-                int32_t r2 = (int32_t)(int16_t)lane_h(st->gpr[rs], 2) * (int32_t)(int16_t)lane_h(st->gpr[rt], 2);
-                int32_t r3 = (int32_t)(int16_t)lane_h(st->gpr[rs], 3) * (int32_t)(int16_t)lane_h(st->gpr[rt], 3);
-                int32_t r4 = (int32_t)(int16_t)lane_h(st->gpr[rs], 4) * (int32_t)(int16_t)lane_h(st->gpr[rt], 4);
-                int32_t r5 = (int32_t)(int16_t)lane_h(st->gpr[rs], 5) * (int32_t)(int16_t)lane_h(st->gpr[rt], 5);
-                int32_t r6 = (int32_t)(int16_t)lane_h(st->gpr[rs], 6) * (int32_t)(int16_t)lane_h(st->gpr[rt], 6);
-                int32_t r7 = (int32_t)(int16_t)lane_h(st->gpr[rs], 7) * (int32_t)(int16_t)lane_h(st->gpr[rt], 7);
-                st->lo.ud0 = ((uint64_t)(uint32_t)r1 << 32) | (uint32_t)r0;
-                st->hi.ud0 = ((uint64_t)(uint32_t)r3 << 32) | (uint32_t)r2;
-                st->lo.ud1 = ((uint64_t)(uint32_t)r5 << 32) | (uint32_t)r4;
-                st->hi.ud1 = ((uint64_t)(uint32_t)r7 << 32) | (uint32_t)r6;
-                if (rd) { set_lane_w(&st->gpr[rd], 0, (uint32_t)r0); set_lane_w(&st->gpr[rd], 1, (uint32_t)r2);
-                          set_lane_w(&st->gpr[rd], 2, (uint32_t)r4); set_lane_w(&st->gpr[rd], 3, (uint32_t)r6); }
-            } break;
-            case 0x1D: /* PDIVBW - 4-way 32/16-bit signed divide: all
-                        * FOUR of Rs's 32-bit lanes are divided by the
-                        * SAME divisor - Rt's halfword lane 0 broadcast
-                        * to every iteration (a real, cited hardware
-                        * quirk, not a copy-paste bug), ported from
-                        * _PDIVBW()/PDIVBW(). */
-            {
-                for (int n = 0; n < 4; n++) {
-                    uint32_t rsv = lane_w(st->gpr[rs], n);
-                    uint16_t rtv16 = lane_h(st->gpr[rt], 0);
-                    int32_t qlo, qhi;
-                    if (rsv == 0x80000000u && rtv16 == 0xFFFFu) { qlo = (int32_t)0x80000000; qhi = 0; }
-                    else if ((int16_t)rtv16 != 0) { qlo = (int32_t)rsv / (int32_t)(int16_t)rtv16; qhi = (int32_t)rsv % (int32_t)(int16_t)rtv16; }
-                    else { qlo = ((int32_t)rsv < 0) ? 1 : -1; qhi = (int32_t)rsv; }
-                    set_lane_w(&st->lo, n, (uint32_t)qlo);
-                    set_lane_w(&st->hi, n, (uint32_t)qhi);
-                }
-            } break;
-            default:
-                halt("unimplemented MMI2 sub-opcode");
-                return 1;
-            }
-            break;
-
-        case 0x29: /* MMI3 */
-            switch (sa) {
-            case 0x08: /* PMTHI */ st->hi = st->gpr[rs]; break;
-            case 0x09: /* PMTLO */ st->lo = st->gpr[rs]; break;
-            case 0x0E: /* PCPYUD */
-                if (rd) {
-                    ee_reg128_t out;
-                    out.ud0 = st->gpr[rs].ud1;
-                    out.ud1 = st->gpr[rt].ud1;
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x12: /* POR */  if (rd) { st->gpr[rd].ud0 = st->gpr[rs].ud0 | st->gpr[rt].ud0; st->gpr[rd].ud1 = st->gpr[rs].ud1 | st->gpr[rt].ud1; } break;
-            case 0x13: /* PNOR */ if (rd) { st->gpr[rd].ud0 = ~(st->gpr[rs].ud0 | st->gpr[rt].ud0); st->gpr[rd].ud1 = ~(st->gpr[rs].ud1 | st->gpr[rt].ud1); } break;
-            case 0x0A: /* PINTEH - interleaves EVEN halfword lanes of
-                        * Rt with EVEN halfword lanes of Rs (odd lanes
-                        * untouched by either input), ported from
-                        * PINTEH(). Distinct from PINTH above: PINTH
-                        * takes ALL of Rt's lanes plus Rs's upper half;
-                        * PINTEH takes only the even-indexed lanes of
-                        * BOTH Rs and Rt. */
-                if (rd) {
-                    ee_reg128_t Rs = st->gpr[rs], Rt = st->gpr[rt], out;
-                    set_lane_h(&out, 0, lane_h(Rt, 0)); set_lane_h(&out, 1, lane_h(Rs, 0));
-                    set_lane_h(&out, 2, lane_h(Rt, 2)); set_lane_h(&out, 3, lane_h(Rs, 2));
-                    set_lane_h(&out, 4, lane_h(Rt, 4)); set_lane_h(&out, 5, lane_h(Rs, 4));
-                    set_lane_h(&out, 6, lane_h(Rt, 6)); set_lane_h(&out, 7, lane_h(Rs, 6));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1A: /* PEXCH - swaps halfword lanes 1 and 2 within
-                        * each 64-bit half (Rt only), ported from
-                        * PEXCH(). Note this is a DIFFERENT permutation
-                        * from PEXEH above (which swaps lanes 0 and 2) -
-                        * easy to confuse, kept as two distinct case
-                        * bodies rather than merged to avoid mixing up
-                        * which lane pair each one swaps. */
-                if (rd) {
-                    ee_reg128_t Rt = st->gpr[rt], out;
-                    set_lane_h(&out, 0, lane_h(Rt, 0)); set_lane_h(&out, 1, lane_h(Rt, 2));
-                    set_lane_h(&out, 2, lane_h(Rt, 1)); set_lane_h(&out, 3, lane_h(Rt, 3));
-                    set_lane_h(&out, 4, lane_h(Rt, 4)); set_lane_h(&out, 5, lane_h(Rt, 6));
-                    set_lane_h(&out, 6, lane_h(Rt, 5)); set_lane_h(&out, 7, lane_h(Rt, 7));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1B: /* PCPYH - broadcasts halfword lane 0 across the
-                        * low 64 bits and lane 4 across the high 64
-                        * bits (Rt only), ported from PCPYH(). */
-                if (rd) {
-                    ee_reg128_t Rt = st->gpr[rt], out;
-                    uint16_t lo = lane_h(Rt, 0), hi = lane_h(Rt, 4);
-                    for (int n = 0; n < 4; n++) set_lane_h(&out, n, lo);
-                    for (int n = 4; n < 8; n++) set_lane_h(&out, n, hi);
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x1E: /* PEXCW - swaps word lanes 1 and 2 (Rt only),
-                        * ported from PEXCW(). Distinct from PEXEW
-                        * above (which swaps lanes 0 and 2). */
-                if (rd) {
-                    ee_reg128_t Rt = st->gpr[rt], out;
-                    set_lane_w(&out, 0, lane_w(Rt, 0)); set_lane_w(&out, 1, lane_w(Rt, 2));
-                    set_lane_w(&out, 2, lane_w(Rt, 1)); set_lane_w(&out, 3, lane_w(Rt, 3));
-                    st->gpr[rd] = out;
-                }
-                break;
-            case 0x00: /* PMADDUW - pipe-paired 32x32(unsigned)->64
-                        * multiply-add, ported from _PMADDUW()/
-                        * PMADDUW(). Unlike PMADDW, no "division
-                        * voodoo" correction applies (that quirk is
-                        * PMADDW-specific per real hardware/PCSX2). */
-            {
-                for (int k = 0; k < 2; k++) {
-                    int ss = (k == 0) ? 0 : 2;
-                    uint64_t acc = (k == 0) ? (((uint64_t)(uint32_t)st->hi.ud0 << 32) | (uint32_t)st->lo.ud0)
-                                             : (((uint64_t)(uint32_t)st->hi.ud1 << 32) | (uint32_t)st->lo.ud1);
-                    uint64_t tempu = acc + (uint64_t)lane_w(st->gpr[rs], ss) * (uint64_t)lane_w(st->gpr[rt], ss);
-                    if (k == 0) { st->lo.ud0 = sext32((uint32_t)(tempu & 0xFFFFFFFFu)); st->hi.ud0 = sext32((uint32_t)(tempu >> 32)); if (rd) st->gpr[rd].ud0 = tempu; }
-                    else        { st->lo.ud1 = sext32((uint32_t)(tempu & 0xFFFFFFFFu)); st->hi.ud1 = sext32((uint32_t)(tempu >> 32)); if (rd) st->gpr[rd].ud1 = tempu; }
-                }
-            } break;
-            case 0x03: /* PSRAVW - variable arithmetic-shift-right of a
-                        * word pair (Rt's lanes 0/2, each shifted by a
-                        * per-pair amount taken from Rs's matching lane,
-                        * masked to 5 bits), writes Rd directly (no
-                        * HI/LO involvement) - ported from PSRAVW(). */
-                if (rd) {
-                    st->gpr[rd].ud0 = sext32((uint32_t)((int32_t)lane_w(st->gpr[rt], 0) >> (lane_w(st->gpr[rs], 0) & 0x1Fu)));
-                    st->gpr[rd].ud1 = sext32((uint32_t)((int32_t)lane_w(st->gpr[rt], 2) >> (lane_w(st->gpr[rs], 2) & 0x1Fu)));
-                }
-                break;
-            case 0x0C: /* PMULTUW - pipe-paired 32x32(unsigned)->64
-                        * multiply (no accumulate), ported from
-                        * _PMULTUW()/PMULTUW(). Real hardware/PCSX2
-                        * quirk preserved verbatim: the result's LOW
-                        * 32 bits are stored via a SIGNED 32-bit cast
-                        * (sign-extended) even though this is the
-                        * "unsigned" multiply variant - not "cleaned
-                        * up" to be purely unsigned. */
-            {
-                uint64_t t0 = (uint64_t)lane_w(st->gpr[rs], 0) * (uint64_t)lane_w(st->gpr[rt], 0);
-                uint64_t t1 = (uint64_t)lane_w(st->gpr[rs], 2) * (uint64_t)lane_w(st->gpr[rt], 2);
-                st->lo.ud0 = sext32((uint32_t)(t0 & 0xFFFFFFFFu)); st->hi.ud0 = sext32((uint32_t)(t0 >> 32));
-                st->lo.ud1 = sext32((uint32_t)(t1 & 0xFFFFFFFFu)); st->hi.ud1 = sext32((uint32_t)(t1 >> 32));
-                if (rd) { st->gpr[rd].ud0 = t0; st->gpr[rd].ud1 = t1; }
-            } break;
-            case 0x0D: /* PDIVUW - pipe-paired 32-bit UNSIGNED divide,
-                        * ported from _PDIVUW()/PDIVUW(). Divide-by-zero
-                        * convention differs from signed PDIVW's
-                        * sign-of-dividend rule: LO is always -1
-                        * (0xFFFFFFFF) here, per real hardware. */
-            {
-                for (int k = 0; k < 2; k++) {
-                    int ss = (k == 0) ? 0 : 2;
-                    uint32_t rsv = lane_w(st->gpr[rs], ss), rtv = lane_w(st->gpr[rt], ss);
-                    int32_t qlo, qhi;
-                    if (rtv != 0) { qlo = (int32_t)(rsv / rtv); qhi = (int32_t)(rsv % rtv); }
-                    else { qlo = -1; qhi = (int32_t)rsv; }
-                    if (k == 0) { st->lo.ud0 = sext32((uint32_t)qlo); st->hi.ud0 = sext32((uint32_t)qhi); }
-                    else        { st->lo.ud1 = sext32((uint32_t)qlo); st->hi.ud1 = sext32((uint32_t)qhi); }
-                }
-            } break;
-            default:
-                halt("unimplemented MMI3 sub-opcode");
-                return 1;
-            }
-            break;
-
-        default:
-            halt("unimplemented MMI top-level funct");
-            return 1;
-        }
-        break;
-
-    case 0x22: /* LWL */ {
-        static const uint32_t LWL_MASK[4]  = { 0xffffffu, 0x0000ffffu, 0x000000ffu, 0x00000000u };
-        static const uint8_t  LWL_SHIFT[4] = { 24, 16, 8, 0 };
-        uint32_t addr = rs32 + imm;
-        uint32_t shift = addr & 3;
-        uint32_t mem = ee_mem_read32(st, addr & ~3u);
-        if (rt) GPR(rt) = sext32((rt32 & LWL_MASK[shift]) | (mem << LWL_SHIFT[shift]));
-    } break;
-    case 0x26: /* LWR */ {
-        static const uint32_t LWR_MASK[4]  = { 0x00000000u, 0xff000000u, 0xffff0000u, 0xffffff00u };
-        static const uint8_t  LWR_SHIFT[4] = { 0, 8, 16, 24 };
-        uint32_t addr = rs32 + imm;
-        uint32_t shift = addr & 3;
-        uint32_t mem = ee_mem_read32(st, addr & ~3u);
-        uint32_t result = (rt32 & LWR_MASK[shift]) | (mem >> LWR_SHIFT[shift]);
-        if (rt) {
-            if (shift == 0)
-                GPR(rt) = sext32(result); /* full 64-bit sign extend, matches PCSX2 */
-            else
-                GPR(rt) = (GPR(rt) & 0xFFFFFFFF00000000ULL) | result; /* upper 32 bits preserved */
-        }
-    } break;
-
-    case 0x20: /* LB */  if (rt) GPR(rt) = (uint64_t)(int64_t)(int8_t)ee_mem_read8(st, rs32 + imm); else ee_mem_read8(st, rs32 + imm); break;
-    case 0x21: /* LH */  if (rt) GPR(rt) = (uint64_t)(int64_t)(int16_t)ee_mem_read16(st, rs32 + imm); else ee_mem_read16(st, rs32 + imm); break;
-    case 0x23: /* LW */  if (rt) GPR(rt) = sext32(ee_mem_read32(st, rs32 + imm)); else ee_mem_read32(st, rs32 + imm); break;
-    case 0x24: /* LBU */ if (rt) GPR(rt) = ee_mem_read8(st, rs32 + imm); else ee_mem_read8(st, rs32 + imm); break;
-    case 0x25: /* LHU */ if (rt) GPR(rt) = ee_mem_read16(st, rs32 + imm); else ee_mem_read16(st, rs32 + imm); break;
-    case 0x27: /* LWU */ if (rt) GPR(rt) = ee_mem_read32(st, rs32 + imm); else ee_mem_read32(st, rs32 + imm); break;
-    case 0x37: /* LD */ {
-        uint32_t ld_addr = rs32 + imm;
-        uint64_t ld_val = ee_mem_read64(st, ld_addr);
-        if (rt) GPR(rt) = ld_val;
-    } break;
-
-    case 0x2C: /* SDL - Store Doubleword Left. Standard MIPS III
-                * counterpart to SWL, scaled from 4 bytes to 8 (3
-                * shift bits instead of 2) - the store-side mirror of
-                * round 13's LDL. Not PS2-specific, implemented
-                * directly from the well-documented MIPS III ISA. */
-    {
-        static const uint64_t SDL_MASK[8] = {
-            0xffffffffffffff00ULL, 0xffffffffffff0000ULL, 0xffffffffff000000ULL, 0xffffffff00000000ULL,
-            0xffffff0000000000ULL, 0xffff000000000000ULL, 0xff00000000000000ULL, 0x0000000000000000ULL
-        };
-        static const uint8_t SDL_SHIFT[8] = { 56, 48, 40, 32, 24, 16, 8, 0 };
-        uint32_t addr = rs32 + imm;
-        uint32_t shift = addr & 7u;
-        uint64_t mem = ee_mem_read64(st, addr & ~7u);
-        ee_mem_write64(st, addr & ~7u, (GPR(rt) >> SDL_SHIFT[shift]) | (mem & SDL_MASK[shift]));
-    } break;
-    case 0x2D: /* SDR - Store Doubleword Right (mirror of SDL, same
-                * relationship SWR has to SWL but for doublewords). */
-    {
-        static const uint64_t SDR_MASK[8] = {
-            0x0000000000000000ULL, 0x00000000000000ffULL, 0x000000000000ffffULL, 0x0000000000ffffffULL,
-            0x00000000ffffffffULL, 0x000000ffffffffffULL, 0x0000ffffffffffffULL, 0x00ffffffffffffffULL
-        };
-        static const uint8_t SDR_SHIFT[8] = { 0, 8, 16, 24, 32, 40, 48, 56 };
-        uint32_t addr = rs32 + imm;
-        uint32_t shift = addr & 7u;
-        uint64_t mem = ee_mem_read64(st, addr & ~7u);
-        ee_mem_write64(st, addr & ~7u, (GPR(rt) << SDR_SHIFT[shift]) | (mem & SDR_MASK[shift]));
-    } break;
-
-    case 0x2A: /* SWL */ {
-        static const uint32_t SWL_MASK[4]  = { 0xffffff00u, 0xffff0000u, 0xff000000u, 0x00000000u };
-        static const uint8_t  SWL_SHIFT[4] = { 24, 16, 8, 0 };
-        uint32_t addr = rs32 + imm;
-        uint32_t shift = addr & 3;
-        uint32_t mem = ee_mem_read32(st, addr & ~3u);
-        ee_mem_write32(st, addr & ~3u, (rt32 >> SWL_SHIFT[shift]) | (mem & SWL_MASK[shift]));
-    } break;
-    case 0x2E: /* SWR */ {
-        static const uint32_t SWR_MASK[4]  = { 0x00000000u, 0x000000ffu, 0x0000ffffu, 0x00ffffffu };
-        static const uint8_t  SWR_SHIFT[4] = { 0, 8, 16, 24 };
-        uint32_t addr = rs32 + imm;
-        uint32_t shift = addr & 3;
-        uint32_t mem = ee_mem_read32(st, addr & ~3u);
-        ee_mem_write32(st, addr & ~3u, (rt32 << SWR_SHIFT[shift]) | (mem & SWR_MASK[shift]));
-    } break;
-
-    case 0x28: /* SB */ ee_mem_write8(st, rs32 + imm, (uint8_t)GPR(rt)); break;
-    case 0x29: /* SH */ ee_mem_write16(st, rs32 + imm, (uint16_t)GPR(rt)); break;
-    case 0x2B: /* SW */ ee_mem_write32(st, rs32 + imm, (uint32_t)GPR(rt)); break;
-    case 0x2F: /* CACHE */ break; /* no-op: no cache model */
-    case 0x33: /* PREF */  break; /* no-op: prefetch hint */
-    case 0x3F: /* SD */ ee_mem_write64(st, rs32 + imm, GPR(rt)); break;
-
-    /* LWC1/SWC1 - direct FPR<->memory word transfer (as opposed to
-     * MFC1/MTC1, which move a raw 32-bit value between an FPR and a
-     * GPR). Found missing once real BIOS boot got far enough to need
-     * it (see docs/STATUS.md's "round 5"/COP0 PRId fix) - halted
-     * cleanly on "unimplemented primary opcode 0x39" (SWC1). Standard
-     * MIPS I FPU load/store, `rt` selects the FPR (not a GPR) here. */
-    case 0x31: /* LWC1 */ st->fpr[rt] = ee_mem_read32(st, rs32 + imm); break;
-    case 0x39: /* SWC1 */ ee_mem_write32(st, rs32 + imm, st->fpr[rt]); break;
-
-    case 0x1A: /* LDL - Load Doubleword Left. Standard MIPS III 64-bit
-                * unaligned-load counterpart to LWL (already
-                * implemented) - same byte-merge idea scaled from a
-                * 4-byte word to an 8-byte doubleword (3 shift bits
-                * instead of 2). Found missing once round 13's VU0
-                * fixes let real BIOS boot advance past the VU0 init/
-                * self-test sequence into new code. Not PS2-specific,
-                * so implemented directly from the well-documented
-                * MIPS III ISA rather than needing live verification. */
-    {
-        static const uint64_t LDL_MASK[8] = {
-            0x00ffffffffffffffULL, 0x0000ffffffffffffULL, 0x000000ffffffffffULL, 0x00000000ffffffffULL,
-            0x0000000000ffffffULL, 0x000000000000ffffULL, 0x00000000000000ffULL, 0x0000000000000000ULL
-        };
-        static const uint8_t LDL_SHIFT[8] = { 56, 48, 40, 32, 24, 16, 8, 0 };
-        uint32_t addr = rs32 + imm;
-        uint32_t shift = addr & 7u;
-        uint64_t mem = ee_mem_read64(st, addr & ~7u);
-        if (rt) GPR(rt) = (GPR(rt) & LDL_MASK[shift]) | (mem << LDL_SHIFT[shift]);
-    } break;
-    case 0x1B: /* LDR - Load Doubleword Right (mirror of LDL, same
-                * relationship LWR has to LWL but for doublewords). */
-    {
-        static const uint64_t LDR_MASK[8] = {
-            0x0000000000000000ULL, 0xff00000000000000ULL, 0xffff000000000000ULL, 0xffffff0000000000ULL,
-            0xffffffff00000000ULL, 0xffffffffff000000ULL, 0xffffffffffff0000ULL, 0xffffffffffffff00ULL
-        };
-        static const uint8_t LDR_SHIFT[8] = { 0, 8, 16, 24, 32, 40, 48, 56 };
-        uint32_t addr = rs32 + imm;
-        uint32_t shift = addr & 7u;
-        uint64_t mem = ee_mem_read64(st, addr & ~7u);
-        if (rt) GPR(rt) = (GPR(rt) & LDR_MASK[shift]) | (mem >> LDR_SHIFT[shift]);
-    } break;
-
-    case 0x36: /* LQC2 - Load Quadword Coprocessor 2 (round 444, task
-                * #228). This is the memory-transfer half of the VU0
-                * macro-mode datapath: the CO-format arithmetic ops
-                * (VADD/VSUB/VMUL/VMADD/VMADDA-broadcast-row/VOPMSUB/
-                * etc, all already implemented above under case 0x12)
-                * operate purely on vu0_vf[]/vu0_acc[] register state
-                * and never touch EE main memory themselves - LQC2/
-                * SQC2 are what actually move VU0 vector registers to
-                * and from RAM, exactly like LWC1/SWC1 do for the FPU.
-                * Real encoding is the same I-type layout as LWC1/LQ:
-                * opcode(6) base=rs(5) ft=rt(5) offset=16 - so this
-                * decoder's existing rs32/rt/imm extraction (shared
-                * with every other I-type case in this switch) applies
-                * unchanged; "rt" here names the VU0 vf register index,
-                * not a GPR. Ported from PCSX2's R5900OpcodeImpl.cpp
-                * LQC2(): reads 4 consecutive 32-bit words starting at
-                * GPR[rs]+imm (UNALIGNED - unlike LQ/SQ, real hardware
-                * does NOT mask the low 4 bits for LQC2/SQC2, confirmed
-                * against PCSX2's own implementation which calls plain
-                * memRead32 at +0/+4/+8/+12 with no address masking),
-                * into VF[rt].xyzw in order. Skipped entirely when
-                * rt==0 (VF00 is a read-only hardwired (0,0,0,1)
-                * constant on real hardware, matching this project's
-                * own vu0_vf_write_lane's existing reg==0 discard and
-                * PCSX2's own "if ( _Ft_ )" guard). */
-        if (rt) {
-            uint32_t addr = rs32 + imm;
-            vu0_vf_write_lane(st, rt, 0, ee_mem_read32(st, addr));
-            vu0_vf_write_lane(st, rt, 1, ee_mem_read32(st, addr + 4));
-            vu0_vf_write_lane(st, rt, 2, ee_mem_read32(st, addr + 8));
-            vu0_vf_write_lane(st, rt, 3, ee_mem_read32(st, addr + 12));
-        }
-        break;
-    case 0x1E: /* LQ - 128-bit load, ported from PCSX2's R5900OpcodeImpl.cpp.
-                * Address is masked to 16-byte alignment (real hardware
-                * ignores the low 4 bits rather than faulting on
-                * unaligned access, unlike LW/LD). Matches PCSX2's own
-                * interpreter exactly in skipping the read entirely
-                * when rt==$0 (unlike LW/LH/etc elsewhere in this
-                * file, which still perform the read for its memory
-                * side effects even when the destination is
-                * discarded) - LQ has no such side-effect-only path in
-                * real PCSX2, so neither does this. */
-        if (rt) {
-            uint32_t addr = (rs32 + imm) & ~0xFu;
-            GPR(rt)  = ee_mem_read64(st, addr);
-            GPR1(rt) = ee_mem_read64(st, addr + 8);
-        }
-        break;
-    case 0x1F: /* SQ - 128-bit store, ported from PCSX2's R5900OpcodeImpl.cpp.
-                * Same 16-byte alignment masking as LQ. Always writes
-                * both halves, including when rt==$0 (whose value is
-                * always zero) - matches real hardware/PCSX2, no
-                * special-case needed. */
-    {
-        uint32_t addr = (rs32 + imm) & ~0xFu;
-        ee_mem_write64(st, addr,     GPR(rt));
-        ee_mem_write64(st, addr + 8, GPR1(rt));
-    } break;
-
-    case 0x3E: /* SQC2 - Store Quadword Coprocessor 2 (round 444, task
-                * #228). The store-side mirror of LQC2 (case 0x36
-                * above) - writes VF[rt].xyzw (4 consecutive 32-bit
-                * words) to EE memory at GPR[rs]+imm, UNALIGNED (no
-                * 16-byte masking, same real-hardware distinction from
-                * LQ/SQ as LQC2 has). Ported from PCSX2's
-                * R5900OpcodeImpl.cpp SQC2(): unlike LQC2, there is no
-                * rt==0 guard - VF00 always reads back its hardwired
-                * (0,0,0,1.0) constant (vu0_vf_read_lane already
-                * special-cases reg==0 for exactly this), so "sqc2
-                * $vf0,addr" is a well-defined real op that stores
-                * (0,0,0,1.0), not a no-op. This is the exact opcode
-                * this project's Round-443 host-native boot trace
-                * first reached and halted on
-                * (pc=0x0050DD8C/0x0050DD90, inside a real VU0 4x4
-                * matrix_multiply()-shaped routine confirmed against
-                * ps2sdk's ee/math3d/src/math3d.c in Round 444) -
-                * closing this gap, together with LQC2 above, is the
-                * complete fix: every arithmetic op that routine uses
-                * (vmulax/vmadday/vmaddaz - the ACC-writing broadcast
-                * row - and the final vmaddw reading ACC - VMADD funct
-                * 0x29) was already implemented in the COP2 CO-format
-                * dispatch; only the memory-transfer opcodes themselves
-                * were missing. */
-    {
-        uint32_t addr = rs32 + imm;
-        ee_mem_write32(st, addr,      vu0_vf_read_lane(st, rt, 0));
-        ee_mem_write32(st, addr + 4,  vu0_vf_read_lane(st, rt, 1));
-        ee_mem_write32(st, addr + 8,  vu0_vf_read_lane(st, rt, 2));
-        ee_mem_write32(st, addr + 12, vu0_vf_read_lane(st, rt, 3));
-    } break;
+#include "ee_mem_switch.inc"
 
     default:
     {
@@ -12831,23 +10722,26 @@ static int ee_step(void){return ee_step_budget(1u,NULL);}
  * fresh GT3 checkpoint re-run, docs/STATUS.md Round 781). Exposed here
  * so ee_hle_thread.c's WaitSema park branch (the ACTUALLY-live code
  * path) can call the exact same sequence. */
-void ee_core_park_tick(ee_state_t *st)
-{
+void ee_core_park_tick_profile_impl(ee_state_t *st){
+    const int service_fast=gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES);
+    vu0_tick(st);
+    if(!service_fast||vu1_work_pending_fast())vu1_tick();
+    if(!service_fast||dma_graphics_work_pending_fast())dma_gif_service();
     st->cop0[9]++;
     ee_irq_tick();
     ee_latch_timer_interrupt(st);
-    ee_check_vblank(st);
-    ee_check_boot_unblock_selfloop(st); /* Round 161 */
-    ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
+    if(!service_fast||g_ee_display_phase==0u||g_ee_display_phase==EE_CYCLES_VBLANK_DURATION)ee_check_vblank(st);
+    if(!service_fast||(!g_boot_once.selfloop&&st->pc==EE_BOOT_UNBLOCK_SELFLOOP_PC))ee_check_boot_unblock_selfloop(st); /* Round 161 */
+    if(!service_fast||(!g_boot_once.fastboot&&st->pc==EE_EELOAD_START_PC))ee_check_eeload_fastboot_patch(st); /* Round 772 (task #447, real fix) */
     ee_check_browser_menu_escalation_heuristic(st); /* Round 610 (task #536) */
     ee_check_browser_idle_carousel(st); /* Round 696 (task #447/#536) */
     if (EE_SBUS_WAIT_PC_MATCH(st->pc)) ee_check_boot_unblock_sbus_wait(st); /* R1180 hot reject; same R178 semantics */
-    ee_check_gs_vsync(st); /* Round 87 (127th finding) */
-    ee_timers_tick(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
+    if(!service_fast||g_ee_display_phase==0u)ee_check_gs_vsync(st); /* Round 87 (127th finding) */
+    ee_timers_tick_fast(); /* Round 87 (127th finding): EE peripheral timers T0-T3 */
     sif_ee_tick(); /* Round 441 (task #212): delayed BOOTEND/SIFINIT/CMDINIT reassertion */
-    ee_check_rpcinit_pending(st);
-    ee_check_rpc_bind_pending(st);
-    ee_check_cdvd_ncmd_pending(st);
+    if(!service_fast||g_rpcinit_pending)ee_check_rpcinit_pending(st);
+    if(!service_fast||g_rpc_bind_pending||g_rpc_bind_qcount)ee_check_rpc_bind_pending(st);
+    if(!service_fast||g_ee_cdvd_ncmd_reentry.valid)ee_check_cdvd_ncmd_pending(st);
     ee_latch_intc_interrupt(st);
     if (!st->branch_pending) {
         /* Round 303's real, verified fix (see the dead-code handler's
@@ -12911,6 +10805,13 @@ void ee_core_park_tick(ee_state_t *st)
         }
     }
 }
+void ee_core_park_tick(ee_state_t *st)
+{
+ unsigned profile_previous=gp_enter(GP_IDLE);
+ ee_core_park_tick_profile_impl(st);
+ gp_leave(profile_previous);
+}
+
 
 /* Public single-instruction step, for callers (currently
  * source/core/system.c's interleaved EE/IOP scheduler) that need to
@@ -12939,7 +10840,11 @@ static const uint8_t *ee_core_block_pointer(ee_state_t *st,uint32_t pc,uint32_t 
         if(st->bios&&off<=st->bios->size&&st->bios->size-off>=4u) {
             *available=st->bios->size-off;return st->bios->data+off;
         }
-    } else if(phys>=0x200000u&&st->ram&&phys<=st->ram_size&&st->ram_size-phys>=4u) {
+    /* The first MiB retains the conservative BIOS/kernel scalar policy.
+     * Retail and prototype ELF text can begin at 0x00100000 (Crash E3).
+     * Admit 1-2 MiB through the same live TLB/source-generation and
+     * per-instruction guards used for higher-address guest code. */
+    } else if(phys>=0x100000u&&st->ram&&phys<=st->ram_size&&st->ram_size-phys>=4u) {
         *available=st->ram_size-phys;return st->ram+phys;
     }
     return NULL;
@@ -12951,10 +10856,25 @@ int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word)
     *word=(uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
     return 1;
 }
+int ee_core_block_source_page(ee_state_t *st,uint32_t pc,uint32_t *page)
+{
+    uint32_t available;const uint8_t *p=ee_core_block_pointer(st,pc,&available);
+    if(!p||!page)return 0;
+    if(st->ram) {
+        uintptr_t q=(uintptr_t)p,b=(uintptr_t)st->ram;
+        if(q>=b && (uint64_t)(q-b)<st->ram_size) {
+            *page=(uint32_t)(q-b)>>12;
+            return 1;
+        }
+    }
+    /* ee_core_block_pointer only returns RAM or immutable BIOS. */
+    *page=UINT32_MAX;
+    return 1;
+}
 unsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit)
 {
     uint32_t available;const uint8_t *p=ee_core_block_pointer(st,pc,&available);
-    if(!p||!words||limit>8u)return 0;
+    if(!p||!words||limit>GEKKO2_EE_MAX_BLOCK_WORDS)return 0;
     unsigned page_words=(4096u-(pc&4095u))/4u;
     if(limit>page_words)limit=page_words;
     if(limit>available/4u)limit=available/4u;
@@ -12982,13 +10902,10 @@ int ee_core_block_memory_safe(const ee_state_t *st,uint32_t instruction)
  * changing state. Resolve again at every instruction, never cache a TLB
  * result across retirement. V/D restrictions are conservative admission
  * rules; unsupported mappings retain the existing scalar fault semantics. */
-uint32_t ee_core_block_memory_resolve(const ee_state_t *st,uint32_t instruction)
+static uint32_t ee_core_block_memory_resolve_address(const ee_state_t *st,uint32_t instruction,uint32_t addr)
 {
- unsigned width=ee_jit_block_memory_width(instruction);
+ unsigned width=ee_jit_block_memory_width(instruction),phys,op=instruction>>26;
  if(!width||!st||!st->ram||st->ram_size<width)return 0;
- unsigned rs=(instruction>>21)&31u;
- uint32_t base=rs?(uint32_t)st->gpr[rs].ud0:0;
- uint32_t addr=base+(uint32_t)(int32_t)(int16_t)instruction,phys,op=instruction>>26;
  if(ee_jit_block_memory_merge(instruction))addr&=~(width-1u);
  else if(op==0x1eu||op==0x1fu)addr&=~15u;
  else if(op==0x36u||op==0x3eu) {if(addr&3u)return 0;}
@@ -13007,27 +10924,132 @@ uint32_t ee_core_block_memory_resolve(const ee_state_t *st,uint32_t instruction)
   if(ee_jit_block_memory_store(instruction)&&!(lo&4u))return 0;
  }
  if(phys>=0x02000000u||phys>st->ram_size-width)return 0;
+#ifdef GEKKO2_SPEED_STUB
+ if((addr&0xc0000000u)!=0x80000000u&&st==&g_state&&width<=8u&&!ee_jit_block_memory_store(instruction)&&
+    !ee_jit_block_memory_merge(instruction)&&op!=0x1eu&&op!=0x1fu&&op!=0x36u&&op!=0x3eu) {
+  uint32_t *e=&ee_quiet_tlb[((addr>>12)&255u)*2u];
+  e[0]=(addr&0xfffff000u)|1u;e[1]=phys&0xfffff000u;ee_quiet_tlb_fills++;
+ }
+#endif
  return phys+1u;
 }
 
+uint32_t ee_core_block_memory_resolve(const ee_state_t *st,uint32_t instruction)
+{
+ if(!st)return 0;
+ unsigned rs=(instruction>>21)&31u;
+ uint32_t addr=(rs?(uint32_t)st->gpr[rs].ud0:0u)+(uint32_t)(int32_t)(int16_t)instruction;
+ return ee_core_block_memory_resolve_address(st,instruction,addr);
+}
+
+/* Precise boundaries only: let the host MMU classify aligned KSEG LW.
+ * Event windows and fetched-first admission keep their nonfaulting RAM proof.
+ * KUSEG/TLB, stores and unaligned accesses retain the original resolver. */
+uint32_t ee_core_block_memory_resolve_precise(const ee_state_t *st,uint32_t instruction)
+{
+#if defined(GEKKO) && defined(GEKKO2_DSI_FASTMEM)
+ const uint32_t needed=GEKKO2_OPT_BIT(GEKKO2_OPT_FASTMEM)|GEKKO2_OPT_BIT(GEKKO2_OPT_CODE_ARENA);
+ unsigned op=instruction>>26;
+ if(g_gekko2_dsi_active&&(gekko2_optimization_mask&needed)==needed&&(op==0x23u||op==0x27u)&&st==&g_state) {
+  unsigned rs=(instruction>>21)&31u;
+  uint32_t addr=(rs?(uint32_t)st->gpr[rs].ud0:0u)+(uint32_t)(int32_t)(int16_t)instruction;
+  if((addr&0xc0000003u)==0x80000000u) {
+   g_gekko2_dsi_block_prepares++;
+   return (addr&0x1fffffffu)+1u;
+  }
+  /* A guest-TLB hit proves mapped RAM before host-window execution.
+   * No host fault substitutes for a missing/invalid guest translation. */
+  uint32_t proof=ee_core_block_memory_resolve(st,instruction);
+  if(proof)g_gekko2_dsi_block_prepares++;
+  return proof;
+ }
+#endif
+ return ee_core_block_memory_resolve(st,instruction);
+}
+
+#ifdef GEKKO2_SPEED_STUB
+/* SPEED2: quiet-state budget consumed by the generated retire stub
+ * (ppc_dynarec_translate_ee_quiet_stub). Armed only at the end of a full C
+ * boundary/prepare, zeroed whenever control leaves the compiled block. */
+uint32_t ee_quiet_left;
+uint64_t ee_quiet_hits;
+uint64_t ee_quiet_arms,ee_quiet_arm_zero;
+uint64_t ee_arm_why[12];
+static inline void ee_quiet_arm(ee_state_t *st)
+{
+ uint32_t q=0;
+ uint32_t cnt=st->cop0[9],cmp=st->cop0[11],stat=st->cop0[12],cause=st->cop0[13];
+ ee_quiet_arms++;
+ int why=-1;
+ if(st!=&g_state)why=0;
+ else if(st->vu0_running)why=1;
+ else if(st->halted||st->idle||st->branch_pending)why=2;
+ else if(!gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)||!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))why=3;
+ else if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending())why=4;
+ else if(ee_intc_pending_fast()||dma_dmac_interrupt_pending_fast()||g_ee_irq.intc_delay||g_ee_irq.intc_armed||(cause&(EE_CAUSE_IP2|EE_CAUSE_IP3)))why=5;
+ else if(vu1_get_state()->running||vu1_get_state()->xgkick_pending||gif_get_state()->fifo_count)why=6;
+ else if((dma_get_state()->chan[0].chcr|dma_get_state()->chan[1].chcr|dma_get_state()->chan[2].chcr)&0x100u)why=7;
+ else if(!(cnt<UINT32_MAX-64u&&ee_timers_batch_clock[0]>3u))why=8;
+ if(why<0) {
+  uint32_t phase=g_ee_display_phase;
+  uint32_t k=24u;
+  uint32_t d=EE_CYCLES_PER_FRAME_NTSC-phase;
+  if(d<=1u)k=0u;else if(d-1u<k)k=d-1u;
+  if(phase<EE_CYCLES_VBLANK_DURATION){
+   uint32_t v=EE_CYCLES_VBLANK_DURATION-phase;
+   if(v<=1u)k=0u;else if(v-1u<k)k=v-1u;
+  }
+  if(ee_timers_batch_clock[0]-2u<k)k=ee_timers_batch_clock[0]-2u;
+  if((stat&0x10007u)==0x10001u&&(stat&0x8000u)&&((cause&EE_CAUSE_IP7)||cnt>=cmp))k=0u;
+  else if(cnt<cmp){uint32_t c=cmp-cnt;if(c<=1u)k=0u;else if(c-1u<k)k=c-1u;}
+  q=k;if(!q)why=9;
+ }
+ if(why>=0)ee_arm_why[why]++;
+ if(!q)ee_quiet_arm_zero++;
+ ee_quiet_left=q;
+}
+#define EE_QUIET_ARM(st) ee_quiet_arm(st)
+#define EE_QUIET_ZERO() (ee_quiet_left=0u)
+int ee_core_quiet_special_pc(uint32_t pc)
+{return pc==EE_BOOT_UNBLOCK_SELFLOOP_PC||pc==EE_EELOAD_START_PC||EE_SBUS_WAIT_PC_MATCH(pc);}
+void ee_core_quiet_layout(uint32_t *out)
+{
+ out[5]=(uint32_t)(uintptr_t)ee_quiet_tlb;
+ out[0]=(uint32_t)(uintptr_t)&ee_quiet_left;
+ out[1]=(uint32_t)(uintptr_t)&g_ee_display_ticks;
+ out[2]=(uint32_t)(uintptr_t)&g_ee_display_phase;
+ out[3]=(uint32_t)(uintptr_t)ee_timers_batch_clock;
+ out[4]=(uint32_t)(uintptr_t)&ee_quiet_hits;
+ out[5]=(uint32_t)(uintptr_t)ee_quiet_tlb;
+}
+#else
+#define EE_QUIET_ARM(st) ((void)0)
+#define EE_QUIET_ZERO() ((void)0)
+#endif
 int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc)
 {
-    if(st!=&g_state||st->halted||st->idle||st->branch_pending||st->pc!=pc||
+    if(st!=&g_state||st->halted||st->idle||st->vu0_running||st->branch_pending||
+       st->exc_raised_this_step||st->mem_tlb_miss||st->pc!=pc||
        st->next_pc!=pc+4u)return 0;
     st->exc_this_pc=pc;st->exc_in_delay_slot=0;st->exc_raised_this_step=0;st->mem_tlb_miss=0;
     st->gpr[0].ud0=0;st->gpr[0].ud1=0;
     st->pc=pc+4u;st->next_pc=pc+8u;
+    EE_QUIET_ARM(st);
     return 1;
 }
 int ee_core_block_prepare(ee_state_t *st,uint32_t pc,uint32_t instruction)
 {
     uint32_t actual;
+    if(!st||st!=&g_state||st->exc_raised_this_step||st->mem_tlb_miss||
+       st->pc!=pc||st->halted||st->idle||st->branch_pending)return 0;
     if(!ee_core_block_peek(st,pc,&actual)||actual!=instruction)return 0;
     return ee_core_block_prepare_fetched(st,pc);
 }
 int ee_core_block_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t instruction)
 {
  uint32_t actual;
+ if(!st||st!=&g_state||st->exc_raised_this_step||st->mem_tlb_miss||
+    st->pc!=pc||st->halted||st->idle||st->branch_pending)return 0;
  if(!ee_core_block_peek(st,pc,&actual)||actual!=instruction)return 0;
  if(!ee_core_block_memory_safe(st,instruction))return 0;
  return ee_core_block_prepare_fetched(st,pc);
@@ -13035,8 +11057,10 @@ int ee_core_block_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t instruction
 uint32_t ee_core_block_prepare_memory_resolved(ee_state_t *st,uint32_t pc,uint32_t instruction)
 {
  uint32_t actual,physical;
+ if(!st||st!=&g_state||st->exc_raised_this_step||st->mem_tlb_miss||
+    st->pc!=pc||st->halted||st->idle||st->branch_pending)return 0;
  if(!ee_core_block_peek(st,pc,&actual)||actual!=instruction)return 0;
- physical=ee_core_block_memory_resolve(st,instruction);
+ physical=ee_core_block_memory_resolve_precise(st,instruction);
  if(!physical||!ee_core_block_prepare_fetched(st,pc))return 0;
  return physical;
 }
@@ -13048,10 +11072,11 @@ uint32_t ee_core_block_prepare_memory_resolved(ee_state_t *st,uint32_t pc,uint32
 uint32_t ee_core_block_prepare_delay(ee_state_t *st,uint32_t pc,uint32_t instruction)
 {
  uint32_t actual,proof=1u;
- if(st!=&g_state||st->halted||st->idle||!st->branch_pending||st->pc!=pc)return 0;
+ if(st!=&g_state||st->halted||st->idle||st->exc_raised_this_step||
+    st->mem_tlb_miss||!st->branch_pending||st->pc!=pc)return 0;
  if(!ee_core_block_peek(st,pc,&actual)||actual!=instruction)return 0;
  if(ee_jit_block_memory_width(instruction)) {
-  proof=ee_core_block_memory_resolve(st,instruction);
+  proof=ee_core_block_memory_resolve_precise(st,instruction);
   if(!proof)return 0;
  }
  st->exc_this_pc=pc;st->exc_in_delay_slot=1u;st->exc_raised_this_step=0;st->mem_tlb_miss=0;
@@ -13061,22 +11086,656 @@ uint32_t ee_core_block_prepare_delay(ee_state_t *st,uint32_t pc,uint32_t instruc
  return proof;
 }
 
-void ee_core_block_commit(ee_state_t *st){ee_retire_instruction(st,0);}
+/* Only nonfaulting integer bodies use this event-free native window.
+ * The caller clamps grants to the current EE/IOP boundary. No guest memory
+ * operation or helper can observe intermediate state within this window. */
+uint64_t ee_core_vu_window_stat(unsigned n){return n<4u?vu_window_accesses[n]:0;}
+uint64_t ee_core_cpu_fifo_stat(unsigned n){return n<3u?cpu_fifo_writes[n]:0;}
+uint64_t ee_core_native_window_stat(unsigned n){return n<4?native_window_stats[n]:0;}
+/* Preview only low address bits for nonfaulting arithmetic. This never
+ * publishes guest state. Unknown 64-bit comparisons/conditional writes
+ * keep the precise path; all memory below is read-only proven RAM. */
+static int ee_native_address_value(uint32_t iw,uint32_t a,uint32_t b,uint32_t *v)
+{
+ unsigned op=iw>>26,f=iw&63u,sa=(iw>>6)&31u;
+ switch(op){
+ case 9:case 25:*v=a+(uint32_t)(int32_t)(int16_t)iw;return 1;
+ case 12:*v=a&(iw&65535u);return 1;
+ case 13:*v=a|(iw&65535u);return 1;
+ case 14:*v=a^(iw&65535u);return 1;
+ case 15:*v=(iw&65535u)<<16;return 1;
+ case 0:switch(f){
+  case 0:*v=b<<sa;return 1;case 2:*v=b>>sa;return 1;
+  case 3:*v=(uint32_t)((int32_t)b>>sa);return 1;
+  case 4:*v=b<<(a&31u);return 1;case 6:*v=b>>(a&31u);return 1;
+  case 7:*v=(uint32_t)((int32_t)b>>(a&31u));return 1;
+  case 33:case 45:*v=a+b;return 1;case 35:case 47:*v=a-b;return 1;
+  case 36:*v=a&b;return 1;case 37:*v=a|b;return 1;
+  case 38:*v=a^b;return 1;case 39:*v=~(a|b);return 1;
+ }break;
+ }
+ return 0;
+}
 
+static unsigned ee_core_native_window_begin_impl(ee_state_t *st,uint32_t pc,const uint32_t *words,unsigned count,unsigned budget,uint32_t needed,int trusted)
+{
+ unsigned n=count<budget?count:budget;
+ n=ee_core_interleave_limit(n);
+ if(!gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)||!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)||
+    st->vu0_running||vu1_get_state()->running||vu1_get_state()->xgkick_pending||gif_get_state()->fifo_count||
+    (dma_get_state()->chan[0].chcr&0x100u)||(dma_get_state()->chan[1].chcr&0x100u)||(dma_get_state()->chan[2].chcr&0x100u)||
+    st!=&g_state||n<2u||n>GEKKO2_EE_MAX_BLOCK_WORDS||st->pc!=pc||st->next_pc!=pc+4u||st->halted||st->idle||st->branch_pending)return 0;
+#ifdef PCSX2WII_LEGACY_BROWSER_INJECTION
+ return 0;
+#endif
+ native_window_stats[2]++;
+ if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending()||
+    ee_intc_pending_fast()||dma_dmac_interrupt_pending_fast()||g_ee_irq.intc_delay||g_ee_irq.intc_armed||
+    ee_timers_batch_clock[0]<=n||g_ee_display_ticks>UINT64_MAX-n||
+    g_ee_display_phase+n>=EE_CYCLES_PER_FRAME_NTSC||
+    (g_ee_display_phase<EE_CYCLES_VBLANK_DURATION&&g_ee_display_phase+n>=EE_CYCLES_VBLANK_DURATION)||
+    st->cop0[9]>UINT32_MAX-n)return 0;
+ uint32_t after=st->cop0[9]+n;
+ if((st->cop0[12]&0x10007u)==0x10001u&&(st->cop0[12]&0x8000u)&&
+    ((st->cop0[13]&EE_CAUSE_IP7)||after>=st->cop0[11]))return 0;
+ uint32_t written=0,known=0,address_values[32],dependent=0;
+ /* Cached, immutable arithmetic bodies need no per-word address analysis.
+  * Preserve every special-PC boundary, including uint32 wrap-around. */
+ unsigned analyze=n;
+ if(trusted&&!needed){
+  /* All five PCs are word aligned. Check alignment once and avoid building
+   * a temporary PC array in every admitted arithmetic window. Unsigned
+   * subtraction deliberately preserves the address-wrap behavior. */
+  uint32_t first=pc+4u,span=n*4u;
+  if(!(pc&3u)&&((uint32_t)(EE_BOOT_UNBLOCK_SELFLOOP_PC-first)<span||
+     (uint32_t)(EE_EELOAD_START_PC-first)<span||
+     (uint32_t)(EE_SBUS_WAIT_LOOP_PC-first)<span||
+     (uint32_t)(EE_SBUS_WAIT_LOOP_PC2-first)<span||
+     (uint32_t)(EE_SBUS_WAIT_LOOP_PC3-first)<span))return 0;
+  analyze=0;
+ }
+ for(unsigned k=0;k<analyze;k++){
+  uint32_t live,next=pc+4u*(k+1u);
+  if(next==EE_BOOT_UNBLOCK_SELFLOOP_PC||next==EE_EELOAD_START_PC||EE_SBUS_WAIT_PC_MATCH(next)||
+     (!trusted&&(!ee_core_block_peek(st,pc+4u*k,&live)||live!=words[k]||!ee_jit_event_candidate(live))))return 0;
+  if(trusted)live=words[k];
+  if(!needed)continue; /* immutable emitter mask: no memory in this body */
+  unsigned op=live>>26,rs=(live>>21)&31u,rt=(live>>16)&31u;
+  unsigned memory=ee_jit_block_memory_width(live);
+  if(memory){
+   if(!gekko2_opt_enabled(GEKKO2_OPT_FASTMEM)||((written&~known)&(1u<<rs)))return 0;
+   if(written&(1u<<rs))dependent=1;
+   uint32_t base=rs?((written&(1u<<rs))?address_values[rs]:(uint32_t)st->gpr[rs].ud0):0u;
+   ee_native_window_memory[k]=ee_core_block_memory_resolve_address(st,live,base+(uint32_t)(int32_t)(int16_t)live);
+   if(!ee_native_window_memory[k])return 0;
+  }
+  unsigned dest=op==0u?(live>>11)&31u:op==0x11u?0u:rt;
+  if(dest){
+   uint32_t value=0;int valid=0;
+   if(needed&(1u<<dest)){
+    if(memory){
+     const uint8_t *p=st->ram+ee_native_window_memory[k]-1u;
+     value=p[0];if(memory>=2u)value|=(uint32_t)p[1]<<8;
+     if(memory>=4u)value|=(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;
+     if(op==0x20u)value=(uint32_t)(int32_t)(int8_t)value;
+     if(op==0x21u)value=(uint32_t)(int32_t)(int16_t)value;
+     valid=1;
+    }else{
+     uint32_t inputs=(1u<<rs)|((op==0u)?1u<<rt:0u);
+     if(!((written&~known)&inputs)){
+      uint32_t a=rs?((written&(1u<<rs))?address_values[rs]:(uint32_t)st->gpr[rs].ud0):0u;
+      uint32_t b=(op==0u&&rt)?((written&(1u<<rt))?address_values[rt]:(uint32_t)st->gpr[rt].ud0):0u;
+      valid=ee_native_address_value(live,a,b,&value);
+     }
+    }
+   }
+   if(valid){address_values[dest]=value;known|=1u<<dest;}else known&=~(1u<<dest);
+   written|=1u<<dest;
+  }
+ }
+ /* All guards above are pure. Publication happens only after admission. */
+ st->gpr[0].ud0=st->gpr[0].ud1=0;
+ st->instructions_executed+=n;st->cop0[9]=after;
+ if(after>=st->cop0[11])st->cop0[13]|=EE_CAUSE_IP7;
+ st->cop0[13]&=~(EE_CAUSE_IP2|EE_CAUSE_IP3);
+ g_ee_display_ticks+=n;g_ee_display_phase+=n;
+ ee_timers_batch_clock[0]-=n;ee_timers_batch_clock[1]+=n;
+ st->exc_this_pc=pc+4u*(n-1u);st->exc_in_delay_slot=0;st->exc_raised_this_step=0;st->mem_tlb_miss=0;
+ st->pc=pc+4u*n;st->next_pc=st->pc+4u;
+ native_window_stats[0]++;native_window_stats[1]+=n;native_window_stats[3]+=dependent;return n;
+}
+
+unsigned ee_core_native_window_begin_with_addresses(ee_state_t *st,uint32_t pc,const uint32_t *words,unsigned count,unsigned budget,uint32_t needed)
+{return ee_core_native_window_begin_impl(st,pc,words,count,budget,needed,0);}
+unsigned ee_core_native_window_begin_cached(ee_state_t *st,uint32_t pc,const uint32_t *words,unsigned count,unsigned budget,uint32_t needed)
+{
+ if(!ee_jit_event_source_current(st,pc,words,count))
+  return ee_core_native_window_begin_with_addresses(st,pc,words,count,budget,needed);
+ return ee_core_native_window_begin_impl(st,pc,words,count,budget,needed,1);
+}
+unsigned ee_core_native_window_begin_aot(ee_state_t *st,uint32_t pc,const uint32_t *words,unsigned count,unsigned budget)
+{
+ if(!words||count>GEKKO2_EE_MAX_BLOCK_WORDS||
+    !gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)||!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))return 0;
+ unsigned n=ee_core_interleave_limit(count<budget?count:budget);
+ unsigned page_words=(4096u-(pc&4095u))/4u;
+ if(n>page_words)n=page_words;
+ if(n<2u)return 0;
+ uint32_t live[GEKKO2_EE_MAX_BLOCK_WORDS];
+ /* Pure integer instructions cannot change their mapping/source page.
+  * Resolve that page once and compare every admitted word afresh. There
+  * is no persistent source cache or reliance on write notifications. */
+ if(ee_core_block_words(st,pc,live,n)!=n)return 0;
+ for(unsigned k=0;k<n;k++) {
+  unsigned op=words[k]>>26;
+  if(live[k]!=words[k]||!ee_jit_event_candidate(words[k])||
+     ee_jit_block_memory_width(words[k])||op==0x11u)return 0;
+ }
+ return ee_core_native_window_begin_impl(st,pc,words,n,n,0u,1);
+}
+unsigned ee_core_native_window_begin(ee_state_t *st,uint32_t pc,const uint32_t *words,unsigned count,unsigned budget)
+{
+ if(!words||count>GEKKO2_EE_MAX_BLOCK_WORDS)return 0;
+ uint32_t needed=0;
+ for(unsigned k=0;k<count;k++)if(ee_jit_block_memory_width(words[k]))needed|=1u<<((words[k]>>21)&31u);
+ return ee_core_native_window_begin_with_addresses(st,pc,words,count,budget,needed);
+}
+
+void ee_core_block_commit_profile_impl(ee_state_t *st){ee_retire_instruction(st,0);}
+void ee_core_block_commit(ee_state_t *st)
+{
+ EE_QUIET_ZERO();
+ unsigned profile_previous=gp_enter(GP_SCHEDULER);
+ ee_core_block_commit_profile_impl(st);
+ gp_leave(profile_previous);
+}
+
+static uint32_t ee_fused_boundaries;
+uint64_t ee_core_get_fused_boundaries(void){return ee_fused_boundaries;}
+
+#ifdef GEKKO2_SPEED_RETIRE
+/* SPEED BETA: quiet-state retire for fused boundaries. Uses the same
+ * guards as native-window admission (n=1) and publishes the same state;
+ * any pending event/service falls back to the full retire chain. */
+uint64_t ee_speed_retire_stats[2];
+static inline __attribute__((always_inline)) void ee_retire_boundary(ee_state_t *st)
+{
+ uint32_t pc=st->pc,cnt=st->cop0[9],cmp=st->cop0[11],stat=st->cop0[12];
+ if(!st->vu0_running&&!st->halted&&!st->idle&&
+    !g_rpcinit_pending&&!g_rpc_bind_pending&&!g_rpc_bind_qcount&&!g_ee_cdvd_ncmd_reentry.valid&&
+    !g_ee_irq.intc_delay&&!g_ee_irq.intc_armed&&
+    ee_timers_batch_clock[0]>1u&&cnt!=UINT32_MAX&&g_ee_display_ticks!=UINT64_MAX&&
+    g_ee_display_phase+1u<EE_CYCLES_PER_FRAME_NTSC&&
+    !(g_ee_display_phase<EE_CYCLES_VBLANK_DURATION&&g_ee_display_phase+1u>=EE_CYCLES_VBLANK_DURATION)&&
+    pc!=EE_BOOT_UNBLOCK_SELFLOOP_PC&&pc!=EE_EELOAD_START_PC&&!EE_SBUS_WAIT_PC_MATCH(pc)&&
+    !(((stat&0x10007u)==0x10001u&&(stat&0x8000u))&&((st->cop0[13]&EE_CAUSE_IP7)||cnt+1u>=cmp))&&
+    !vu1_get_state()->running&&!vu1_get_state()->xgkick_pending&&!gif_get_state()->fifo_count&&
+    !((dma_get_state()->chan[0].chcr|dma_get_state()->chan[1].chcr|dma_get_state()->chan[2].chcr)&0x100u)&&
+    !sif_ee_tick_pending()&&!ee_intc_pending_fast()&&!dma_dmac_interrupt_pending_fast()){
+  st->gpr[0].ud0=st->gpr[0].ud1=0;
+  st->instructions_executed++;st->cop0[9]=cnt+1u;
+  if(cnt+1u>=cmp)st->cop0[13]|=EE_CAUSE_IP7;
+  st->cop0[13]&=~EE_CAUSE_IP2;
+  if(!st->branch_pending)st->cop0[13]&=~EE_CAUSE_IP3;
+  g_ee_display_ticks++;g_ee_display_phase++;
+  ee_timers_batch_clock[0]--;ee_timers_batch_clock[1]++;
+  ee_speed_retire_stats[0]++;return;
+ }
+ ee_speed_retire_stats[1]++;
+ ee_retire_instruction_inline(st,0);
+}
+#define EE_BOUNDARY_RETIRE(st) ee_retire_boundary(st)
+#else
+#define EE_BOUNDARY_RETIRE(st) ee_retire_instruction_inline(st,0)
+#endif
+/* Detailed per-instruction counters themselves cost Broadway work. Enable
+ * only for diagnostic A/B builds; the PPC oracle counts actual calls. */
+#ifdef GEKKO2_COUNT_BOUNDARIES
+#define EE_COUNT_FUSED_BOUNDARY() (ee_fused_boundaries++)
+#else
+#define EE_COUNT_FUSED_BOUNDARY() ((void)0)
+#endif
+uint32_t ee_core_block_boundary_profile_impl(ee_state_t *st,uint32_t pc,uint32_t instruction){
+ /* Canonical write-through state is already published by the native body.
+  * Retire first, including timers/IRQ/rescheduling, then perform the exact
+  * original next-instruction proof. A failed prepare still retires once. */
+ EE_BOUNDARY_RETIRE(st);EE_COUNT_FUSED_BOUNDARY();
+ return (uint32_t)ee_core_block_prepare(st,pc,instruction);
+}
+uint32_t ee_core_block_boundary(ee_state_t *st,uint32_t pc,uint32_t instruction)
+{
+ unsigned profile_previous=gp_enter(GP_SCHEDULER);
+ uint32_t result=ee_core_block_boundary_profile_impl(st,pc,instruction);
+ gp_leave(profile_previous);
+ return result;
+}
+
+uint32_t ee_core_block_memory_boundary_profile_impl(ee_state_t *st,uint32_t pc,uint32_t instruction){EE_BOUNDARY_RETIRE(st);EE_COUNT_FUSED_BOUNDARY();return ee_core_block_prepare_memory_resolved(st,pc,instruction);}
+uint32_t ee_core_block_memory_boundary(ee_state_t *st,uint32_t pc,uint32_t instruction)
+{
+ unsigned profile_previous=gp_enter(GP_SCHEDULER);
+ uint32_t result=ee_core_block_memory_boundary_profile_impl(st,pc,instruction);
+ gp_leave(profile_previous);
+ return result;
+}
+
+uint32_t ee_core_block_delay_boundary_profile_impl(ee_state_t *st,uint32_t pc,uint32_t instruction){EE_BOUNDARY_RETIRE(st);EE_COUNT_FUSED_BOUNDARY();return ee_core_block_prepare_delay(st,pc,instruction);}
+uint32_t ee_core_block_delay_boundary(ee_state_t *st,uint32_t pc,uint32_t instruction)
+{
+ unsigned profile_previous=gp_enter(GP_SCHEDULER);
+ uint32_t result=ee_core_block_delay_boundary_profile_impl(st,pc,instruction);
+ gp_leave(profile_previous);
+ return result;
+}
+
+
+unsigned ee_core_interleave_quantum=UINT32_MAX;
+static unsigned ee_interleave_left,ee_interleave_stopped;
+static int (*ee_interleave_callback)(void);
+static int (*ee_event_callback)(unsigned);
+static unsigned ee_event_spent,ee_event_paid,ee_event_slots,ee_event_width,ee_event_busy;
+static uint64_t ee_event_retired_base;
+static unsigned ee_event_urgent;
+void ee_core_event_notify(void){if(ee_event_callback)ee_event_urgent=1u;}
+void ee_core_event_sync(void)
+{
+ EE_QUIET_ZERO();
+ if(!ee_event_callback||ee_event_busy)return;
+ /* Precise blocks account their slots on return, but a DSI MMIO helper
+  * may synchronize in the middle. Already retired instructions must be
+  * visible here as well; parked/fault slots use the explicit slot count. */
+ uint64_t retired=g_state.instructions_executed-ee_event_retired_base;
+ uint64_t total=(uint64_t)ee_event_spent+retired;
+ unsigned progress=total>ee_event_slots?ee_event_slots:(unsigned)total;
+ unsigned earned=progress/8u;
+ if(earned<=ee_event_paid)return;
+ unsigned due=earned-ee_event_paid;
+ ee_event_paid+=due;ee_event_busy=1u;
+ if(!ee_event_callback(due))ee_interleave_stopped=1u;
+ ee_event_busy=0u;
+}
+/* This is an instruction-slot deadline in the existing clock model, not
+ * a new claim of cycle accuracy. Dense/pending events retain 8:1 stepping. */
+unsigned ee_core_event_distance(unsigned maximum)
+{
+ if(maximum<8u)return 8u;
+ /* Pending hardware levels are not delivery deadlines when COP0 masks
+  * the line. Precise retirement still updates Cause/latches each slot;
+  * native-window admission remains conservative. Shared accesses and
+  * status-changing helpers still notify/synchronize at their boundary. */
+ if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending()) {
+  ee_event_deadline_stats[0]++;return 8u;
+ }
+ if(g_state.idle){ee_event_deadline_stats[1]++;return 8u;}
+ uint32_t status=g_state.cop0[12];
+ int enabled=(status&0x10007u)==0x10001u;
+ int intc=ee_intc_pending_fast()||g_ee_irq.intc_delay||g_ee_irq.intc_armed;
+ int dmac=dma_dmac_interrupt_pending_fast();
+ if(enabled&&((intc&&(status&EE_STATUS_IM2))||(dmac&&(status&EE_STATUS_IM3)))) {
+  ee_event_deadline_stats[2]++;return 8u;
+ }
+ if(intc||dmac)ee_event_deadline_stats[3]++;
+ unsigned distance=EE_CYCLES_PER_FRAME_NTSC-g_ee_display_phase;
+ if(g_ee_display_phase<EE_CYCLES_VBLANK_DURATION&&EE_CYCLES_VBLANK_DURATION-g_ee_display_phase<distance)
+  distance=EE_CYCLES_VBLANK_DURATION-g_ee_display_phase;
+ if(ee_timers_batch_clock[0]<distance)distance=ee_timers_batch_clock[0];
+ uint32_t count=g_state.cop0[9],compare=g_state.cop0[11];
+ if((g_state.cop0[12]&0x10007u)==0x10001u&&(g_state.cop0[12]&0x8000u)) {
+  if((g_state.cop0[13]&EE_CAUSE_IP7)||compare<=count){ee_event_deadline_stats[4]++;return 8u;}
+  if(compare-count<distance)distance=compare-count;
+ }
+ if(distance<maximum)maximum=distance;
+ if(distance<8u)ee_event_deadline_stats[5]++;
+ maximum&=~7u;ee_event_deadline_stats[maximum<=8u?6:7]++;return maximum<8u?8u:maximum;
+}
+unsigned ee_core_step_event_n(unsigned quanta,unsigned width,int (*catch_up)(unsigned))
+{
+ if(!quanta||quanta>UINT32_MAX/8u||!catch_up||ee_event_callback||ee_interleave_callback)return 0;
+ if(width<8u||width>512u||(width&7u))return 0;
+ ee_event_callback=catch_up;ee_event_spent=ee_event_paid=ee_event_busy=0u;
+ ee_event_urgent=0u;ee_event_retired_base=g_state.instructions_executed;
+ ee_event_slots=quanta*8u;ee_event_width=width;ee_interleave_stopped=0u;
+ ee_core_interleave_quantum=ee_event_slots<width?ee_event_slots:width;
+ while(ee_event_spent<ee_event_slots&&!ee_interleave_stopped&&!g_state.halted)
+  ee_core_step_n(ee_event_slots-ee_event_spent);
+ ee_core_event_sync();
+ /* Halted EE still grants the unused IOP time, just like the baseline. */
+ if(g_state.halted&&!ee_interleave_stopped&&ee_event_paid<quanta) {
+  unsigned due=quanta-ee_event_paid;ee_event_paid=quanta;ee_event_busy=1u;
+  if(!catch_up(due))ee_interleave_stopped=1u;
+  ee_event_busy=0u;
+ }
+ unsigned done=ee_event_paid;
+ ee_event_callback=NULL;ee_event_spent=ee_event_paid=ee_event_slots=ee_event_busy=0u;
+ ee_interleave_stopped=0u;ee_core_interleave_quantum=UINT32_MAX;
+ return done;
+}
+
+void ee_core_interleave_account(unsigned slots)
+{
+ EE_QUIET_ZERO();
+ if(ee_event_callback&&slots) {
+  ee_event_spent+=slots;ee_event_retired_base=g_state.instructions_executed;
+  ee_core_interleave_quantum-=slots;
+  if(!ee_core_interleave_quantum) {
+   ee_core_event_sync();ee_event_urgent=0u;
+   unsigned left=ee_event_slots-ee_event_spent;
+   unsigned next=ee_core_event_distance(ee_event_width);
+   ee_core_interleave_quantum=left<next?left:next;
+  } else if(ee_event_urgent) {
+   /* An instruction/helper may arm a new event after window admission.
+    * Return to fine interleave at the next original 8-slot boundary. */
+   unsigned next=8u-(ee_event_spent&7u);
+   if(!(ee_event_spent&7u)){ee_core_event_sync();ee_event_urgent=0u;}
+   if(ee_core_interleave_quantum>next)ee_core_interleave_quantum=next;
+  }
+  return;
+ }
+ if(!ee_interleave_callback||!slots)return;
+ /* All admission paths clamp blocks to the current quantum. No callback
+  * may be postponed until after the next EE body has run. */
+ ee_core_interleave_quantum-=slots;
+ if(!ee_core_interleave_quantum) {
+  ee_interleave_left--;ee_core_interleave_quantum=8u;
+  if(!ee_interleave_callback()){ee_interleave_stopped=1u;ee_core_interleave_quantum=0u;}
+ }
+}
+
+#ifdef GEKKO2_IDLE_SKIP
+/* SPEED5 idle-skip (HLE, inaccurate by design): known guest busy-wait
+ * loops are fast-forwarded in guest time without executing them. The
+ * pc stays on the loop head; Count/timers/display advance by k slots and
+ * the IOP/event scheduler is paid for those slots. Nicht auf Wii getestet. */
+uint64_t ee_idle_skip_stats[16]; /* 0 calls,1 slots,2 pc-seen,3 vu/dma/fifo,4 rpc/sif,5 irq-deliverable,6 timer/phase,7 ok */
+#define EE_IDLE_NO(n) do{ee_idle_skip_stats[n]++;return 0;}while(0)
+int ee_core_idle_pc(uint32_t pc){return (pc>=0x003993b8u&&pc<=0x003993c8u)||(pc>=0x0035c698u&&pc<=0x0035c6b0u)||(pc>=0x003578a8u&&pc<=0x003578c0u)||(pc>=0x0035e620u&&pc<=0x0035e62cu)||(pc>=0x0035d920u&&pc<=0x0035d95cu);}
+static unsigned ee_idle_on;
+unsigned ee_core_idle_active(void){return ee_idle_on;}
+static inline uint32_t ee_idle_rd32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
+uint32_t ee_dma_diag[64];uint64_t ee_dma_diag_hits;
+static void ee_dma_diag_snap(ee_state_t *st)
+{
+ dma_state_t *d=dma_get_state();unsigned i,n=0;
+ for(i=0;i<DMA_CHANNEL_COUNT&&n<48;i++){ee_dma_diag[n++]=d->chan[i].chcr;ee_dma_diag[n++]=d->chan[i].madr;ee_dma_diag[n++]=d->chan[i].qwc;ee_dma_diag[n++]=d->chan[i].tadr;}
+ ee_dma_diag[40]=d->d_ctrl;ee_dma_diag[41]=d->d_stat;ee_dma_diag[42]=d->d_rbsr;ee_dma_diag[43]=d->d_rbor;ee_dma_diag[44]=d->d_stadr;
+ ee_dma_diag[45]=gif_get_state()->fifo_count;ee_dma_diag[46]=vu1_get_state()->running|(vu1_get_state()->xgkick_pending<<1);
+ ee_dma_diag[47]=d->gif_tag_pending;ee_dma_diag[48]=d->vif_tag_pending[1];ee_dma_diag[49]=d->vif_tag_end[1];
+ ee_dma_diag[50]=st->pc;ee_dma_diag[51]=(uint32_t)ee_dma_diag_hits;
+ if(st->ram_size>0x70000018u-0x70000000u){} 
+}
+#ifndef GEKKO2_SPIN_HITS
+#define GEKKO2_SPIN_HITS 3u
+#endif
+/* SPEED10: generic spin detector. Block-boundary samples of (pc, all GPR/FPR/HI/LO)
+ * that repeat unchanged GEKKO2_SPIN_HITS times in a row mean the EE is polling state
+ * only external agents (IOP, DMA, timers, IRQ) can change; those act at event
+ * boundaries, so the clocks are warped to the next boundary instead of executing
+ * the loop. Inexact for loops whose side effects live in uncovered state. */
+static struct{uint32_t pc;uint32_t hits;uint64_t h;} ee_spin_tab[256];
+uint64_t ee_spin_stats[4]; /* 0 hashes,1 confirmed,2 skips,3 slots */
+static uint32_t ee_spin_tick;
+static inline uint64_t ee_spin_hash(const ee_state_t *st)
+{
+ uint64_t h=1469598103934665603ull;unsigned i;
+ for(i=1;i<32;i++){h=(h^st->gpr[i].ud0)*1099511628211ull;h=(h^st->gpr[i].ud1)*1099511628211ull;}
+ for(i=0;i<32;i++)h=(h^st->fpr[i])*1099511628211ull;
+ h=(h^st->hi.ud0)*1099511628211ull;h=(h^st->lo.ud0)*1099511628211ull;
+ return h;
+}
+/* BETA12.8: safe, title-independent INTC VBLANK_START polling.
+ * A dynamically decoded R5900 sequence must do nothing except:
+ *   LUI r,0x1001; LW r,-0x1000(r); ANDI r,r,4;
+ *   0..3 NOPs; BEQZ r,back-to-LUI; NOP.
+ * The device address is 0x1000f000, the *real* EE_INTC_STAT register.
+ * Requiring a complete side-effect-free loop, matching base/destination
+ * registers, the exact branch target and a NOP delay-slot prevents the
+ * shortcut from affecting arbitrary BIOS/games with coincidental PCs.
+ * Current PC must be inside the sequence; the event scheduler still caps
+ * the clock advance before the next timer/VBLANK/interrupt deadline.
+ * No synthetic IRQ, no forced flip, no guest register change.
+ */
+static uint32_t ee_vblank_skip_last_site;
+static int ee_vblank_poll_signature(const ee_state_t *st, uint32_t pc)
+{
+    if (!st->ram || (pc & 3u) || (ee_intc_get_state()->stat & 4u)) return 0;
+    /* BETA12.9: register-held base form. Common code hoists
+     * LUI/ADDIU outside the hot loop and polls only LW/ANDI/BEQZ/NOP.
+     * Require the live base GPR to resolve to precisely EE_INTC_STAT;
+     * never skip a loop with stores, a non-NOP delay slot, or an IRQ
+     * which is already observable by the guest. */
+    for (unsigned n=0;n<4u;n++) {
+        if (pc < 4u*n) continue;
+        uint32_t start=pc-4u*n;
+        if (start>=st->ram_size || st->ram_size-start<16u)continue;
+        const uint8_t *q=st->ram+start;
+        uint32_t lw=ee_idle_rd32(q);
+        if ((lw & 0xfc000000u)!=0x8c000000u)continue;
+        unsigned base=(lw>>21)&31u,rt=(lw>>16)&31u;
+        if (!base || !rt || base==rt)continue;
+        const int32_t imm=(int16_t)(lw&0xffffu);
+        if ((uint32_t)st->gpr[base].ud0+(uint32_t)imm!=0x1000f000u)continue;
+        if (ee_idle_rd32(q+4)!=(0x30000004u|(rt<<21)|(rt<<16)) ||
+            ee_idle_rd32(q+8)!=(0x1000fffdu|(rt<<21)) ||
+            ee_idle_rd32(q+12)!=0u)continue;
+        ee_vblank_skip_last_site=start;
+        return 1;
+    }
+
+    for (unsigned n=0; n<=6u; n++) {
+        if (pc < n*4u) continue;
+        const uint32_t start=pc-n*4u;
+        if (start > st->ram_size || st->ram_size-start < 20u) continue;
+        const uint8_t *code=st->ram+start;
+        const uint32_t first=ee_idle_rd32(code);
+        /* LUI r,0x1001; r must be a nonzero GPR */
+        if ((first & 0xffe0ffffu)!=0x3c001001u) continue;
+        const unsigned r=(first>>16)&31u;
+        if (!r) continue;
+        if (ee_idle_rd32(code+4u)!=(0x8c00f000u|(r<<21)|(r<<16)) ||
+            ee_idle_rd32(code+8u)!=(0x30000004u|(r<<21)|(r<<16))) continue;
+        for(unsigned extras=0;extras<=3u;extras++) {
+            const uint32_t branch_off=(3u+extras)*4u;
+            if (st->ram_size-start < branch_off+8u || pc>start+branch_off+4u)continue;
+            int nops=1;
+            for(unsigned i=3u;i<3u+extras;i++)
+                if(ee_idle_rd32(code+i*4u)!=0u){nops=0;break;}
+            if(!nops)continue;
+            const uint32_t br_pc=start+branch_off;
+            const int32_t rel=((int32_t)(start-(br_pc+4u)))/4;
+            if (rel < -32768 || rel > 32767) continue;
+            const uint32_t expected=(0x10000000u|(r<<21)|((uint16_t)rel));
+            if (ee_idle_rd32(code+branch_off)!=expected ||
+                ee_idle_rd32(code+branch_off+4u)!=0u)continue;
+            ee_vblank_skip_last_site=start;
+            return 1;
+        }
+    }
+    return 0;
+}
+static uint64_t ee_vblank_skip_fast_hits, ee_vblank_skip_fast_slots;
+uint64_t ee_core_vblank_fast_wait_stat(unsigned which)
+{
+    if(which==2u)return ee_vblank_skip_last_site;
+    return which ? ee_vblank_skip_fast_slots : ee_vblank_skip_fast_hits;
+}
+static unsigned ee_idle_skip(ee_state_t *st,unsigned budget)
+{
+ uint32_t pc=st->pc;
+ int dw=(pc>=0x0035d920u&&pc<=0x0035d95cu)||(pc>=0x0035e620u&&pc<=0x0035e62cu);
+ if(pc>=0x0035e620u&&pc<=0x0035e62cu){ee_dma_diag_hits++;if(ee_dma_diag_hits==2000||ee_dma_diag_hits==200000||ee_dma_diag_hits==2000000)ee_dma_diag_snap(st);}
+ if(st->next_pc!=pc+4u||st->branch_pending||st->halted||st->idle)return 0;
+ int vs=(pc>=0x003993b8u&&pc<=0x003993c4u)||(pc>=0x0035c698u&&pc<=0x0035c6acu&&(uint32_t)st->gpr[31].ud0==0x003993c0u);
+ int tm=(pc>=0x003578a8u&&pc<=0x003578bcu);
+ if(!st->ram||(dw&&st->ram_size<0x0035e624u))return 0;
+ if(dw&&(ee_idle_rd32(st->ram+(0x35d920u&0x1fffffffu))!=0x3c107000u||ee_idle_rd32(st->ram+(0x35e620u&0x1fffffffu))!=0x8c820000u))dw=0;
+ int gen=0, verified_vblank=0;
+ if(!vs&&!tm&&!dw){
+  verified_vblank=ee_vblank_poll_signature(st,pc);
+  if(verified_vblank)gen=1;
+  else {
+  ee_idle_on=0u;
+  /* Generic register repetition cannot prove a BIOS/kernel initialization
+   * loop has no memory/MMIO side effects. Keep the experimental heuristic
+   * confined to user-mode executable RAM, outside exception handlers. */
+  if(pc>=st->ram_size||(st->cop0[12]&0x1eu)!=0x10u)return 0;
+  if(ee_spin_tick++&1u)return 0;
+  { uint32_t idx=(pc>>2)&255u;uint64_t h=ee_spin_hash(st);ee_spin_stats[0]++;
+    if(ee_spin_tab[idx].pc==pc&&ee_spin_tab[idx].h==h){if(ee_spin_tab[idx].hits<1000u)ee_spin_tab[idx].hits++;}
+    else{ee_spin_tab[idx].pc=pc;ee_spin_tab[idx].h=h;ee_spin_tab[idx].hits=0u;}
+    if(ee_spin_tab[idx].hits<GEKKO2_SPIN_HITS)return 0;
+    ee_spin_stats[1]++;gen=1; }
+  }
+ }
+ uint32_t ph0=(vs?0x003993b8u:0x003578a8u)&0x1fffffffu;
+ if(!dw&&!gen){if(ph0+4u>st->ram_size)return 0;
+ if(ee_idle_rd32(st->ram+ph0)!=(vs?0x0c0d71a6u:0x8c620000u))return 0;}
+ if(vs){
+  uint32_t a=((uint32_t)st->gpr[28].ud0-0x6480u)&0x1fffffffu;
+  if(a+4u>st->ram_size||ee_idle_rd32(st->ram+a)!=1u)return 0;
+ }
+ ee_idle_skip_stats[2]++;
+ if(st->vu0_running||vu1_get_state()->running||vu1_get_state()->xgkick_pending||gif_get_state()->fifo_count||
+    (!dw&&!gen&&((dma_get_state()->chan[0].chcr&0x100u)||(dma_get_state()->chan[1].chcr&0x100u)||(dma_get_state()->chan[2].chcr&0x100u))))EE_IDLE_NO(3);
+ if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending())EE_IDLE_NO(4);
+ { uint32_t status=st->cop0[12];
+   int en=(status&0x10007u)==0x10001u;
+   if(en&&((ee_intc_pending_fast()&&(status&EE_STATUS_IM2))||(dma_dmac_interrupt_pending_fast()&&(status&EE_STATUS_IM3))||g_ee_irq.intc_delay||g_ee_irq.intc_armed))EE_IDLE_NO(5); }
+ unsigned k=ee_core_interleave_limit(budget);
+ uint32_t d=EE_CYCLES_PER_FRAME_NTSC-g_ee_display_phase;
+ if(g_ee_display_phase<EE_CYCLES_VBLANK_DURATION&&EE_CYCLES_VBLANK_DURATION-g_ee_display_phase<d)d=EE_CYCLES_VBLANK_DURATION-g_ee_display_phase;
+ if(ee_timers_batch_clock[0]<d)d=ee_timers_batch_clock[0];
+ uint32_t cnt=st->cop0[9];
+ if((st->cop0[12]&0x10007u)==0x10001u&&(st->cop0[12]&0x8000u)){
+  if((st->cop0[13]&EE_CAUSE_IP7)||st->cop0[11]<=cnt)EE_IDLE_NO(6);
+  if(st->cop0[11]-cnt<d)d=st->cop0[11]-cnt;
+ }
+ if(d<=9u||g_ee_display_ticks>UINT64_MAX-k||cnt>UINT32_MAX-k)EE_IDLE_NO(6);
+ if(k>d-1u)k=d-1u;
+ k&=~7u;
+ if(k<8u)EE_IDLE_NO(6);
+ st->gpr[0].ud0=st->gpr[0].ud1=0;
+ st->instructions_executed+=k;st->cop0[9]=cnt+k;
+ st->cop0[13]&=~(EE_CAUSE_IP2|EE_CAUSE_IP3);
+ g_ee_display_ticks+=k;g_ee_display_phase+=k;
+ ee_timers_batch_clock[0]-=k;ee_timers_batch_clock[1]+=k;
+ ee_idle_on=1u;ee_idle_skip_stats[7]++;ee_idle_skip_stats[0]++;ee_idle_skip_stats[1]+=k;
+ if(verified_vblank){ee_vblank_skip_fast_hits++;ee_vblank_skip_fast_slots+=k;}
+ else if(gen){ee_spin_stats[2]++;ee_spin_stats[3]+=k;}
+ return k;
+}
+#endif
+
+#ifndef GEKKO2_IDLE_SKIP
+uint64_t ee_core_vblank_fast_wait_stat(unsigned which){(void)which;return 0;}
+unsigned ee_core_idle_active(void){return 0;}
+#endif
+#ifdef GEKKO2_SPEED_STUB
+/* BETA12.2: sample SCALAR EE entry PCs, not just native block entries.
+ * In Crash E3 the old >=2 MiB code gate makes EE_HOTPC appear frozen.
+ * Sample once per 4093 scalar calls (prime interval avoids short-loop
+ * aliasing), with no per-instruction logging and no guest-state writes. */
+typedef struct { uint32_t pc; uint32_t samples; } ee_scalar_hot_t;
+static ee_scalar_hot_t ee_scalar_hot[256];
+static uint32_t ee_scalar_sample_until = 4093u;
+static uint64_t ee_scalar_total_samples;
+static inline void ee_scalar_hot_sample(uint32_t pc)
+{
+    if (--ee_scalar_sample_until) return;
+    ee_scalar_sample_until = 4093u;
+    ee_scalar_total_samples++;
+    ee_scalar_hot_t *entry = &ee_scalar_hot[((pc >> 2) ^ (pc >> 11)) & 255u];
+    if (entry->pc != pc) { entry->pc = pc; entry->samples = 0; }
+    if (entry->samples != UINT32_MAX) entry->samples++;
+}
+uint64_t ee_core_scalar_hot_top(uint32_t *pcs, uint32_t *hits, unsigned maximum)
+{
+    if (!pcs || !hits || !maximum) return ee_scalar_total_samples;
+    for (unsigned k = 0; k < maximum; ++k) { pcs[k] = 0; hits[k] = 0; }
+    for (unsigned i = 0; i < 256u; ++i) {
+        const ee_scalar_hot_t *e = &ee_scalar_hot[i];
+        if (!e->samples || e->samples <= hits[maximum-1u]) continue;
+        unsigned pos = maximum-1u;
+        while (pos > 0u && e->samples > hits[pos-1u]) {
+            pcs[pos] = pcs[pos-1u]; hits[pos] = hits[pos-1u]; --pos;
+        }
+        pcs[pos] = e->pc; hits[pos] = e->samples;
+    }
+    return ee_scalar_total_samples;
+}
+#endif
+static void ee_speed_session_reset(void)
+{
+#ifdef GEKKO2_SPEED_STUB
+ memset(ee_scalar_hot,0,sizeof ee_scalar_hot);
+ ee_scalar_sample_until=4093u;ee_scalar_total_samples=0;
+ ee_quiet_left=0;ee_quiet_hits=ee_quiet_arms=ee_quiet_arm_zero=ee_quiet_tlb_fills=0;
+ memset(ee_quiet_tlb,0,sizeof ee_quiet_tlb);memset(ee_arm_why,0,sizeof ee_arm_why);
+#endif
+#ifdef GEKKO2_SPEED_RETIRE
+ memset(ee_speed_retire_stats,0,sizeof ee_speed_retire_stats);
+#endif
+#ifdef GEKKO2_IDLE_SKIP
+ ee_idle_on=ee_spin_tick=0;ee_dma_diag_hits=0;
+ memset(ee_spin_tab,0,sizeof ee_spin_tab);memset(ee_spin_stats,0,sizeof ee_spin_stats);
+ memset(ee_idle_skip_stats,0,sizeof ee_idle_skip_stats);memset(ee_dma_diag,0,sizeof ee_dma_diag);
+#endif
+}
 unsigned ee_core_step_n(unsigned n)
 {
-    unsigned retired = 0;
-    while (retired < n && !g_state.halted) {
+    unsigned retired = 0, used = 0;
+    while (used < n && !g_state.halted && !ee_interleave_stopped) {
         uint64_t before = g_state.instructions_executed;
         unsigned block_retired=0;
-        int halted = ee_step_budget(n-retired,&block_retired);
-        if(block_retired)retired+=block_retired;
-        else if (g_state.instructions_executed != before)
-            retired++;
+#ifdef GEKKO2_IDLE_SKIP
+        { unsigned sk=ee_idle_skip(&g_state,n-used);
+          if(sk){retired+=sk;used+=sk;ee_core_interleave_account(sk);continue;} }
+#endif
+#ifdef GEKKO2_SPEED_STUB
+        uint32_t scalar_entry_pc = g_state.pc;
+#endif
+        int halted = ee_step_budget(n-used,&block_retired);
+        if(block_retired){retired+=block_retired;used+=block_retired;}
+        else {
+#ifdef GEKKO2_SPEED_STUB
+            ee_scalar_hot_sample(scalar_entry_pc);
+#endif
+            /* R1330-J: idle/park and scalar fault/redirect attempts still
+             * consume an EE scheduler slot. Waiting for a retirement here
+             * can starve the IOP that must wake the EE through SIF/IRQ.
+             * Keep the returned architectural retirement count truthful. */
+            if(g_state.instructions_executed != before)retired++;
+            used++;ee_core_interleave_account(1u);
+        }
         if (halted)
             break;
     }
     return retired;
+}
+unsigned ee_core_step_interleaved_n(unsigned quanta,int (*after_quantum)(void))
+{
+ if(!quanta||quanta>UINT32_MAX/8u||!after_quantum||ee_interleave_callback)return 0;
+ ee_interleave_callback=after_quantum;ee_interleave_left=quanta;
+ ee_core_interleave_quantum=8u;ee_interleave_stopped=0u;
+ /* Scalar HLE handlers can return early without setting halted. Preserve
+  * the unfinished quantum instead of returning zero quanta to the frontend
+  * and restarting it before the IOP ever receives its boundary tick. */
+ while(ee_interleave_left&&!ee_interleave_stopped&&!g_state.halted) {
+  unsigned slots=(ee_interleave_left-1u)*8u+ee_core_interleave_quantum;
+  /* A larger host plan must not enlarge native-chain admission: keep
+   * the original eight-quantum/64-slot translation horizon. */
+  if(gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)&&slots>64u)slots=64u;
+  ee_core_step_n(slots);
+ }
+ /* A halted EE still grants an IOP tick, including its unfinished quantum,
+  * exactly as the old before-IOP callback does. No synthetic EE retirement. */
+ while(ee_interleave_left&&!ee_interleave_stopped&&g_state.halted) {
+  ee_interleave_left--;
+  if(!after_quantum())ee_interleave_stopped=1u;
+ }
+ unsigned done=quanta-ee_interleave_left;
+ ee_interleave_callback=NULL;ee_interleave_stopped=0u;
+ ee_interleave_left=0u;ee_core_interleave_quantum=UINT32_MAX;
+ return done;
 }
 
 void ee_core_run(const bios_image_t *bios)
@@ -13129,6 +11788,7 @@ void ee_core_run(const bios_image_t *bios)
 
 void ee_core_shutdown(void)
 {
+    dsi_fastmem_shutdown();
     if (g_state.ram) {
         free(g_state.ram);
         g_state.ram = NULL;

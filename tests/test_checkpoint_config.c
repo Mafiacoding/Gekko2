@@ -5,13 +5,22 @@
 #include "core/checkpoint.h"
 #include "core/system.h"
 #include "core/hw/cdvd_config.h"
+#include "core/hw/ipu.h"
+#include "core/hw/dma.h"
 #define C(x) do{if(!(x)){printf("FAIL line %d\n",__LINE__);return 1;}}while(0)
 int main(void){
  bios_image_t b={0}; C(!system_init(&b,&b));
  char path[]="/tmp/pcsx2-config-XXXXXX";int fd=mkstemp(path);C(fd>=0);close(fd);
  uint8_t data[16],saved[344],got[344];memset(data,0x53,16);
  C(!cdvd_config_open(1,2,2));C(!cdvd_config_write(data));cdvd_config_snapshot_save(saved);
- C(!checkpoint_save(path));cdvd_config_reset();C(!checkpoint_load(path,&b,&b,0));
+ uint8_t ipu_data[16];memset(ipu_data,0x9a,sizeof ipu_data);
+ ipu_mmio_write32(0x10002000,7);ipu_mmio_write32(0x10002000,0x50000000);
+ ipu_process_quadwords(4,ipu_data,1);ipu_state_t ipu_saved=*ipu_get_state();
+ C(ipu_saved.busy&&ipu_saved.pos>0&&ipu_saved.pos<64);
+ dma_get_state()->ipu_tag_pending=1;dma_get_state()->ipu_tag_end=1;
+ C(!checkpoint_save(path));cdvd_config_reset();ipu_init();dma_get_state()->ipu_tag_pending=0;
+ C(!checkpoint_load(path,&b,&b,0));C(!memcmp(&ipu_saved,ipu_get_state(),sizeof ipu_saved));
+ C(dma_get_state()->ipu_tag_pending==1&&dma_get_state()->ipu_tag_end==1);
  cdvd_config_snapshot_save(got);C(!memcmp(saved,got,344));
  FILE*f=fopen(path,"r+b");C(f);long pos=-1;char tag[4];uint32_t n;
  /* Header is read through the writer's framing: locate CNFG by walking blocks. */

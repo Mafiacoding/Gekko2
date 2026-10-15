@@ -39,7 +39,7 @@ typedef struct {
 } dma_channel_t;
 
 #define DMA_ERR_NONE            0
-#define DMA_ERR_UNSUPPORTED_TAG 1  /* hit REF/REFS/CALL/RET - not implemented */
+#define DMA_ERR_UNSUPPORTED_TAG 1  /* unsupported chain mode or exhausted call stack */
 #define DMA_ERR_NO_RAM_BOUND    2  /* dma_bind_ee_ram() was never called */
 #define DMA_ERR_OUT_OF_BOUNDS   3  /* tag or data address outside bound RAM */
 
@@ -86,6 +86,11 @@ typedef struct {
      * matching PCSX2's own hwReset(), which sets both to the same
      * 0x1201 constant. */
     uint32_t d_enable_state;
+    /* R1335: resumable to-IPU chain payload; guest-visible DMA registers
+     * advance only after accepted FIFO quadwords. */
+    uint32_t ipu_tag_pending, ipu_tag_end;
+    uint32_t gif_tag_pending,gif_tag_end,gif_tag_id;
+    uint32_t vif_tag_pending[2],vif_tag_end[2],vif_tag_id[2];
 } dma_state_t;
 
 /*
@@ -166,6 +171,8 @@ int dma_mmio_write32(uint32_t addr, uint32_t val);
  */
 void dma_bind_ee_ram(uint8_t *ram, uint32_t ram_size);
 void dma_bind_scratchpad(uint8_t *scratch, uint32_t scratch_size); /* Round 572 - see dma.c's dma_resolve_ptr() doc comment */
+/* Optional CPU-layer observer; keeps dma.c standalone-linkable. */
+void dma_set_ee_write_notify(void (*fn)(uint32_t phys_addr, uint32_t len));
 
 /* Called by a real (future) consumer - e.g. GIF packet parsing - to
  * receive the quadwords a channel's transfer produces. 'data' points
@@ -204,6 +211,9 @@ void dma_set_sink(int channel, dma_sink_fn fn);
  * docs/ROADMAP.md.
  */
 void dma_channel_kick(int channel);
+int dma_ipu_work_pending(void);
+int dma_ipu_service(void);
+int dma_gif_service(void);
 
 /*
  * Sets DMAC_STAT's low (status) bit for `channel` - real hardware's
@@ -335,5 +345,24 @@ void dma_channel_set_irq_enable(int channel, int enabled);
  * external line (task #176).
  */
 int dma_dmac_interrupt_pending(void);
+/* Same canonical fields and ordering as the out-of-line IRQ probe. */
+#ifdef GEKKO
+extern dma_state_t gekko2_dma_live;
+#endif
+static inline int dma_dmac_interrupt_pending_fast(void)
+{
+#ifdef GEKKO
+    uint32_t stat=gekko2_dma_live.d_stat;
+    if (!(gekko2_dma_live.d_ctrl & 1u)) return 0;
+    if (((gekko2_dma_live.d_enable_state >> 16) & 0xffu)==1u) return 0;
+    return ((stat & (stat >> 16) & 0xffffu) != 0u) || ((stat & 0x8000u) != 0u);
+#else
+    return dma_dmac_interrupt_pending();
+#endif
+}
 
+
+/* Stable read-only scheduler views. Point at the same state as getters;
+ * no cached activity flags to invalidate after MMIO or checkpoint restore. */
+extern const dma_state_t * const dma_scheduler_view;
 #endif

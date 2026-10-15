@@ -174,10 +174,10 @@ int main(void)
         /* Right triangle (0,0)-(60,0)-(0,60), same closed-form
          * barycentric weights as test_gif_gouraud.c: vertex0 dominant
          * near (0,0), vertex1 near (60,0), vertex2 near (0,60). Map
-         * vertex0->u=0 (red), vertex1->u=5 (green), vertex2->u=10 (blue). */
+         * vertex0->u=0 (red), vertex1->u=5 (green), vertex2->u=12, so interior u=10 reads blue. */
         uint32_t dummy_color = 0xFF7F7F7Fu; /* irrelevant under DECAL */
         int32_t verts[3][2] = { { 0, 0 }, { 60, 0 }, { 0, 60 } };
-        int32_t uvs[3][2] = { { 0, 0 }, { 5, 0 }, { 10, 0 } };
+        int32_t uvs[3][2] = { { 0, 0 }, { 5, 0 }, { 12, 0 } };
         for (int i = 0; i < 3; i++) {
             append_ad(buf, &off, dummy_color, 0, GS_REG_RGBAQ);
             append_ad(buf, &off, (uint32_t)(uvs[i][0] << 4), (uint32_t)(uvs[i][1] << 4), GS_REG_UV);
@@ -186,22 +186,14 @@ int main(void)
 
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
-        /* Sample EXACTLY at each vertex's own screen coordinate -
-         * unlike Gouraud color (which blends continuously), nearest-
-         * neighbor texture sampling snaps to discrete texels, so a
-         * point merely "near" a vertex can round to an adjacent texel
-         * instead. At a vertex's own coordinate the barycentric
-         * weights are exact (1,0,0) by construction (two of the three
-         * edge-function terms are exactly zero when evaluated at a
-         * point that IS one of the triangle's own vertices), so the
-         * interpolated UV is exactly that vertex's own UV value with
-         * no rounding ambiguity. */
-        uint32_t at_v0 = gs_mem_read_psmct32(0, 640, 0, 0);
-        uint32_t at_v1 = gs_mem_read_psmct32(0, 640, 60, 0);
-        uint32_t at_v2 = gs_mem_read_psmct32(0, 640, 0, 60);
-        CHECK(at_v0 == col_red, "UV interpolation: sample at vertex0's own coordinate reads back the red texel (u=0 exactly)");
-        CHECK(at_v1 == col_green, "UV interpolation: sample at vertex1's own coordinate reads back the green texel (u=5 exactly)");
-        CHECK(at_v2 == col_blue, "UV interpolation: sample at vertex2's own coordinate reads back the blue texel (u=10 exactly)");
+        /* Top-left coverage excludes the right/bottom vertex. Check their
+         * untouched destinations, then use strictly interior samples whose
+         * affine UVs are independently 5+11/30 and 10+1/2. */
+        CHECK(gs_mem_read_psmct32(0,640,0,0)==col_red,"UV origin samples texel 0");
+        CHECK(gs_mem_read_psmct32(0,640,60,0)==0,"right vertex excluded by top-left coverage");
+        CHECK(gs_mem_read_psmct32(0,640,0,60)==0,"bottom vertex excluded by top-left coverage");
+        CHECK(gs_mem_read_psmct32(0,640,50,6)==col_green,"interior affine UV 5+11/30 samples texel 5");
+        CHECK(gs_mem_read_psmct32(0,640,6,50)==col_blue,"interior affine UV 10+1/2 samples texel 10");
     }
 
     /* --- Regression: TME=0 (untextured) still works exactly as

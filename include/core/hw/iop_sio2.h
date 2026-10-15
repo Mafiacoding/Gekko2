@@ -2,6 +2,12 @@
 #define PCSX2_WII_IOP_SIO2_H
 
 #include <stdint.h>
+/* R1365 supersedes historical scope notes below: SIO2 commands
+ * 40/41/43/44/45/46/47/4C/4D/4F and native 79h pressure replies added.
+ * Pressure is derived as 0/255 from host digital buttons; rumble hardware
+ * and exact serial ACK timing remain unimplemented. */
+uint16_t iop_sio2_pad_sample_buttons(void);
+uint32_t iop_sio2_pad_sample_count(void);
 
 /*
  * iop_sio2.h - SIO2 (controller/memory-card serial interface)
@@ -351,5 +357,11 @@ void iop_sio2_mc_insert_blank(void);
 int  iop_sio2_mc_insert_from_file(const char *path); /* returns 1 on success */
 void iop_sio2_mc_eject(void);
 int  iop_sio2_mc_is_inserted(void);
+
+/* Negotiated protocol only; frontend buttons remain live input. */
+#define IOP_PAD_PROTOCOL_BYTES 24u
+void iop_sio2_pad_protocol_save(uint8_t out[IOP_PAD_PROTOCOL_BYTES]);
+int iop_sio2_pad_protocol_valid(const uint8_t in[IOP_PAD_PROTOCOL_BYTES]);
+void iop_sio2_pad_protocol_load(const uint8_t in[IOP_PAD_PROTOCOL_BYTES]);
 
 #endif

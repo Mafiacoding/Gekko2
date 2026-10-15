@@ -21,22 +21,21 @@ if fused:
  from unicorn.ppc_const import UC_PPC_REG_14,UC_PPC_REG_1,UC_PPC_REG_LR
  # The last compiled program is CVT.S.W. Enter its native function directly
  # so an enclosing C function cannot hide a damaged nonvolatile register.
- slot=((base>>2)^(base>>12))&255
- native=int.from_bytes(bytes(u.mem_read(syms['precise_cache']+slot*44+40,4)),'big')
+ native=precise_native_for_pc(base)
  assert native
  syms['internal_native_abi']=native
  word(state+off['pc'],base);word(state+off['next_pc'],base+4)
  saved=[0xa1000000+0x101*n for n in range(18)]
  for n,v in enumerate(saved):u.reg_write(UC_PPC_REG_14+n,v)
  def linkage_write(uc,address,size,user):
-  if address==syms['ee_jit_cvt_s_w_helper']:
+  if address==syms.get('ee_jit_cvt_s_w_helper'):
    sp=uc.reg_read(UC_PPC_REG_1)
    uc.mem_write(sp+4,struct.pack('>I',uc.reg_read(UC_PPC_REG_LR)))
  hook=u.hook_add(UC_HOOK_CODE,linkage_write)
  assert call('internal_native_abi',state,0,0)==8
  u.hook_del(hook)
  assert [u.reg_read(UC_PPC_REG_14+n) for n in range(18)]==saved
- print('PASS raw native CVT.S.W EABI with callee linkage-area write')
+ print('PASS raw native CVT.S.W callee-saved EABI; legacy helper linkage checked when present')
 links_sig=hashlib.sha256();link_cases=0
 for sub in range(0x10,0x14):
  for rs in [0,3,31]:

@@ -2,6 +2,7 @@
 #define PCSX2WII_VU_H
 
 #include <stdint.h>
+#include "core/hw/vu_timing.h"
 
 /*
  * vu.h - VU0/VU1 "micro mode" data/instruction memory + microcode
@@ -134,12 +135,31 @@ typedef struct {
     uint32_t ebit_delay;     /* 0 = not stopping; see header comment */
     uint8_t  running;
 
+    /* AOT3: metered VU1 PATH1 transfer, one qword per two VU cycles. */
+    uint8_t  xgkick_pending;
+    uint32_t xgkick_addr;       /* byte offset in the 16 KiB VU1 ring */
+    uint64_t xgkick_busy_stalls;/* forced drains before a second kick */
+
     uint64_t instructions_executed;
     uint64_t unimplemented_opcodes_seen;
     vu_pipeline_t pipeline;
+    /* Appended for existing checkpoint offsets. */
+    uint64_t xgkick_last_cycle, xgkick_cycle_credit;
+    uint32_t xgkick_packet_qwords, xgkick_ring_qwords;
+    uint8_t xgkick_eop;
+    vu_timing_t timing;
+    /* One deferred PATH1 start while the previous transfer is blocked
+     * by GIF arbitration.  Never overwrite the live packet address. */
+    uint32_t xgkick_deferred_addr;
+    uint8_t xgkick_deferred;
+    uint64_t xgkick_deferred_stalls;
 } vu1_state_t;
 
 void vu1_init(void);
+void vu1_tick(void);
+/* Native static half handlers, separately from runtime JIT counters. */
+uint64_t vu_aot_executed_count(unsigned half);
+int vu_aot_pair_available(uint32_t upper,uint32_t lower);
 vu1_state_t *vu1_get_state(void);
 
 /* Called from vif.c's VIF_CMD_MPG handling: writes one little-endian
@@ -186,4 +206,13 @@ int vu_micro_step_pipeline(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
     uint32_t *ebit_delay,uint64_t *retired,uint64_t *unknown,
     vu_pipeline_t *pipeline);
 
+int vu_micro_step_timed(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
+    uint8_t *mem,uint32_t mem_mask,uint8_t *micro,uint32_t micro_mask,
+    uint32_t *tpc,uint32_t *branch_delay,uint32_t *branch_target,
+    uint32_t *ebit_delay,uint64_t *retired,uint64_t *unknown,
+    vu_pipeline_t *pipeline,vu_timing_t *timing);
+
+/* Stable read-only scheduler views. Point at the same state as getters;
+ * no cached activity flags to invalidate after MMIO or checkpoint restore. */
+extern const vu1_state_t * const vu1_scheduler_view;
 #endif

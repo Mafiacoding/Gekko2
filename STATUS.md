@@ -1,6 +1,240 @@
-# Gekko2 status — R1308
+# Gekko2 SPEED BETA12.20 – 15 October 2026
 
-Updated 2026-10-04. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
+**Aktueller Stand:** R1389-SPEED-BETA12.20-GX-ALPHA-FENCES. Quellcode und Host-Regressionen; Hardware-Gameplaytest steht noch aus. Persistente 128-Bit-PPC-Registerübergabe über unabhängige JIT-Blöcke und vollständige GS/GX-Hardwaretreue bleiben offen. Die darunter folgenden früheren Statuspunkte dokumentieren ältere Versionen.
+
+## Historischer Stand: BETA12.9
+
+**Wii compile passed; physical Wii test not yet performed.**
+
+- New PS2 GS `TRXDIR=2` local-memory copy support, same-PXM layouts only,
+  overlap-aware, no synthetic frame flip, host source and GIF-register tests PASS.
+- Expanded generic VBlank matcher for register-held MMIO base, with checked
+  side-effect/delay-slot, MMIO address and real IRQ guards; host matcher PASS.
+- Current preceding Wii result: Crash E3 font fixed, first image on screen,
+  roughly 2 emulated guest VBlanks/s in some intervals, later VSync wait
+  continues while displayed buffer is black and alternate draw target nonblack.
+- This new GS move implementation is a *candidate* for missing transfers;
+  no evidence yet that the Crash demo actually requests `TRXDIR=2`.
+- No supported claim of full BIOS speedup or in-game success.
+- See `docs/BETA12.9-GS-TRANSFER-RESEARCH.md` and older history below.
+
+---
+
+# Gekko2 — BETA12.5 FILEIO TRACE
+
+The owner's second BETA12.4 Wii log positively contains:
+`CRASH_E3_NUERROR pc=00103d74 caller=0012fa18 provider=30313132`
+`heading="NuError - nufont.c(117) : " detail="unable to create font fonts\ariel32"`.
+The emulator's FILEIO provider is genuinely `2110` (little-endian ASCII bytes), but
+font creation fails, and GS display remains disabled (`PMODE=0`). Zero ISO-cache
+transport failures are reported. This does not prove FIO read delivery is correct.
+
+BETA12.5 adds diagnostic counters only: FILEIO provider query; OPEN attempts and
+status, READ count/actual bytes, CLOSE operations; plus counters for paths containing
+`ariel32`. The existing file RPC responses and game state are unchanged.
+Build is verified by Wii cross-compilation, DOL/ELF validation and MEM1 checks.
+**The new diagnostic DOL has not yet been run on Wii. No title screen claim.**
+
+---
+
+# Gekko2 — SPEED BETA12.4 ERROR DIAG status
+
+**Built, not physically re-tested:** Direct disassembly of the private Crash E3
+ELF proves that `0x00103D70` executes an unconditional self-branch inside the
+NuError path. GX and Software Wii logs both end with `FIRST_IMAGE=0`, `PMODE=0`
+and a stationary guest CPU at this address. The approximately 46-minute Software
+run retained the same fatal loop; the ISO cache recorded 0 failures.
+
+BETA12.4 adds only a read-only fatal-error probe after the existing BETA12.3
+legacy FILEIO correction. It emits a single `CRASH_E3_NUERROR` record with the
+formatted error and caller if both the self-branch and original Nu2 data
+fingerprint match. No game state or HLE responses are changed.
+
+**Not established:** Actual fatal-message text on Wii, successful Crash title,
+GT3 race or Tekken gameplay, or performance increase. Wii build and probe native
+test succeeded, but the new DOL has not been run on Wii/Dolphin.
+
+See [BETA12.4 verification](docs/BETA12.4-CRASH-E3-NUERROR.md).
+
+---
+
+# Gekko2 — SPEED BETA12.3 FILEIO TEST status
+
+**Host-verified:** real Crash E3 `FONTS/ARIEL32.FNT;1` can be opened through
+legacy and modern FILEIO OPEN layouts, plus lowercase path without ISO version
+suffix. Version strings 2050 and 2110 are parsed from the selected IOP FILEIO
+module, not supplied by a per-game success stub. ELF/ISO, basic VU and
+RPC tests pass. Wii devkitPPC cross-build and DOL structural checks pass.
+
+**Unverified:** Crash E3 title on Wii/Dolphin, New Game and gameplay; the
+VU integer-to-conditional-branch hazard investigated by Codex; GT3 memory
+card/race, Tekken post-VS/VIF graphics, and Wii FPS improvement.
+
+See [BETA12.3 verification](docs/BETA12.3-CRASH-E3-FILEIO.md).
+
+---
+
+## R1387: independent GIF / GS Q
+
+Preserves R1386 AOT and modern DSI toolchain. Corrects Q latching and
+checkpoint compatibility. The reported BIOS/PCSX2 visual discrepancy
+remains unresolved: ten controlled BIOS captures are unchanged.
+See [implementation, tests and exact limits](docs/R1387-GS-Q.md).
+
+## R1386: guarded AOT windows and IRQ/checkpoint fixes
+
+Modern DSI build with devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0.
+Preserves R1384 accuracy and R1385 timed VU hybrid JIT. Adds cached AOT
+lookup, guarded arithmetic windows, idle graphics service checks, safe
+IRQ wakeup/preemption, VU1 cold reset and negotiated pad checkpoint state.
+See [fix inventory and remaining limits](docs/R1386-FIX-ABGLEICH.md).
+PPC instruction reductions are measured in a modeled linked binary;
+physical Wii speed, BIOS crash and correct Tekken/GT3 gameplay remain open.
+
+## R1385: timed VU hybrid blocks
+
+VU0/VU1 production paths use dynamically emitted PPC blocks with precise
+per-pair timing and source guards. Native fused non-arithmetic pairs are
+available inside the timed scheduler. See [R1385 details](docs/R1385-TIMED-HYBRID-JIT.md)
+for executable validation and remaining accuracy/gameplay limits.
+
+# R1384 Codex checkpoint
+
+R1384 adds executable FMAC timing, VU0 M continuation, resumable GIF/VIF DMA,
+a CPU GIF FIFO, and general word residency across all 128 EE GPR words.
+The DSI build uses the recovered devkitPPC r50 / libogc 3.1.0 Docker SDK and
+the owner's AOT profile. See [R1384 implementation and limits](docs/R1384-CODEX-HARDWARE.md).
+Complete hardware accuracy and a fully native timed VU backend remain unproven;
+physical Wii boot/game/FPS checks are pending. Earlier sections below are
+historical checkpoint evidence.
+
+# R1379-AOT3 — AOT2 continuation and PCSX2/GIF fixes
+
+The working AOT2 workflow is retained with guarded EE delay slots, BC2,
+LQC2 VF0 reads, correct J/JAL regions and metered VU1 XGKICK transfers.
+The R1379B incomplete-PATH1 fix is included. Existing graphics/VIF/CHD
+corrections remain present. The owner reports approximately halved BIOS
+boot time and nearly 0.30 FPS in Tekken for AOT2; AOT3 hardware performance
+has not yet been measured. Full dynarec and PS2 hardware fidelity remain
+in development. See [changes, reproduction, evidence and remaining gaps](docs/R1379-AOT3.md).
+
+# R1378-AOT2 — hybrid static compilation checkpoint
+
+EE scalar/complex/memory, IOP tick-safe and VU0/VU1 pipeline-safe static paths
+are integrated. 4,500 EE + 1,928 VU + 255 IOP host comparisons, 37 existing
+regression binaries and 110 linked-PPC comparisons pass. The private test
+build contains 512 EE entries, 256 IOP entries and 44/64 VU upper/lower words.
+The MEM1 gate passes with 2,108,352 bytes remaining. This does not certify
+full dynarec/hardware completion, physical Wii boot or faster FPS.
+See [implemented scope and remaining work](docs/R1378-AOT2.md).
+
+# R1352 Beta — dependent EE windows, word-safe ARM IPC, VU/FIFO mapping
+
+See [implementation and limits](docs/R1352-EE-ARM-VU.md). Linked comparisons preserve exact CPU/timer/IRQ state. Dependent RAM-window microbenchmarks reduce PPC instruction counts by18–22%; actual Wii boot time remains unmeasured. VU local windows and CPU quadword FIFO stores are now connected. BIOS null-vertex repair is unverified; path=1 is zero-based PATH2. ARM transport uses aligned shared-word accesses and private staging; test the newly supplied worker after a full Wii restart.
+
+# R1342 — EE prefix reuse, CPU guards and IOP deadlines
+
+Four independently selectable optimizations reduce short EE grant overhead,
+inactive CPU service calls, repeated THREADMAN scans and historical diagnostic
+work. MLOAD status 1 is supported with complete-buffer/readback verification.
+See [implementation, source audit, measurements and limits](docs/R1342-PERFORMANCE-CPU-ARM.md).
+Warm short-grant tests improve by 21%; a mixed EE/IOP replay improves by 0.7%.
+These synthetic PPC instruction counts do not establish doubled Wii FPS.
+The four CPU options default ON and require cold boot. A separate default-OFF
+experimental ARM option delegates large IOP BIOS RAM jobs to MLOAD and verifies
+every byte. ARM/IOS changes require an app restart. Physical R1342 boot, ARM
+handshake and a RAM-job speedup remain unverified.
+
+# R1341 — cache/retirement and ARM transport test build
+
+Guarded EE lookup/admission hints, reduced duplicate IRQ/IOP fetch work,
+event-safe PPC timer bookkeeping and verified MLOAD status-zero transfers.
+Short host button presses persist until the guest controller samples them.
+See [implementation, measured tests and limits](docs/R1341-PERFORMANCE-ARM.md).
+Targeted synthetic EE replay uses 6.07% fewer PPC instructions; a mixed replay
+is essentially unchanged (+0.10%). **A 2x/3x Wii speedup is not established.**
+ARM startup still requires a physical Wii test; its worker currently handles
+CSC only. R1340 Tekken streaming stays intact. PLUS pauses; MINUS+A sends
+PS2 START. No new setting is required.
+
+# R1340 — retail sound/streaming transport
+
+Verified-provider RSPU2 initialization/status, bounded disc-to-EE video reads,
+separate 7/128 audio/video group extraction, sound-parameter storage and
+checkpoint persistence. A private native cold boot now renders the **Tekken
+Tag Tournament title graphic** in the real GS viewport. Interactive title
+navigation, a complete FMV and streamed audio playback remain unverified;
+physical Wii performance/compatibility requires a new test. See
+[R1340 implementation and limits](docs/R1340-TEKKEN-STREAMING.md).
+
+R1339 ARM loader bounds/diagnostics and R1338 cache/IOS settings are retained.
+The owner's R1338 log measured FIRST_IMAGE 509303 ms vs 552449 ms; ARM completed
+zero jobs. Those measurements do not establish a new R1340 speedup.
+
+## Historical checkpoints
+
+R1338: EE recency / budget admission, persistent ARM settings and explicit
+CURRENT / IOS222 startup selection. See [R1338 details](docs/R1338-CACHE-ARM-IOS.md)
+and packaged verification results; physical Wii speed/ARM loading unverified.
+
+# R1337 status
+
+BDEC/IDEC scalar coefficient decode and IDCT implemented; synthetic native and
+linked PPC checks pass. Executable arena uses size bins and boundary tags.
+Experimental MLOAD RAM loader can start the included ARM CSC service on a
+compatible current IOS; standard IOS remains CPU fallback. No physical-Wii
+ARM acceleration or complete game/movie boot is verified.
+See [R1337 evidence and limits](docs/R1337-DECODER-CACHE-ARM.md).
+
+# Historical Gekko2 status — R1335
+
+Updated 2026-10-08. **Early alpha; alpha coming soon, without a fixed date.** This is the current project status. Historical round documents describe their own revisions and do not override it.
+
+## R1335 IPU / HLE / cache comparison
+
+Real input/output FIFO data and streaming CSC, FDEC, SETIQ/SETVQ/SETTH are wired
+to EE MMIO and bounded resumable DMA. MPEG decode/PACK remain open. Known HLE
+RAM copy/fill operations have a tested fast path; strict unknown-call fallback
+is optional. Compact reuse is an independent 1024/4096-owner cold-boot switch.
+ARM transport and worker handler are tested with mocked IPC; an IOS server and
+ARM hardware timing are still needed. No measured Wii FPS gain or Tekken title
+boot is asserted. See [R1335 evidence](docs/R1335-IPU-HLE-ARM.md).
+
+## R1334 cache and game-diagnostic checkpoint
+
+Block cache reuse ON now retains 4096 EE block owners; OFF retains 256.
+The executable arena stays 6 MiB. Missing boot-local IOP masks/counters reset.
+IPU_STATUS/IPU_COMMANDS expose the existing decoder gap during game tests;
+MPEG output remains unimplemented. ARM offload is future work.
+Validation: 26 linked PPC suites, focused CPU/IOP/IPU/log checks, and both Wii cross-builds pass.
+See [R1334 handoff](docs/R1334-EE-CACHE-GAME-DIAGNOSTICS.md) and
+[ARM measurement plan](docs/R1334-ARM-ROADMAP.md). Synthetic cache replay
+improvements are not measured Wii FPS gains.
+
+## R1333 session and cache changes
+
+Cold Boot restarts the selected BIOS/disc mode and reserves a separate numbered
+log. START/PLUS only pauses/resumes an existing session; requested CPU/GX options
+apply on a cold boot. EE boot one-shots/SIF system registers and selected render,
+translation and Fastmem counters reset. GPU ownership must resolve before a
+restart frees old guest RAM. Hardware FIFO buffers remain allocated.
+
+EE cache reuse now preserves same-PC block-length variants and selects by the
+current retirement budget. A synthetic alternating 8/2 replay reduces modeled
+PPC instructions 145,993→119,273 with identical guest results. Source/mapping
+invalidation and precise EE8/IOP1 boundaries remain.
+
+Validation: 25/25 linked PPC suites, 64/64 native GS tests, three same-process
+cold boots, unique log/resume/write-error tests, both cross-builds and DOL/ELF
+structure checks. Launcher image is a host render. No physical Wii R1333 boot
+or FPS gain is certified. See [R1333 handoff](docs/R1333-COLD-BOOT-CACHE.md).
+
+Owner-supplied R1332 Wii logs show Tekken first image near 64 million EE
+instructions and accepted native GX draws, with substantial hybrid depth work.
+The supplied fresh BIOS run ends near 203 million EE instructions before first
+image. These are historical observations, not proof that R1333 fixes BIOS
+progress or reaches playable performance. Earlier status sections below retain
+their original checkpoint scope.
 
 ## Verified progress
 
@@ -97,3 +331,55 @@ GX feature work is paused while the custom PPC dynarec becomes the priority. Nex
 ## Distribution and reporting
 
 Public sources contain no BIOS, discs, private guest RAM/checkpoints or owner runtime logs. Preserve original source and third-party notices. Report revision, BIOS model, controller, JIT/interpreter and GX/software settings with timings/screenshots; redact personal paths and never share protected firmware/disc data.
+# Current checkpoint: R1351C
+
+DSI is now integrated into precise LW blocks and boundary classification.
+Read docs/R1351C-DSI-BLOCKS.md. Actual Wii B log26 validates MMU self-test,
+but had0 emitted sites; C fixes the execution-route integration. Physical
+Wii C boot/backpatch timing is pending. Older A/B notes follow.
+
+Paired official devkitPPC r50/GCC16.1.0/libogc3.1.0 builds. A is the guarded
+memory control; B adds the MMU/DSI pilot for scalar aligned kernel-segment
+EE LW reads. Both linked ELFs pass CPU, VU, FPU, scheduler and ARM transport
+regressions. DSI HTAB/glue/backpatch checks pass with modeled privileged
+hardware; no R1351 Wii speed/boot measurement exists yet. Read
+docs/R1351-TOOLCHAIN-DSI.md for scope, settings, status codes and limitations.
+ARM reply corruption and captured identical zero vertices remain open from
+the physical R1350 log. Historical checkpoint notes below retain their dates.
+
+
+
+### BETA12.13 GS alias / framebuffer coherence (diagnostic)
+Native PSM-aware source bounds, conditional GX ownership resolve on physical texture/framebuffer overlap, 16-bit GS page geometry correction, and bounded 64KiB snapshot for overlapping `TRXDIR=2` cross-layout copies. Host/GIF regressions and Wii cross-build pass; real Wii behavior pending. See `docs/BETA12.13-GS-ALIAS.md`.
+
+## BETA12.15 – targeted EE / IOP scheduler / GX fast-path update
+- Cold-boot consistent EE cache-stride / way selection and retained owner guards.
+- IOP one-tick native admission (AOT/JIT/scalar), callback unchanged.
+- GX texturing invalidates the GPU texture cache only on an actual CPU
+  texture-buffer upload; a rejected draw's pending upload is still handled.
+- Host regression and Wii cross-build passed; physical hardware untested.
+- Detailed scope and remaining work: docs/BETA12.15-JIT-SCHED-GX.md.
+
+### BETA12.17 – JIT-Helfer, 128-Bit-GPR-Lokalität, GX-Framebuffer
+
+- Bei EE-Exceptions oder TLB-Fehlern bricht die native Blockvorbereitung ab. Der DSI-LW/LWU-Helfer überschreibt das Zielregister nach einem fehlgeschlagenen C-Speicherzugriff nicht mehr.
+- Die PPC-Registerresidenz gruppiert wiederholt gelesene vier 32-Bit-Lanes derselben 128-Bit-GPR innerhalb eines nativen Blocks. **Keine** dauerhafte Residenz über beliebige JIT-Blockgrenzen.
+- GX-Import nutzt gesättigte Z16/Z24-Vergleiche; die späte FBA-/FBMSK-Verknüpfung unterstützt PSMCT32 und den Alpha-Erhalt bei PSMCT24. Komplexe GX-Fälle bleiben im bestehenden Software-Fallback.
+- Cross-Build und gezielte Host-Tests bestanden; reale Wii, FPS, Crash/Tekken/GT3 bleiben zu verifizieren.
+
+### BETA12.18 – GS scanout PSM und Exception-Vorbereitungen
+
+- `DISPFB.PSM` 0/1/2/10 selects the Wii software scanout/probes; separate swizzled CT16/CT16S data and 5:5:5 RGB expansion. Existing CT32/CT24 scanout and GX presentation remain unchanged.
+- `ee_core_block_prepare*` rejects a previous helper exception/TLB miss **before** peeking/fetching guest instructions; the exception vector is not overwritten by a second speculative fetch. Existing scalar fallbacks remain.
+- Crash E3 disc `crash.bin` is a raw Mode2 2352-byte-sector ISO9660 image. Earlier Wii log requests `LEVELS/B/TITLES/TITLE.LGT;1`, but the disc contains only `TITLE.GSC;1` and `TITLE.NUS;1` in that folder. Resource absence may be intentional for an E3 demo; **not proof of the black screen's cause**. No fabricated title assets or forced framebuffer swapping.
+- Host: `test_beta12_18_scanout`, `test_gs_display_scaling`, source guard-order checks pass; Wii cross-build, ELF/DOL structural verification and static MEM1 verification pass. No real Wii test or gameplay success yet.
+- Open: actually reproducing/repairing Crash's CT32 black transition, full helper exception atomicity, persistent PPC registers across independent JIT blocks, complete GX DATE/blending/masks, exact framebuffer alias timing.
+
+
+## BETA12.19 addendum (2026-10-15)
+See `docs/BETA12.19-FB16-JIT-GUARD.md`: CT16/CT16S native framebuffer writes, FBA/FBMSK/DATE, depth saturation and EE JIT fault fences. Wii gameplay and independent-block 128-bit PPC pinning remain unverified/open.
+
+
+### BETA12.20 – GX Alpha/DATE-Sprite-Import
+
+Neue CPU-GX-Sprite-Verarbeitung für DATE, ATE/AFAIL, Alpha-Erhalt, FBA/FBMSK und spätes Z-Schreiben. 159 neue Testchecks + 324 GX-Pipelinefälle + 16 FB16-Checks bestanden. Wii-Cross-Build bestandene DOL-/ELF-/MEM1-Prüfung. **Keine** persistente 128-Bit-PPC-Registerübergabe über unabhängige JIT-Blöcke; siehe `docs/BETA12.20-GX-ALPHA-RESIDENCY-PLAN.md`. Crash E3 weiterhin unbestätigt.

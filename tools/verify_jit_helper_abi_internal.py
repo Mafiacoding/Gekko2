@@ -19,9 +19,10 @@ u.reg_write(UC_PPC_REG_MSR,0x2000)
 def floating(bits):return struct.unpack('>f',struct.pack('>I',bits))[0]
 def f32(x):return struct.unpack('>I',struct.pack('>f',x))[0]
 def helper(uc,address,size,user):
- if address not in [0x100,0x104,0x108]:return
+ if address not in [0x100,0x104,0x108,0x120,0x124]:return
  if family=='memory':
   memory_calls.append(tuple(uc.reg_read(UC_PPC_REG_3+n) for n in range(4)))
+  if address==0x120:uc.mem_write(uc.reg_read(UC_PPC_REG_5),struct.pack('>QQ',0x90abcdef11223344,0x90abcdef11223344))
   result=None
  elif address!=0x108:return # host sentinels share CTR-aligned address
  if family=='memory':pass
@@ -79,7 +80,7 @@ for family in ['sqrt','rsqrt','cvt','vsqrt','vrsqrt']:
 print(f'PASS {cases} generated PPC helper cases with hostile EABI linkage/argument/volatile writes')
 
 # Scalar MMIO fallbacks use helpers even when direct RAM paths are available.
-# Exercise all load/store widths, merge words and the two-call quad paths.
+# Exercise all load/store widths, merge words and the atomic quad paths.
 family='memory';memory_cases=0
 for op in [0x20,0x24,0x21,0x25,0x23,0x27,0x37,0x1e,0x28,0x29,0x2b,0x3f,0x1f,0x22,0x26,0x2a,0x2e]:
  for offset in range(4):

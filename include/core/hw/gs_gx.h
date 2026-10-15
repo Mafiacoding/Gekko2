@@ -29,10 +29,19 @@ int gs_gx_import_flat(uint8_t *vram,uint32_t size,const void *rgba8,uint32_t cap
  * The CPU maps exact GS sample indices; axis fitting requires >=1/8 texel
  * margin at every output pixel. Alpha remains exact CPU side metadata. */
 typedef uint32_t (*gs_gx_texel_fn)(int32_t x,int32_t y);
+/* Exact Z format normalization, also used by host hardware regression tests. */
+uint32_t gs_gx_depth_normalize(uint32_t z,uint32_t psm);
 typedef struct {
     uint32_t zbp,zpsm,ztest,zwrite,ztst,z;
     uint32_t blend,a,b,c,d,fix,pabe,colclamp;
+    uint32_t fbmask,fba; /* GS FRAME.FBMSK and alpha correction; zero is the legacy default */
+    /* Exact late pixel tests for CPU-side GX import; all default to disabled.
+     * GPU submission must STILL reject unsupported alpha/DATE state. */
+    uint32_t date,datm,ate,atst,aref,afail;
 } gs_gx_pipeline;
+/* Exact late framebuffer merge for PSMCT32/24: alpha correction precedes FBMSK. */
+uint32_t gs_gx_framebuffer_store(uint32_t source,uint32_t dest,
+                                  uint32_t mask,uint32_t fba,uint32_t psm);
 typedef struct {
     gs_gx_flat_draw coverage;
     int32_t origin_x,origin_y;
@@ -40,7 +49,7 @@ typedef struct {
     int32_t column[640],row[512];
     float s0,s1,t0,t1;
     gs_gx_pipeline pipeline;
-    uint32_t hardware_depth,hardware_blend; /* depth: 0 hybrid, 1 direct, 2 split Z32 */
+    uint32_t hardware_depth,hardware_blend; /* depth: 0 hybrid, 1 direct, 2 split Z32; blend: 2 native additive */
 } gs_gx_texture_draw;
 int gs_gx_prepare_texture(gs_gx_texture_draw *d,uint32_t psm,uint32_t bp,uint32_t bw,
     int32_t x,int32_t y,uint32_t w,uint32_t h,const int32_t *columns,const int32_t *rows,
@@ -54,6 +63,36 @@ int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,
 int gs_gx_draw_flat_pipeline(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,
     int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
     uint32_t rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline);
+/* R1330-E: native GX vertex-color interpolation for untextured Gouraud triangles.
+ * Unsupported GS tests/effects return 0 so the scalar rasterizer remains exact. */
+int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+    int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+    const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline);
+int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+    int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,
+    uint32_t tex_w,uint32_t tex_h,uint32_t alpha,uint32_t scanmsk,gs_gx_texel_fn sample);
+/* Exact screen-space shaded snapshot; GX owns resident RGB/blending.
+ * CPU still evaluates GS STQ/TFX/filter and constant-Z eligibility. */
+/* Experimental native affine sampler. Constant fragment color/Q/Z only.
+ * GX filtering precision may differ from the GS 4-bit filter. */
+int gs_gx_draw_native_affine_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *uv,uint32_t tex_w,uint32_t tex_h,uint32_t wrap_s,uint32_t wrap_t,
+ uint32_t linear,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline);
+/* Experimental projective STQ and optional vertex RGB modulation.
+ * RGB hardware precision differs from GS; alpha remains uniform.
+ * conservative_z requires no Z writes and all lower-bound Z tests to pass. */
+typedef struct { uint32_t rgba,tcc,tfx,target_height; } gs_gx_native_color;
+int gs_gx_draw_native_stq_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *st,const float *q,const uint32_t *rgba,uint32_t tex_w,uint32_t tex_h,
+ uint32_t wrap_s,uint32_t wrap_t,uint32_t linear,uint32_t scanmsk,
+ gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline,uint32_t conservative_z,const gs_gx_native_color *color);
+uint64_t gs_gx_native_affine_stat(unsigned n);
+int gs_gx_draw_shaded_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline);
+uint64_t gs_gx_shaded_triangle_stat(unsigned n);
 int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,
  const int32_t *xy,const int32_t *columns,const int32_t *rows,double du,double dv,uint32_t scanmsk,
  gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline);
@@ -62,6 +101,9 @@ int gs_gx_ready(void);
 int gs_gx_render_active(void);
 /* 0=accepted draws, 1=quads, 2=readback bytes, 3=resolve waits, 4=attempts. */
 uint64_t gs_gx_work_count(unsigned index);
+/* CPU waits: 0 source reuse, 1 readback, 2 XFB present, 3 shutdown;
+ * 4..7 corresponding Broadway time-base ticks (wrap-safe per wait). */
+uint64_t gs_gx_sync_count(unsigned index);
 /* 0 candidates, 1 accepted textured sprites, 2 uploaded bytes, 3 layout rejects. */
 uint64_t gs_gx_texture_count(unsigned index);
 /* 0 depth hardware, 1 depth hybrid, 2 blend hardware, 3 blend hybrid,
@@ -69,6 +111,11 @@ uint64_t gs_gx_texture_count(unsigned index);
 uint64_t gs_gx_pipeline_count(unsigned index);
 /* 0 opens, 1 batched draws, 2 resolves, 3 GPU snapshots, 4 resident presents, 5 seed bytes. */
 uint64_t gs_gx_surface_count(unsigned index);
+/* R1330L: 0 attempts,1 accepted,2 CPU depth tests,3 failed depth tests,
+ * 4 CPU depth writes,5 GX blend draws,6 compact readback bytes avoided,
+ * 7 depth/alias rejects,8 blend rejects,9 residency/layout rejects,
+ * 10 GPU-only destination rectangle copy bytes. */
+uint64_t gs_gx_resident_pipeline_count(unsigned index);
 /* Diagnostic escape hatch; synchronization must succeed before changing mode. */
 int gs_gx_set_residency_enabled(int enabled);
 /* Caller verifies current physical source/CLUT/state; key consumed by one draw. */
@@ -91,5 +138,7 @@ int gs_gx_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
 int gs_gx_capture_vram_psmct32(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
                              uint32_t width,uint32_t height,uint32_t alpha);
 void gs_gx_shutdown(void);
+/* Resolve old VRAM ownership, retain the bound hardware FIFO, clear boot caches. */
+int gs_gx_reset_boot_state(void);
 #endif
 #endif

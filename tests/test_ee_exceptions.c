@@ -187,7 +187,7 @@ static void test_nested_exception(void) {
     memset(st, 0, sizeof(*st));
     st->cop0[12] = 0x70400004u; /* real reset value: BEV=1, ERL=1 */
 
-    ee_raise_tlb_exception(st, /*is_store=*/0, 0x11110000u, 0x1000u, 0);
+    ee_raise_tlb_exception(st, /*is_store=*/0, 0x11110000u, 0x1000u, 0, EE_TLB_FAULT_MISS);
     CHECK((st->cop0[12] & 0x2u) != 0, "Nested-exception setup: first fault set Status.EXL");
     CHECK(st->cop0[14] == 0x1000u, "Nested-exception setup: first fault's EPC recorded correctly");
     CHECK(st->pc == 0xBFC00200u, "Nested-exception setup: first fault vectored to the TLB Refill vector (offset 0)");
@@ -196,7 +196,7 @@ static void test_nested_exception(void) {
      * has ERET'd yet) - must NOT change EPC, and must use the general
      * vector (offset 0x180) even though this is ALSO a TLB code. */
     st->exc_raised_this_step = 0; /* new instruction/step context - the once-per-instruction guard below is a separate mechanism */
-    ee_raise_tlb_exception(st, /*is_store=*/1, 0x22220000u, 0x2000u, 0);
+    ee_raise_tlb_exception(st, /*is_store=*/1, 0x22220000u, 0x2000u, 0, EE_TLB_FAULT_MISS);
     CHECK(st->cop0[14] == 0x1000u, "Nested exception: EPC unchanged (still points at the FIRST fault)");
     CHECK(st->pc == 0xBFC00380u, "Nested exception: vectors to the general-exception offset (0x180), not TLB Refill (0x0)");
 }
@@ -216,15 +216,32 @@ static void test_exc_raised_guard(void) {
     st->cop0[12] = 0x70400004u;
     st->exc_raised_this_step = 0; /* fresh "instruction" */
 
-    ee_raise_tlb_exception(st, /*is_store=*/0, 0xAAAA0000u, 0x3000u, 0);
+    ee_raise_tlb_exception(st, /*is_store=*/0, 0xAAAA0000u, 0x3000u, 0, EE_TLB_FAULT_MISS);
     CHECK(st->cop0[8] == 0xAAAA0000u, "Guard test: first call's BadVAddr recorded");
     CHECK((st->cop0[13] & 0x7Cu) == (2u << 2), "Guard test: first call's ExcCode (TLBL) recorded");
 
     /* Second call, SAME step (guard not reset) - must be fully
      * ignored, even though it's a different address/direction/pc. */
-    ee_raise_tlb_exception(st, /*is_store=*/1, 0xBBBB0000u, 0x4000u, 0);
+    ee_raise_tlb_exception(st, /*is_store=*/1, 0xBBBB0000u, 0x4000u, 0, EE_TLB_FAULT_MISS);
     CHECK(st->cop0[8] == 0xAAAA0000u, "Guard test: second call's BadVAddr did NOT overwrite the first");
     CHECK((st->cop0[13] & 0x7Cu) == (2u << 2), "Guard test: second call's ExcCode (TLBS) did NOT overwrite the first (still TLBL)");
+}
+
+/* BETA12.16: nested vectoring may update ExcCode but must not
+ * overwrite the original branch-delay return context. */
+static void test_nested_delay_slot_bd(void) {
+    ee_state_t *st = ee_core_get_state();
+    memset(st, 0, sizeof(*st));
+    st->cop0[12] = 0x70400004u;
+    st->branch_pending=1;
+    ee_raise_exception(st, 9u << 2, 0x2004u, 1);
+    CHECK(st->cop0[14] == 0x2000u, "Delay-slot BREAK: saved branch EPC");
+    CHECK((st->cop0[13] & 0x80000000u) != 0, "Delay-slot BREAK: Cause.BD set");
+    CHECK(!st->branch_pending, "Exception vector cancels pending guest branch");
+    ee_raise_exception(st, 2u << 2, 0x3000u, 0);
+    CHECK(st->cop0[14] == 0x2000u, "Nested exception preserves original EPC");
+    CHECK((st->cop0[13] & 0x80000000u) != 0, "Nested exception preserves original BD");
+    CHECK(st->pc == 0xBFC00380u, "Nested exception chooses general vector");
 }
 
 int main(void) {
@@ -234,6 +251,7 @@ int main(void) {
     test_bev_vectoring();
     test_nested_exception();
     test_exc_raised_guard();
+    test_nested_delay_slot_bd();
 
     printf("\n%d check(s) failed\n", failures);
     return failures != 0;

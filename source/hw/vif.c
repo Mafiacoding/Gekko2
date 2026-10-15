@@ -6,6 +6,7 @@
 #include "core/hw/gif.h"
 #include "core/hw/vu.h"
 #include "core/ee/ee_core.h"
+#include "core/hw/ee_intc.h"
 #include <string.h>
 
 /* VIFcode CMD field values (bits 24-30 of the code word) - cross-
@@ -53,7 +54,105 @@
 #define VIF_CMD_DIRECTHL 0x51 /* VIF1 only */
 
 static vif_state_t g_vif0;
+const vif_state_t * const vif0_scheduler_view = &g_vif0;
 static vif_state_t g_vif1;
+const vif_state_t * const vif1_scheduler_view = &g_vif1;
+
+#define VIF0_STAT_ADDR  0x10003800u
+#define VIF0_FBRST_ADDR 0x10003810u
+#define VIF1_STAT_ADDR  0x10003C00u
+#define VIF1_FBRST_ADDR 0x10003C10u
+#define VIF_STAT_VIS     (1u << 10)
+#define VIF_STAT_INT     (1u << 11)
+#define VIF_FBRST_RST    (1u << 0)
+#define VIF_FBRST_STC    (1u << 3)
+#define EE_INTC_IRQ_VIF0 4
+#define EE_INTC_IRQ_VIF1 5
+
+static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words);
+
+static int vif_complete_code(vif_state_t *vif, uint32_t code)
+{
+    if (!(code & 0x80000000u))
+        return 0;
+    /* PCSX2 latches the code I-bit and delivers the EE INTC event only
+     * after the command has completed. This synchronous VIF model does
+     * not yet suspend DMA parsing, so expose INT/INTC now but leave VIS
+     * clear until a real resumable stall/FIFO model exists. */
+    vif->stat |= VIF_STAT_INT | VIF_STAT_VIS;
+    vif->irq_stalled = 1;
+    vif->interrupts_raised++;
+    ee_intc_raise(vif->is_vif1 ? EE_INTC_IRQ_VIF1 : EE_INTC_IRQ_VIF0);
+    return 1;
+}
+
+int vif_mmio_read32(uint32_t addr, uint32_t *out)
+{
+    /* Registers are 16-byte spaced; expose the implemented command state
+     * instead of falling through to the generic EE memory backing store.
+     * Layout checked against PCSX2 Vif.h::VIFregisters. */
+    vif_state_t *vif;
+    uint32_t offset;
+    if (addr >= 0x10003800u && addr < 0x10003980u) {
+        vif = &g_vif0; offset = addr - 0x10003800u;
+    } else if (addr >= 0x10003c00u && addr < 0x10003d80u) {
+        vif = &g_vif1; offset = addr - 0x10003c00u;
+    } else return 0;
+    if (!out || (offset & 15u)) return 0;
+    switch (offset) {
+    case 0x00: *out = vif->stat | (vif->is_vif1 && vif->dbf ? (1u << 7) : 0); break;
+    case 0x30: *out = vif->mark; break;
+    case 0x40: *out = vif->cycle_cl | ((uint32_t)vif->cycle_wl << 8); break;
+    case 0x50: *out = vif->mode; break;
+    case 0x70: *out = vif->mask; break;
+    case 0x80: *out = vif->code; break;
+    case 0x90: *out = vif->itops; break;
+    case 0xa0: if (!vif->is_vif1) return 0; *out = vif->base; break;
+    case 0xb0: if (!vif->is_vif1) return 0; *out = vif->ofst; break;
+    case 0xc0: if (!vif->is_vif1) return 0; *out = vif->tops & 0x3ffu; break;
+    case 0xd0: *out = vif->itop; break;
+    case 0xe0: if (!vif->is_vif1) return 0; *out = vif->top; break;
+    default:
+        if (offset >= 0x100 && offset <= 0x130) *out = vif->row[(offset - 0x100) >> 4];
+        else if (offset >= 0x140 && offset <= 0x170) *out = vif->col[(offset - 0x140) >> 4];
+        else return 0; /* ERR, NUM and other unmodeled state remain explicit. */
+    }
+    return 1;
+}
+
+int vif_mmio_write32(uint32_t addr, uint32_t value)
+{
+    vif_state_t *vif;
+    if (addr == VIF1_STAT_ADDR) {
+        /* STAT.FDR (bit 23) is writable for VIF1 reverse GS->EE DMA.
+         * Retain the unrelated status flags, including VIS/INT. */
+        g_vif1.stat = (g_vif1.stat & ~(1u<<23)) | (value & (1u<<23));
+        return 1;
+    }
+    if (addr == VIF0_FBRST_ADDR) vif = &g_vif0;
+    else if (addr == VIF1_FBRST_ADDR) vif = &g_vif1;
+    else return 0;
+
+    /* STC clears the architecturally visible stall/interrupt/error
+     * status group. Only VIS/INT exist in this narrow model today. */
+    if (value & VIF_FBRST_STC) {
+        uint32_t words = vif->stall_words;
+        uint8_t replay[sizeof(vif->stall_buffer)];
+        if (words)
+            memcpy(replay, vif->stall_buffer, words * 4u);
+        vif->stall_words = 0;
+        vif->irq_stalled = 0;
+        vif->stat &= ~(VIF_STAT_VIS | VIF_STAT_INT);
+        if (words)
+            vif_process(vif, replay, words);
+    }
+    if (value & VIF_FBRST_RST) {
+        int is_vif1 = vif->is_vif1;
+        memset(vif, 0, sizeof(*vif));
+        vif->is_vif1 = is_vif1;
+    }
+    return 1;
+}
 
 void vif_init(void)
 {
@@ -171,31 +270,10 @@ static void vif_unpack_write_lane(vif_state_t *vif, uint32_t dest_addr, int lane
  * combination (stops the caller from processing the rest of the
  * stream, same "stop rather than guess" philosophy as every other
  * out-of-scope code in this file). */
-/* Round 580 (task #536/#557): upfront payload-size calculation for an
- * UNPACK VIFcode, BEFORE any data is read. Real hardware computes
- * this via PCSX2's `Vif_Unpack.cpp` `vifUnpackSetup<idx>()` closed-
- * form formula, but THIS project's own `vif_unpack()` fast path
- * (below) determines its consumed-byte count a different way: by
- * tracking the furthest byte offset any loop iteration actually
- * dereferences (`max_read_end`), not via a closed-form CL/WL
- * formula - a deliberate choice (see vif_unpack()'s own comment)
- * that also, as a side effect, sidesteps a degenerate case in the
- * textbook formula (CL=WL=0, this project's un-STCYCL'd default -
- * see vif.c's `wl_eff = cycle_wl ? cycle_wl : 256u` convention -
- * makes the real formula's "filling write" branch collapse to n=0,
- * i.e. 0 bytes needed, which is wrong). To guarantee this function
- * always agrees EXACTLY with what the fast path would itself compute
- * (the property that actually matters - consistency between the
- * single-call and split-across-calls paths, not textbook fidelity in
- * isolation), this is a "dry run" of vif_unpack()'s own cursor/
- * read-span loop: same is_fill/cl_eff/wl_eff/block_pos stepping, same
- * per-VN/VL read_span sizing, same max_read_end tracking and final
- * (+3)/4-rounded-up-to-words sizing - just without ever touching
- * `data` (the read spans are pure functions of vn/vl/num/cycle state,
- * not of the actual bytes present, so this needs no data pointer).
- * Returns bytes (0 for a reserved VN/VL combo, matching vif_unpack()'s
- * own gsize==0 check so callers can share that "unsupported"
- * classification). */
+/* Source payload length and component lookahead are separate. V3 uses
+ * V4's W read, but consumes only its three source components: otherwise
+ * a following VIFcode is swallowed as data. Cycle stepping remains shared
+ * with the unpack cursor. PCSX2 Vif_Unpack.cpp::vifUnpackSetup uses gsize. */
 static uint32_t vif_unpack_needed_bytes(vif_state_t *vif, uint32_t cmd, uint32_t num)
 {
     uint32_t vn = (cmd >> 2) & 0x3u;
@@ -204,45 +282,16 @@ static uint32_t vif_unpack_needed_bytes(vif_state_t *vif, uint32_t cmd, uint32_t
     if (gsize == 0u)
         return 0u;
 
-    uint32_t cl_eff = vif->cycle_cl;
-    uint32_t wl_eff = vif->cycle_wl ? vif->cycle_wl : 256u;
-    int is_fill = (cl_eff < wl_eff);
-    uint32_t component_width = (vl == 0u) ? 4u : (vl == 1u) ? 2u : (vl == 2u) ? 1u : 2u;
-
-    uint32_t src_cursor = 0u;
-    uint32_t max_read_end = 0u;
-    uint32_t block_pos = 0u;
-
-    for (uint32_t v = 0; v < num; v++) {
-        uint32_t read_span;
-        if (vn == 3u && vl == 3u)
-            read_span = 2u; /* V4-5 */
-        else if (vn == 0u)
-            read_span = component_width; /* S */
-        else if (vn == 1u)
-            read_span = 2u * component_width; /* V2 */
-        else
-            read_span = 4u * component_width; /* V3 (real over-read quirk) or V4 */
-
-        uint32_t this_end = src_cursor + read_span;
-        if (this_end > max_read_end)
-            max_read_end = this_end;
-
-        block_pos++;
-        if (is_fill) {
-            if (block_pos <= cl_eff)
-                src_cursor += gsize;
-            else if (block_pos == wl_eff)
-                block_pos = 0;
-        } else {
-            src_cursor += gsize;
-            if (block_pos >= wl_eff)
-                block_pos = 0;
-        }
+    /* Fill lookahead is not consumed data. See PCSX2 Vif_Unpack.cpp
+     * vifUnpackSetup: only CL source vectors per WL output vectors. */
+    uint32_t cl = vif->cycle_cl;
+    uint32_t wl = vif->cycle_wl ? vif->cycle_wl : 256u;
+    uint32_t source_vectors = num;
+    if (cl < wl) {
+        uint32_t remainder = num % wl;
+        source_vectors = cl * (num / wl) + (remainder < cl ? remainder : cl);
     }
-
-    uint32_t words = (max_read_end + 3u) / 4u;
-    return words * 4u;
+    return (source_vectors * gsize + 3u) & ~3u;
 }
 
 static int vif_unpack(vif_state_t *vif, uint32_t code, uint32_t cmd, const uint8_t *data, uint32_t total_words, uint32_t *pos)
@@ -285,26 +334,14 @@ static int vif_unpack(vif_state_t *vif, uint32_t code, uint32_t cmd, const uint8
     uint32_t addr_cursor = base_addr;
     uint32_t block_pos = 0;
     uint32_t src_cursor = (*pos) * 4u;
-    uint32_t start_byte = src_cursor;
-    /* Tracks the furthest byte offset actually dereferenced by any
-     * iteration (including V3's real "reads 1 component past its own
-     * gsize" quirk, and fill-mode's repeat iterations which re-read
-     * an already-covered position without extending this). This -
-     * NOT how far src_cursor itself moved - is what determines how
-     * many words of the stream this UNPACK consumed, since (a) in
-     * fill mode src_cursor stops advancing once the last real chunk
-     * is reached even though that chunk's own bytes are still real,
-     * consumed data, and (b) a trailing partial iteration whose
-     * cursor advanced in anticipation of a read that never actually
-     * happened (num ran out) must NOT be counted. */
-    uint32_t max_read_end = start_byte;
+    /* V3's W lookahead may read beyond the logical payload but must not
+     * advance command consumption. Missing lookahead bytes read as zero. */
 
     /* V4-5 forces STMOD mode to 0 - see vif.h's citation. */
     int mode = (vn == 3u && vl == 3u) ? 0 : (int)vif->mode;
 
     for (uint32_t v = 0; v < num; v++) {
         uint32_t lane_val[4];
-        uint32_t read_span;
 
         if (vn == 3u && vl == 3u) { /* V4-5 */
             uint32_t raw = vif_rd_bytes_le(data, total_bytes, src_cursor, 2u);
@@ -312,28 +349,20 @@ static int vif_unpack(vif_state_t *vif, uint32_t code, uint32_t cmd, const uint8
             lane_val[1] = (raw & 0x03E0u) >> 2;
             lane_val[2] = (raw & 0x7C00u) >> 7;
             lane_val[3] = (raw & 0x8000u) >> 8;
-            read_span = 2u;
         } else if (vn == 0u) { /* S - broadcast to all 4 lanes */
             uint32_t d = vif_extend(vif_rd_bytes_le(data, total_bytes, src_cursor, component_width), component_width, usn);
             lane_val[0] = lane_val[1] = lane_val[2] = lane_val[3] = d;
-            read_span = component_width;
         } else if (vn == 1u) { /* V2 - real hardware repeats the pair: X=v0,Y=v1,Z=v0,W=v1 */
             uint32_t v0 = vif_extend(vif_rd_bytes_le(data, total_bytes, src_cursor + 0u * component_width, component_width), component_width, usn);
             uint32_t v1 = vif_extend(vif_rd_bytes_le(data, total_bytes, src_cursor + 1u * component_width, component_width), component_width, usn);
             lane_val[0] = v0; lane_val[1] = v1; lane_val[2] = v0; lane_val[3] = v1;
-            read_span = 2u * component_width;
         } else { /* V3 (reuses V4's 4-component read - real hardware
                   * quirk, see citation above) or V4: both dereference
                   * 4 full components, even though V3's OWN gsize is
                   * only 3 components wide. */
             for (int lane = 0; lane < 4; lane++)
                 lane_val[lane] = vif_extend(vif_rd_bytes_le(data, total_bytes, src_cursor + (uint32_t)lane * component_width, component_width), component_width, usn);
-            read_span = 4u * component_width;
         }
-
-        uint32_t this_end = src_cursor + read_span;
-        if (this_end > max_read_end)
-            max_read_end = this_end;
 
         for (int lane = 0; lane < 4; lane++)
             vif_unpack_write_lane(vif, addr_cursor, lane, lane_val[lane], mode, mask_enable, block_pos);
@@ -356,7 +385,7 @@ static int vif_unpack(vif_state_t *vif, uint32_t code, uint32_t cmd, const uint8
         }
     }
 
-    uint32_t consumed_bytes = max_read_end - start_byte;
+    uint32_t consumed_bytes = vif_unpack_needed_bytes(vif,cmd,num);
     uint32_t consumed_words = (consumed_bytes + 3u) / 4u;
     uint32_t avail_words = total_words - (*pos);
     if (consumed_words > avail_words)
@@ -385,9 +414,35 @@ static void vif_latch_micro(vif_state_t *vif)
  * rather than guessing a skip length and misparsing what follows as
  * garbage VIFcodes (same philosophy as gif.c's REGLIST/IMAGE
  * fallback). */
+/* DIRECT retains its own immutable payload while GIF denies PATH2.
+ * DIRECTHL never interrupts an active PATH3 IMAGE packet. */
+static int vif_direct_drain(vif_state_t *vif) {
+    if(!vif->direct_needed_words||vif->direct_have_words<vif->direct_needed_words)return 1;
+    uint32_t left=(vif->direct_needed_words-vif->direct_sent_words)/4u;
+    uint32_t done=0;
+    if(!(vif->direct_hl&&gif_get_state()->arb_owner==3u))
+        done=gif_try_process_quadwords(GIF_PATH_2,vif->direct_buffer+vif->direct_sent_words*4u,left);
+    vif->direct_sent_words+=done*4u;vif->direct_qwords_forwarded+=done;
+    if(done<left){gif_get_state()->arb_pending|=2u;vif->stat|=1u<<3;return 0;}
+    vif->stat&=~(1u<<3);
+    vif->direct_needed_words=vif->direct_have_words=vif->direct_sent_words=0;
+    vif_complete_code(vif,vif->code);return 1;
+}
+static void vif_hold_words(vif_state_t *vif,const uint8_t *data,uint32_t words) {
+    uint32_t room=sizeof(vif->stall_buffer)/4u-vif->stall_words;
+    if(words>room)words=room;
+    memcpy(vif->stall_buffer+vif->stall_words*4u,data,words*4u);vif->stall_words+=words;
+}
 static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words)
 {
     uint32_t pos = 0; /* in 32-bit words */
+    if (vif->irq_stalled) {
+        uint32_t room = (uint32_t)(sizeof(vif->stall_buffer) / 4u) - vif->stall_words;
+        uint32_t take = total_words < room ? total_words : room;
+        memcpy(vif->stall_buffer + vif->stall_words * 4u, data, take * 4u);
+        vif->stall_words += take;
+        return;
+    }
 
     if (vif->direct_needed_words) {
         uint32_t need = vif->direct_needed_words - vif->direct_have_words;
@@ -396,10 +451,9 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
         vif->direct_have_words += take;
         pos += take;
         if (vif->direct_have_words < vif->direct_needed_words) return;
-        gif_process_quadwords(GIF_PATH_2, vif->direct_buffer,
-                              vif->direct_needed_words / 4u);
-        vif->direct_qwords_forwarded += vif->direct_needed_words / 4u;
-        vif->direct_needed_words = vif->direct_have_words = 0;
+        if(!vif_direct_drain(vif)||vif->irq_stalled) {
+            vif_hold_words(vif,data+pos*4u,total_words-pos);return;
+        }
     }
 
 
@@ -412,6 +466,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             dst[vif->register_pending_have++] = vif_rd_le32(data + pos++ * 4u);
         if (vif->register_pending_have < count) return;
         vif->register_pending_cmd = vif->register_pending_have = 0;
+        vif_complete_code(vif, vif->code);
     }
 
     /* Round 579 (task #536/#556): resume a real MPG upload left
@@ -436,8 +491,12 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
         vif->mpg_pending_addr += words * 4u;
         vif->mpg_pending_words -= words;
         vif->mpg_words_written += words;
-        if (vif->mpg_pending_words == 0u)
+        if (vif->mpg_pending_words == 0u) {
             vif->mpg_pending = 0;
+            if(vif_complete_code(vif, vif->code)) {
+                vif_hold_words(vif,data+pos*4u,total_words-pos);return;
+            }
+        }
     }
 
     /* Round 580 (task #536/#557): resume a real UNPACK payload left
@@ -462,6 +521,9 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             vif->unpack_pending = 0;
             vif->unpack_have_bytes = 0;
             vif->unpack_needed_bytes = 0;
+            if(vif_complete_code(vif, vif->unpack_code)) {
+                vif_hold_words(vif,data+pos*4u,total_words-pos);return;
+            }
         }
     }
 
@@ -508,6 +570,14 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
 
             if (!vif_unpack(vif, code, cmd, data, total_words, &pos))
                 return;
+            if (vif_complete_code(vif, code)) {
+                uint32_t remain = total_words - pos;
+                uint32_t room = (uint32_t)(sizeof(vif->stall_buffer) / 4u);
+                if (remain > room) remain = room;
+                if (remain) memcpy(vif->stall_buffer, data + pos * 4u, remain * 4u);
+                vif->stall_words = remain;
+                return;
+            }
             continue;
         }
 
@@ -551,9 +621,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
         case VIF_CMD_MSKPATH3:
             if (!vif->is_vif1)
                 vif->unsupported_cmds_seen++;
-            /* VIF1-side effect is masking GIF PATH3 arbitration - not
-             * modeled (no GIF path-priority model exists), safe no-op
-             * on VIF1 too. */
+            else gif_set_path3_mask((imm>>15)&1u);
             break;
 
         case VIF_CMD_MARK:
@@ -699,15 +767,18 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
              * counted there in 32-bit words). */
             uint32_t words = (imm ? imm : 65536u) * 4u;
             uint32_t avail = total_words - pos;
+            vif->direct_sent_words=0;vif->direct_hl=cmd==VIF_CMD_DIRECTHL;
             if (words > avail) {
                 vif->direct_needed_words = words;
                 vif->direct_have_words = avail;
                 memcpy(vif->direct_buffer, data + pos * 4u, avail * 4u);
                 pos += avail;
             } else {
-                gif_process_quadwords(GIF_PATH_2, data + pos * 4u, words / 4u);
-                vif->direct_qwords_forwarded += words / 4u;
-                pos += words;
+                vif->direct_needed_words=vif->direct_have_words=words;
+                memcpy(vif->direct_buffer,data+pos*4u,words*4u);pos+=words;
+                if(!vif_direct_drain(vif)||vif->irq_stalled) {
+                    vif_hold_words(vif,data+pos*4u,total_words-pos);return;
+                }
             }
         } break;
 
@@ -732,7 +803,38 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             vif->unsupported_cmds_seen++;
             break;
         }
+        if (!vif->register_pending_cmd && !vif->mpg_pending &&
+            !vif->direct_needed_words && vif_complete_code(vif, code)) {
+            uint32_t remain = total_words - pos;
+            uint32_t room = (uint32_t)(sizeof(vif->stall_buffer) / 4u);
+            if (remain > room) remain = room;
+            if (remain) memcpy(vif->stall_buffer, data + pos * 4u, remain * 4u);
+            vif->stall_words = remain;
+            return;
+        }
     }
+}
+
+static void vif_service_one(vif_state_t *vif) {
+    if(vif->irq_stalled)return;
+    if(!vif_direct_drain(vif)||vif->irq_stalled)return;
+    if(vif->stall_words) {
+        uint8_t replay[sizeof(vif->stall_buffer)];uint32_t words=vif->stall_words;
+        memcpy(replay,vif->stall_buffer,words*4u);vif->stall_words=0;
+        vif_process(vif,replay,words);
+    }
+}
+void vif_service(void){vif_service_one(&g_vif0);vif_service_one(&g_vif1);}
+uint32_t vif_accept_quadwords(int channel,const uint8_t *data,uint32_t qwc) {
+    vif_state_t *vif=channel==1?&g_vif1:&g_vif0;
+    vif_service_one(vif);
+    if(vif->irq_stalled||vif->stall_words||
+       (vif->direct_needed_words&&vif->direct_have_words==vif->direct_needed_words)) {
+        uint32_t room=vif->stall_words<64u?(64u-vif->stall_words)/4u:0;
+        uint32_t take=qwc<room?qwc:room;vif_hold_words(vif,data,take*4u);return take;
+    }
+    uint32_t take=qwc<16u?qwc:16u;
+    vif_process(vif,data,take*4u);return take;
 }
 
 void vif0_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)

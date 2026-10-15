@@ -1107,6 +1107,9 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx, uint32_t lower);
  * lower, preserving the current micro interpreter ordering. */
 int ppc_dynarec_translate_vu_pair(ppc_codegen_ctx_t *ctx, uint32_t upper, uint32_t lower);
 
+int ppc_dynarec_translate_vu_timed_block(ppc_codegen_ctx_t *ctx,
+    const uint32_t *upper,const uint32_t *lower,unsigned count,uint32_t pc,
+    uint32_t micro_mask,uint32_t helper);
 int ppc_dynarec_translate_vu_block(ppc_codegen_ctx_t *ctx,const uint32_t *upper,
                                   const uint32_t *lower,unsigned count);
 
@@ -1141,6 +1144,7 @@ int ppc_dynarec_translate_iop_block(ppc_codegen_ctx_t *ctx,uint32_t pc,
     const uint32_t *words,unsigned count,uint32_t prepare,uint32_t retire,
     uint32_t scalar,unsigned *native_count);
 uint64_t ppc_dynarec_get_allocated_bodies(void);
+void ppc_dynarec_reset_translation_stats(void);
 uint64_t ppc_dynarec_get_eliminated_word_ops(void);
 uint64_t ppc_dynarec_get_word_spills(void);
 uint64_t ppc_dynarec_get_reused_word_loads(void);
@@ -1150,5 +1154,22 @@ uint64_t ppc_dynarec_get_resident_loads(void);
 uint64_t ppc_dynarec_get_resident_refresh_edges(void);
 int ppc_dynarec_translate_iop_resident_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,uint32_t,uint32_t,unsigned *);
 int ppc_dynarec_translate_ee_resident_delay_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t);
+int ppc_dynarec_translate_ee_fused_delay_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t);
+int ppc_dynarec_translate_ee_budget_delay_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t);
+
+/* BETA11 handoff omitted this interface from its source-only diff. */
+typedef struct {
+ uint32_t quiet_left,ticks,phase,clock,hits,table;
+ int16_t ins,c9,pc,npc,exc_pc,exc_delay,exc_raised,tlbmiss,bp,gpr0;
+} ppc_ee_quiet_layout;
+void ppc_dynarec_set_ee_quiet_stub(uint32_t,int (*)(uint32_t));
+void ppc_dynarec_set_ee_quiet_mem_stub(uint32_t);
+void ppc_dynarec_set_ee_quiet_batch_stub(uint32_t);
+int ppc_dynarec_translate_ee_quiet_stub(ppc_codegen_ctx_t *,const ppc_ee_quiet_layout *);
+int ppc_dynarec_translate_ee_quiet_mem_stub(ppc_codegen_ctx_t *,const ppc_ee_quiet_layout *);
+int ppc_dynarec_translate_ee_quiet_batch_stub(ppc_codegen_ctx_t *,const ppc_ee_quiet_layout *);
+
+int ppc_dynarec_translate_ee_event_chain(ppc_codegen_ctx_t *,uint32_t);
+int ppc_dynarec_translate_ee_event_window(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,uint32_t,unsigned,uint32_t);
 
 #endif

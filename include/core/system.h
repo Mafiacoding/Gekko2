@@ -50,6 +50,12 @@ int system_init(const bios_image_t *ee_bios, const bios_image_t *iop_bios);
  * Returns 1 if both cores halted on their own, 0 if the slice limit
  * was hit first (only possible when max_slices != 0). */
 int system_run_interleaved(uint64_t max_slices);
+/* No-op outside EE event batches; recursive IOP accesses do not re-enter. */
+void system_shared_sync(void);
+/* 0..6 SIF reads, 7..13 writes; 14/15 SIF DMA; 16/17 IOP RAM bridge; 18 other. */
+void system_shared_sync_reason(unsigned reason);
+uint64_t system_sync_reason_stat(unsigned reason);
+uint64_t system_event_stat(unsigned index);
 
 /* Round 448 (task #247 continued): re-establishes the EE->IOP SIF
  * DMA-copy write bridge (ee_core_set_iop_write8_bridge()) WITHOUT

@@ -1,8 +1,11 @@
 """Internal fused delay slots; no user release artifacts or FPS claims."""
 from pathlib import Path
-old=Path(__file__).with_name('verify_ee_extensions_r1306.py').read_text()
-old=old.replace("extended='R1306' in Path(a.elf).name","extended='R1306' in Path(a.elf).name or 'ee_core_block_prepare_delay' in syms")
-exec(compile(old,'verify_ee_extensions_r1306.py','exec'))
+from unicorn.ppc_const import UC_PPC_REG_6
+exec(compile(Path(__file__).with_name('ee_ppc_fixture_internal.py').read_text(),'ee_ppc_fixture_internal.py','exec'))
+cases=[('J',2<<26|((base+64)>>2)),('JAL',3<<26|((base+64)>>2)),
+ ('JR',(3<<21)|8),('JALR',(3<<21)|(3<<11)|9)]
+for op in [4,5,6,7,20,21,22,23]:cases.append(('B'+str(op),(op<<26)|(3<<21)|((5 if op in [4,5,20,21] else 0)<<16)|13))
+for sub in range(4):cases.append(('REGIMM'+str(sub),(1<<26)|(3<<21)|(sub<<16)|13))
 fused='ee_core_block_prepare_delay' in syms and enabled
 delay_sig=hashlib.sha256();programs=0
 # Same 16 controls and 4x2 outcomes as the prior suite, now budget includes DS.
@@ -32,7 +35,7 @@ if fused:
  # Changed delay source exits with branch pending; scalar resumes new word.
  extension_setup();u.mem_write(ram+base+8,struct.pack('<I',(2<<26)|((base+64)>>2)))
  def mutate_slot(uc,address,size,user):
-  if address==syms['ee_core_block_prepare_delay']:uc.mem_write(ram+base+12,struct.pack('<I',(9<<26)|(6<<16)|99))
+  if address==syms['ee_core_block_prepare_delay'] or address==syms.get('ee_core_block_delay_boundary'):uc.mem_write(ram+base+12,struct.pack('<I',(9<<26)|(6<<16)|99))
  hook=u.hook_add(UC_HOOK_CODE,mutate_slot);before=executed();assert call('ee_jit_try_execute_block',state,4)==3
  u.hook_del(hook);assert executed()==before+3 and bytes(u.mem_read(state+off['branch_pending'],1))==b'\x01'
  assert call('ee_core_step_n',1)==1 and int.from_bytes(bytes(u.mem_read(state+6*16,8)),'big')==99

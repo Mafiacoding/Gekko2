@@ -13,7 +13,7 @@ resident_checks=0
 for change in range(8):
  for budget in [0,1,2,7,8,16]:
   source=[(1<<21)|(2<<16)|(3<<11)|0x25]*8;pattern=[1]*8
-  heap=0x81600000;u.mem_write(words_ptr,struct.pack('>8I',*source));u.mem_write(ctx,bytes(16))
+  heap=0x81600000;heap_spans.clear();free_ranges.clear();u.mem_write(words_ptr,struct.pack('>8I',*source));u.mem_write(ctx,bytes(16))
   assert call('ppc_dynarec_init',ctx,10)==0
   assert call('ppc_dynarec_translate_iop_resident_block',ctx,ibase,words_ptr,8,prepare,retire,scalar,native_ptr)==0
   fn=call('ppc_dynarec_finalize',ctx);assert fn

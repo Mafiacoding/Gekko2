@@ -18,8 +18,11 @@ int main(void)
   st.gpr[3].ud0=0x300000;st.tlb[0].entry_lo0=(0x300u<<6)|2;
   assert(!!ee_core_block_memory_resolve(&st,iw)==(op==0x36));st.tlb[0].entry_lo0=(0x300u<<6)|6;
  }
- assert(ee_jit_block_candidate(0x36u<<26));assert(!ee_jit_block_memory_width(0x36u<<26));
+ assert(ee_jit_block_candidate(0x36u<<26));assert(ee_jit_block_memory_width(0x36u<<26)==16);
  assert(ee_jit_block_memory_store(0x3eu<<26));assert(!ee_jit_block_memory_store(0x36u<<26));
  assert(ee_jit_block_memory_width(0x27u<<26)==4);
- puts("PASS vector memory proof: unmasked EA, page crossings, V/D, VF00 no-access and LWU");return 0;
+ st.gpr[3].ud0=0x803ffff4;
+ assert(!ee_core_block_memory_resolve(&st,(0x36u<<26)|(3u<<21)));
+ assert(!ee_core_block_memory_resolve(&st,(0x3eu<<26)|(3u<<21)));
+ puts("PASS vector memory proof: unmasked EA, page crossings, V/D, VF00 read proof and LWU");return 0;
 }

@@ -122,6 +122,7 @@ void iop_core_run(void);
 int iop_core_step(void);
 /* Explicit scheduler-tick budget. The EE/IOP scheduler still grants one
  * IOP tick after eight EE steps; callers must not run ahead of that grant. */
+unsigned iop_core_step_one_native(void);
 unsigned iop_core_step_n(unsigned budget);
 unsigned iop_core_step_interleaved_n(unsigned budget,void (*before_tick)(void));
 /* Private precise-block callback contract, shared with the PPC emitter. */
@@ -130,6 +131,7 @@ int iop_core_block_prepare(iop_state_t *st,uint32_t pc,uint32_t word,uint32_t pr
 void iop_core_block_retire(iop_state_t *st,uint32_t pc);
 void iop_core_block_scalar(iop_state_t *st,uint32_t pc,uint32_t word);
 uint64_t iop_core_block_stale_count(void);
+uint64_t iop_aot_executed_count(void);
 void iop_core_shutdown(void);
 iop_state_t *iop_core_get_state(void);
 
@@ -140,4 +142,8 @@ void     iop_mem_write8(iop_state_t *st, uint32_t addr, uint8_t val);
 void     iop_mem_write16(iop_state_t *st, uint32_t addr, uint16_t val);
 void     iop_mem_write32(iop_state_t *st, uint32_t addr, uint32_t val);
 
+uint64_t iop_core_route_stat(unsigned n);
+unsigned iop_core_event_distance(unsigned maximum);
+unsigned iop_core_spin_skip(unsigned budget);
+uint64_t iop_core_idle_batch_stat(unsigned index);
 #endif

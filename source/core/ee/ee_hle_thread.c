@@ -1059,7 +1059,10 @@ int ee_hle_thread_try_handle(ee_state_t *st, int32_t sysnum, uint32_t this_pc, i
             EE_RET(-1);
         }
         EE_ADVANCE();
-        reschedule(st);
+        /* iWakeupThread runs inside an interrupt callback. Its live
+         * registers are not the interrupted thread's saved context,
+         * even when BIOS callback glue has already cleared EXL. */
+        if (sysnum == 51) reschedule(st);
         return 1;
     }
     if (sysnum == 53 || sysnum == -54) {
@@ -1866,6 +1869,9 @@ void ee_hle_thread_check_preempt(ee_state_t *st)
      * original rationale), just no longer firing during the one window
      * where doing so is unsafe. */
     if (st->cop0[12] & 0x6u) return; /* Status.EXL (bit 1) or Status.ERL (bit 2) set - genuinely mid-exception, never preempt here */
+    /* BIOS user callbacks may have EXL clear but interrupts disabled.
+     * Wait for the interrupt return before saving a thread context. */
+    if (!(st->cop0[12] & 1u)) return;
     /* Round 625 (task #536/#607, following Round 624's live-hardware-
      * verified findings): never freeze a thread's context while its PC
      * sits inside the real, fixed generic ERET-glue thread-start

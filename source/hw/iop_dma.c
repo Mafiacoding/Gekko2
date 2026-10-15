@@ -38,11 +38,12 @@ static const iop_dma_range_t s_ranges[] = {
 #define NUM_RANGES (int)(sizeof(s_ranges) / sizeof(s_ranges[0]))
 
 static iop_dma_state_t g_dma;
+static uint32_t g_spu2_transfer_count;
 static uint32_t g_sif2_transfer_count; /* Round 511 diagnostic: counts real, completed IOP-RAM-to-EE-RAM SIF2 transfers */
 
 void iop_dma_init(void)
 {
-    memset(&g_dma, 0, sizeof(g_dma));
+    memset(&g_dma, 0, sizeof(g_dma));g_spu2_transfer_count=0;
 }
 
 static uint8_t *g_iop_ram = NULL;
@@ -204,97 +205,42 @@ uint32_t iop_dma_get_sif2_transfer_count(void)
     return g_sif2_transfer_count;
 }
 
-/*
- * Round 712 (task #683, per the user's explicit "wire the sound input"
- * instruction, following directly from Round 711's real SPU2 ADSR/
- * ADPCM synthesis engine): IOP DMA channel 7 (real hardware/PCSX2 base
- * 0x1F801500, s_ranges[] above, real name "SPU2" - psx-spx's DMA
- * Channels page and every PS2 hardware reference this project has
- * used elsewhere agree channel 7 is SPU2's DMA channel, the direct PS2
- * successor of the PS1 SPU's own channel 4) - the real IOP-RAM-to-
- * SPU2-local-RAM waveform delivery path Round 711's engine explicitly,
- * honestly left unwired ("the BIOS boot itself doesn't yet drive real
- * KON/waveform-DMA traffic into this engine").
- *
- * Real, cited destination addressing (psx-spx SPU page, "Sound RAM
- * Data Transfer" - the same page already cited throughout
- * spu2_mixer.h/iop_spu2.h for ADPCM/ADSR/register-layout facts): the
- * real Transfer Start Address register (this project's own pre-
- * existing, real, cited `SPU2_C_TSA_HI`/`SPU2_C_TSA_LO`, Round 185) is
- * documented for the PS1 SPU as being in the same "8 byte units"
- * granularity as the per-voice SSA/LSA address registers - this
- * project extends that same convention to TSA here (an inferred
- * extension for the PS2 SPU2's split hi/lo 32-bit register, exactly
- * the same honest-inference discipline `spu2_mixer.c`'s own doc
- * comment already uses for SSA_HI/LO, not independently re-verified
- * against a PS2-specific citation). Real hardware auto-increments TSA
- * by the transferred byte count as data streams in (so consecutive DMA
- * blocks continue from where the previous one left off without the
- * IOP having to reprogram TSA every time) - implemented below by
- * writing the advanced value back through the same real
- * `iop_spu2_mmio_write16()` path the BIOS itself would use to read it
- * back.
- *
- * Honest scope/simplification: this project's SPU2 register scaffold
- * does not yet distinguish which of the two real cores (Core0/Core1,
- * ADMAS-selected on real hardware) owns a given DMA kick, and this
- * project's channel-7 register block itself is not core-specific - so
- * this function always targets Core0's TSA (offset 0, no
- * `SPU2_CORE1_OFFSET` added), an explicit, documented simplification
- * rather than a fabricated core-selection heuristic. If real BIOS
- * traffic is later found driving Core1 specifically, this is the
- * single, well-isolated place that would need extending.
- */
-static uint32_t g_spu2_transfer_count; /* Round 712 diagnostic, mirrors g_sif2_transfer_count's own precedent */
-
-static void iop_dma_spu2_try_transfer(iop_dma_channel_t *ch)
+/* SPU2 word-addressed RAM transfers, core0 DMA4 / core1 DMA7.
+ * PCSX2 IopDma.cpp uses CHCR bit0 for RAM -> SPU2 and transfers
+ * BCR words as pairs of SPU2 halfwords. RAM writes wrap at 2 MiB. */
+void iop_dma_spu2_progress(int core,uint32_t bytes,int done)
 {
-    if (!g_iop_ram)
-        return; /* iop_dma_bind_iop_ram() never called - same safety check as SIF0/SIF2 above */
-
-    uint32_t bs = ch->bcr & 0xFFFFu;
-    uint32_t ba = (ch->bcr >> 16) & 0xFFFFu;
-    if (bs == 0) bs = 0x10000u; /* same real "0 means 10000h" convention as SIF0/SIF2 */
-    uint32_t total_words = (ba == 0) ? bs : (bs * ba);
-    uint32_t total_bytes = total_words * 4u;
-    if (total_bytes == 0) {
-        ch->chcr &= ~0x01000000u;
-        return;
-    }
-
-    if ((uint64_t)ch->madr + (uint64_t)total_bytes > (uint64_t)g_iop_ram_size) {
-        ch->chcr &= ~0x01000000u; /* out-of-bounds source: drop rather than read past IOP RAM */
-        return;
-    }
-
-    uint16_t tsa_hi = 0, tsa_lo = 0;
-    iop_spu2_mmio_read16(iop_spu2_core_reg_addr(0, SPU2_C_TSA_HI), &tsa_hi);
-    iop_spu2_mmio_read16(iop_spu2_core_reg_addr(0, SPU2_C_TSA_LO), &tsa_lo);
-    uint32_t tsa_units = ((uint32_t)tsa_hi << 16) | (uint32_t)tsa_lo;
-    uint32_t dest_byte_addr = tsa_units * 8u; /* 8-byte-unit convention, see doc comment above */
-
-    if ((uint64_t)dest_byte_addr + (uint64_t)total_bytes > (uint64_t)SPU2_MIXER_RAM_SIZE) {
-        ch->chcr &= ~0x01000000u; /* out-of-bounds destination: drop rather than write past SPU2 RAM */
-        return;
-    }
-
-    uint8_t *spu2_ram = spu2_mixer_get_ram();
-    memcpy(spu2_ram + dest_byte_addr, g_iop_ram + ch->madr, total_bytes);
-
-    /* real hardware auto-advances TSA past the just-written block */
-    uint32_t new_tsa_units = tsa_units + (total_bytes / 8u);
-    iop_spu2_mmio_write16(iop_spu2_core_reg_addr(0, SPU2_C_TSA_HI), (uint16_t)(new_tsa_units >> 16));
-    iop_spu2_mmio_write16(iop_spu2_core_reg_addr(0, SPU2_C_TSA_LO), (uint16_t)(new_tsa_units & 0xFFFFu));
-
-    ch->chcr &= ~0x01000000u; /* real hardware auto-clears STR upon completion, same as SIF0/SIF2 */
-    iop_dma_signal_channel_done(7); /* real per-channel completion IRQ path, same as SIF0/SIF2 */
-    g_spu2_transfer_count++;
+ int channel=core?7:4;iop_dma_channel_t *ch=&g_dma.ch[channel];
+ ch->madr+=bytes;
+ if(done){ch->chcr&=~0x01000000u;iop_dma_signal_channel_done(channel);g_spu2_transfer_count++;}
 }
-
-uint32_t iop_dma_get_spu2_transfer_count(void)
+static void iop_dma_spu2_try_transfer(iop_dma_channel_t *ch,int channel)
 {
-    return g_spu2_transfer_count;
+ int core=channel==7;iop_spu2_sync_now();iop_spu2_adma_cancel(core);
+ if(!g_iop_ram)return;
+ uint32_t bs=ch->bcr&0xffffu,ba=ch->bcr>>16;
+ unsigned mode=(ch->chcr>>9)&3u;
+ uint64_t words=mode==0u?(bs?bs:0x10000u):(uint64_t)(bs?bs:0x10000u)*(ba?ba:0x10000u);
+ if(mode>1u||words>g_iop_ram_size/4u)return;
+ uint32_t bytes=(uint32_t)words*4u,addr=ch->madr&0x1fffffu;
+ if(addr>g_iop_ram_size||bytes>g_iop_ram_size-addr)return;
+ ch->madr=addr;
+ if(ch->chcr&1u){int ad=iop_spu2_adma_begin(core,addr,bytes);if(ad)return;}
+ uint16_t hi=0,lo=0;iop_spu2_mmio_read16(iop_spu2_core_reg_addr(core,SPU2_C_TSA_HI),&hi);
+ iop_spu2_mmio_read16(iop_spu2_core_reg_addr(core,SPU2_C_TSA_LO),&lo);
+ uint32_t word=(((uint32_t)hi<<16)|lo)&0xfffffu;
+ uint32_t offset=word*2u,remaining=bytes;uint8_t *ram=spu2_mixer_get_ram();
+ while(remaining){uint32_t n=SPU2_MIXER_RAM_SIZE-offset;if(n>remaining)n=remaining;
+  iop_spu2_check_ram_irq(offset/2u,n/2u);
+  if(ch->chcr&1u)memcpy(ram+offset,g_iop_ram+addr,n);else memcpy(g_iop_ram+addr,ram+offset,n);
+  addr+=n;remaining-=n;offset=0;
+ }
+ word=(word+bytes/2u)&0xfffffu;
+ iop_spu2_set_raw16(iop_spu2_core_reg_addr(core,SPU2_C_TSA_HI),(uint16_t)(word>>16));
+ iop_spu2_set_raw16(iop_spu2_core_reg_addr(core,SPU2_C_TSA_LO),(uint16_t)word);
+ iop_dma_spu2_progress(core,bytes,1);
 }
+uint32_t iop_dma_get_spu2_transfer_count(void){return g_spu2_transfer_count;}
 
 int iop_dma_channel_write_bytes(int channel, const uint8_t *data, uint32_t nbytes)
 {
@@ -503,8 +449,9 @@ int iop_dma_mmio_write32(uint32_t addr, uint32_t value)
              * exact meaning for this specific channel, so nothing is
              * assumed about it, matching SIF0's own documented
              * precedent). */
-            if (this_channel == 7 && (value & 0x01000000u)) {
-                iop_dma_spu2_try_transfer(c);
+            if(this_channel==4||this_channel==7){
+                if(value&0x01000000u)iop_dma_spu2_try_transfer(c,this_channel);
+                else iop_spu2_adma_cancel(this_channel==7);
             }
             return 1;
         }

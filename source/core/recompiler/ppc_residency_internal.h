@@ -13,39 +13,63 @@ uint64_t ppc_dynarec_get_resident_loads(void){return resident_loads;}
 uint64_t ppc_dynarec_get_resident_refresh_edges(void){return resident_refresh_edges;}
 static void residency_plan(ppc_residency *a,const uint32_t *words,unsigned count,int ee,unsigned generation_offset)
 {
-    unsigned reads[32]={0},writes[32]={0};
+    /* Analyze actual emitted architectural-word accesses. This covers
+     * scalar, packed MMI and all four lanes without an ISA-family guess.
+     * Live intervals end at writes; helper/control bodies are fences in
+     * residency_body, preserving canonical state at every observation. */
+    unsigned reads[128]={0},first[128],last[128],score[128]={0};
     memset(a,0,sizeof(*a));memset(a->slot,-1,sizeof a->slot);
-    a->bank_words=ee?128u:32u;
-    a->generation_offset=generation_offset;
+    a->bank_words=ee?128u:32u;a->generation_offset=generation_offset;
+    for(unsigned w=0;w<128;w++)first[w]=~0u;
+    ppc_codegen_ctx_t body;
+    if(ppc_dynarec_init(&body,8u))return;
     for(unsigned n=0;n<count;n++) {
-        uint32_t w=words[n];unsigned op=w>>26,rs=(w>>21)&31u,rt=(w>>16)&31u,rd=(w>>11)&31u,fn=w&63u;
-        /* Only repeated scalar integer sources justify a resident pool.
-         * Opaque helpers, merge branches and resolved memory proofs do not
-         * reuse those operand loads; a memory-only block stays unmodified. */
-        if(!(op==0u||(op>=8u&&op<=14u)||op==25u))continue;
-        if(op==0u&&(fn==8u||fn==9u||fn==10u||fn==11u||fn==0x1au||fn==0x1bu))continue;
-        if(rs)reads[rs]++;
-        if(op==0u) {
-            if(rt)reads[rt]++;
-            if(rd&&fn!=8u&&fn!=0x11u&&fn!=0x13u)writes[rd]++;
-        } else if((op>=8u&&op<=15u)||op==25u||(op>=0x20u&&op<=0x27u)||op==0x1eu) {
-            if(rt)writes[rt]++;
-        } else if(rt)reads[rt]++;
-        if(op==3u)writes[31]++;
-    }
-    /* Admission avoids paying resident stores for a simple read/write
-     * accumulator. Cache genuinely reused sources; all words keep their
-     * architectural offsets; uncached upper EE words remain canonical. */
-    for(unsigned k=0;k<(ee?6u:12u);k++) {
-        unsigned best=0;
-        for(unsigned r=1;r<32;r++)
-            if(reads[r]>=2u&&reads[r]>writes[r]&&(!best||reads[r]-writes[r]>reads[best]-writes[best]))best=r;
-        if(!best)break;
-        reads[best]=0;
-        for(unsigned lane=0;lane<(ee?2u:1u);lane++) {
-            unsigned word=ee?best*4u+lane:best;
-            a->slot[word]=(int8_t)a->count;a->offsets[a->count++]=(uint16_t)(word*4u);
+        body.used_words=0;
+        int result=ee?ppc_dynarec_translate_one(&body,words[n]):ppc_dynarec_translate_iop_one(&body,words[n]);
+        if(result)continue;
+        /* Count only bodies that can actually be renamed. Opaque helper
+         * and control paths must not skew the resident pool admission. */
+        int safe=1;
+        for(size_t k=0;k<body.used_words;k++) {
+            uint32_t w=body.code[k];unsigned op=w>>26;int dest=word_alloc_destination(w);
+            if(op==16u||op==18u||op==19u||(dest==-2&&op!=36u)||dest==3||dest>=18){safe=0;break;}
         }
+        if(!safe)continue;
+        for(size_t k=0;k<body.used_words;k++) {
+            uint32_t w=body.code[k];unsigned op=w>>26,base=(w>>16)&31u;int off=(int16_t)w;
+            if(base!=3u||off<0||(off&3)||(unsigned)off/4u>=a->bank_words)continue;
+            unsigned word=(unsigned)off/4u;
+            if(op==32u) {
+                if(first[word]==~0u)first[word]=n;
+                reads[word]++;last[word]=n;
+            }
+        }
+    }
+    ppc_dynarec_free(&body);
+    for(unsigned w=ee?4u:1u;w<a->bank_words;w++)if(reads[w]>=2u)
+        score[w]=reads[w]*256u/(last[w]-first[w]+1u);
+    /* EE's 128-bit architectural GPRs contain four host words. When at
+     * least two lanes of the same GPR are hot, reserve all four together.
+     * This avoids one lane evicting another across native instructions;
+     * write-through remains mandatory at every helper and block exit.
+     * Across separate JIT callable blocks no host register is assumed live. */
+    if(ee)for(unsigned group=1u;group<32u&&a->count+4u<=12u;group++){
+        unsigned base=group*4u,hot=0u;
+        for(unsigned lane=0;lane<4u;lane++)hot+=(score[base+lane]!=0u);
+        if(hot<2u)continue;
+        for(unsigned lane=0;lane<4u;lane++){
+            unsigned w=base+lane;
+            a->slot[w]=(int8_t)a->count;
+            a->offsets[a->count++]=(uint16_t)(w*4u);
+            score[w]=0u;
+        }
+    }
+    while(a->count<12u) {
+        unsigned best=128u;
+        for(unsigned w=0;w<a->bank_words;w++)if(score[w]&&(best==128u||score[w]>score[best]))best=w;
+        if(best==128u)break;
+        score[best]=0;a->slot[best]=(int8_t)a->count;
+        a->offsets[a->count++]=(uint16_t)(best*4u);
     }
 }
 static void residency_save(ppc_codegen_ctx_t *ctx,const ppc_residency *a,int restore)

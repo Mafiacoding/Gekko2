@@ -145,6 +145,19 @@ int ee_timers_mmio_write32(uint32_t addr, uint32_t value);
  * instruction step, same placement/rationale as ee_check_vblank()/
  * ee_check_gs_vsync() in ee_core.c. */
 void ee_timers_tick(void);
+/* Same event-safe deferred tick as the out-of-line routine. No batching
+ * crosses an IRQ boundary; MMIO/snapshot invalidates or materializes it. */
+extern uint32_t ee_timers_batch_clock[2];
+static inline void ee_timers_tick_fast(void)
+{
+#ifdef GEKKO
+ if(ee_timers_batch_clock[0]>1u){
+  --ee_timers_batch_clock[0];++ee_timers_batch_clock[1];return;
+ }
+#endif
+ ee_timers_tick();
+}
+
 /* Current counts without handing out a mutable pointer. */
 void ee_timers_snapshot(ee_timers_state_t *out);
 void ee_timers_restore(const ee_timers_state_t *in);

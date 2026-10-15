@@ -30,6 +30,19 @@ int main(void) {
     CHECK(gs_mmio_write64(0x12001010u, 0xFF) == 1, "write to IMR handled");
     CHECK(gs_mmio_read64(0x12001010u, &v) == 1 && v == 0xFF, "IMR is a plain read/write register (not W1C)");
 
+    /* GS event latching and IMR polarity: reset masks all sources. */
+    gs_init();
+    CHECK(gs_raise_event(0u) == 0, "masked SIGNAL latches CSR but does not request INTC_GS");
+    CHECK((gs_get_state()->csr & 0x1u) != 0, "SIGNAL event sets CSR.SIGNAL");
+    CHECK(gs_mmio_write64(0x12001000u, 0x1u) == 1 && (gs_get_state()->csr & 0x1u) == 0,
+          "CSR W1C acknowledges SIGNAL");
+
+    CHECK(gs_mmio_write64(0x12001010u, GS_IMR_RESET_ALL_MASKED & ~(1ull << 9)) == 1,
+          "FINISH source unmasked in GS_IMR");
+    CHECK(gs_raise_event(1u) == 1, "unmasked FINISH requests INTC_GS");
+    CHECK((gs_get_state()->csr & 0x2u) != 0, "FINISH event sets CSR.FINISH");
+    CHECK(gs_raise_event(5u) == 0, "out-of-range GS event is rejected");
+
     /* address outside the GS privileged range is unclaimed */
     CHECK(gs_mmio_read64(0x11FFFFFFu, &v) == 0, "address just below GS range unclaimed");
     CHECK(gs_mmio_read64(0x12002000u, &v) == 0, "address just above GS range unclaimed");

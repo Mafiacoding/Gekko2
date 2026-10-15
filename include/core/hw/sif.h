@@ -554,4 +554,5 @@ uint32_t sif_cmd_iop_lookup_bind_sid(uint32_t cd_ptr); /* returns 0 if not found
  * definition in sif.c. Returns the table's fixed capacity. */
 uint32_t sif_cmd_iop_dump_bind_table(uint32_t *out_cd, uint32_t *out_sid, uint32_t max);
 
+int sif_ee_tick_pending(void);
 #endif

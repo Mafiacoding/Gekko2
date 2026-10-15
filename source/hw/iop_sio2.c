@@ -33,8 +33,37 @@ typedef struct {
     uint8_t axis_rx, axis_ry, axis_lx, axis_ly; /* Round 195: real
                         * cited 00h/80h/FFh convention, default 0x80
                         * (Center) each */
+    uint8_t config_mode,native_mode,mode_lock,motor_map[6];
+    uint32_t response_bytes;
 } pad_t;
 static pad_t g_pad;
+void iop_sio2_pad_protocol_save(uint8_t out[IOP_PAD_PROTOCOL_BYTES])
+{
+    memset(out,0,IOP_PAD_PROTOCOL_BYTES);
+    out[0]=g_pad.connected;out[1]=g_pad.analog_mode;out[2]=g_pad.config_mode;
+    out[3]=g_pad.native_mode;out[4]=g_pad.mode_lock;
+    out[5]=g_pad.axis_rx;out[6]=g_pad.axis_ry;out[7]=g_pad.axis_lx;out[8]=g_pad.axis_ly;
+    memcpy(out+9,g_pad.motor_map,6);
+    for(unsigned n=0;n<4;n++)out[15+n]=(uint8_t)(g_pad.response_bytes>>(8*n));
+}
+int iop_sio2_pad_protocol_valid(const uint8_t in[IOP_PAD_PROTOCOL_BYTES])
+{
+    for(unsigned n=0;n<5;n++)if(in[n]>1)return 0;
+    for(unsigned n=18;n<IOP_PAD_PROTOCOL_BYTES;n++)if(in[n])return 0;
+    return 1;
+}
+void iop_sio2_pad_protocol_load(const uint8_t in[IOP_PAD_PROTOCOL_BYTES])
+{
+    if(!iop_sio2_pad_protocol_valid(in))return;
+    g_pad.connected=in[0];g_pad.analog_mode=in[1];g_pad.config_mode=in[2];
+    g_pad.native_mode=in[3];g_pad.mode_lock=in[4];
+    g_pad.axis_rx=in[5];g_pad.axis_ry=in[6];g_pad.axis_lx=in[7];g_pad.axis_ly=in[8];
+    memcpy(g_pad.motor_map,in+9,6);g_pad.response_bytes=0;
+    for(unsigned n=0;n<4;n++)g_pad.response_bytes|=(uint32_t)in[15+n]<<(8*n);
+}
+static uint32_t g_pad_samples;
+uint32_t iop_sio2_pad_sample_count(void){return g_pad_samples;}
+uint16_t iop_sio2_pad_sample_buttons(void){g_pad_samples++;return g_pad.buttons;}
 static uint32_t g_pad_command_count = 0; /* Round 510 diagnostic */
 
 /* Command/reply staging buffers for the batched FIFOIN -> CTRL-start
@@ -68,6 +97,8 @@ void iop_sio2_init(void)
                            * iop_sio2_pad_disconnect() for testing */
     g_pad.buttons = 0;   /* pressed-polarity: 0 = nothing pressed */
     g_pad.analog_mode = 0; /* real cited power-up default: digital */
+    g_pad.config_mode=g_pad.native_mode=g_pad.mode_lock=0;
+    g_pad.response_bytes=0;memset(g_pad.motor_map,0xff,sizeof(g_pad.motor_map));
     g_pad.axis_rx = g_pad.axis_ry = g_pad.axis_lx = g_pad.axis_ly =
         IOP_PAD_ANALOG_CENTER; /* real cited rest/center value */
     g_cmd_len = 0;
@@ -150,6 +181,7 @@ uint32_t iop_sio2_get_pad_command_count(void)
 void iop_sio2_pad_set_analog_mode(int enabled)
 {
     g_pad.analog_mode = enabled ? 1 : 0;
+    g_pad.native_mode=0;
 }
 
 int iop_sio2_pad_is_analog_mode(void)
@@ -184,76 +216,75 @@ void iop_sio2_pad_get_analog_axes(uint8_t *right_x, uint8_t *right_y,
  * header's citation trail (psx-spx Controllers - Communication
  * Sequence / Standard Digital Controllers) for every byte value used
  * here. */
+/* R1365: batched DualShock2 configuration, based on PCSX2 SIO/Pad and
+ * ps2sdk padman command tables. Timing/ACK remains the existing batch model.
+ * Wii digital buttons provide pressure endpoints 0/255, not real sensors. */
 static void pad_process_command(void)
 {
     g_pad_command_count++;
-    int n = g_cmd_len;
-    g_reply_len = 0;
-    g_reply_pos = 0;
-
-    if (n < 1)
-        return;
-
-    if (!g_pad.connected) {
-        /* real cited High-Z bus behavior, same FFh convention already
-         * used for the no-memory-card case. */
-        int i;
-        for (i = 0; i < n; i++)
-            g_reply_buf[g_reply_len++] = 0xFF;
-        return;
+    unsigned n=(unsigned)g_cmd_len;
+    g_reply_len=g_reply_pos=0;
+    if(!n)return;
+    if(!g_pad.connected){memset(g_reply_buf,0xff,n);g_reply_len=n;return;}
+    g_reply_buf[g_reply_len++]=0;
+    if(n<2)return;
+    uint8_t cmd=g_cmd_buf[1];
+    if(cmd!=0x42&&cmd!=0x43&&!g_pad.config_mode)return;
+    if(cmd!=0x40&&cmd!=0x41&&cmd!=0x42&&cmd!=0x43&&cmd!=0x44&&cmd!=0x45&&
+       cmd!=0x46&&cmd!=0x47&&cmd!=0x4c&&cmd!=0x4d&&cmd!=0x4f)return;
+    unsigned length=9;
+    uint8_t id=g_pad.config_mode?0xf3:g_pad.native_mode?0x79:g_pad.analog_mode?0x73:0x41;
+    if(cmd==0x42&&!g_pad.config_mode)length=g_pad.native_mode?21:g_pad.analog_mode?9:5;
+    if(cmd==0x43&&!g_pad.config_mode)length=g_pad.native_mode?21:g_pad.analog_mode?9:5;
+    if(n>length)n=length;
+    memset(g_reply_buf,0,n);g_reply_buf[1]=id;
+    if(n>=3)g_reply_buf[2]=0x5a;
+    if(cmd==0x42){
+        uint16_t wire=(uint16_t)~g_pad.buttons;
+        if(n>=4)g_reply_buf[3]=wire&255;
+        if(n>=5){g_reply_buf[4]=wire>>8;g_pad_samples++;}
+        const uint8_t axes[]={g_pad.axis_rx,g_pad.axis_ry,g_pad.axis_lx,g_pad.axis_ly};
+        for(unsigned i=0;i<4&&i+5<n;i++)g_reply_buf[i+5]=axes[i];
+        static const uint16_t pressure_bits[]={IOP_PAD_BTN_RIGHT,IOP_PAD_BTN_LEFT,
+         IOP_PAD_BTN_UP,IOP_PAD_BTN_DOWN,IOP_PAD_BTN_TRIANGLE,IOP_PAD_BTN_CIRCLE,
+         IOP_PAD_BTN_CROSS,IOP_PAD_BTN_SQUARE,IOP_PAD_BTN_L1,IOP_PAD_BTN_R1,
+         IOP_PAD_BTN_L2,IOP_PAD_BTN_R2};
+        for(unsigned i=0;i<12&&i+9<n;i++)g_reply_buf[i+9]=(g_pad.buttons&pressure_bits[i])?255:0;
+    }else if(cmd==0x43){
+        if(n>=4)g_pad.config_mode=g_cmd_buf[3]!=0;
+    }else if(cmd==0x44){
+        if(n>=4){g_pad.analog_mode=g_cmd_buf[3]!=0;g_pad.native_mode=0;}
+        if(n>=5)g_pad.mode_lock=g_cmd_buf[4]==3;
+    }else if(cmd==0x45){
+        const uint8_t info[]={3,2,(uint8_t)g_pad.analog_mode,2,1,0};
+        for(unsigned i=0;i<6&&i+3<n;i++)g_reply_buf[i+3]=info[i];
+    }else if(cmd==0x46){
+        unsigned which=n>=4&&g_cmd_buf[3]!=0;
+        const uint8_t info[]={0,0,1,which?1:2,which?1:0,which?0x14:0x0a};
+        for(unsigned i=0;i<6&&i+3<n;i++)g_reply_buf[i+3]=info[i];
+    }else if(cmd==0x47){
+        const uint8_t info[]={0,0,2,0,1,0};
+        for(unsigned i=0;i<6&&i+3<n;i++)g_reply_buf[i+3]=info[i];
+    }else if(cmd==0x4c){if(n>=7)g_reply_buf[6]=g_cmd_buf[3]?7:4;
+    }else if(cmd==0x4d){
+        for(unsigned i=0;i<6&&i+3<n;i++){
+            g_reply_buf[i+3]=g_pad.motor_map[i];g_pad.motor_map[i]=g_cmd_buf[i+3];
+        }
+    }else if(cmd==0x41){
+        if(g_pad.analog_mode){if(n>=4)g_reply_buf[3]=255;if(n>=5)g_reply_buf[4]=255;
+          if(n>=6)g_reply_buf[5]=3;if(n>=9)g_reply_buf[8]=0x5a;}
+    }else if(cmd==0x40){if(n>=6)g_reply_buf[5]=2;if(n>=9)g_reply_buf[8]=0x5a;
+    }else if(cmd==0x4f){
+        if(n>=4)g_pad.response_bytes=g_cmd_buf[3];
+        if(n>=5)g_pad.response_bytes|=(uint32_t)g_cmd_buf[4]<<8;
+        if(n>=6){
+            g_pad.response_bytes|=(uint32_t)g_cmd_buf[5]<<16;
+            g_pad.native_mode=g_pad.response_bytes==0x3ffffu;
+            g_pad.analog_mode=g_pad.native_mode||g_pad.response_bytes==0x3fu;
+        }
+        if(n>=9)g_reply_buf[8]=0x5a;
     }
-
-    g_reply_buf[g_reply_len++] = 0x00; /* reply to 01h: dummy/don't-care */
-    if (n < 2)
-        return;
-
-    uint8_t cmd = g_cmd_buf[1];
-    if (cmd != IOP_PAD_CMD_READ) {
-        /* real cited invalid-command framing: only 42h is modeled for
-         * this digital-pad-only scope; anything else gets no further
-         * reply bytes beyond the dummy already emitted. */
-        return;
-    }
-
-    /* Round 195: real cited ID depends on mode - 5A41h digital,
-     * 5A73h analog (psx-spx). */
-    g_reply_buf[g_reply_len++] = g_pad.analog_mode ?
-        IOP_PAD_ID_ANALOG_LO : IOP_PAD_ID_LO; /* reply to 42h */
-    if (n < 3) return;
-    g_reply_buf[g_reply_len++] = g_pad.analog_mode ?
-        IOP_PAD_ID_ANALOG_HI : IOP_PAD_ID_HI; /* reply to TAP byte */
-    if (n < 4) return;
-
-    /* real hardware wire polarity is 0=pressed - invert our
-     * pressed-polarity g_pad.buttons only at this final step. */
-    uint16_t wire = (uint16_t)~g_pad.buttons;
-    g_reply_buf[g_reply_len++] = (uint8_t)(wire & 0xFFu);        /* swlo, reply to 1st MOT byte */
-    if (n < 5) return;
-    g_reply_buf[g_reply_len++] = (uint8_t)((wire >> 8) & 0xFFu); /* swhi, reply to 2nd MOT byte */
-
-    if (!g_pad.analog_mode) {
-        /* "transfer stops here for digital pad" - real cited fact,
-         * no further reply bytes regardless of how many more were
-         * sent. */
-        return;
-    }
-
-    /* Round 195: real cited analog-mode continuation - 4 more bytes
-     * (adc0..adc3 = RightJoyX, RightJoyY, LeftJoyX, LeftJoyY), each
-     * only sent if the caller actually clocks that many bytes (same
-     * "if (n < N) return" pattern already used throughout this
-     * function for a real partial/short transfer). */
-    if (n < 6) return;
-    g_reply_buf[g_reply_len++] = g_pad.axis_rx; /* adc0 */
-    if (n < 7) return;
-    g_reply_buf[g_reply_len++] = g_pad.axis_ry; /* adc1 */
-    if (n < 8) return;
-    g_reply_buf[g_reply_len++] = g_pad.axis_lx; /* adc2 */
-    if (n < 9) return;
-    g_reply_buf[g_reply_len++] = g_pad.axis_ly; /* adc3 */
-    /* "transfer stops here for analog pad (in analog mode)" - real
-     * cited fact, no further reply bytes regardless of how many more
-     * were sent. */
+    g_reply_len=n;
 }
 
 static void mc_process_command(void)

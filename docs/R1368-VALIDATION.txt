@@ -1,0 +1,81 @@
+edge.log
+{"ppc_instructions": 1689349, "retired": 3328, "state_sha256": "9f8979228310acad3495c204105a2fb8b8f2c31c3dddefb5c7e6f4e95f3eebc0"}
+
+
+hash-new.log
+{"ppc_instructions": 37364, "hashes": ["76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf"], "calls": 8, "bytes_per_call": 16384}
+
+
+hash-base.log
+{"ppc_instructions": 295216, "hashes": ["76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf", "76efddc5ce450bbf"], "calls": 8, "bytes_per_call": 16384}
+
+
+chains.log
+PASS required warm native successor, all nonvolatile registers and allocation-failure fallback
+EE_NATIVE_CHAIN_SIGNATURE dc31389850cd8e187655dd34ac53def15da76a22a4a6f8c0d16683bb4df5826a
+PASS 126 cold/warm chain budgets, modified successor source and timer boundaries
+
+
+prefix.log
+PASS 12 mixed owner prefixes length2..7; complete EE/timer/IRQ/display state and following RAM store
+PASS cached prefix windows under full foreign arena; all owner variants released at teardown
+WARM_PREFIX_COST {"2": {"precise": 104800, "native": 92200}, "3": {"precise": 133600, "native": 93000}, "4": {"precise": 162400, "native": 93800}, "5": {"precise": 191200, "native": 94600}, "6": {"precise": 220000, "native": 95400}, "7": {"precise": 248800, "native": 96200}}
+
+
+events.log
+CHECK 1 0
+CHECK 1 234881024
+CHECK 2 0
+CHECK 2 234881024
+CHECK 3 0
+CHECK 3 234881024
+CHECK 7 0
+CHECK 7 234881024
+CHECK 8 0
+CHECK 8 234881024
+CHECK 9 0
+CHECK 9 234881024
+CHECK 16 0
+CHECK 16 234881024
+CHECK 17 0
+CHECK 17 234881024
+CHECK 31 0
+CHECK 31 234881024
+CHECK 63 0
+CHECK 63 234881024
+CHECK 64 0
+CHECK 64 234881024
+CHECK 65 0
+CHECK 65 234881024
+CHECK 257 0
+CHECK 257 234881024
+PASS 26 full EE/IOP/timer state comparisons against exact 8:1 interleave
+BATCH_COST {64: {'legacy': 1507130, 'event': 1756006}, 65: {'legacy': 1509418, 'event': 1840979}, 257: {'legacy': 2094618, 'event': 4039669}}
+PASS 6 shared mailbox publication / echo grants with exact tick ratio
+PASS event batches and shared barriers actually exercised
+WARM_SCHEDULER_COST {'legacy': 781271, 'event_only': 1015290, 'event_long_idle': 770915, 'slices': 256}
+
+
+gx-upload.log
+PASS 6 source packs: miss/hit, deferred upload after rejection, generation/invalid-key/origin changes; unchanged pixels and four required CPU flushes
+PASS fresh scanout flushes repacked data before GX viewport; rendering not modeled
+
+
+dol-check.json
+{
+  "dol": "Gekko2-R1368.dol",
+  "sha256": "46f1146362fe2004297356c2191ea07f8ec0b022684620c9fc6ceb445dd4f275",
+  "bytes": 1904408,
+  "entry": "0x80003f00",
+  "sections": 2,
+  "load_end": "0x801d4cf8",
+  "bss_end": "0x815025b0",
+  "wii_hid4_markers": [
+    "0x80003f20",
+    "0x8011df10"
+  ],
+  "elf_section_bytes_match": true,
+  "runtime_boot_verified": false
+}
+
+Native test exit-code entries: 39

@@ -34,7 +34,7 @@ for length in range(1,9):
     source=[(9<<26)|(2<<21)|(2<<16)|1]*length
     pattern=[1]*length
     if stop>=0:pattern[stop]=result
-    call('iop_jit_reset_for_test');heap=0x81600000
+    call('iop_jit_reset_for_test');heap=0x81600000;heap_spans.clear();free_ranges.clear()
     u.mem_write(words_ptr,struct.pack('>'+str(length)+'I',*source));u.mem_write(ctx,bytes(16))
     assert call('ppc_dynarec_init',ctx,(length*100+160+127)//128)==0
     assert call('ppc_dynarec_translate_iop_block' if 'ppc_dynarec_translate_iop_block' in syms else 'ppc_dynarec_translate_iop_resident_block',ctx,ibase,words_ptr,length,prepare,retire,scalar,native_ptr)==0
@@ -61,7 +61,7 @@ for length in range(1,9):
     checks+=1
 for budget in range(5):
  source=[(9<<26)|(2<<21)|(2<<16)|1,12,(9<<26)|(2<<21)|(2<<16)|1];pattern=[1]*3
- heap=0x81600000;u.mem_write(words_ptr,struct.pack('>3I',*source));u.mem_write(ctx,bytes(16))
+ heap=0x81600000;heap_spans.clear();free_ranges.clear();u.mem_write(words_ptr,struct.pack('>3I',*source));u.mem_write(ctx,bytes(16))
  assert call('ppc_dynarec_init',ctx,5)==0
  assert call('ppc_dynarec_translate_iop_block' if 'ppc_dynarec_translate_iop_block' in syms else 'ppc_dynarec_translate_iop_resident_block',ctx,ibase,words_ptr,3,prepare,retire,scalar,native_ptr)==0
  assert int.from_bytes(u.mem_read(native_ptr,4),'big')==1

@@ -216,4 +216,5 @@ uint32_t iop_dma_get_sif2_transfer_count(void);
  * own diagnostic precedent. */
 uint32_t iop_dma_get_spu2_transfer_count(void);
 
+void iop_dma_spu2_progress(int core,uint32_t bytes,int done);
 #endif

@@ -6,6 +6,14 @@ static uint32_t seed=12345;
 static uint32_t rnd(void){seed=seed*1664525u+1013904223u;return seed;}
 #define CHECK(x) do{if(!(x)){printf("FAIL line %d\n",__LINE__);return 1;}}while(0)
 int main(void){
+    ee_timers_init();ee_timers_tick();ee_timers_tick();
+    uint64_t probe_clock=g_bus_tick_counter;
+    uint32_t probe_distance=g_event_distance,probe_deferred=g_deferred_ticks,probe_value=0;
+    CHECK(probe_deferred>0);
+    CHECK(!ee_timers_mmio_read32(0x80300000u,&probe_value));
+    CHECK(!ee_timers_mmio_write32(0x80300000u,123u));
+    CHECK(g_bus_tick_counter==probe_clock&&g_event_distance==probe_distance&&g_deferred_ticks==probe_deferred);
+    puts("PASS unsupported timer probes preserve deferred clocks and deadline");
     ee_timers_state_t expected,actual;
     uint64_t clock=0;uint32_t irq[4]={0};
     ee_timers_init();memset(&expected,0,sizeof(expected));

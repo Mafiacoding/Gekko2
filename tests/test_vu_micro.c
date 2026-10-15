@@ -133,7 +133,7 @@ int main(void)
      * the safety cap, not a real E-bit stop. */
     vu1_exec_micro(0);
     vu1 = vu1_get_state();
-    CHECK(vu1->running == 0, "VU1: safety cap run also leaves running=0 afterward");
+    CHECK(vu1->running == 1, "VU1: safety cap retains RUN for scheduler continuation");
     CHECK(vu1->instructions_executed == 65536u, "VU1: safety cap (65536 instructions) was hit, not a real E-bit stop");
 
     /* --- VU1: I-bit sets VI[21] (REG_I) from the lower word's raw bits, and skips the lower instruction --- */
@@ -326,8 +326,8 @@ int main(void)
     vu1 = vu1_get_state();
     vu1->vf[15][0] = vu_bits(1.5f); vu1->vf[15][1] = vu_bits(2.5f); vu1->vf[15][2] = vu_bits(3.5f); vu1->vf[15][3] = vu_bits(4.5f);
     vu1->vi[1] = 2; /* quadword index 2 -> byte address 32 */
-    put_vu1_instr(0, enc_lower_direct(VUL_SQ, 0, 1, 15, 0), 0); /* SQ vf15, 0(vi1) */
-    put_vu1_instr(8, enc_lower_direct(VUL_LQ, 0, 16, 1, 0), 0); /* LQ vf16, 0(vi1) */
+    put_vu1_instr(0, enc_lower_direct(VUL_SQ, 15, 1, 15, 0), 0); /* SQ vf15, 0(vi1) */
+    put_vu1_instr(8, enc_lower_direct(VUL_LQ, 15, 16, 1, 0), 0); /* LQ vf16, 0(vi1) */
     put_vu1_instr(16, 0, enc_upper_a(1, 0, 0, 0, 0, 0));
     put_vu1_instr(24, 0, 0);
     vu1_exec_micro(0);

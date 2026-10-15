@@ -4,6 +4,8 @@ from unicorn import Uc,UC_ARCH_PPC,UC_MODE_PPC32,UC_MODE_BIG_ENDIAN
 from unicorn.ppc_const import UC_PPC_REG_1,UC_PPC_REG_2,UC_PPC_REG_3,UC_PPC_REG_13,UC_PPC_REG_LR,UC_PPC_REG_PC
 p=argparse.ArgumentParser();p.add_argument('elf');p.add_argument('--nm',required=True);a=p.parse_args()
 nm=subprocess.check_output([a.nm,a.elf],text=True);syms={l.split()[2]:int(l.split()[0],16) for l in nm.splitlines() if len(l.split())==3 and l.split()[0].isalnum()}
+for legacy,current in [('DCFlushRange','PPCDCacheFlushAsync'),('DCInvalidateRange','PPCDCacheInvalidate'),('ICInvalidateRange','PPCICacheInvalidate')]:
+ if legacy not in syms and current in syms:syms[legacy]=syms[current]
 u=Uc(UC_ARCH_PPC,UC_MODE_PPC32|UC_MODE_BIG_ENDIAN);u.mem_map(0x80000000,24*1024*1024)
 e=open(a.elf,'rb').read();off=struct.unpack_from('>I',e,28)[0];stride,num=struct.unpack_from('>HH',e,42)
 for i in range(num):
@@ -12,11 +14,27 @@ for i in range(num):
 u.reg_write(UC_PPC_REG_1,0x81780000)
 for sym,reg in [('_SDA_BASE_',UC_PPC_REG_13),('_SDA2_BASE_',UC_PPC_REG_2)]:
  if sym in syms:u.reg_write(reg,syms[sym])
+# libogc 3 PPCSync deliberately clears FP; hardware lazily restores the
+# floating-point context on the next FPU instruction. Unicorn lacks that
+# platform exception service. Model only its FP-enable action, not FPU maths.
 def call(name,*args):
  u.reg_write(UC_PPC_REG_1,0x81780000)
  for i,v in enumerate(args):u.reg_write(UC_PPC_REG_3+i,v)
  u.reg_write(UC_PPC_REG_LR,0x817ff000)
- u.emu_start(syms[name],0x817ff000,count=10000000)
+ start=syms[name]
+ for retry in range(32):
+  try:
+   u.emu_start(start,0x817ff000,count=10000000)
+   break
+  except Exception:
+   from unicorn import UcError,UC_ERR_EXCEPTION
+   from unicorn.ppc_const import UC_PPC_REG_MSR
+   # Unicorn exposes the PC after the faulting FPU instruction here.
+   pc=u.reg_read(UC_PPC_REG_PC)-4;op=int.from_bytes(u.mem_read(pc,4),'big')>>26
+   if op not in (48,49,50,51,52,53,54,55,59,63):raise
+   u.reg_write(UC_PPC_REG_MSR,u.reg_read(UC_PPC_REG_MSR)|0x2000)
+   u.ctl_remove_cache(pc,pc+4);start=pc
+ else:raise AssertionError('platform FPU restore retry budget exhausted')
  assert u.reg_read(UC_PPC_REG_PC)==0x817ff000, ('instruction budget exhausted',name)
  return u.reg_read(UC_PPC_REG_3)
 checks=0

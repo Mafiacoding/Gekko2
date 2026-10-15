@@ -1,3 +1,5 @@
+#include "core/runtime_profile.h"
+#include "core/recompiler/dynarec_config.h"
 /*
  * system.c - interleaved EE/IOP scheduler. See system.h for the
  * rationale and current known simplifications (EE_IOP_STEP_RATIO
@@ -9,6 +11,10 @@
 #include "core/hw/cdvd_config.h"
 #include "core/ee/ee_core.h"
 #include "core/iop/iop_core.h"
+#include "core/hw/arm_worker.h"
+#include "core/hw/arm_ram.h"
+#include "core/hw/ipu.h"
+#include "core/hw/iop_spu2.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <unistd.h>
@@ -67,6 +73,7 @@ static void system_safe_printf(const char *fmt, ...)
  * free of a hard link-time dependency on iop_core.c). */
 static void system_iop_write8_adapter(void *ctx, uint32_t addr, uint8_t val)
 {
+    system_shared_sync_reason(17u);
     iop_mem_write8((iop_state_t *)ctx, addr, val);
 }
 
@@ -77,6 +84,7 @@ static void system_iop_write8_adapter(void *ctx, uint32_t addr, uint8_t val)
  * rationale. width is 1/2/4 bytes. */
 static uint32_t system_iop_read_adapter(void *ctx, uint32_t addr, int width)
 {
+    system_shared_sync_reason(16u);
     iop_state_t *iop = (iop_state_t *)ctx;
     switch (width) {
         case 1: return (uint32_t)iop_mem_read8(iop, addr);
@@ -86,8 +94,16 @@ static uint32_t system_iop_read_adapter(void *ctx, uint32_t addr, int width)
     }
 }
 
+static uint64_t g_event_stats[5];
+static uint64_t g_sync_reasons[19];
+
 int system_init(const bios_image_t *ee_bios, const bios_image_t *iop_bios)
 {
+    for(unsigned i=0;i<5u;i++)g_event_stats[i]=0;
+    for(unsigned i=0;i<19u;i++)g_sync_reasons[i]=0;
+    arm_worker_begin_session();
+    arm_ram_reset();
+    arm_worker_reset(); /* Connect before the EE cold-boot RAM calibration. */
     cdvd_config_reset();
     if (ee_core_init(ee_bios) != 0) {
         printf("[!] system_init: EE core init failed\n");
@@ -136,53 +152,157 @@ __attribute__((noinline)) uint32_t system_profile_clock(void)
 }
 void system_profile_reset(void)
 {
-    g_profile=(system_profile_t){0};g_profile_remaining=256;g_profile_rng=0x12810003u;
+    gekko2_profile_reset();g_profile=(system_profile_t){0};g_profile_remaining=256;g_profile_rng=0x12810003u;
 }
 void system_profile_get(system_profile_t *out){if(out)*out=g_profile;}
 
-/* EE still runs eight instructions before EVERY IOP tick, including
+/* EE still runs eight scheduler slots before EVERY IOP tick, including
  * native block slots, HLE interception, idle and scalar recovery. Grouping
  * host calls does not grant either guest CPU extra execution time. */
-static unsigned g_iop_sample_pending;
+static unsigned g_iop_sample_pending,g_iop_sample_has_middle;
+/* Both core states are stable objects. Refresh per frontend invocation,
+ * including restored checkpoints; callbacks need no repeated getter calls. */
+static ee_state_t *g_scheduler_ee;
+static iop_state_t *g_scheduler_iop;
+static int g_scheduler_service_fast;
 static uint32_t g_iop_sample_begin,g_iop_sample_middle;
 static void system_finish_iop_sample(void)
 {
     if(!g_iop_sample_pending)return;
+    gekko2_profile_stop();
     uint32_t end=system_profile_clock();
+    if(!g_iop_sample_has_middle)g_iop_sample_middle=end;
     g_profile.ee_ticks+=(uint32_t)(g_iop_sample_middle-g_iop_sample_begin);
     g_profile.iop_ticks+=(uint32_t)(end-g_iop_sample_middle);
     g_profile.samples++;
-    g_iop_sample_pending=0;
+    g_iop_sample_pending=0;g_iop_sample_has_middle=0;
 }
 static void system_before_iop_tick(void)
 {
     system_finish_iop_sample();
-    ee_state_t *ee=ee_core_get_state();
+    ee_state_t *ee=g_scheduler_service_fast?g_scheduler_ee:ee_core_get_state();
     if(--g_profile_remaining==0) {
-        g_iop_sample_begin=system_profile_clock();
+        g_iop_sample_begin=system_profile_clock();gekko2_profile_start(GP_EE);
         if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
-        g_iop_sample_middle=system_profile_clock();
+        gekko2_profile_enter(GP_IOP);g_iop_sample_middle=system_profile_clock();g_iop_sample_has_middle=1;
         g_iop_sample_pending=1;
         uint32_t rng=g_profile_rng;rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
         g_profile_rng=rng;g_profile_remaining=128+(rng&255u);
     } else if(!ee->halted)ee_core_step_n(EE_IOP_STEP_RATIO);
 }
 
+#if GEKKO2_SCHEDULER_QUANTA_ENABLED
+static unsigned system_quantum_grant;
+static void system_begin_ee_quantum(void)
+{
+ if(g_iop_sample_pending)return;
+ if(--g_profile_remaining==0u) {
+  g_iop_sample_begin=system_profile_clock();g_iop_sample_middle=g_iop_sample_begin;g_iop_sample_has_middle=0;
+  gekko2_profile_start(GP_EE);g_iop_sample_pending=1u;
+  uint32_t rng=g_profile_rng;rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
+  g_profile_rng=rng;g_profile_remaining=128u+(rng&255u);
+ }
+}
+static int system_after_ee_quantum(void)
+{
+ if(g_iop_sample_pending){gekko2_profile_enter(GP_IOP);g_iop_sample_middle=system_profile_clock();g_iop_sample_has_middle=1;}
+ iop_state_t *iop=g_scheduler_service_fast?g_scheduler_iop:iop_core_get_state();
+ if(!iop->halted) {
+  if(g_scheduler_service_fast)iop_core_step_one_native();else iop_core_step_n(1u);
+ }
+ system_finish_iop_sample();
+ if(--system_quantum_grant&&!iop->halted)system_begin_ee_quantum();
+ return !iop->halted;
+}
+#endif
+
+
+static unsigned g_event_active,g_event_syncing;
+static int g_event_iop_blocks;
+uint64_t system_event_stat(unsigned index){return index<5u?g_event_stats[index]:0u;}
+uint64_t system_sync_reason_stat(unsigned reason){return reason<19u?g_sync_reasons[reason]:0u;}
+void system_shared_sync_reason(unsigned reason)
+{
+ if(!g_event_active||g_event_syncing)return;
+ g_event_stats[2]++;g_sync_reasons[reason<19u?reason:18u]++;
+ ee_core_event_sync();ee_core_event_notify();
+}
+void system_shared_sync(void){system_shared_sync_reason(18u);}
+#if GEKKO2_SCHEDULER_QUANTA_ENABLED
+static int system_event_catch_up(unsigned ticks)
+{
+ g_event_syncing=1u;
+ if(g_iop_sample_pending){gekko2_profile_enter(GP_IOP);g_iop_sample_middle=system_profile_clock();g_iop_sample_has_middle=1;}
+ unsigned done=0;
+ /* Keep the warmed one-tick IOP owners while changing EE granularity.
+  * Re-forming IOP blocks for every catch-up remainder adds translation
+  * variants. Parked cores still use the deadline-safe bulk path. */
+ while(done<ticks&&!g_scheduler_iop->halted) {
+#ifdef GEKKO2_IDLE_SKIP
+  { unsigned sk=iop_core_spin_skip(ticks-done); if(sk){done+=sk;continue;} }
+#endif
+  if(g_event_iop_blocks){unsigned n=iop_core_step_n(ticks-done);done+=n;if(!n)break;}
+  else if(g_scheduler_service_fast&&!g_scheduler_iop->idle)done+=iop_core_step_one_native();
+  else {unsigned n=iop_core_step_n(ticks-done);done+=n;if(!n)break;}
+ }
+ g_event_stats[1]+=done;g_event_stats[3]++;
+ system_finish_iop_sample();g_event_syncing=0u;
+ if(!g_scheduler_iop->halted)system_begin_ee_quantum();
+ return !g_scheduler_iop->halted;
+}
+#endif
+#ifndef GEKKO2_FORCE_EVENT
+#define GEKKO2_FORCE_EVENT_ON 0
+#endif
 int system_run_interleaved(uint64_t max_slices)
 {
     ee_state_t  *ee  = ee_core_get_state();
     iop_state_t *iop = iop_core_get_state();
+    g_scheduler_ee=ee;g_scheduler_iop=iop;
+    /* Options apply only at cold boot. Sample once per frontend call,
+     * including checkpoint restores, instead of every IOP boundary. */
+    g_scheduler_service_fast=gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES);
+    g_event_iop_blocks=gekko2_opt_enabled(GEKKO2_OPT_IOP_CATCHUP_BLOCKS);
+#if GEKKO2_SCHEDULER_QUANTA_ENABLED
+    #ifdef GEKKO2_FORCE_EVENT
+#define GEKKO2_FORCE_EVENT_ON 1
+    const int ee_native_schedule=1;
+#else
+    const int ee_native_schedule=gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS);
+#endif
+#endif
 
     uint64_t slice = 0;
+    /* Wake once per frontend timeslice, outside the EE/IOP hot loop. */
+    if(arm_worker_completion_ready())ipu_service();
     for (;;) {
-        unsigned grant=8u,done;
+        /* R1346: one host plan, with native admission capped internally
+         * at the original64 EE slots. Per-IOP callbacks are never deferred. */
+        unsigned grant=g_scheduler_service_fast?64u:8u,done;
         if(max_slices && max_slices-slice<grant)grant=(unsigned)(max_slices-slice);
         if(!iop->halted) {
+#if GEKKO2_SCHEDULER_QUANTA_ENABLED
+            if(ee_native_schedule&&(GEKKO2_FORCE_EVENT_ON||gekko2_opt_enabled(GEKKO2_OPT_EVENT_SCHEDULER))) {
+                unsigned width=ee_core_event_distance(ee_core_idle_active()?512u:64u);
+                unsigned iop_limit=iop_core_event_distance(width/8u);
+                if(iop_limit*8u<width)width=iop_limit*8u;
+                if(width<8u)width=8u;
+                g_event_stats[0]++;g_event_stats[4]+=width;
+                g_event_active=1u;system_begin_ee_quantum();
+                done=ee_core_step_event_n(grant,width,system_event_catch_up);
+                g_event_active=0u;
+            } else if(ee_native_schedule) {
+                system_quantum_grant=grant;system_begin_ee_quantum();
+                done=ee_core_step_interleaved_n(grant,system_after_ee_quantum);
+            } else done=iop_core_step_interleaved_n(grant,system_before_iop_tick);
+#else
             done=iop_core_step_interleaved_n(grant,system_before_iop_tick);
+#endif
         } else {
             system_before_iop_tick();done=1;
         }
         system_finish_iop_sample();
+        iop_spu2_sync(iop->sched_ticks);
 
         if (ee->halted && iop->halted) {
             system_safe_printf("\n[+] system_run_interleaved: both cores halted after %llu slice(s)\n",
@@ -198,8 +318,21 @@ int system_run_interleaved(uint64_t max_slices)
 
         slice+=done;
         if (max_slices != 0 && slice >= max_slices) {
-#ifndef PCSX2WII_FAST
-            system_safe_printf("\n[!] system_run_interleaved: hit slice cap (%llu) before both cores halted\n",
+            /*
+             * R1330-H: max_slices is the normal frontend timeslice quantum,
+             * not an error/safety cap. main.c intentionally calls this
+             * function repeatedly with an adaptive budget (typically a few
+             * thousand IOP instructions) so input, presentation and logging
+             * stay responsive. Printing three warning lines at every normal
+             * quantum boundary floods the Wii video console and can visibly
+             * alternate console text with the guest framebuffer.
+             *
+             * Keep the return value/EE:IOP scheduling exactly unchanged.
+             * Explicit diagnostic builds can opt back into the old boundary
+             * trace without making ordinary hardware builds spam every frame.
+             */
+#ifdef GEKKO2_TRACE_SLICE_BOUNDARIES
+            system_safe_printf("\n[diag] system_run_interleaved: quantum complete (%llu)\n",
                    (unsigned long long)max_slices);
             system_safe_printf("    EE  halted=%d pc=0x%08lX\n", ee->halted, (unsigned long)ee->pc);
             system_safe_printf("    IOP halted=%d pc=0x%08lX\n", iop->halted, (unsigned long)iop->pc);

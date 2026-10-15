@@ -1,3 +1,4 @@
+extern void ee_core_event_notify(void) __attribute__((weak));
 /*
  * ee_timers.c - EE peripheral counter/timer register block + real
  * tick/IRQ model. See ee_timers.h for full scope, citation trail, and
@@ -55,7 +56,9 @@ static const uint64_t EE_HBLNK_PERIOD_CYCLES = 18743ull;
 static uint64_t g_bus_tick_counter = 0;
 /* Deferred ticks never cross a compare/overflow boundary. MMIO and
  * snapshots materialize counts; legacy mutable state disables deferral. */
-static uint32_t g_deferred_ticks, g_event_distance;
+uint32_t ee_timers_batch_clock[2]={0,0};
+#define g_event_distance ee_timers_batch_clock[0]
+#define g_deferred_ticks ee_timers_batch_clock[1]
 static int g_state_exposed;
 static uint64_t g_batched_ticks, g_boundary_ticks;
 static void ee_timers_materialize(void);
@@ -105,13 +108,13 @@ static ee_timer_t *find_timer(uint32_t addr, uint32_t *sub_off_out, int *has_hol
 
 int ee_timers_mmio_read32(uint32_t addr, uint32_t *out)
 {
-    ee_timers_materialize();
     uint32_t sub_off;
     int has_hold;
     ee_timer_t *t = find_timer(addr, &sub_off, &has_hold);
     if (!t)
         return 0;
 
+    ee_timers_materialize();
     switch (sub_off) {
         case 0x00: *out = t->count; return 1;
         case 0x10: *out = t->mode;  return 1;
@@ -123,14 +126,14 @@ int ee_timers_mmio_read32(uint32_t addr, uint32_t *out)
 
 int ee_timers_mmio_write32(uint32_t addr, uint32_t value)
 {
-    g_event_distance=0;
-    ee_timers_materialize();
     uint32_t sub_off;
     int has_hold;
     ee_timer_t *t = find_timer(addr, &sub_off, &has_hold);
     if (!t)
         return 0;
 
+    if(ee_core_event_notify)ee_core_event_notify();
+    g_event_distance=0;ee_timers_materialize();
     switch (sub_off) {
         case 0x00:
             t->count = value;

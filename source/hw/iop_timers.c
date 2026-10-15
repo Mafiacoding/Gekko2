@@ -31,7 +31,9 @@ static const iop_timer_range_t s_ranges[IOP_TIMERS_COUNT] = {
 static const int s_irq_bit[IOP_TIMERS_COUNT] = { 4, 5, 6, 14, 15, 16 };
 
 static iop_timers_state_t g_timers;
-static uint32_t g_deferred_ticks,g_event_distance;
+uint32_t iop_timers_batch_clock[2]={0,0};
+#define g_event_distance iop_timers_batch_clock[0]
+#define g_deferred_ticks iop_timers_batch_clock[1]
 static int g_state_exposed,g_dense_events;
 static void iop_timers_materialize(void);
 
@@ -229,4 +231,17 @@ static __attribute__((noinline)) void iop_timers_boundary(void) {
 void iop_timers_tick(void) {
     if(g_event_distance>1u){--g_event_distance;g_deferred_ticks++;return;}
     iop_timers_boundary();
+}
+
+/* Derived timer distance is invalidated by every MMIO write/restore. */
+unsigned iop_timers_event_distance(unsigned maximum)
+{
+ if(g_state_exposed||g_dense_events)return 1u;
+ if(!g_event_distance)g_event_distance=iop_timers_distance();
+ return g_event_distance<maximum?g_event_distance:maximum;
+}
+int iop_timers_advance_before_event(unsigned ticks)
+{
+ if(!ticks||g_state_exposed||g_dense_events||!g_event_distance||ticks>=g_event_distance)return 0;
+ g_event_distance-=ticks;g_deferred_ticks+=ticks;return 1;
 }

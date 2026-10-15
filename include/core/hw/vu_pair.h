@@ -27,7 +27,7 @@ static inline int vu_pair_lower_reads(uint32_t w,unsigned vf) {
     if(op==1u)return ((w>>11)&31u)==vf;
     if(op!=64u||(w&63u)<60u)return 0;
     if(sub==12u||(sub==15u&&bc==0u))return ((w>>11)&31u)==vf;
-    if(sub==13u&&(bc&1u))return ((w>>16)&31u)==vf;
+    if(sub==13u&&(bc&1u))return ((w>>11)&31u)==vf;
     if(sub==14u&&bc<3u)return (bc!=1u&&((w>>11)&31u)==vf)||((w>>16)&31u)==vf;
     if(sub>=28u&&!(sub==30u&&bc==3u))return ((w>>11)&31u)==vf;
     return 0;

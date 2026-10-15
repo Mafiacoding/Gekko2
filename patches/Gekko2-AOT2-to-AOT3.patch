@@ -1,0 +1,2480 @@
+diff --git a/README.md b/README.md
+index a3b82a5..4154729 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,13 @@
++# R1379-AOT3 — AOT2 continuation and PCSX2/GIF fixes
++
++The working AOT2 workflow is retained with guarded EE delay slots, BC2,
++LQC2 VF0 reads, correct J/JAL regions and metered VU1 XGKICK transfers.
++The R1379B incomplete-PATH1 fix is included. Existing graphics/VIF/CHD
++corrections remain present. The owner reports approximately halved BIOS
++boot time and nearly 0.30 FPS in Tekken for AOT2; AOT3 hardware performance
++has not yet been measured. Full dynarec and PS2 hardware fidelity remain
++in development. See [changes, reproduction, evidence and remaining gaps](docs/R1379-AOT3.md).
++
+ # R1378-AOT2 — experimental EE/IOP/VU static compilation
+ 
+ The optional hybrid workflow now compiles selected EE, IOP, VU0 and VU1
+diff --git a/STATUS.md b/STATUS.md
+index 49b6389..3d560fc 100644
+--- a/STATUS.md
++++ b/STATUS.md
+@@ -1,3 +1,13 @@
++# R1379-AOT3 — AOT2 continuation and PCSX2/GIF fixes
++
++The working AOT2 workflow is retained with guarded EE delay slots, BC2,
++LQC2 VF0 reads, correct J/JAL regions and metered VU1 XGKICK transfers.
++The R1379B incomplete-PATH1 fix is included. Existing graphics/VIF/CHD
++corrections remain present. The owner reports approximately halved BIOS
++boot time and nearly 0.30 FPS in Tekken for AOT2; AOT3 hardware performance
++has not yet been measured. Full dynarec and PS2 hardware fidelity remain
++in development. See [changes, reproduction, evidence and remaining gaps](docs/R1379-AOT3.md).
++
+ # R1378-AOT2 — hybrid static compilation checkpoint
+ 
+ EE scalar/complex/memory, IOP tick-safe and VU0/VU1 pipeline-safe static paths
+diff --git a/docs/GRAPHICS-AUDIT-CHECKPOINT.md b/docs/GRAPHICS-AUDIT-CHECKPOINT.md
+index 8894b7e..7aba99d 100644
+--- a/docs/GRAPHICS-AUDIT-CHECKPOINT.md
++++ b/docs/GRAPHICS-AUDIT-CHECKPOINT.md
+@@ -1,3 +1,5 @@
++Historical audit checkpoint. Superseded by R1379B.md for build status.
++
+ # Graphics audit checkpoint (based on R1378)
+ 
+ Implemented and checked:
+diff --git a/docs/R1378-AOT2.md b/docs/R1378-AOT2.md
+index 3c6d008..adde555 100644
+--- a/docs/R1378-AOT2.md
++++ b/docs/R1378-AOT2.md
+@@ -1,3 +1,8 @@
++Historical AOT2 checkpoint. On 12 October 2026 the owner reports approximately
++halved BIOS boot time and nearly 0.30 FPS in Tekken. No exact timing logs were
++supplied. Continued by [R1379-AOT3](R1379-AOT3.md); use the frozen AOT2 source
++package to reproduce its original executable.
++
+ # R1378-AOT2 — hybrid EE, IOP, VU0 and VU1 static compilation
+ 
+ AOT2 extends the tested AOT1 workflow to all four CPU execution paths. It
+diff --git a/docs/R1379-AOT3.md b/docs/R1379-AOT3.md
+new file mode 100644
+index 0000000..6b090b5
+--- /dev/null
++++ b/docs/R1379-AOT3.md
+@@ -0,0 +1,111 @@
++# R1379-AOT3 — AOT2 continuation with PCSX2/GIF corrections
++
++This checkpoint combines the owner's working R1378-AOT2 with the recovered
++`Gekko2-R1379B-Source.zip`. The AOT2 input profile and existing Wii build
++options are retained. It continues the full dynarec/PS2 accuracy project;
++it does not certify that project complete.
++
++## Changes
++
++- The R1379B bounded XGKICK completion fix is integrated into the shared GIF
++  parser. Incomplete PATH1 PACKED/REGLIST/IMAGE state cannot consume the next
++  kick. PATH2 and PATH3 fragment continuation remains independent.
++- VU1 XGKICK now transfers one quadword per two VU issue clocks with one
++  initial issue-cycle credit. It reads live memory lazily, wraps the 16 KiB
++  ring, exposes VPU_STAT bit 12, drains before another kick and at a real
++  stop, and bounds malformed no-EOP BIOS packets to one physical ring.
++  The temporary 16 KiB ring-copy buffer is removed. VU execution itself is
++  still synchronous with the EE/VIF caller; this is not full GIF arbitration.
++- PATH1 IMAGE EOP survives fragment boundaries and stops parsing after its
++  remaining payload. Finishing PATH1 does not clear another path's IMAGE
++  bookkeeping. Actual kick counters count kicks, not transport fragments.
++- EE AOT can execute a legal delay slot after a terminal branch and can
++  enter a selected straight-line handler as an existing delay slot. The
++  live slot word/mapping and safe data address are checked separately after
++  the branch retires. Annulled, unsafe, changed or nested-control slots
++  decline before mutation. Every instruction keeps its original retirement
++  and EE/IOP quantum; Count IRQ deferral across a branch is preserved.
++- BC2F/T/FL/TL are implemented using VPU_STAT bit 8, including likely
++  annulment. The scalar core and AOT include the same operation body.
++- LQC2 to VF0 performs memory reads and discards writes. Its RAM proof
++  retains the actual unmasked address and full 16-byte span. The runtime
++  PPC block emitter also preserves VF0 while performing the read.
++- J/JAL use the upper address bits of PC+4 across region boundaries in EE,
++  IOP, the PPC emitter and AOT generation.
++- New GIF/VU checkpoint fields are appended; older checkpoint payloads
++  initialize added state without shifting existing offsets.
++
++The VIF fill-mode/source-length and live MMIO fixes, DATE/CT24 semantics,
++shared triangle edges, nearest/negative-repeat sampling, freeze fixes,
++guarded successor lookup and GX source-upload reuse were already present
++in the AOT2 base and remain present. DVD2048/single-data-track CD2448 CHD
++support and its hunk cache remain present.
++
++## Build and reproduction
++
++Use the same workflow as R1378-AOT2, with your local BIOS/profile:
++
++```sh
++python3 tools/verify_ee_aot.py
++python3 tools/verify_r1370_native.py
++python3 tests/test_ee_aot_inputs.py
++export DEVKITPRO=/absolute/path/devkitpro
++bash tools/build_ee_aot.sh /absolute/path/profile.json
++```
++
++The output is `Gekko2-R1379-AOT3.dol` and `.elf`. The private build retains
++512 EE entries, 256 IOP entries and 44/64 VU upper/lower words. EE contains
++4,008 instruction bodies rather than AOT2's 3,536. The published source has
++empty generated tables; private BIOS/profile/microcode bytes are excluded.
++Always run the final MEM1 size gate; the test fixture derives its code arena
++from actual ELF load spans so a growing image cannot overlap its heap.
++
++Install the DOL as `apps/gekko2/boot.dol` and cold boot. Keep the existing
++app assets and ARM worker. Existing EE JIT/blocks, IOP JIT and VU JIT controls
++still gate their corresponding paths; no new setting is required.
++
++## Evidence
++
++Validation logs and final binary hashes are in `validation/aot3-*`.
++The build passes 6,887 EE/IOP/VU interpreter comparisons, 39 CPU regression
++binaries, 49 focused graphics/device regressions and three input/size suites.
++The final ELF passes 114 linked AOT comparisons plus 8 BC2, 6 jump-region
++and 2 production XGKICK oracles. The historical linked PPC delay/vector/chain
++suite also passes 256 delay programs, 60 vector programs and seven chain
++budgets. Some native regression suites overlap; these are execution counts,
++not a claim of that many independent hardware conformance tests.
++MEM1 static end is `0x81622620`, leaving 1,956,320 bytes before its limit.
++Independent native tests check BC2 outcomes/annulment/overflow BD/EPC,
++VF0 data-TLB access and jump-region boundaries. VU/GIF oracles check issue
++clocks, live-source mutation, wrapping, repeated kicks, E drain, incomplete
++BIOS packets, IMAGE EOP and independent path state. Linked PPC checks
++execute the final target binary with modeled platform services.
++
++On 12 October 2026 the owner reports that **AOT2** approximately halves BIOS
++boot time and Tekken reaches nearly **0.30 FPS**. No exact boot duration,
++repeat-run count or accompanying timing log was supplied. This is owner
++hardware evidence for AOT2, not a local measurement or AOT3 result.
++
++## Full-completion gaps
++
++These are implementation work, not merely missing acceptance paperwork:
++
++| Area | Still required |
++| --- | --- |
++| Full dynamic recompilation | General paired 64/128-bit allocation, audited helper contracts and safe patched tail links; all changed/unselected code still needs runtime paths |
++| EE/IOP hardware fidelity | Cycle-cost/event model instead of one Count tick per EE retirement; broader privilege/COP exceptions, cache behavior and HLE/device audit |
++| COP2 control | Full CTC2/FBRST read-only, reset/force-break and macro/micro synchronization behavior |
++| VU pipeline | FMAC/MAC/status/CLIP publication latency, dependency stalls and exact floating-point corner cases; VU0 M synchronization |
++| VIF/GIF | Asynchronous EE/VU scheduling, coordinated PATH priority/backpressure/MSKPATH3, STOP/force-break and complete NUM/ERR/FIFO state |
++| GS/GX | Automatic MTBA, trilinear mipmap behavior and broader exact renderer coverage while preserving VRAM ownership/fallbacks |
++| Disc/device compatibility | Multi-track/parent/split CHDs and monolithic files above 2 GiB; full game/device conformance |
++
++The historical eight failures in `tests/test_vif.c` are not reported as
++passing or repaired by this checkpoint. Broad differential agreement with
++the current scalar core cannot prove hardware correctness where both paths
++share the same incomplete model. Full completion requires independent
++architectural oracles plus repeated BIOS/game tests on the Wii.
++
++Primary references inspected in the included reference snapshot:
++PCSX2 `GS/GSState.cpp` PATH1 termination, `VUops.cpp` XGKICK clocks,
++`COP2.cpp` BC2 condition and `VU0.cpp` LQC2 VF0 read-discard behavior.
+diff --git a/docs/R1379B.md b/docs/R1379B.md
+new file mode 100644
+index 0000000..1de027a
+--- /dev/null
++++ b/docs/R1379B.md
+@@ -0,0 +1,23 @@
++# R1379B test build
++
++Changes relative to R1378B:
++- VIF fill UNPACK consumes only source vectors, preserving the following command.
++- Payload length calculation replaces a per-vector scan with constant-time arithmetic.
++- EE reads the live implemented VIF MMIO registers instead of unrelated backing RAM.
++- Bounded synchronous XGKICK terminates incomplete PATH1 parser state, following
++  PCSX2 GSState's BIOS incomplete-packet handling. PATH3/DMA continuation remains intact.
++- Existing R1378 shared triangle edges, DATE, nearest sampling and freeze fixes retained.
++- libchdr CHD DVD2048 and single data-track CD2448 support retained, with a hunk cache.
++- DSI, GX native additive/fence, EE block and ARM beta build paths retained.
++
++This does not prove missing BIOS cubes are fully corrected. Compare on physical Wii.
++CHD multi-track/parent/split and monolithic files above 2 GiB remain unsupported.
++No measured Wii FPS improvement is claimed.
++
++Build: GCC16.1.0, libogc3.1.0, matching newlib/crtls, libfat-ogc2.1.0.
++Validation: 48 focused native regressions; 16,777,216 payload-length combinations.
++DOL section/ELF comparison and linked PPC GX-mock check are recorded separately.
++Legacy tests/test_vif.c still has eight unresolved fixture/test failures and is
++not part of the passing focused suite. No full BIOS or game run locally.
++
++Reference: https://github.com/PCSX2/pcsx2/blob/master/pcsx2/GS/GSState.cpp
+diff --git a/include/build_version.h b/include/build_version.h
+index 8719c2e..6f023f0 100644
+--- a/include/build_version.h
++++ b/include/build_version.h
+@@ -1,4 +1,4 @@
+ #ifndef GEKKO2_BUILD_VERSION_H
+ #define GEKKO2_BUILD_VERSION_H
+-#define GEKKO2_RELEASE "R1378"
++#define GEKKO2_RELEASE "R1379"
+ #endif
+diff --git a/include/core/hw/gif.h b/include/core/hw/gif.h
+index 20ab785..57eb54a 100644
+--- a/include/core/hw/gif.h
++++ b/include/core/hw/gif.h
+@@ -671,6 +671,12 @@ void gif_init(void);
+  * now it drives the real transfer-arbitration register model added
+  * this round (see gif_mmio_read32/write32 below). */
+ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc);
++/* Complete bounded synchronous VU1 XGKICK, not a DMA fragment. */
++void gif_process_xgkick(const uint8_t *data, uint32_t qwc);
++/* Fragment calls preserve PATH1 state until the bounded kick ends. */
++void gif_begin_xgkick(void);
++void gif_process_xgkick_fragment(const uint8_t *data, uint32_t qwc);
++void gif_end_xgkick(void);
+ 
+ /* Real GIF MMIO register read/write, for wiring into the EE bus
+  * dispatch chain (ee_core.c's ee_mem_read32/write32), same pattern
+@@ -1189,6 +1195,8 @@ typedef struct {
+     uint64_t sprite_pos16;
+     /* Appended to preserve existing diagnostic/fixture offsets. */
+     int date, datm, ctx1_date, ctx1_datm, ctx2_date, ctx2_datm;
++    /* Appended so older GIF checkpoint field offsets remain stable. */
++    uint8_t image_eop_path[3];
+ } gif_state_t;
+ 
+ gif_state_t *gif_get_state(void);
+diff --git a/include/core/hw/vu.h b/include/core/hw/vu.h
+index 140cfe28..4a6dd33 100644
+--- a/include/core/hw/vu.h
++++ b/include/core/hw/vu.h
+@@ -134,14 +134,18 @@ typedef struct {
+     uint32_t ebit_delay;     /* 0 = not stopping; see header comment */
+     uint8_t  running;
+ 
+-    /* R1330-D: one outstanding VU1 XGKICK/PATH1 request. */
++    /* AOT3: metered VU1 PATH1 transfer, one qword per two VU cycles. */
+     uint8_t  xgkick_pending;
+     uint32_t xgkick_addr;       /* byte offset in the 16 KiB VU1 ring */
+-    uint64_t xgkick_busy_stalls;/* rejected overwrite attempts */
++    uint64_t xgkick_busy_stalls;/* forced drains before a second kick */
+ 
+     uint64_t instructions_executed;
+     uint64_t unimplemented_opcodes_seen;
+     vu_pipeline_t pipeline;
++    /* Appended for existing checkpoint offsets. */
++    uint64_t xgkick_last_cycle, xgkick_cycle_credit;
++    uint32_t xgkick_packet_qwords, xgkick_ring_qwords;
++    uint8_t xgkick_eop;
+ } vu1_state_t;
+ 
+ void vu1_init(void);
+diff --git a/include/core/recompiler/ee_block_policy.h b/include/core/recompiler/ee_block_policy.h
+index d5026fc..90a757a 100644
+--- a/include/core/recompiler/ee_block_policy.h
++++ b/include/core/recompiler/ee_block_policy.h
+@@ -14,7 +14,7 @@ static inline unsigned ee_jit_block_memory_width(uint32_t w)
+  case 0x1au:case 0x1bu:case 0x2cu:case 0x2du:case 0x37u:case 0x3fu:return 8u;
+  case 0x1eu:return ((w>>16)&31u)?16u:0u; /* LQ $zero has no access. */
+  case 0x1fu:case 0x3eu:return 16u;
+- case 0x36u:return ((w>>16)&31u)?16u:0u;
++ case 0x36u:return 16u; /* LQC2 VF0 reads memory and discards the result. */
+  default:return 0u;
+  }
+ }
+diff --git a/meta.xml b/meta.xml
+index 98c3a1b..1d8bc5f 100644
+--- a/meta.xml
++++ b/meta.xml
+@@ -1,9 +1,9 @@
+ <?xml version='1.0' encoding='utf-8'?>
+ <app version="1">
+-  <name>Gekko2 R1378-AOT2</name>
++  <name>Gekko2 R1379-AOT3</name>
+   <coder>Mafiacoding</coder>
+-  <version>R1378-AOT2 Hybrid Recompilation Beta</version>
++  <version>R1379-AOT3 Hybrid Recompilation Beta</version>
+   <release_date>20261012</release_date>
+   <short_description>Experimental PS2 emulator / EE, IOP and VU static compilation</short_description>
+-  <long_description>AOT2 adds selected native static EE, IOP, VU0 and VU1 handlers with the existing precise execution boundaries. Host and linked-PPC checks pass; physical Wii boot, FPS improvement and complete game compatibility remain unconfirmed. Keep the existing worker files and supply your own BIOS and disc.</long_description>
++  <long_description>AOT3 continues AOT2 with guarded EE delay slots, PCSX2-aligned BC2/LQC2 corrections and metered VU1 XGKICK transfers. The owner reports halved BIOS boot time and nearly 0.30 FPS in Tekken for AOT2; AOT3 physical Wii performance and complete PS2 compatibility remain unconfirmed. Keep the existing worker files and supply your own BIOS and disc.</long_description>
+ </app>
+diff --git a/source/core/checkpoint.c b/source/core/checkpoint.c
+index 9aa457d..4dddb25 100644
+--- a/source/core/checkpoint.c
++++ b/source/core/checkpoint.c
+@@ -38,6 +38,7 @@
+ #include "core/hw/cdvd_config.h"
+ 
+ #include <stdio.h>
++#include <stddef.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -315,9 +316,12 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
+     EXPECT("ESIO", generic, sizeof(generic), &size); memcpy(ee_sio_get_state(), generic, size);
+     EXPECT("ETMR", generic, sizeof(generic), &size); { ee_timers_state_t timers;ee_timers_snapshot(&timers);memcpy(&timers,generic,size);ee_timers_restore(&timers); }
+     EXPECT("GIF0", generic, sizeof(generic), &size);
+-    if(size!=sizeof(*gif_get_state()) && size!=sizeof(*gif_get_state())-sizeof(uint64_t))goto fail_close;
++    uint32_t old_gif_size=offsetof(gif_state_t,image_eop_path);
++    if(size!=sizeof(*gif_get_state()) && size!=old_gif_size &&
++       size!=old_gif_size-sizeof(uint64_t))goto fail_close;
++    memset(gif_get_state(),0,sizeof(*gif_get_state()));
+     memcpy(gif_get_state(),generic,size);
+-    if(size!=sizeof(*gif_get_state())) {
++    if(size==old_gif_size-sizeof(uint64_t)) {
+         gif_state_t *gif=gif_get_state();
+         gif->sprite_pos16=(uint64_t)(uint32_t)(gif->v0x*16)
+             |((uint64_t)(uint32_t)(gif->v0y*16)<<32);
+@@ -374,7 +378,15 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
+     }
+     EXPECT("VIF0", generic, sizeof(generic), &size); if (size != sizeof(*vif0_get_state())) goto fail_close; memcpy(vif0_get_state(), generic, size);
+     EXPECT("VIF1", generic, sizeof(generic), &size); if (size != sizeof(*vif1_get_state())) goto fail_close; memcpy(vif1_get_state(), generic, size);
+-    EXPECT("VU10", generic, sizeof(generic), &size); memcpy(vu1_get_state(), generic, size);
++    EXPECT("VU10", generic, sizeof(generic), &size);
++    if(size>sizeof(*vu1_get_state()))goto fail_close;
++    memset(vu1_get_state(),0,sizeof(*vu1_get_state()));
++    memcpy(vu1_get_state(), generic, size);
++    if(size<=offsetof(vu1_state_t,xgkick_last_cycle) && vu1_get_state()->xgkick_pending) {
++        vu1_get_state()->xgkick_ring_qwords=VU1_MEM_SIZE/16u;
++        vu1_get_state()->xgkick_cycle_credit=1u;
++        vu1_get_state()->xgkick_last_cycle=vu1_get_state()->pipeline.cycle;
++    }
+     EXPECT("EETH", eeth_blob, sizeof(eeth_blob), &eeth_size);
+     EXPECT("IHP1", heap_blob, sizeof(heap_blob), &heap_size);
+ 
+diff --git a/source/core/ee/ee_cop2_switch.inc b/source/core/ee/ee_cop2_switch.inc
+index 252642a..d23060e 100644
+--- a/source/core/ee/ee_cop2_switch.inc
++++ b/source/core/ee/ee_cop2_switch.inc
+@@ -60,6 +60,20 @@
+                  * these bits to actually act on. */
+                 vu0_vi_write(st, rd, rt32);
+                 break;
++            case 0x08: { /* BC2F/T/FL/TL: condition is VPU_STAT bit 8. */
++                if(rt>3u) {
++                    halt("reserved BC2 selector");
++                    return 1;
++                }
++                unsigned condition=(st->cop2_ctrl[29]>>8)&1u;
++                if(condition==(rt&1u))
++                    BRANCH_TO(this_pc+4u+(uint32_t)(imm*4));
++                else if(rt&2u) {
++                    st->pc=fallthrough_pc+4u;
++                    st->next_pc=st->pc+4u;
++                } else st->branch_pending=1u;
++                break;
++            }
+             default:
+                 halt("unimplemented COP2 sub-opcode (VU0 vector datapath not implemented)");
+                 return 1;
+diff --git a/source/core/ee/ee_core.c b/source/core/ee/ee_core.c
+index d7f1bd5..da914bd 100644
+--- a/source/core/ee/ee_core.c
++++ b/source/core/ee/ee_core.c
+@@ -5724,7 +5724,7 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
+     }
+ 
+ #if defined(GEKKO2_EE_AOT) && !defined(PCSX2WII_LEGACY_FRAME_REPAIR)
+-    if(block_retired && !in_delay_slot &&
++    if(block_retired &&
+        gekko2_opt_enabled(GEKKO2_OPT_EE_JIT) &&
+        gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)) {
+         unsigned n=ee_aot_try_execute_fetched(st,budget,instr);
+@@ -10374,8 +10374,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
+         }
+         break;
+ 
+-    case 0x02: /* J */   BRANCH_TO((this_pc & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
+-    case 0x03: /* JAL */  LINK(31); BRANCH_TO((this_pc & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
++    case 0x02: /* J */   BRANCH_TO(((this_pc + 4u) & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
++    case 0x03: /* JAL */  LINK(31); BRANCH_TO(((this_pc + 4u) & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
+     case 0x04: /* BEQ */  st->branch_pending = 1; if (GPR(rs) == GPR(rt)) BRANCH_TO(this_pc + 4 + (imm << 2)); break;
+     case 0x05: /* BNE */  st->branch_pending = 1; if (GPR(rs) != GPR(rt)) BRANCH_TO(this_pc + 4 + (imm << 2)); break;
+     case 0x06: /* BLEZ */ st->branch_pending = 1; if ((int64_t)GPR(rs) <= 0) BRANCH_TO(this_pc + 4 + (imm << 2)); break;
+diff --git a/source/core/ee/ee_mem_switch.inc b/source/core/ee/ee_mem_switch.inc
+index 377bdd4..fd6645b 100644
+--- a/source/core/ee/ee_mem_switch.inc
++++ b/source/core/ee/ee_mem_switch.inc
+@@ -151,12 +151,10 @@
+                 * does NOT mask the low 4 bits for LQC2/SQC2, confirmed
+                 * against PCSX2's own implementation which calls plain
+                 * memRead32 at +0/+4/+8/+12 with no address masking),
+-                * into VF[rt].xyzw in order. Skipped entirely when
+-                * rt==0 (VF00 is a read-only hardwired (0,0,0,1)
+-                * constant on real hardware, matching this project's
+-                * own vu0_vf_write_lane's existing reg==0 discard and
+-                * PCSX2's own "if ( _Ft_ )" guard). */
+-        if (rt) {
++                * into VF[rt].xyzw in order. VF0 discards writes but
++                * still performs all memory reads (PCSX2 VU0.cpp LQC2
++                * explicitly reads a temporary when _Ft_==0). */
++        {
+             uint32_t addr = rs32 + imm;
+             vu0_vf_write_lane(st, rt, 0, ee_mem_read32(st, addr));
+             vu0_vf_write_lane(st, rt, 1, ee_mem_read32(st, addr + 4));
+diff --git a/source/core/iop/iop_decoded_switch.inc b/source/core/iop/iop_decoded_switch.inc
+index 38b51b3..65cd593 100644
+--- a/source/core/iop/iop_decoded_switch.inc
++++ b/source/core/iop/iop_decoded_switch.inc
+@@ -416,9 +416,9 @@
+         }
+         break;
+ 
+-    case 0x02: /* J */   BRANCH_TO((this_pc & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
++    case 0x02: /* J */   BRANCH_TO(((this_pc + 4u) & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2)); break;
+     case 0x03: /* JAL */ {
+-        uint32_t jal_tgt = (this_pc & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2);
++        uint32_t jal_tgt = ((this_pc + 4u) & 0xF0000000u) | ((instr & 0x03FFFFFFu) << 2);
+         /* Round 77 (117th finding, task #221/#245): 0xBFC4A600 is the
+          * real ROM's device-table-entry classifier (see the 116th/
+          * 117th findings) - it takes the raw device-table entry
+diff --git a/source/core/recompiler/ee_aot.c b/source/core/recompiler/ee_aot.c
+index 7b7eee5..a4d4de8 100644
+--- a/source/core/recompiler/ee_aot.c
++++ b/source/core/recompiler/ee_aot.c
+@@ -9,12 +9,18 @@ static uint32_t ee_aot_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t word)
+ {
+     uint32_t live;
+     if(!ee_core_block_peek(st,pc,&live)||live!=word)return 0;
+-    uint32_t proof_word=word;
+-    if((word>>26)==0x36u)proof_word=(word&0x03e0ffffu)|(0x1eu<<26)|(1u<<16);
+-    if((word>>26)==0x3eu)proof_word=(word&0x03ffffffu)|(0x1fu<<26);
+-    if((word>>26)==0x1eu&&!((word>>16)&31u))return ee_core_block_prepare_fetched(st,pc);
+-    if(!ee_core_block_memory_resolve_precise(st,proof_word))return 0;
+-    return ee_core_block_prepare_fetched(st,pc);
++    if(!((word>>26)==0x1eu&&!((word>>16)&31u)) &&
++       !ee_core_block_memory_resolve_precise(st,word))return 0;
++    return st->branch_pending ? ee_core_block_prepare_delay(st,pc,word) :
++        ee_core_block_prepare_fetched(st,pc);
++}
++static uint32_t ee_aot_prepare(ee_state_t *st,uint32_t pc,uint32_t word,
++                               unsigned delay_safe,unsigned memory)
++{
++    if(st->branch_pending&&!delay_safe)return 0;
++    if(memory)return ee_aot_prepare_memory(st,pc,word);
++    return st->branch_pending ? ee_core_block_prepare_delay(st,pc,word) :
++        ee_core_block_prepare(st,pc,word);
+ }
+ #include "ee_aot_generated.inc"
+ static uint64_t retired_count;
+@@ -23,7 +29,7 @@ uint64_t ee_aot_retired_count(void) { return retired_count; }
+ unsigned ee_aot_try_execute_fetched(ee_state_t *st, unsigned budget, uint32_t first_word)
+ {
+     unsigned lo=0, hi=ee_aot_entries_count;
+-    if(!st || st->halted || st->idle || st->branch_pending || st->exc_in_delay_slot)
++    if(!st || st->halted || st->idle)
+         return 0;
+     budget=ee_core_interleave_limit(budget);
+     if(!budget) return 0;
+diff --git a/source/core/recompiler/ppc_dynarec.c b/source/core/recompiler/ppc_dynarec.c
+index a7e6836..6013aff 100644
+--- a/source/core/recompiler/ppc_dynarec.c
++++ b/source/core/recompiler/ppc_dynarec.c
+@@ -4725,10 +4725,10 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
+     }
+ 
+     if (op == 0x02) {
+-        /* MIPS: j target -> pc = (this_pc & 0xF0000000) |
++        /* MIPS: j target -> pc = ((this_pc+4) & 0xF0000000) |
+          * ((instr & 0x03FFFFFF) << 2); always taken, delay slot always
+          * executes, no link register write (that's JAL below). The
+-         * top-4-bits-of-this_pc part is read from CONTEXT at runtime
++         * top-4-bits-of-PC+4 part is read from CONTEXT at runtime
+          * (see EXC_THIS_PC_OFFSET's comment for why that's required,
+          * not just a style choice, under this dynarec's encoding-keyed
+          * cache) while the low 26 bits of the target are a plain
+@@ -4737,6 +4737,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
+          * this_pc itself. */
+         uint32_t target_low = (mips_instr & 0x03FFFFFFu) << 2;
+         emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, EXC_THIS_PC_OFFSET));
++        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, 4)); /* target region is PC+4 */
+         emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 0, 0, 3)); /* &= 0xF0000000 */
+         emit_load_const32(ctx, SCRATCH_B, target_low);
+         emit(ctx, enc_or(SCRATCH_A, SCRATCH_A, SCRATCH_B));
+@@ -4747,7 +4748,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
+     }
+ 
+     if (op == 0x03) {
+-        /* MIPS: jal target -> gpr[31] = this_pc + 8; pc = (this_pc &
++        /* MIPS: jal target -> gpr[31] = this_pc + 8; pc = ((this_pc+4) &
+          * 0xF0000000) | ((instr & 0x03FFFFFF) << 2) - same target
+          * computation as J above, plus the LINK(31) write. IMPORTANT:
+          * ee_core.c's own LINK() macro is `GPR(reg) = this_pc + 8;`
+@@ -4774,6 +4775,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
+         emit(ctx, enc_addi(SCRATCH_B, 0, 0)); /* li SCRATCH_B, 0 (zero-extend, NOT sign-extend - see comment above) */
+         emit(ctx, enc_stw(SCRATCH_B, CTX_REG, REG_HI(31)));
+         emit(ctx, enc_lwz(SCRATCH_A, CTX_REG, EXC_THIS_PC_OFFSET));
++        emit(ctx, enc_addi(SCRATCH_A, SCRATCH_A, 4)); /* target region is PC+4 */
+         emit(ctx, enc_rlwinm(SCRATCH_A, SCRATCH_A, 0, 0, 3)); /* &= 0xF0000000 */
+         emit_load_const32(ctx, SCRATCH_B, target_low);
+         emit(ctx, enc_or(SCRATCH_A, SCRATCH_A, SCRATCH_B));
+@@ -6984,7 +6986,7 @@ static void ee_block_resolved_memory(ppc_codegen_ctx_t *ctx,uint32_t iw)
+     emit(ctx,enc_stwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+    } else {
+     emit(ctx,enc_lwbrx(SCRATCH_D,SCRATCH_C,SCRATCH_A));
+-    emit(ctx,enc_stw(SCRATCH_D,CTX_REG,VU0_VF_OFF(rt,lane)));
++    if(rt)emit(ctx,enc_stw(SCRATCH_D,CTX_REG,VU0_VF_OFF(rt,lane)));
+    }
+    if(lane<3u)emit(ctx,enc_addi(SCRATCH_A,SCRATCH_A,4));
+   }
+diff --git a/source/hw/gif.c b/source/hw/gif.c
+index 6a32121..e1f70e1 100644
+--- a/source/hw/gif.c
++++ b/source/hw/gif.c
+@@ -3073,6 +3073,7 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
+                 image_write_pixel_qwords(p + consumed, avail_qwords);
+ 
+             g_gif.image_carry_remaining_qwords = shortfall_qwords;
++            g_gif.image_eop_path[s_gif_active_path] = eop;
+ 
+             return len; /* fully consumed - nothing left in this buffer to misparse as a fresh tag */
+         }
+@@ -3087,7 +3088,8 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
+     return consumed;
+ }
+ 
+-void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
++static void gif_process_quadwords_impl(int channel, const uint8_t *data,
++                                       uint32_t qwc, int count_kick)
+ {
+     /* Round 542: `channel` is now a real GIF_PATH_1/2/3 selector (see
+      * gif.h) - clamp defensively to PATH_3 for any out-of-range value
+@@ -3101,7 +3103,7 @@ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
+     /* Round 577 (task #551): real diagnostic counter - see gif.h's
+      * gif_path1_transfers comment. Counts the call, not the quadword
+      * count, matching "one XGKICK = one transfer" semantics. */
+-    if (s_gif_active_path == GIF_PATH_1)
++    if (s_gif_active_path == GIF_PATH_1 && count_kick)
+         g_gif.gif_path1_transfers++;
+ 
+     uint32_t len = qwc * 16u;
+@@ -3116,7 +3118,10 @@ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
+         uint32_t take_qwords = owed_qwords < avail_qwords ? owed_qwords : avail_qwords;
+         if (g_gif.trx_active) image_write_pixel_qwords(data, take_qwords);
+         g_gif.image_carry_remaining_qwords = owed_qwords - take_qwords;
++        g_gif.image_carry_path[s_gif_active_path] = g_gif.image_carry_remaining_qwords;
+         off = take_qwords * 16u;
++        if(!g_gif.image_carry_remaining_qwords && s_gif_active_path==GIF_PATH_1 &&
++           g_gif.image_eop_path[GIF_PATH_1])return;
+     }
+ 
+     gif_register_carry_t *carry=&g_gif.register_carry_path[s_gif_active_path];
+@@ -3140,6 +3145,42 @@ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
+     g_gif.image_carry_path[s_gif_active_path] = g_gif.image_carry_remaining_qwords;
+ }
+ 
++void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
++{
++    gif_process_quadwords_impl(channel,data,qwc,1);
++}
++
++/* A synchronous XGKICK submits at most one complete VU1 ring traversal.
++ * PCSX2 GSState clears an incomplete PATH1 NLOOP at this boundary (BIOS
++ * packets can omit EOP). Do not let a stale tag consume the next kick.
++ * Generic DMA/DIRECT streams keep their cross-call continuation state. */
++void gif_process_xgkick(const uint8_t *data, uint32_t qwc)
++{
++    gif_begin_xgkick();
++    gif_process_xgkick_fragment(data,qwc);
++    gif_end_xgkick();
++}
++
++void gif_end_xgkick(void)
++{
++    memset(&g_gif.register_carry_path[GIF_PATH_1], 0,
++           sizeof(g_gif.register_carry_path[GIF_PATH_1]));
++    g_gif.image_carry_path[GIF_PATH_1] = 0;
++    g_gif.image_eop_path[GIF_PATH_1] = 0;
++    if(s_gif_active_path==GIF_PATH_1)g_gif.image_carry_remaining_qwords = 0;
++}
++
++void gif_begin_xgkick(void)
++{
++    gif_end_xgkick();
++    g_gif.gif_path1_transfers++;
++}
++
++void gif_process_xgkick_fragment(const uint8_t *data,uint32_t qwc)
++{
++    gif_process_quadwords_impl(GIF_PATH_1,data,qwc,0);
++}
++
+ /* Round 542: real GIF MMIO register block (0x10003000-0x100030A0).
+  * See gif.h's field comments (gif_ctrl/gif_mode/gif_tag0-3/gif_cnt/
+  * gif_p3cnt/gif_p3tag) for the full per-register citation/rationale;
+diff --git a/source/hw/vu.c b/source/hw/vu.c
+index f4ee0f0..8a3fa49 100644
+--- a/source/hw/vu.c
++++ b/source/hw/vu.c
+@@ -18,6 +18,8 @@
+ #include <math.h>
+ 
+ static vu1_state_t g_vu1;
++static void vu1_service_xgkick(int flush);
++static void vu1_issue_xgkick(uint32_t addr);
+ 
+ void vu1_init(void)
+ {
+@@ -295,6 +297,10 @@ int vu_micro_step_pipeline(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
+             vi[23]=pipeline->p_value;pipeline->p_pending=0;
+         }
+     }
++    /* Drain bytes whose VU issue clocks elapsed before this pair can
++     * overwrite them. FDIV/EFU stalls contribute to the same clock. */
++    if(mem==g_vu1.mem && pipeline==&g_vu1.pipeline)
++        vu1_service_xgkick(0);
+     unsigned upper_dst=vu_pair_upper_dest(upper);
+     int conflict=vu_pair_vf_conflict(upper,lower);
+     uint32_t old_vf[4],new_vf[4];
+@@ -408,23 +414,68 @@ int vu_micro_step_pipeline(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4],
+     return 0;
+ }
+ 
+-/* R1330-D PATH1 boundary service. XGKICK supplies a ring start, not an
+- * exact packet length; gif_process_quadwords() already terminates PATH1
+- * at EOP. Linearize only when the packet starts away from qword zero. */
+-static void vu1_service_xgkick(void)
++/* PCSX2 VUops.cpp _vuXGKICKTransfer/_vuXGKICK: one quadword per
++ * two VU clocks, with one issue-cycle credit. Packet lengths are read
++ * lazily from live VU memory; later SQ writes are visible until transfer.
++ * No ring copy or transfer-sized temporary buffer is needed. The one-ring
++ * cap retains the BIOS malformed-packet bound from GSState::Transfer<0>. */
++static void vu1_service_xgkick(int flush)
+ {
+-    static uint8_t wrapped[VU1_MEM_SIZE];
+-    uint32_t addr;
+-    if (!g_vu1.xgkick_pending) return;
+-    addr = g_vu1.xgkick_addr & (VU1_MEM_SIZE - 1u);
+-    g_vu1.xgkick_pending = 0u;
+-    if (addr) {
+-        memcpy(wrapped, g_vu1.mem + addr, VU1_MEM_SIZE - addr);
+-        memcpy(wrapped + (VU1_MEM_SIZE - addr), g_vu1.mem, addr);
+-        gif_process_quadwords(GIF_PATH_1, wrapped, VU1_MEM_SIZE / 16u);
+-    } else {
+-        gif_process_quadwords(GIF_PATH_1, g_vu1.mem, VU1_MEM_SIZE / 16u);
++    if(!g_vu1.xgkick_pending)return;
++    uint64_t now=g_vu1.pipeline.cycle;
++    if(now>=g_vu1.xgkick_last_cycle)
++        g_vu1.xgkick_cycle_credit+=now-g_vu1.xgkick_last_cycle;
++    g_vu1.xgkick_last_cycle=now;
++    while(g_vu1.xgkick_pending && (flush || g_vu1.xgkick_cycle_credit>=2u)) {
++        uint32_t addr=g_vu1.xgkick_addr;
++        if(!g_vu1.xgkick_packet_qwords) {
++            uint32_t lo=vu_rd_le32(g_vu1.mem+addr);
++            uint32_t hi=vu_rd_le32(g_vu1.mem+addr+4u);
++            uint32_t loops=lo&0x7fffu,mode=(hi>>26)&3u,nreg=hi>>28;
++            if(!nreg)nreg=16u;
++            uint32_t payload=mode==0u?loops*nreg:
++                mode==1u?(loops*nreg+1u)/2u:loops;
++            g_vu1.xgkick_packet_qwords=1u+payload;
++            g_vu1.xgkick_eop=!!(lo&0x8000u);
++        }
++        uint32_t take=flush?g_vu1.xgkick_ring_qwords:
++            (uint32_t)(g_vu1.xgkick_cycle_credit/2u > g_vu1.xgkick_ring_qwords ?
++                g_vu1.xgkick_ring_qwords:g_vu1.xgkick_cycle_credit/2u);
++        if(take>g_vu1.xgkick_packet_qwords)take=g_vu1.xgkick_packet_qwords;
++        if(take>(VU1_MEM_SIZE-addr)/16u)take=(VU1_MEM_SIZE-addr)/16u;
++        gif_process_xgkick_fragment(g_vu1.mem+addr,take);
++        g_vu1.xgkick_addr=(addr+take*16u)&(VU1_MEM_SIZE-1u);
++        g_vu1.xgkick_packet_qwords-=take;
++        g_vu1.xgkick_ring_qwords-=take;
++        uint64_t cost=take*2u;
++        g_vu1.xgkick_cycle_credit=g_vu1.xgkick_cycle_credit>cost?
++            g_vu1.xgkick_cycle_credit-cost:0u;
++        if(flush)g_vu1.pipeline.cycle+=cost;
++        if(!g_vu1.xgkick_ring_qwords ||
++           (!g_vu1.xgkick_packet_qwords && g_vu1.xgkick_eop)) {
++            g_vu1.xgkick_pending=0;
++            ee_core_get_state()->cop2_ctrl[29]&=~(1u<<12);
++            gif_end_xgkick();
++        }
+     }
++    g_vu1.xgkick_last_cycle=g_vu1.pipeline.cycle;
++}
++
++static void vu1_issue_xgkick(uint32_t addr)
++{
++    if(g_vu1.xgkick_pending) {
++        g_vu1.xgkick_busy_stalls++;
++        vu1_service_xgkick(1);
++    }
++    g_vu1.xgkick_addr=addr&(VU1_MEM_SIZE-16u);
++    g_vu1.xgkick_packet_qwords=0;
++    g_vu1.xgkick_ring_qwords=VU1_MEM_SIZE/16u;
++    g_vu1.xgkick_cycle_credit=1u;
++    g_vu1.xgkick_last_cycle=g_vu1.pipeline.cycle;
++    g_vu1.xgkick_eop=0;
++    g_vu1.xgkick_pending=1;
++    ee_core_get_state()->cop2_ctrl[29]|=1u<<12;
++    gif_begin_xgkick();
+ }
+ 
+ /* Compatibility one-pair API: no asynchronous state supplied. Production
+@@ -461,24 +512,23 @@ static inline int vu1_block_candidate(void)
+ static void vu1_run_pairs(void)
+ {
+     for (uint32_t i = 0; i < VU_EXEC_STEP_CAP; i++) {
+-        vu1_service_xgkick();
+         int stopped = vu_micro_step_pipeline(g_vu1.vf, g_vu1.vi, g_vu1.acc,
+                                      g_vu1.mem, VU1_MEM_SIZE - 1u,
+                                      g_vu1.micro, VU1_MICRO_SIZE - 1u,
+                                      &g_vu1.tpc, &g_vu1.branch_delay, &g_vu1.branch_target,
+                                      &g_vu1.ebit_delay,
+                                      &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline);
+-        if (stopped)
++        if (stopped) {
++            vu1_service_xgkick(1);
+             break;
++        }
+     }
+-    vu1_service_xgkick();
+ 
+ }
+ 
+ static void vu1_run_blocks(void)
+ {
+     for (uint32_t i = 0; i < VU_EXEC_STEP_CAP; i++) {
+-        vu1_service_xgkick();
+         unsigned ran=0;
+         if(!vu_aot_available(vu_rd_le32(g_vu1.micro+((g_vu1.tpc+4u)&(VU1_MICRO_SIZE-1u))),vu_rd_le32(g_vu1.micro+(g_vu1.tpc&(VU1_MICRO_SIZE-1u))))&&vu1_block_candidate())ran=vu_jit_try_block(g_vu1.vf,g_vu1.vi,g_vu1.acc,g_vu1.mem,VU1_MEM_SIZE-1u,
+             g_vu1.micro,VU1_MICRO_SIZE-1u,&g_vu1.tpc,&g_vu1.branch_delay,&g_vu1.branch_target,
+@@ -490,10 +540,11 @@ static void vu1_run_blocks(void)
+                                      &g_vu1.tpc, &g_vu1.branch_delay, &g_vu1.branch_target,
+                                      &g_vu1.ebit_delay,
+                                      &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline);
+-        if (stopped)
++        if (stopped) {
++            vu1_service_xgkick(1);
+             break;
++        }
+     }
+-    vu1_service_xgkick();
+ 
+ }
+ 
+diff --git a/source/hw/vu_lower_body.inc b/source/hw/vu_lower_body.inc
+index decd625..2966209 100644
+--- a/source/hw/vu_lower_body.inc
++++ b/source/hw/vu_lower_body.inc
+@@ -208,12 +208,9 @@
+                      * zero EE-side triangle vertex kicks) had no way to
+                      * ever reach the rasterizer.
+                      *
+-                     * This project makes the transfer synchronous - same
+-                     * simplification precedent as vu1_exec_micro() already
+-                     * treating MSCAL as blocking-to-completion instead of
+-                     * real hardware's per-cycle async xgkickenable/
+-                     * xgkickaddr/xgkickdiff queueing and metered drain (see
+-                     * PCSX2's _vuXGKICKTransfer()) - not modeled here.
++                     * The production VU1 sender meters quadwords at VU
++                     * issue boundaries and flushes at E/second-kick boundaries.
++                     * VU execution itself still runs synchronously within VIF.
+                      *
+                      * VU0 has NO real XGKICK/GIF connection at all on real
+                      * hardware (only VU1 is wired to the GIF unit) - this
+@@ -226,19 +223,9 @@
+                      * misinterpreting VU0's much smaller data memory as a
+                      * GS packet stream. */
+                     uint32_t addr = (vu_read_vi16(vi, rs) & 0x3FFu) * 16u;
+-                    /* R1330-D: only the real production VU1 state owns
+-                     * PATH1. Latch the kick here; the runner drains it at
+-                     * an explicit instruction boundary instead of entering
+-                     * the GIF parser from inside this opcode. */
+-                    if (mem == g_vu1.mem && mem_mask == (VU1_MEM_SIZE - 1u)) {
+-                        if (!g_vu1.xgkick_pending) {
+-                            g_vu1.xgkick_addr = addr;
+-                            g_vu1.xgkick_pending = 1u;
+-                        } else {
+-                            /* Never overwrite an outstanding PATH1 start. */
+-                            g_vu1.xgkick_busy_stalls++;
+-                        }
+-                    }
++                    /* Only the physical VU1 instance can own PATH1. */
++                    if(mem==g_vu1.mem && mem_mask==VU1_MEM_SIZE-1u)
++                        vu1_issue_xgkick(addr);
+                     return 1;
+                 }
+                 if (fdslot == VULS_FD_R_GROUP) {
+diff --git a/source/main.c b/source/main.c
+index a866eb1..71d2109 100644
+--- a/source/main.c
++++ b/source/main.c
+@@ -18,7 +18,7 @@
+ #ifdef GEKKO2_IOP_LIGHTREC_PILOT
+ #ifdef GEKKO2_GX_NATIVE_ADDITIVE
+ #ifdef GEKKO2_EE_AOT
+-#define GEKKO2_BUILD_NAME "" GEKKO2_RELEASE "-AOT2 hybrid EE/IOP/VU recompilation beta"
++#define GEKKO2_BUILD_NAME "" GEKKO2_RELEASE "-AOT3 hybrid recompilation / XGKICK timing beta"
+ #else
+ #define GEKKO2_BUILD_NAME "" GEKKO2_RELEASE "-B GX destination-alpha correction graphics beta"
+ #endif
+diff --git a/tests/test_ee_aot.c b/tests/test_ee_aot.c
+index 2af3dfc..5047860 100644
+--- a/tests/test_ee_aot.c
++++ b/tests/test_ee_aot.c
+@@ -51,6 +51,7 @@ int main(void)
+             /* Exercise zero/negative comparisons and high halves as well. */
+             if(trial<4){st->gpr[1].ud0=trial==0?0:trial==1?UINT64_MAX:trial==2?UINT64_C(0x8000000000000000):UINT64_C(0x7fffffff);st->gpr[2].ud0=st->gpr[1].ud0;}
+             if(entry->memory)st->gpr[1].ud0=0x80300000u;
++            st->gpr[4].ud0=0x80300000u;
+             st->hi.ud0=random64();st->lo.ud0=random64();
+             st->pc=entry->pc;st->next_pc=entry->pc+4;
+             for(unsigned i=0;i<sizeof data;i++)data[i]=(uint8_t)random64();
+@@ -81,10 +82,16 @@ int main(void)
+     write32(st->ram+(entry->pc&0x1fffffffu)+4,0x24030001u);
+     assert(ee_aot_try_execute_fetched(st,2,entry->words[0])==1);
+     assert(st->pc==entry->pc+4&&st->instructions_executed==before.instructions_executed+1);
+-    *st=before;st->branch_pending=1;
+-    assert(!ee_aot_try_execute_fetched(st,2,entry->words[0]));
+-    *st=before;st->exc_in_delay_slot=1;
+-    assert(!ee_aot_try_execute_fetched(st,2,entry->words[0]));
++    /* A selected straight-line entry may be an actual delay slot. It
++     * retires exactly once and exposes the older branch target. */
++    *st=before;st->branch_pending=1;st->next_pc=entry->pc+64u;
++    ee_state_t delay_start=*st;
++    gekko2_optimization_mask &= ~GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
++    assert(ee_core_step_n(1)==1);scalar=*st;
++    *st=delay_start;
++    assert(ee_aot_try_execute_fetched(st,2,entry->words[0])==1);
++    same(&scalar,st);
++    gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
+     *st=before;assert(!ee_aot_try_execute_fetched(st,0,entry->words[0]));
+     *st=before;ee_core_interleave_quantum=1u;
+     assert(ee_aot_try_execute_fetched(st,32u,entry->words[0])==1u);
+@@ -107,6 +114,28 @@ int main(void)
+         st->gpr[1].ud0=0x10003000u;before=*st;
+         assert(!ee_aot_try_execute_fetched(st,2,entry->words[0]));same(&before,st);break;
+     }
++    /* A fused slot is fetched again after the branch retires. */
++    for(unsigned f=0;f<aot_fixture_count;f++)if(aot_fixtures[f].words[0]==0x10220003u &&
++                                               aot_fixtures[f].words[1]==0x24630001u) {
++        entry=&aot_fixtures[f];*st=initial;
++        st->pc=entry->pc;st->next_pc=entry->pc+4;
++        write32(st->ram+(entry->pc&0x1fffffffu),entry->words[0]);
++        write32(st->ram+(entry->pc&0x1fffffffu)+4,0x24630002u);
++        assert(ee_aot_try_execute_fetched(st,2,entry->words[0])==1);
++        assert(st->branch_pending && st->pc==entry->pc+4 && !st->gpr[3].ud0);
++        assert(ee_core_step_n(1)==1 && st->gpr[3].ud0==2u);
++        write32(st->ram+(entry->pc&0x1fffffffu)+4,entry->words[1]);
++        *st=initial;st->pc=entry->pc;st->next_pc=entry->pc+4;
++        st->cop0[12]=0x00418001u;st->cop0[11]=st->cop0[9]+1u;
++        ee_state_t irq_start=*st;
++        gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
++        /* Count latches at the branch; the existing core takes its IRQ
++         * after the slot. Fusing cannot change that boundary. */
++        assert(ee_core_step_n(2)==2);scalar=*st;
++        *st=irq_start;assert(ee_aot_try_execute_fetched(st,2,entry->words[0])==2);
++        same(&scalar,st);gekko2_optimization_mask|=GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
++        break;
++    }
+     printf("PASS EE AOT: %u interpreter comparisons; source, partial exit, delay-slot execution, quantum, precise IRQ, TLB and MMIO guards\n",checked);
+     return 0;
+ }
+diff --git a/tests/test_ee_cop2_branch_aot3.c b/tests/test_ee_cop2_branch_aot3.c
+new file mode 100644
+index 0000000..fb6f6e7
+--- /dev/null
++++ b/tests/test_ee_cop2_branch_aot3.c
+@@ -0,0 +1,53 @@
++/* GPL-3.0-or-later. BC2 hardware condition, annulment and exception oracles. */
++#include <assert.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include "core/ee/ee_core.h"
++#include "core/recompiler/optimization.h"
++static void put(uint8_t *p,uint32_t w){for(unsigned i=0;i<4;i++)p[i]=w>>(8*i);}
++int main(void) {
++    bios_image_t bios={0};bios.data=calloc(1,BIOS_MAX_SIZE);bios.size=BIOS_MAX_SIZE;bios.loaded=1;
++    assert(!ee_core_init(&bios));ee_state_t *s=ee_core_get_state();ee_state_t initial=*s;
++    const uint32_t pc=0x8020f000u;
++    gekko2_optimization_mask&=~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT));
++    for(unsigned condition=0;condition<2;condition++)for(unsigned kind=0;kind<4;kind++) {
++        *s=initial;s->pc=pc;s->next_pc=pc+4;s->cop2_ctrl[29]=condition<<8;
++        uint32_t branch=0x49000003u|(kind<<16);
++        put(s->ram+(pc&0x1fffffff),branch);
++        put(s->ram+(pc&0x1fffffff)+4,0x24030001u);
++        put(s->ram+(pc&0x1fffffff)+8,0x24040002u);
++        int taken=condition==(kind&1u),annul=!taken&&(kind&2u);
++        assert(ee_core_step_n(1)==1 && !s->halted);
++        assert(s->pc==pc+(annul?8u:4u));
++        assert(s->branch_pending==!annul && !s->gpr[3].ud0);
++        assert(ee_core_step_n(1)==1 && !s->halted);
++        assert(s->pc==pc+(taken?16u:annul?12u:8u));
++        assert(s->gpr[3].ud0==(annul?0u:1u));
++        assert(s->gpr[4].ud0==(annul?2u:0u));
++    }
++    *s=initial;s->pc=pc;s->next_pc=pc+4;s->cop2_ctrl[29]=1u<<8;
++    s->gpr[1].ud0=0x7fffffffu;s->gpr[2].ud0=1;s->gpr[3].ud0=0x55;
++    put(s->ram+(pc&0x1fffffff),0x49010003u);
++    put(s->ram+(pc&0x1fffffff)+4,0x00221820u);
++    assert(ee_core_step_n(2)==2);
++    assert(s->cop0[14]==pc && (s->cop0[13]&0x80000000u));
++    assert(((s->cop0[13]>>2)&31u)==12u && s->gpr[3].ud0==0x55);
++    /* VF0 is immutable, but LQC2 must still take a missing data TLB fault. */
++    *s=initial;s->pc=pc;s->next_pc=pc+4;s->gpr[1].ud0=0x00400000u;
++    put(s->ram+(pc&0x1fffffff),(0x36u<<26)|(1u<<21));
++    assert(ee_core_step_n(1)==1 && s->mem_tlb_miss);
++    assert(s->cop0[14]==pc && ((s->cop0[13]>>2)&31u)==2u);
++    assert(s->vu0_vf[0][0]==0 && s->vu0_vf[0][3]==0x3f800000u);
++    /* J/JAL use the PC+4 region, including a 256 MiB boundary. */
++    for(unsigned op=2;op<=3;op++) {
++        *s=initial;s->pc=0x0ffffffcu;s->next_pc=0x10000000u;
++        s->tlb[0].entry_hi=0x0fffe000u;
++        s->tlb[0].entry_lo1=(0x200u<<6)|6u;
++        put(s->ram+0x200ffcu,(op<<26)|4u);
++        assert(ee_core_step_n(1)==1);
++        assert(s->pc==0x10000000u && s->next_pc==0x10000010u && s->branch_pending);
++        if(op==3)assert(s->gpr[31].ud0==0x10000004u);
++    }
++    puts("PASS BC2 condition matrix, delay slots, likely annulment, precise overflow BD/EPC");
++    return 0;
++}
+diff --git a/tests/test_ee_vector_memory_internal.c b/tests/test_ee_vector_memory_internal.c
+index 58fa094..3adbdd4 100644
+--- a/tests/test_ee_vector_memory_internal.c
++++ b/tests/test_ee_vector_memory_internal.c
+@@ -18,8 +18,11 @@ int main(void)
+   st.gpr[3].ud0=0x300000;st.tlb[0].entry_lo0=(0x300u<<6)|2;
+   assert(!!ee_core_block_memory_resolve(&st,iw)==(op==0x36));st.tlb[0].entry_lo0=(0x300u<<6)|6;
+  }
+- assert(ee_jit_block_candidate(0x36u<<26));assert(!ee_jit_block_memory_width(0x36u<<26));
++ assert(ee_jit_block_candidate(0x36u<<26));assert(ee_jit_block_memory_width(0x36u<<26)==16);
+  assert(ee_jit_block_memory_store(0x3eu<<26));assert(!ee_jit_block_memory_store(0x36u<<26));
+  assert(ee_jit_block_memory_width(0x27u<<26)==4);
+- puts("PASS vector memory proof: unmasked EA, page crossings, V/D, VF00 no-access and LWU");return 0;
++ st.gpr[3].ud0=0x803ffff4;
++ assert(!ee_core_block_memory_resolve(&st,(0x36u<<26)|(3u<<21)));
++ assert(!ee_core_block_memory_resolve(&st,(0x3eu<<26)|(3u<<21)));
++ puts("PASS vector memory proof: unmasked EA, page crossings, V/D, VF00 read proof and LWU");return 0;
+ }
+diff --git a/tests/test_vu_q_pipeline_internal.c b/tests/test_vu_q_pipeline_internal.c
+index eec65f1..0b2064a 100644
+--- a/tests/test_vu_q_pipeline_internal.c
++++ b/tests/test_vu_q_pipeline_internal.c
+@@ -129,7 +129,7 @@ int main(void){
+     vu1_micro_write32(4,NOP|0x40000000u);
+     vu1_micro_write32(8,0);vu1_micro_write32(12,NOP);
+     vu1_exec_micro(0);
+-    CHECK(!s->xgkick_pending);CHECK(s->xgkick_addr==16368);
++    CHECK(!s->xgkick_pending);CHECK(s->xgkick_addr==16); /* consumed tag+payload, wrapped */
+     CHECK(gif_get_state()->prim==0x46);CHECK(gif_get_state()->gif_path1_transfers==1);
+     puts("PASS EFU/P, flag queries, CLIP ordering and deferred wrapped PATH1");
+     puts("PASS VU selectors, Q issue/WAITQ/reissue/flags/E-bit and VF pair hazards");return 0;
+diff --git a/tests/test_xgkick_boundary_r1379.c b/tests/test_xgkick_boundary_r1379.c
+new file mode 100644
+index 0000000..206302c
+--- /dev/null
++++ b/tests/test_xgkick_boundary_r1379.c
+@@ -0,0 +1,36 @@
++#include <assert.h>
++#include <stdio.h>
++#include "hw/gif.c"
++static void w(uint8_t*p,uint32_t x){for(int i=0;i<4;i++)p[i]=x>>(8*i);}
++int main(void){
++ uint8_t tag[16]={0},packet[32]={0};
++ gif_init();gs_mem_init();
++ /* PACKED A+D tag with an incomplete payload and no EOP. */
++ w(tag,4);w(tag+4,1u<<28);w(tag+8,0xe);
++ gif_process_quadwords(GIF_PATH_3,tag,1);
++ assert(g_gif.register_carry_path[GIF_PATH_3].remaining);
++ gif_process_xgkick(tag,1);
++ assert(!g_gif.register_carry_path[GIF_PATH_1].remaining);
++ assert(g_gif.register_carry_path[GIF_PATH_3].remaining);
++ w(packet,1u|0x8000u);w(packet+4,1u<<28);w(packet+8,0xe);
++ w(packet+16,0x1234);w(packet+24,GS_REG_XYOFFSET_1);
++ gif_process_xgkick(packet,2);
++ assert(g_gif.ctx1_xyoffset_x==0x1234);
++ assert(!g_gif.register_carry_path[GIF_PATH_1].remaining);
++ /* IMAGE EOP continuation stops before unrelated following words. */
++ memset(tag,0,sizeof tag);w(tag,2u|0x8000u);w(tag+4,2u<<26);
++ gif_process_quadwords(GIF_PATH_1,tag,1);
++ assert(g_gif.image_carry_path[GIF_PATH_1]==2);
++ uint8_t tail[64]={0};memcpy(tail+32,packet,32);w(tail+48,0x9999);
++ gif_process_quadwords(GIF_PATH_1,tail,4);
++ assert(g_gif.ctx1_xyoffset_x==0x1234);
++ assert(!g_gif.image_carry_path[GIF_PATH_1]);
++ /* Ending PATH1 never clears another path's current IMAGE bookkeeping. */
++ gif_init();
++ w(tag,3u);gif_process_quadwords(GIF_PATH_3,tag,1);
++ assert(g_gif.image_carry_remaining_qwords==3);
++ gif_end_xgkick();
++ assert(g_gif.image_carry_path[GIF_PATH_3]==3 && g_gif.image_carry_remaining_qwords==3);
++ puts("PASS incomplete bounded XGKICK does not poison next kick or PATH3");
++ return 0;
++}
+diff --git a/tests/test_xgkick_timing_aot3.c b/tests/test_xgkick_timing_aot3.c
+new file mode 100644
+index 0000000..81ea8a3
+--- /dev/null
++++ b/tests/test_xgkick_timing_aot3.c
+@@ -0,0 +1,74 @@
++/* GPL-3.0-or-later. Independent VU issue-clock and GIF boundary oracles. */
++#include <assert.h>
++#include <stdio.h>
++#include <string.h>
++#include "core/hw/vu.h"
++#include "core/hw/gif.h"
++#include "core/hw/gs_mem.h"
++#include "core/ee/ee_core.h"
++#include "core/recompiler/optimization.h"
++static void put(uint8_t *p,uint32_t w){for(unsigned i=0;i<4;i++)p[i]=w>>(8*i);}
++static const uint32_t kick=0x80000efcu; /* XGKICK VI1 */
++static void packet(uint32_t addr,uint32_t value) {
++    vu1_state_t *v=vu1_get_state();
++    memset(v->mem+addr,0,16);
++    put(v->mem+addr,0x8001u);put(v->mem+addr+4,1u<<28);put(v->mem+addr+8,14u);
++    addr=(addr+16u)&16383u;memset(v->mem+addr,0,16);
++    put(v->mem+addr,value);put(v->mem+addr+8,GS_REG_XYOFFSET_1);
++}
++static int step(uint32_t lower,uint32_t upper) {
++    vu1_state_t *v=vu1_get_state();unsigned off=v->tpc&16383u;
++    put(v->micro+off,lower);put(v->micro+off+4,upper);
++    return vu_micro_step_pipeline(v->vf,v->vi,v->acc,v->mem,16383u,
++        v->micro,16383u,&v->tpc,&v->branch_delay,&v->branch_target,&v->ebit_delay,
++        &v->instructions_executed,&v->unimplemented_opcodes_seen,&v->pipeline);
++}
++static void reset(void){vu1_init();gif_init();gs_mem_init();memset(ee_core_get_state()->cop2_ctrl,0,sizeof ee_core_get_state()->cop2_ctrl);}
++int main(void) {
++    gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
++    reset();vu1_state_t *v=vu1_get_state();gif_state_t *g=gif_get_state();
++    v->vi[1]=0;packet(0,0x1111);
++    assert(!step(kick,0x2ff));
++    assert(v->xgkick_pending && v->xgkick_addr==0);
++    assert(ee_core_get_state()->cop2_ctrl[29]&(1u<<12));
++    assert(g->ctx1_xyoffset_x==0 && g->gif_path1_transfers==1);
++    assert(!step(0x800003bf,0x2ff));assert(v->xgkick_addr==16);
++    /* The source is still live after its tag left VU memory. */
++    put(v->mem+16,0x2222);
++    assert(!step(0x800003bf,0x2ff));assert(g->ctx1_xyoffset_x==0);
++    assert(!step(0x800003bf,0x2ff));
++    assert(g->ctx1_xyoffset_x==0x2222 && !v->xgkick_pending);
++    assert(!(ee_core_get_state()->cop2_ctrl[29]&(1u<<12)));
++    assert(g->gif_path1_transfers==1);
++
++    reset();v->vi[1]=1023;packet(16368,0x3456);
++    step(kick,0x2ff);step(0x800003bf,0x2ff);
++    assert(v->xgkick_addr==0 && v->xgkick_pending);
++    step(0x800003bf,0x2ff);step(0x800003bf,0x2ff);
++    assert(g->ctx1_xyoffset_x==0x3456 && !v->xgkick_pending);
++
++    reset();v->vi[1]=0;packet(0,0x1234);packet(32,0x5678);
++    step(kick,0x2ff);v->vi[1]=2;step(kick,0x2ff);
++    assert(g->ctx1_xyoffset_x==0x1234 && v->xgkick_pending);
++    assert(v->xgkick_busy_stalls==1 && g->gif_path1_transfers==2);
++    for(unsigned n=0;n<3;n++)step(0x800003bf,0x2ff);
++    assert(g->ctx1_xyoffset_x==0x5678 && !v->xgkick_pending);
++
++    /* Actual runner: E plus one delay pair must flush the remaining packet. */
++    reset();v->vi[1]=0;packet(0,0x6789);
++    put(v->micro,kick);put(v->micro+4,0x400002ff);
++    put(v->micro+8,0x800003bf);put(v->micro+12,0x2ff);
++    vu1_exec_micro(0);
++    assert(g->ctx1_xyoffset_x==0x6789 && !v->xgkick_pending);
++    assert(v->instructions_executed==2 && g->gif_path1_transfers==1);
++
++    /* A no-EOP oversized BIOS packet is bounded to one physical ring. */
++    reset();put(v->mem,0x7fff);put(v->mem+4,0); /* NREG=0 means 16 */
++    put(v->micro,kick);put(v->micro+4,0x400002ff);
++    put(v->micro+8,0x800003bf);put(v->micro+12,0x2ff);
++    vu1_exec_micro(0);
++    assert(!v->xgkick_pending && !g->register_carry_path[GIF_PATH_1].remaining);
++    assert(v->pipeline.cycle<=2050u && g->gif_path1_transfers==1);
++    puts("PASS XGKICK two-cycle clock, live source, wrap, second kick, E drain, BIOS bound");
++    return 0;
++}
+diff --git a/tools/build_ee_aot.sh b/tools/build_ee_aot.sh
+index 43fa4f9..d4fa05a 100644
+--- a/tools/build_ee_aot.sh
++++ b/tools/build_ee_aot.sh
+@@ -11,5 +11,5 @@ fi
+ python3 tools/ee_aot_generate.py --profile "$1" --max-blocks "${EE_AOT_MAX_BLOCKS:-512}" --output source/core/recompiler/ee_aot_generated.inc --complex-output source/core/ee/ee_aot_complex_generated.inc
+ python3 tools/vu_aot_generate.py --micro "$1.vu0.bin" --micro "$1.vu1.bin" --output source/hw/vu_aot_generated.inc
+ python3 tools/iop_aot_generate.py --profile "$1" --output source/core/iop/iop_aot_generated.inc
+-make -j4 BUILD=build-r1378-aot2 TARGET=Gekko2-R1378-AOT2 LIGHTREC_PILOT=1 EXTRA_CFLAGS='-ffp-contract=off -DGEKKO2_EE_AOT -DGEKKO2_VU_AOT -DGEKKO2_IOP_AOT -DGEKKO2_EE_BLOCK_FAST -DGEKKO2_GOURAUD_EARLY_DEGENERATE -DGEKKO2_ARM_BETA -DGEKKO2_DSI_FASTMEM -DGEKKO2_GX_NATIVE_ADDITIVE -DGEKKO2_GX_RESIDENT_FENCE'
+-python3 tools/verify_wii_memory.py Gekko2-R1378-AOT2.elf
++make -j4 BUILD=build-r1379-aot3 TARGET=Gekko2-R1379-AOT3 LIGHTREC_PILOT=1 EXTRA_CFLAGS='-ffp-contract=off -DGEKKO2_EE_AOT -DGEKKO2_VU_AOT -DGEKKO2_IOP_AOT -DGEKKO2_EE_BLOCK_FAST -DGEKKO2_GOURAUD_EARLY_DEGENERATE -DGEKKO2_ARM_BETA -DGEKKO2_DSI_FASTMEM -DGEKKO2_GX_NATIVE_ADDITIVE -DGEKKO2_GX_RESIDENT_FENCE'
++python3 tools/verify_wii_memory.py Gekko2-R1379-AOT3.elf
+diff --git a/tools/ee_aot_generate.py b/tools/ee_aot_generate.py
+index 18de0ba..6c1ffc0 100644
+--- a/tools/ee_aot_generate.py
++++ b/tools/ee_aot_generate.py
+@@ -25,7 +25,7 @@ def complex_family(word):
+         if rs in (0,2,4,6) or rs==8 and rt<4 or rs==20 and fn==32:return 'cop1'
+         if rs==16 and fn in (0,1,2,3,4,5,6,7,0x16,0x18,0x19,0x1a,0x1c,0x1d,0x1e,0x1f,0x24,0x28,0x29,0x32,0x34,0x36):return 'cop1'
+     if op==0x12:
+-        if rs in (0,1,2,4,5,6):return 'cop2'
++        if rs in (0,1,2,4,5,6) or rs==8 and rt<4:return 'cop2'
+         if rs&16:
+             if fn<=0x32 or fn in (0x34,0x35,0x38,0x39):
+                 if fn!=0x33:return 'cop2'
+@@ -78,6 +78,32 @@ def number(value):
+     return result
+ 
+ 
++def has_delay_slot(word):
++    op, rs, rt, fn = word >> 26, word >> 21 & 31, word >> 16 & 31, word & 63
++    return (op in (2, 3, 4, 5, 6, 7, 20, 21, 22, 23) or
++            op == 0 and fn in (8, 9) or
++            op == 1 and rt in (0, 1, 2, 3, 16, 17, 18, 19) or
++            op in (16, 17, 18) and rs == 8 and rt < 4)
++
++
++def supported_prefix(pc, values, max_words):
++    words = []
++    slot = False
++    for value in values[:max_words]:
++        word = number(value)
++        result = translate(word, pc + len(words) * 4)
++        if result is None or slot and result[1]:
++            break
++        words.append(word)
++        if slot:
++            break
++        if result[1]:
++            if not has_delay_slot(word):
++                break
++            slot = True
++    return words
++
++
+ def translate(word, pc):
+     op, rs, rt, rd, sa, fn = word >> 26, word >> 21 & 31, word >> 16 & 31, word >> 11 & 31, word >> 6 & 31, word & 63
+     imm = (word & 0xffff) - (0x10000 if word & 0x8000 else 0)
+@@ -89,7 +115,7 @@ def translate(word, pc):
+     family=complex_family(word)
+     # COP/MMI/memory specializations execute the same bodies as the scalar core.
+     if family and (op not in (32,33,35,36,37,39,55,40,41,43,63)):
+-        terminal=(op==0x10 and rs!=0) or (op==0x11 and rs==8) or (op==0x12 and rs&16 and fn in (56,57))
++        terminal=(op==0x10 and rs!=0) or (op in (0x11,0x12) and rs==8) or (op==0x12 and rs&16 and fn in (56,57))
+         return f'(void)ee_aot_execute_complex(st, UINT32_C(0x{word:08x}));',bool(terminal)
+     if op in (8,24) or op==0 and fn in (32,34,44,46):
+         bits=32 if op==8 or op==0 and fn in (32,34) else 64
+@@ -174,7 +200,7 @@ def translate(word, pc):
+             link = assign(rd, f'UINT64_C(0x{(pc+8)&0xffffffff:08x})') if fn == 9 else ''
+             return f'{{ uint32_t target=(uint32_t){g(rs)}; {link} st->next_pc=target; st->branch_pending=1; }}', True
+     if op in (2, 3):
+-        jump = (pc & 0xf0000000) | ((word & 0x3ffffff) << 2)
++        jump = ((pc + 4) & 0xf0000000) | ((word & 0x3ffffff) << 2)
+         link = assign(31, f'UINT64_C(0x{(pc+8)&0xffffffff:08x})') if op == 3 else ''
+         return f'{link} st->next_pc=UINT32_C(0x{jump:08x}); st->branch_pending=1;', True
+     if op in (4, 5, 6, 7, 20, 21, 22, 23) or op == 1 and rt in (0, 1, 2, 3, 16, 17, 18, 19):
+@@ -228,15 +254,8 @@ def read_blocks(args):
+         candidates = json.loads(Path(args.profile).read_text())['blocks']
+         blocks = []
+         for candidate in sorted(candidates, key=lambda b: -int(b['hits'])):
+-            pc, words = number(candidate['pc']), []
+-            for value in candidate['words'][:args.max_words]:
+-                word = number(value)
+-                result = translate(word, pc + len(words)*4)
+-                if result is None:
+-                    break
+-                words.append(word)
+-                if result[1]:
+-                    break
++            pc = number(candidate['pc'])
++            words = supported_prefix(pc, candidate['words'], args.max_words)
+             if words:
+                 blocks.append((pc, words))
+                 if len(blocks) == args.max_blocks:
+@@ -254,18 +273,14 @@ def read_blocks(args):
+         if len(matching) != 1:
+             raise ValueError(f'entry {pc:#x} has missing/ambiguous executable backing')
+         base, data = matching[0]
+-        words = []
++        values = []
+         for i in range(args.max_words):
+             off = pc - base + i * 4
+             if off + 4 > len(data):
+                 break
+             word = struct.unpack_from('<I', data, off)[0]
+-            result = translate(word, pc + i * 4)
+-            if result is None:
+-                break
+-            words.append(word)
+-            if result[1]:
+-                break
++            values.append(word)
++        words = supported_prefix(pc, values, args.max_words)
+         if not words:
+             raise ValueError(f'entry {pc:#x} starts with an unsupported opcode')
+         blocks.append((pc, words))
+@@ -290,18 +305,21 @@ def generate(blocks):
+         for i, word in enumerate(words):
+             address = pc + i * 4
+             result = translate(word, address)
+-            if result is None or result[1] and i != len(words)-1:
++            if (result is None or result[1] and i != len(words)-1 and
++                not (i == len(words)-2 and has_delay_slot(word) and
++                     translate(words[i+1],address+4) is not None and
++                     not translate(words[i+1],address+4)[1])):
+                 raise ValueError(f'unsupported opcode or nonterminal branch at {address:#x}')
+-            prepare = 'ee_aot_prepare_memory' if word >> 26 in MEMORY_OPS else 'ee_core_block_prepare'
+             if complex_family(word) and word>>26 not in (32,33,35,36,37,39,55,40,41,43,63):
+                 output += [f'    if(!ee_aot_complex_available(UINT32_C(0x{word:08x}))) return n;']
+-            output += [f'    if(n>=budget || !{prepare}(st, UINT32_C(0x{address:08x}), UINT32_C(0x{word:08x}))) return n;',
++            output += ['    { unsigned was_delay=st->branch_pending;',
++                       f'    if(n>=budget || !ee_aot_prepare(st, UINT32_C(0x{address:08x}), UINT32_C(0x{word:08x}), {int(not result[1])}u, {int(word >> 26 in MEMORY_OPS)}u)) return n;',
+                        '    { unsigned quantum=ee_core_interleave_quantum;',
+                        f'      {result[0]}',
+                        '      if(st->halted) return n;',
+                        '      ee_core_block_commit(st); ++n;',
+                        '      ee_core_interleave_account(1u);',
+-                       '      if(quantum==1u) return n;', '    }']
++                       '      if(was_delay || quantum==1u) return n;', '    }','    }']
+         output += ['    return n;', '}']
+         entries.append(f'    {{UINT32_C(0x{pc:08x}), UINT32_C(0x{words[0]:08x}), ee_aot_{index}}},')
+     output += ['static const ee_aot_entry ee_aot_entries[] = {', *(entries or ['    {0u, 0u, NULL},']), '};', f'static const unsigned ee_aot_entries_count = {len(entries)}u;', '']
+diff --git a/tools/ee_ppc_fixture_internal.py b/tools/ee_ppc_fixture_internal.py
+index 7d41672..f3876db 100644
+--- a/tools/ee_ppc_fixture_internal.py
++++ b/tools/ee_ppc_fixture_internal.py
+@@ -43,7 +43,17 @@ def precise_native_for_pc(pc,count=None):
+ state=call('ee_core_get_state');ram=0x91000000;base=0x200000
+ u.mem_map(ram,0x400000);u.reg_write(UC_PPC_REG_MSR,0x2000)
+ def word(address,value):u.mem_write(address,struct.pack('>I',value))
+-heap=0x81600000;heap_limit=0x81700000;fail_alloc=False;allocs=frees=0
++# Generated AOT can extend static storage past the old fixture heap base.
++# Derive a non-overlapping arena from actual PT_LOAD memory spans.
++binary=Path(a.elf).read_bytes();phoff=struct.unpack_from('>I',binary,28)[0]
++stride,count=struct.unpack_from('>HH',binary,42)
++ends=[]
++for index in range(count):
++ kind,_,addr,_,_,memsize,_,_=struct.unpack_from('>8I',binary,phoff+index*stride)
++ if kind==1 and 0x80000000<=addr<0x81800000:ends.append(addr+memsize)
++heap_base=(max([0x81600000,*ends])+4095)&~4095
++heap=heap_base;heap_limit=0x81700000;fail_alloc=False;allocs=frees=0
++assert heap_base<heap_limit,'linked static image leaves no fixture code arena'
+ heap_spans={};free_ranges=[]
+ platforms={syms[n]:n for n in ['memalign','free','DCFlushRange','ICInvalidateRange','memset','malloc','calloc']}
+ def platform(uc,address,size,user):
+@@ -103,7 +113,7 @@ def extension_setup():
+  global heap,heap_spans,free_ranges
+  if 'ee_jit_reset_stats_for_test' in syms:call('ee_jit_reset_stats_for_test')
+  if 'ee_fastmem_invalidate' in syms:call('ee_fastmem_invalidate')
+- heap=0x81600000;heap_spans.clear();free_ranges.clear()
++ heap=heap_base;heap_spans.clear();free_ranges.clear()
+  for name in ['ee_timers_init','ee_intc_init','dma_init','gif_init']:call(name)
+  u.mem_write(state,bytes(size));word(state+off['ram'],ram);word(state+off['ram_size'],0x400000)
+  word(state+off['pc'],base);word(state+off['next_pc'],base+4)
+diff --git a/tools/verify_ee_aot.py b/tools/verify_ee_aot.py
+index 873dbf6..d6f07fa 100644
+--- a/tools/verify_ee_aot.py
++++ b/tools/verify_ee_aot.py
+@@ -23,6 +23,7 @@ words=[(op<<26)|(1<<21)|(2<<16)|0xffff for op in (9,10,11,12,13,14,25)]
+ words += [(15<<26)|(2<<16)|0x8000]
+ words += [(1<<21)|(2<<16)|(3<<11)|(31<<6)|fn for fn in (0,2,3,4,6,7,10,11,16,17,18,19,20,22,23,33,35,36,37,38,39,42,43,45,47,56,58,59,60,62,63)]
+ words += [(op<<26)|(1<<21)|(2<<16)|8 for op in memory_ops]
++words += [(0x36<<26)|(1<<21)|8]
+ words += [(op<<26)|(1<<21)|(2<<16)|3 for op in (4,5,6,7,20,21,22,23)]
+ words += [(1<<26)|(31<<21)|(rt<<16)|0xfffd for rt in (0,1,2,3,16,17,18,19)]
+ words += [(op<<26)|0x80001 for op in (2,3)]
+@@ -39,6 +40,7 @@ for rs in (0,2,4,6,8,16,20):
+     for fn in (range(64) if rs in (16,20) else [0]):
+         word=(17<<26)|(rs<<21)|(2<<16)|(1<<11)|(3<<6)|fn
+         if aot.complex_family(word):words.append(word)
++for rt in range(4):words.append((18<<26)|(8<<21)|(rt<<16)|3)
+ for rs in (0,1,2,4,5,6,31):
+     for fn in (range(64) if rs==31 else [0]):
+         word=(18<<26)|(rs<<21)|(2<<16)|(1<<11)|(3<<6)|fn
+@@ -53,8 +55,17 @@ for index, word in enumerate(words):
+     translated=aot.translate(word,pc)
+     assert translated is not None
+     blocks.append((pc,[word] if translated[1] else [word,0]))
++# Fused terminal branch and legal slot fixtures, including faults and live memory.
++for index, (branch, slot) in enumerate((
++    (0x10220003,0x24630001), (0x50220003,0x24630001),
++    (0x04210003,0x24630001), (0x04310003,0x24630001),
++    (0x00201809,0x24630001), (0x10220003,0x00221820),
++    (0x10220003,0x00221834), (0x10220003,0x8c830008),
++    (0x10220003,0x48830800), (0x41010003,0x24630001),
++    (0x45010003,0x24630001), (0x49010003,0x24630001))):
++    blocks.append((0x80310000+index*256,[branch,slot]))
+ blocks.append((0x00200000,[0x2422ffff,0]))
+-for invalid in ([(3,[0])],[(0x80200000,[0x0000000c])],[(0x80200000,[0,0])]*2,[(0x80200000,[0x10000000,0])]):
++for invalid in ([(3,[0])],[(0x80200000,[0x0000000c])],[(0x80200000,[0,0])]*2,[(0x80200000,[0x10000000,0,0])]):
+     try:aot.generate(invalid)
+     except ValueError:pass
+     else:raise AssertionError('invalid block accepted')
+@@ -99,7 +110,7 @@ with tempfile.TemporaryDirectory(prefix='gekko2-aot-') as temporary:
+         exe=out/name
+         subprocess.run([cc,*flags,str(root/f'tests/{name}.c'),*objects,'-lm','-o',str(exe)],check=True)
+         subprocess.run([str(exe)],check=True)
+-    regressions=[p for p in sorted((root/'tests').glob('test_*.c')) if p.name.startswith(('test_ee_mmi_','test_ee_cop0_','test_ee_cop2_','test_ee_fpu')) or p.stem in ('test_ee_exceptions','test_ee_traps_internal','test_iop_pipeline_internal','test_iop_divide_r1269','test_iop_hw_interrupt','test_iop_hle_thread','test_vu_micro','test_vu_q_pipeline_internal','test_vu_r_lfsr_r1326','test_system_handshake')]
++    regressions=[p for p in sorted((root/'tests').glob('test_*.c')) if p.name.startswith(('test_ee_mmi_','test_ee_cop0_','test_ee_cop2_','test_ee_fpu')) or p.stem in ('test_ee_exceptions','test_ee_vector_memory_internal','test_ee_traps_internal','test_iop_pipeline_internal','test_iop_divide_r1269','test_iop_hw_interrupt','test_iop_hle_thread','test_vu_micro','test_vu_q_pipeline_internal','test_vu_r_lfsr_r1326','test_system_handshake')]
+     for source in regressions:
+         excluded={str(root/'source'/m) for m in re.findall(r'#include "((?:core|hw)/[^"]+\.c)"',source.read_text())}
+         selected=[obj for p,obj in zip(sources,objects) if str(p) not in excluded]
+diff --git a/tools/verify_ee_aot_ppc.py b/tools/verify_ee_aot_ppc.py
+index c149bdd..3869e2c 100644
+--- a/tools/verify_ee_aot_ppc.py
++++ b/tools/verify_ee_aot_ppc.py
+@@ -11,7 +11,7 @@ extra.add_argument('--bios',required=True)
+ options, remaining=extra.parse_known_args()
+ sys.argv=[sys.argv[0],*remaining]
+ fixture=Path(__file__).with_name('ee_ppc_fixture_internal.py').read_text()
+-fixture=fixture.replace("'gpr_generation']","'gpr_generation','bios']")
++fixture=fixture.replace("'gpr_generation']","'gpr_generation','bios','cop2_ctrl']")
+ exec(compile(fixture,'ee_ppc_fixture_internal.py','exec'))
+ import importlib.util
+ spec=importlib.util.spec_from_file_location('aot',root/'tools/ee_aot_generate.py')
+@@ -31,12 +31,7 @@ for record in records:
+ records=profile_blocks
+ selected=[]
+ for record in records:
+- pc=aot.number(record['pc']);words=[]
+- for raw in record['words']:
+-  w=aot.number(raw);translation=aot.translate(w,pc+len(words)*4)
+-  if translation is None:break
+-  words.append(w)
+-  if translation[1]:break
++ pc=aot.number(record['pc']);words=aot.supported_prefix(pc,record['words'],32)
+  if words and (pc&0xc0000000)==0x80000000 and (pc&0x1fffffff)>=0x1fc00000:
+   selected.append((pc,words))
+  if len(selected)==48:break
+@@ -137,3 +132,54 @@ for upper,lower in upper_words[:24]:
+   assert snapshots[0]==snapshots[1],('VU PPC AOT mismatch',hex(upper),hex(lower),unit);vu_comparisons+=1
+ assert vu_hits
+ print(json.dumps({'vu_linked_ppc_comparisons':vu_comparisons,'vu_aot_exercised':vu_hits,'all_passed':True,'physical_wii_verified':False}))
++
++# Independent BC2 oracles execute linked target code, beyond interpreter parity.
++pc=0x8020f000;bc2_cases=0
++for condition in (0,1):
++ for kind in range(4):
++  setup();word(state+off['bios'],bios_descriptor)
++  word(state+off['pc'],pc);word(state+off['next_pc'],pc+4)
++  word(state+off['cop2_ctrl']+29*4,condition<<8)
++  u.mem_write(ram+(pc&0x1fffffff),struct.pack('<3I',0x49000003|(kind<<16),0x24030001,0x24040002))
++  taken=condition==(kind&1);annul=not taken and bool(kind&2)
++  assert call('ee_core_step_n',1)==1
++  assert int.from_bytes(u.mem_read(state+off['pc'],4),'big')==pc+(8 if annul else 4)
++  assert call('ee_core_step_n',1)==1
++  assert int.from_bytes(u.mem_read(state+off['pc'],4),'big')==pc+(16 if taken else 12 if annul else 8)
++  assert int.from_bytes(u.mem_read(state+3*16,8),'big')==(0 if annul else 1)
++  bc2_cases+=1
++
++# The encoding-keyed PPC cache must use each live PC+4 region.
++region_cases=0
++for region_pc in (0x0ffffffc,0x8ffffffc,0xfffffffc):
++ for opcode in (2,3):
++  setup();word(state+off['exc_this_pc'],region_pc)
++  word(state+off['pc'],(region_pc+4)&0xffffffff)
++  word(state+off['next_pc'],(region_pc+8)&0xffffffff)
++  word(syms['gekko2_optimization_mask'],initial_mask|1)
++  assert call('ee_jit_try_execute_one_at',state,region_pc,(opcode<<26)|4)==1
++  target=((region_pc+4)&0xf0000000)|16
++  assert int.from_bytes(u.mem_read(state+off['next_pc'],4),'big')==target
++  if opcode==3:assert int.from_bytes(u.mem_read(state+31*16,8),'big')==((region_pc+8)&0xffffffff)
++  region_cases+=1
++
++# Production VU1 runners (not synthetic VU-sized memory) drive the real GIF.
++_,unitoff=layout('core/hw/vu.h','vu1_state_t',['vi','mem','micro','xgkick_pending','xgkick_addr','instructions_executed','pipeline'])
++_,gifoff=layout('core/hw/gif.h','gif_state_t',['ctx1_xyoffset_x','gif_path1_transfers'])
++unit=call('vu1_get_state');gifstate=call('gif_get_state');kick_cases=0
++for start in (0,16368):
++ setup();call('vu1_init');call('gif_init')
++ word(unit+unitoff['vi']+4,start//16)
++ tag=struct.pack('<4I',0x8001,1<<28,14,0)
++ payload=struct.pack('<4I',0x6789,0,0x18,0) # XYOFFSET_1
++ u.mem_write(unit+unitoff['mem']+start,tag)
++ u.mem_write(unit+unitoff['mem']+((start+16)&16383),payload)
++ u.mem_write(unit+unitoff['micro'],struct.pack('<4I',0x80000efc,0x400002ff,0x800003bf,0x2ff))
++ call('vu1_exec_micro',0)
++ assert int.from_bytes(u.mem_read(gifstate+gifoff['ctx1_xyoffset_x'],4),'big')==0x6789
++ assert bytes(u.mem_read(unit+unitoff['xgkick_pending'],1))==b'\x00'
++ assert int.from_bytes(u.mem_read(unit+unitoff['xgkick_addr'],4),'big')==((start+32)&16383)
++ assert int.from_bytes(u.mem_read(unit+unitoff['instructions_executed'],8),'big')==2
++ assert int.from_bytes(u.mem_read(gifstate+gifoff['gif_path1_transfers'],8),'big')==1
++ kick_cases+=1
++print(json.dumps({'bc2_linked_ppc_oracles':bc2_cases,'jump_region_ppc_oracles':region_cases,'production_xgkick_ppc_oracles':kick_cases,'all_passed':True,'physical_wii_verified':False}))
+diff --git a/tools/verify_r1370_native.py b/tools/verify_r1370_native.py
+index fd044eb..e0155ac 100644
+--- a/tools/verify_r1370_native.py
++++ b/tools/verify_r1370_native.py
+@@ -3,6 +3,8 @@ import concurrent.futures, json, os, pathlib, subprocess, tempfile
+ root=pathlib.Path(__file__).resolve().parents[1]
+ cc=os.environ.get('CC','cc')
+ tests={
++ 'test_xgkick_timing_aot3':[],
++ 'test_xgkick_boundary_r1379':['source/hw/gif.c'],
+  'test_vif_transport_r1379':[],
+  'test_chd_r1378':[],
+  'test_date_r1378':['source/hw/gif.c'],
+diff --git a/validation/aot3-build.json b/validation/aot3-build.json
+new file mode 100644
+index 0000000..bb4e314
+--- /dev/null
++++ b/validation/aot3-build.json
+@@ -0,0 +1,52 @@
++{
++  "build": "R1379-AOT3",
++  "basis": "R1378-AOT2 + R1379B XGKICK boundary fix",
++  "binaries": [
++    {
++      "file": "Gekko2-R1379-AOT3.dol",
++      "size": 3063104,
++      "sha256": "2292116fc87c6a139cfbb590aaf37cec758901fe9ca0a9cccac4ccae50b77aac"
++    },
++    {
++      "file": "Gekko2-R1379-AOT3.elf",
++      "size": 15895804,
++      "sha256": "21c39e39e23faf43ff4f7a7907867a98d600ce8e1c4cbdab8e12d3ee6a39cc81"
++    }
++  ],
++  "memory": {
++    "mem1_static_end": "0x81622620",
++    "mem1_remaining_bytes": 1956320,
++    "minimum_remaining_bytes": 1048576,
++    "passed": true
++  },
++  "ee_entries": 512,
++  "ee_instruction_bodies": 4008,
++  "iop_entries": 256,
++  "vu_words": {
++    "upper": 44,
++    "lower": 64
++  },
++  "host_comparisons": {
++    "EE": 4704,
++    "VU": 1928,
++    "IOP": 255
++  },
++  "legacy_cpu_regressions": 39,
++  "focused_graphics_device_regressions": 49,
++  "linked_ppc_aot_comparisons": 114,
++  "independent_linked_ppc_oracles": {
++    "BC2": 8,
++    "jump_region": 6,
++    "production_XGKICK": 2
++  },
++  "legacy_linked_ppc_programs": {
++    "delay": 256,
++    "vector": 60,
++    "chain_budgets": 7
++  },
++  "physical_wii_verified": false,
++  "full_dynarec_hardware_fidelity_complete": false,
++  "private_inputs_distributed": false,
++  "dol_elf_section_check_passed": true,
++  "all_targeted_checks_passed": true
++}
+diff --git a/validation/aot3-dol.json b/validation/aot3-dol.json
+new file mode 100644
+index 0000000..1448767
+--- /dev/null
++++ b/validation/aot3-dol.json
+@@ -0,0 +1,15 @@
++{
++  "dol": "Gekko2-R1379-AOT3.dol",
++  "sha256": "2292116fc87c6a139cfbb590aaf37cec758901fe9ca0a9cccac4ccae50b77aac",
++  "bytes": 3063104,
++  "entry": "0x80003f00",
++  "sections": 2,
++  "load_end": "0x802efb40",
++  "bss_end": "0x81622620",
++  "wii_hid4_markers": [
++    "0x80003f20",
++    "0x80216edc"
++  ],
++  "elf_section_bytes_match": true,
++  "runtime_boot_verified": false
++}
+diff --git a/validation/aot3-graphics.log b/validation/aot3-graphics.log
+new file mode 100644
+index 0000000..4d6beea
+--- /dev/null
++++ b/validation/aot3-graphics.log
+@@ -0,0 +1,437 @@
++/workspace/scratch/d50f06c0f7bf/gekko2-work/Gekko2-R1378-Grafik-Audit/tests/test_checkpoint_rspu2_r1340.c: In function ‘main’:
++/workspace/scratch/d50f06c0f7bf/gekko2-work/Gekko2-R1378-Grafik-Audit/tests/test_checkpoint_rspu2_r1340.c:52:101: warning: ignoring return value of ‘ftruncate’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
++   52 |  f=fopen(path,"r+b");C(f);fseek(f,pos,SEEK_SET);fwrite("END0",1,4,f);n=0;fwrite(&n,4,1,f);fflush(f);ftruncate(fileno(f),pos+8);fclose(f);
++      |                                                                                                     ^~~~~~~~~~~~~~~~~~~~~~~~~~
++PASS XGKICK two-cycle clock, live source, wrap, second kick, E drain, BIOS bound
++PASS incomplete bounded XGKICK does not poison next kick or PATH3
++PASS VIF fill command boundary and register MMIO
++PASS none CHD: all 128 sectors random/repeated match ISO, directory/file lookup, boundary rejection, live CDVD mount/read/unmount
++PASS zlib CHD: all 128 sectors random/repeated match ISO, directory/file lookup, boundary rejection, live CDVD mount/read/unmount
++PASS lzma CHD: all 128 sectors random/repeated match ISO, directory/file lookup, boundary rejection, live CDVD mount/read/unmount
++PASS cd CHD: all 128 sectors random/repeated match ISO, directory/file lookup, boundary rejection, live CDVD mount/read/unmount
++PASS truncated CHD rejection, case-insensitive browser, hunk cache exercised
++PASS nearest fractional texel selection and negative REPEAT coordinates
++PASS DATE CT32 DATM0/1 alpha-bit pass/reject, rejected Z unchanged, CT24 rejection, CT16/16S rejection, both contexts, opaque fast-path disabled
++PASS 8454144 exact additive channel combinations and eligibility/alpha gates
++PASS GX durable ring: ordering, wrap, enter/done, replace and failed-path handling
++PASS 19584 exact shaded-source pixels: STQ/UV, flat/Gouraud, four TFX modes, TCC, nearest/bilinear and triangle/padding coverage
++GS digest reuse: all pixel formats, disjoint writes, GPU failure, option toggle and escaped raw pointer: 0 failures
++Shared-edge RGB=181818
++PASS shared diagonal blended once: both diagonals/windings, CPU pixels and GX row spans, no gaps or double coverage
++PASS CPU framebuffer -> GX tiled -> full VRAM: three BIOS bases, every pixel/edge, odd crop padding, logged FFMD scanout
++GX pipeline: 324 cases, 0 failures
++160 overlapping surface draws, mixed CT32/CT24 alpha, SCANMSK, full VRAM and atomic rejection: 0 failures
++PASS all 256 RGB levels preserved in GX tiled upload, alpha opaque, VRAM unchanged; software XFB black Y=16
++R1365 DualShock2: 29 command batches passed; modes/config/partial transfers/metadata/pressure/motor map/reset
++R1364 controller mappings/focus/session/axes: 50 checks passed (hardware not tested)
++R1364 GamePad -> SIO2 digital/analog replies, inverted buttons and disconnect neutral: passed
++PASS old options keep sound OFF; version9 persists bit31 and rejects old-version sound masks
++PASS DMA4/7 core mapping, word units, reverse copy, wrap, FIFO, IRQ latch and MMIO bounds
++PASS idle batch preserves silent mixer-output IRQ at the first 768-cycle sample boundary
++PASS guest-clock 48 kHz, split-stereo ADMA data, consumption-timed DMA completion and nonblocking output
++PASS bounded PCM queue overflow, zero-fill underflow and pause/stop flush
++PASS sound snapshot state validation and empty host queue after restore
++PASS SPU2 active-voice/RAM checkpoint, exact next PCM, corrupt-state rejection and legacy cold defaults
++ok:   SPU2 mixer: renders exact silence when no voice has ever been keyed on
++ok:   SPU2 mixer: KON count starts at 0
++ok:   SPU2 mixer: KON0 bit0 write increments real KON count
++ok:   SPU2 mixer: real ADPCM decode + ADSR attack + volume mixing produces strong non-silent output
++ok:   SPU2 mixer: real ADPCM LoopEnd flag (no-repeat) sets the real ENDX0 bit0 via iop_spu2.c's own register file
++ok:   SPU2 mixer: voice correctly mutes (goes inactive) after a real LoopEnd-without-repeat flag
++ok:   SPU2 mixer: second real KON increments the running total
++ok:   SPU2 mixer: self-looping voice 1 reaches strong non-silent output before KOFF
++ok:   SPU2 mixer: real KOFF drives Release envelope to 0 and the voice goes inactive (silent) thereafter
++
++0 check(s) failed
++ALL CHECKS PASSED (0 failures)
++ok:   SPU2: address in range reads back 0 after init
++ok:   SPU2: address just below the real base is correctly NOT claimed
++ok:   SPU2: address just past the modeled window is correctly NOT claimed
++ok:   SPU2: write16 to a real in-range register is accepted
++ok:   SPU2: read16 reads back exactly what write16 stored (real register persistence)
++ok:   SPU2: 32-bit write/read round-trip also works (some real IOP code may use LW/SW)
++ok:   SPU2: a 32-bit write is visible via 16-bit reads at the same+adjacent offsets (little-endian, shared backing store)
++ok:   SPU2: reachable through iop_core.c's real iop_mem_read16/write16 dispatch (LH/SH path)
++ok:   SPU2: reachable through iop_core.c's real iop_mem_read32/write32 dispatch (LW/SW path)
++ok:   SPU2: dispatch correctly leaves ordinary IOP RAM addresses alone
++
++0 check(s) failed
++ok:   SPU2 DMA: transfer count starts at 0
++ok:   SPU2 DMA: real STR-bit kick performs exactly one transfer
++ok:   SPU2 DMA: 2-word (8-byte) transfer lands at SPU2 RAM byte 0, matching real IOP-RAM source data exactly
++ok:   SPU2 DMA: real hardware auto-clears STR after completion
++ok:   SPU2 DMA: real TSA register auto-advances by the transferred 16-bit-word count (0 -> 4)
++ok:   SPU2 DMA: second real STR-bit kick counted
++ok:   SPU2 DMA: second transfer correctly continues at the advanced TSA destination (byte offset 8), not overwriting the first block
++ok:   SPU2 DMA: real BIOS-style explicit TSA reprogram correctly redirects the destination within SPU2 RAM
++ok:   SPU2 DMA: out-of-bounds IOP-RAM source is safely dropped, not read past the end
++
++0 check(s) failed
++PASS IDEC two intra macroblocks, RGB32/RGB16, SGN, FIFO backpressure and checkpoint resume
++PASS real BDEC DC macroblock, CBP=0 signed residual, start-code/TOP, FIFO output and IDCT legal extrema
++PASS R1340 streaming: lifecycle, state-derived status, real bytes, bus bounds, partial read failure, EOF, invalidation, checkpoint
++RSPU/CNFG checkpoint: round trip, malformed/duplicate rejection and legacy cold defaults pass
++Too-small holes=1000, allocation scans=1
++PASS size-class lookup skips unsuitable holes; full coalescing restored
++PASS VU0 cold reset VF00=(0,0,0,1) before any BIOS instruction
++PASS literal Tekken IOR, 16-bit result, VI0, reserved opcode, VU0/VU1
++PASS actual PPC VU IOR/IAND emitter, reserved rejection, VI0
++ok:   VU1: program is not running after vu1_exec_micro() returns
++ok:   VU1: executed exactly 4 instructions (the E-bit one plus its real one-instruction delay slot, then stopped)
++ok:   VU1: all-zero words now genuinely decode as real (degenerate, no-effect) ADDbc/LQ instructions - see task #94 note above
++ok:   VU1: TPC ended up pointing at the (unexecuted) 5th instruction, not wrapped/misplaced
++ok:   VU1: MSCAL start_addr is correctly interpreted as an instruction-pair index (*8 for the byte offset)
++ok:   VU1: safety cap run also leaves running=0 afterward
++ok:   VU1: safety cap (65536 instructions) was hit, not a real E-bit stop
++ok:   VU1: I-flag instruction correctly loaded VI[21] (REG_I) from the lower word's raw bits
++ok:   VU1: vu1_micro_write32 stores little-endian, matching this project's other memory helpers
++ok:   VU1: micro-instruction memory address wraps at the real 16KB boundary
++ok:   VU0: program is not running after vu0_exec_micro() returns
++ok:   VU0: executed exactly 3 instructions (the plain one, the E-bit one, and its real delay slot)
++ok:   VU0: real TPC register (cop2_ctrl[26], REG_TPC) reflects the live program counter after execution
++ok:   VU0: micro memory at offset 0 is untouched by the earlier VU1-only writes (separate memories)
++ok:   VU1: real ADD (Class A funct 0x28) computes Fd = Fs + Ft per-lane
++ok:   VU1: real ADDA (writes ACC) followed by real MADD (reads ACC) - the accumulator register genuinely works
++ok:   VU1: real ADDbc broadcasts the selected lane (bc=2=z here) of Ft to every dest lane
++ok:   VU1: real ADDQ uses the Q register (vi[22]) as the second operand, not Ft
++ok:   VU1: real B branch - the delay-slot instruction (MOVE vf20) executed, the skipped one (MOVE vf21) did not
++ok:   VU1: real B branch - exactly 4 instructions retired (branch, delay slot, E-bit instr at target, its own delay slot)
++ok:   VU1: real IADD computes vi[rd] = vi[rs] + vi[rt]
++ok:   VU1: real IADDIU computes vi[It] = vi[Is] + real 15-bit unsigned immediate (100+5000=5100)
++ok:   VU1: real ISUBIU computes vi[It] = vi[Is] - real 15-bit unsigned immediate (100-30=70)
++ok:   VU1: real IADDIU with It=vi0 is correctly a no-op (real hardware's vi0 hardwired-zero guard)
++ok:   VU1: real SQ actually wrote the correct raw bytes into data memory (1.5f = 0x3FC00000 little-endian)
++ok:   VU1: real LQ reads back exactly what SQ wrote (full quadword round-trip through VU1 data memory)
++
++0 check(s) failed
++PASS VU pair I/E/branch scheduling, new upper decode, aliases
++R1357 XPADMAN DMA / padInfoMode admission: 0 failures (modes/RPC/axes, buttons, disconnected ports, two buffers, bounds)
++Legacy PAD RPC: 0 failures; typed results, safe DMA, modes, buttons, frame refresh, close and absent port
++ok:   Nop raises INT3
++ok:   Nop stat has no error bit
++ok:   Nop raised real IOP IRQ2
++ok:   unimplemented opcode raises INT5
++ok:   unimplemented opcode sets Error stat bit
++ok:   unimplemented opcode error byte is 40h (Invalid command)
++ok:   GetTN with no disc raises INT5
++ok:   no-disc GetTN sets Error bit
++ok:   no-disc GetTN error byte is 80h (cannot respond/no disk)
++ok:   mount synthetic ISO succeeds
++ok:   GetTN with disc mounted raises INT3
++ok:   mounted GetTN has no error
++ok:   Setloc raises INT3
++ok:   ReadN first response is INT3
++ok:   ReadN second response is INT1 (data ready)
++ok:   DRQSTS set after ReadN data-ready
++ok:   RDDATA returns real synthetic sector bytes (0,1,2,...)
++ok:   Pause first response is INT3
++ok:   Pause second response is INT2 after ack
++ok:   GetID first response is INT3
++ok:   GetID second response is INT2 (disc present)
++ok:   CDROM class-3/spec-0x20 event not yet delivered before any terminal interrupt
++ok:   Pause (2nd run) first response is INT3
++ok:   Pause (2nd run) second response is INT2 after ack
++ok:   CDROM class-3/spec-0x20 event IS delivered after real INT2 fires (task #301 fix)
++ok:   CDROM class-3/spec-0x8000 event also delivered on the same real INT2 (task #301 fix)
++
++0 failures
++ok:   system init
++ok:   synthetic disc mounted
++ok:   real pending ReadN second response
++ok:   save pending controller
++ok:   normal data-ready response
++ok:   restore pending controller
++ok:   all pending FIFO/register state restored
++ok:   second response still delivered after restore
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   real sector prefix
++ok:   save partially read sector
++ok:   restore sector cursor
++ok:   sector data and cursor restored
++ok:   reject out-of-range cursor
++ok:   reject unknown pending phase
++ok:   reject invalid response FIFO position
++R1357 CDROM checkpoint: 0 failures
++PASS toSPR TTE: full tag, payload order, scratch wrap, disabled, zero QWC
++PASS MFIFO: empty drain, incomplete packet, producer wakeup, wrapped payload, next-tag stall
++ok:   NORMAL mode: sink called exactly once
++ok:   NORMAL mode: exactly 1 quadword (16 bytes) delivered
++ok:   NORMAL mode: delivered data matches source RAM
++ok:   NORMAL mode: STR cleared after completion
++ok:   NORMAL mode: no error
++ok:   CHAIN mode: sink called once per tag (2 tags total)
++ok:   CHAIN mode: 2 quadwords total delivered
++ok:   CHAIN mode: tag1 (CNT) delivered its inline data correctly
++ok:   CHAIN mode: tag2 (REFE) delivered its out-of-line data correctly
++ok:   CHAIN mode: STR cleared after REFE terminates the chain
++ok:   CHAIN mode: no error for the fully-supported chain
++ok:   REF tag: no error (real hardware tag type, now implemented)
++ok:   REF tag: sink called once per tag (REF then REFE)
++ok:   REF tag: 2 quadwords total delivered
++ok:   REF tag: delivered its out-of-line data (from ADDR field) correctly
++ok:   REF tag: chain continued correctly into the terminating REFE tag
++ok:   REF tag: STR cleared after the chain's REFE terminates
++ok:   unsupported tag ID (CALL) sets last_error instead of silently mishandling it
++ok:   unsupported tag also clears STR (doesn't hang with STR stuck on)
++ok:   unsupported tag: no data delivered (correctly refuses rather than guessing)
++
++0 check(s) failed
++PASS SPR DMA copy, wrap, source chain and bounds
++PASS DMA tag VIF commands, MPG payload, DIRECT payload, zero QWC and TTE disabled
++PASS IOP independent load-delay, merge forwarding, explicit-write cancellation, EPC/BD/TAR, alignment, overflow and IRQ flush oracles
++PASS Lightrec through real IOP retirement: pending LW, branch delay, exact ticks and changed source
++PASS admission reuse, failed-probe invalidation, trim invalidation, stable owners and balanced allocation counters
++PASS stable addresses, trim, fragmented exhaustion, owner isolation, coalescing and heap ownership
++PASS 100000 randomized arena allocations/releases/trims preserve owner bytes and fully coalesce
++PASS ISO/Mode1/Mode2 cached payload parity, 49/50 hits, tail/OOB, traversal and unmount
++ok:   create plain ISO
++ok:   open plain 2048 image
++ok:   SYSTEM.CNF ;1 fallback
++ok:   nested game ELF path traversal
++ok:   out-of-image LBA rejected
++ok:   create raw Mode1 image
++ok:   detect raw Mode1
++ok:   create raw Mode2 Form1 image
++ok:   detect raw Mode2 Form1
++ok:   cdrom1 prefix and explicit version
++ok:   root extent outside image rejected
++
++All checks passed.
++nested ISO path PASS
++{
++  "native_regressions": [
++    {
++      "test": "test_xgkick_timing_aot3",
++      "exit_code": 0
++    },
++    {
++      "test": "test_xgkick_boundary_r1379",
++      "exit_code": 0
++    },
++    {
++      "test": "test_vif_transport_r1379",
++      "exit_code": 0
++    },
++    {
++      "test": "test_chd_r1378",
++      "exit_code": 0
++    },
++    {
++      "test": "test_date_r1378",
++      "exit_code": 0
++    },
++    {
++      "test": "test_gx_additive_r1374",
++      "exit_code": 0
++    },
++    {
++      "test": "test_gx_dump_r1373",
++      "exit_code": 0
++    },
++    {
++      "test": "test_gx_shaded_triangle_r1370",
++      "exit_code": 0
++    },
++    {
++      "test": "test_gs_hash_cache_r1368",
++      "exit_code": 0
++    },
++    {
++      "test": "test_triangle_edges_r1377",
++      "exit_code": 0
++    },
++    {
++      "test": "test_framebuffer_r1376",
++      "exit_code": 0
++    },
++    {
++      "test": "test_gx_pipeline_r1298",
++      "exit_code": 0
++    },
++    {
++      "test": "test_gx_surface_r1300",
++      "exit_code": 0
++    },
++    {
++      "test": "test_gx_scanout_black_r1356",
++      "exit_code": 0
++    },
++    {
++      "test": "test_pad_config_r1365",
++      "exit_code": 0
++    },
++    {
++      "test": "test_controller_r1364",
++      "exit_code": 0
++    },
++    {
++      "test": "test_controller_guest_r1364",
++      "exit_code": 0
++    },
++    {
++      "test": "test_sound_options_r1363",
++      "exit_code": 0
++    },
++    {
++      "test": "test_sound_beta_r1363",
++      "exit_code": 0
++    },
++    {
++      "test": "test_checkpoint_sound_r1363",
++      "exit_code": 0
++    },
++    {
++      "test": "test_spu2_mixer",
++      "exit_code": 0
++    },
++    {
++      "test": "test_spu2_regs",
++      "exit_code": 0
++    },
++    {
++      "test": "test_iop_spu2",
++      "exit_code": 0
++    },
++    {
++      "test": "test_iop_dma_spu2",
++      "exit_code": 0
++    },
++    {
++      "test": "test_ipu_idec_r1337",
++      "exit_code": 0
++    },
++    {
++      "test": "test_ipu_bdec_r1337",
++      "exit_code": 0
++    },
++    {
++      "test": "test_rspu2_stream_r1340",
++      "exit_code": 0
++    },
++    {
++      "test": "test_checkpoint_rspu2_r1340",
++      "exit_code": 0
++    },
++    {
++      "test": "test_code_cache_classes_r1362",
++      "exit_code": 0
++    },
++    {
++      "test": "test_vu0_reset_r1361",
++      "exit_code": 0
++    },
++    {
++      "test": "test_vu_ior_r1357",
++      "exit_code": 0
++    },
++    {
++      "test": "test_vu_ior_codegen_r1357",
++      "exit_code": 0
++    },
++    {
++      "test": "test_vu_micro",
++      "exit_code": 0
++    },
++    {
++      "test": "test_vu_jit_pair_r1269",
++      "exit_code": 0
++    },
++    {
++      "test": "test_pad_new_dma_r1357",
++      "exit_code": 0
++    },
++    {
++      "test": "test_pad_legacy_rpc_r1356",
++      "exit_code": 0
++    },
++    {
++      "test": "test_cdrom_checkpoint_r1357",
++      "exit_code": 0
++    },
++    {
++      "test": "test_dma_tospr_tte_r1357",
++      "exit_code": 0
++    },
++    {
++      "test": "test_dma_mfifo_producer",
++      "exit_code": 0
++    },
++    {
++      "test": "test_dma_chain",
++      "exit_code": 0
++    },
++    {
++      "test": "test_dma_scratch_transfer",
++      "exit_code": 0
++    },
++    {
++      "test": "test_dma_vif_tag_transfer",
++      "exit_code": 0
++    },
++    {
++      "test": "test_iop_lightrec_pipeline_r1358",
++      "exit_code": 0
++    },
++    {
++      "test": "test_code_cache_admission_r1358",
++      "exit_code": 0
++    },
++    {
++      "test": "test_ppc_code_cache_r1331",
++      "exit_code": 0
++    },
++    {
++      "test": "test_code_cache_random_r1337",
++      "exit_code": 0
++    },
++    {
++      "test": "test_iso_cache_r1358",
++      "exit_code": 0
++    },
++    {
++      "test": "test_iso_loader",
++      "exit_code": 0
++    },
++    {
++      "test": "test_iso_nested_path",
++      "exit_code": 0
++    }
++  ],
++  "all_passed": true,
++  "wii_runtime_test": false
++}
+diff --git a/validation/aot3-input.log b/validation/aot3-input.log
+new file mode 100644
+index 0000000..53c7bcd
+--- /dev/null
++++ b/validation/aot3-input.log
+@@ -0,0 +1,5 @@
++...
++----------------------------------------------------------------------
++Ran 3 tests in 0.535s
++
++OK
+diff --git a/validation/aot3-native.log b/validation/aot3-native.log
+new file mode 100644
+index 0000000..995e7ee
+--- /dev/null
++++ b/validation/aot3-native.log
+@@ -0,0 +1,505 @@
++PASS EE AOT: 4704 interpreter comparisons; source, partial exit, delay-slot execution, quantum, precise IRQ, TLB and MMIO guards
++PASS VU AOT: 1928 VU0/VU1 pipeline comparisons with Q/P, I/E flags, branch delays and side effects
++PASS IOP AOT: 255 comparisons with pending loads, BD context and exact EE callbacks
++ok:   ee_core_init(): cop0[15] (PRId) == 0x00002e20 immediately after init
++ok:   core halted on BREAK
++ok:   MFC0 $t0,$15 reads back 0x2e20, sign-extended (matches real PCSX2's R5900.cpp)
++ok:   sanity: real PRId 0x2e20 (11808) is NOT less than 89 - the BIOS's revision-check branch now goes the correct way
++
++0 check(s) failed
++ok:   RFE test: ran to completion without any spurious halt
++ok:   RFE shifted the Status KU/IE stack right by 2 correctly (0x19 -> 0x16)
++ok:   ERET test: ran to completion without any spurious halt (control reached the EPC target)
++ok:   ERET cleared Status.EXL after taking the EPC branch
++ok:   ERET has NO branch delay slot - the instruction after it never executed
++ok:   EI/DI test: ran to completion without any spurious halt
++ok:   EI set Status.EIE (bit 16) when the gate condition (KSU==0) was satisfied
++ok:   DI cleared Status.EIE again
++ok:   EI did NOT set Status.EIE when gated off (KSU!=0, no _EDI/EXL/ERL)
++
++0 check(s) failed
++ok:   TLBWI test: core halted on BREAK
++ok:   TLBWI: tlb[0].entry_hi == EntryHi that was written
++ok:   TLBWI: tlb[0].entry_lo0 == EntryLo0 that was written
++ok:   TLBWI: tlb[0].entry_lo1 == EntryLo1 that was written
++ok:   TLBR: EntryHi read back correctly via MFC0 after TLBR
++ok:   TLBP: finds the matching entry (index 3) via VPN2 match
++ok:   TLBP: no match sets Index to 0x80000000 (read back sign-extended via MFC0)
++ok:   KUSEG translation test: core halted on BREAK
++ok:   KUSEG SW/LW round-trip through a TLB-mapped 0x71000100 address works (value survives, sign-extended)
++ok:   KUSEG write actually landed at the translated physical address (0x01000000 + 0x100 offset)
++ok:   KUSEG TLB miss: faulting LW did not fabricate a value (register left untouched)
++ok:   KUSEG TLB miss: Cause.ExcCode == TLBL (2)
++ok:   KUSEG TLB miss: Cause.BD == 0 (LW was not in a branch delay slot)
++ok:   KUSEG TLB miss: EPC points at the faulting LW instruction
++ok:   KUSEG TLB miss: BadVAddr == the faulting virtual address
++ok:   KUSEG TLB miss: Status.EXL got set
++ok:   KUSEG TLB miss: pc vectored to the TLB Refill handler (BEV=1 at reset, so the uncached ROM vector, offset 0)
++ok:   TLB Invalid load: ExcCode == TLBL
++ok:   TLB Invalid load: uses general vector, not refill vector
++ok:   TLB Invalid store: ExcCode == TLBS
++ok:   TLB Invalid store: uses general vector, not refill vector
++ok:   TLB Modified store: ExcCode == Mod (1)
++ok:   TLB Modified store: uses general exception vector
++ok:   TLB Modified store: backing RAM was not written
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VADDA recognized)
++ok:   VADDA.xyzw VF1,VF2 (idx40, dest=ACC) computes ACC=VF1+VF2: (12,23,34,45)
++ok:   VMULA(idx42) seeds ACC=(20,60,120,200), then VMADDA(idx41) accumulates to (40,120,240,400)
++ok:   VSUBA.xyzw VF1,VF2 (idx44) computes ACC=VF1-VF2: (-8,-17,-26,-35)
++ok:   VOPMULA VF1,VF2 (idx46) computes the cross-product-shaped outer product into ACC: (90,40,40), overwriting the prior sentinel
++ok:   VMULAq.xyzw VF1 (idx28, broadcasts Q=1000) computes ACC=VF1*1000: (2000,3000,4000,5000), unaffected by the following VNOP
++ok:   VADDAy.xyzw VF1,VF2 (idx1, broadcasts VF2.y=20) computes ACC=VF1+20: (22,23,24,25)
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VADD/VMUL/VIADD-family/VIADDI all recognized)
++ok:   VADD.xyzw VF3,VF1,VF2 computes (12,23,34,45)
++ok:   VMUL.xyzw VF4,VF1,VF2 computes (20,60,120,200)
++ok:   VADD.x VF5,VF1,VF2 only writes the X lane (destmask honored), Y stays 0
++ok:   VIADD  VI3,VI1,VI2 = 5+3 = 8
++ok:   VISUB  VI4,VI1,VI2 = 5-3 = 2
++ok:   VIAND  VI5,VI1,VI2 = 5&3 = 1
++ok:   VIOR   VI6,VI1,VI2 = 5|3 = 7
++ok:   VIADDI VI7,VI1,10  = 5+10 = 15
++ok:   VIADDI VI8,VI1,0x1E (sign-extends to -2) = 5-2 = 3
++ok:   VIADDI to VI0 (dest=0) is a no-op - VI0 stays hardwired 0
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VMAX/VMINI recognized)
++ok:   VMAX.xyzw VF3,VF1,VF2 computes (2,1,10,-5)
++ok:   VMINI.xyzw VF4,VF1,VF2 computes (1,-3,4,-10)
++ok:   VMAX.x VF5,VF1,VF2 only writes the X lane (destmask honored), Y stays 0
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VMADD/VMSUB/VOPMSUB recognized)
++ok:   VMADD.xyzw VF3,VF1,VF2 computes ACC+VF1*VF2 = (12,16,22,30)
++ok:   VMSUB.xyzw VF4,VF1,VF2 computes ACC-VF1*VF2 = (8,4,-2,-10)
++ok:   VMADD.x VF9,VF1,VF2 only writes the X lane (destmask honored), Y stays 0
++ok:   VOPMSUB VF5,VF1,VF2 computes the cross-product-shaped outer-product multiply-subtract (1,6,6)
++
++0 check(s) failed
++PASS BC2 condition matrix, delay slots, likely annulment, precise overflow BD/EPC
++ok:   core halted cleanly on BREAK (broadcast-form ops recognized)
++ok:   VADDy.xyzw VF3,VF1,VF2 broadcasts VF2.y(20) to every lane: (22,23,24,25)
++ok:   VSUBx.xyzw VF4,VF1,VF2 broadcasts VF2.x(10) to every lane: (-8,-7,-6,-5)
++ok:   VMULz.xyzw VF9,VF1,VF2 broadcasts VF2.z(30) to every lane: (60,90,120,150)
++ok:   VMAXw.xyzw VF11,VF1,VF2 broadcasts max(VF1[lane], VF2.w(40)): (40,40,40,40)
++ok:   VMINIx.xyzw VF13,VF1,VF2 broadcasts min(VF1[lane], VF2.x(10)): (2,3,4,5), VF1 unchanged since it's always smaller
++ok:   VADDy.x VF15,VF1,VF2 only writes the X lane (destmask honored, Y stays 0)
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VMADD/VMSUB-broadcast and VMULq/VMAXi/VMULi/VMINIi recognized)
++ok:   VMADDy.xyzw VF3,VF1,VF2 = ACC(100)+VF1[lane]*VF2.y(20): (140,160,180,200)
++ok:   VMSUBx.xyzw VF4,VF1,VF2 = ACC(100)-VF1[lane]*VF2.x(10): (80,70,60,50)
++ok:   VMULq.xyzw VF5,VF1 = VF1[lane]*Q(100): (200,300,400,500)
++ok:   VMAXi.xyzw VF7,VF1 = max(VF1[lane], I(7)): (7,7,7,7) since VF1's lanes are all <7 except none >7
++ok:   VMULi.xyzw VF9,VF1 = VF1[lane]*I(7): (14,21,28,35)
++ok:   VMINIi.xyzw VF16,VF1 = min(VF1[lane], I(7)): (2,3,4,5) since VF1's lanes are all <7
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VCLIPw recognized)
++ok:   VCLIPw VF1xyz,VF2w: x=10.0>5.0 sets bit0 only, clipflag = 0x01
++ok:   second VCLIPw shifts previous 0x01 left by 6 and ORs in new bits 0x19 -> 0x59
++
++0 check(s) failed
++ok:   CFC2 reads back exactly what CTC2 wrote to FBRST (control reg 28)
++ok:   cop2_ctrl[28] state actually holds the written value
++ok:   MFC2 reads back exactly what MTC2 wrote to an arbitrary control reg (5)
++ok:   MFC2 from a never-written control reg (0) reads back 0
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VDIV/VSQRT/VRSQRT/VWAITQ recognized)
++ok:   VDIV Q,VF1x,VF2x computes 20.0/4.0 = 5.0
++ok:   VDIV Q,VF1y,VF2z (0/0, same sign) clamps to signed +FLT_MAX (0x7F7FFFFF)
++ok:   VSQRT Q,VF1w computes sqrt(|-9.0|) = 3.0
++ok:   VRSQRT Q,VF1x,VF2x computes 20.0/sqrt(4.0) = 10.0
++ok:   VRSQRT Q,VF1x,VF2z (ft=0, fs!=0, same sign) clamps to signed +FLT_MAX
++ok:   VWAITQ is a true no-op - Q is unchanged from the preceding VRSQRT result
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VLQI/VLQD/VSQD/VSQI-destmask-fix recognized)
++ok:   VSQI post-incremented VI10 twice: 5 -> 6 -> 7
++ok:   VLQI.xyzw VF2,(VI11++) loads back the full VSQI-stored VF1 from quadword 5: (2,3,4,5)
++ok:   VLQI post-incremented VI11: 5 -> 6
++ok:   VLQD.xyzw VF3,(--VI12) pre-decrements to 7 and loads the single-X-lane VSQI store: X=2 (from VF1.x), Y=0 (destmask fix - Y was never written)
++ok:   VLQD pre-decremented VI12: 7 -> 6
++ok:   VSQD pre-decremented VI13: 10 -> 9
++ok:   VSQD's store at quadword 9 reads back correctly via VLQI: (2,3,4,5)
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VMTIR/VMFIR/VILWR recognized)
++ok:   VMTIR VI10,VF1y truncates VF1.y's raw pattern (0x56780002) to its low 16 bits: 0x0002
++ok:   VMFIR.xz VF2,VI11 broadcasts sign-extended 0xBEEF (-> 0xFFFFBEEF) into X and Z only, Y untouched (0)
++ok:   VILWR.z VI13,(VI12) reads back the planted 0x7777 from VU0 mem quadword 3's Z lane, low 16 bits
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VRINIT/VRGET/VRNEXT/VRXOR recognized)
++ok:   VRINIT seeds R to 0x3F800000|(seed&0x7FFFFF), then VRGET reads it back unchanged
++ok:   VRNEXT advances the LFSR once and broadcasts the new value into all 4 lanes, matching the reference AdvanceLFSR model
++ok:   a second VRNEXT advances the LFSR again (not idempotent), matching the reference model's second step
++ok:   VRXOR XORs R's mantissa with VF1.y's raw pattern and re-clamps to the [1.0,2.0) bit pattern, matching the reference model
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (VABS/VITOF/VFTOI/VMOVE/VMR32 recognized)
++ok:   VABS.xyzw VF2,VF1 (dest=FT,src=FS) computes |VF1|: (2.5,3,4,5)
++ok:   VMOVE.xyzw VF3,VF1 copies VF1 unchanged: (-2.5,3,-4,5)
++ok:   VMR32.xyzw VF4,VF1 rotates lanes: FT.x=FS.y,FT.y=FS.z,FT.z=FS.w,FT.w=FS.x -> (3,-4,5,-2.5)
++ok:   VITOF4.xyzw VF6,VF5 = int/16: (16/16=1, 4096/16=256, -32768/16=-2048, 100/16=6.25)
++ok:   VITOF12.xyzw VF8,VF5 = int/4096: (16/4096, 4096/4096=1, -32768/4096=-8)
++ok:   VFTOI0.xyzw VF10,VF9 = truncate(float): (2,-2,100)
++ok:   VFTOI4.xyzw VF11,VF9 = truncate(float*16): 0.0625*16=1.0 -> 1
++ok:   VABS.x VF16,VF1 only writes the X lane (destmask honored), Y stays 0
++
++0 check(s) failed
++ok:   core halted cleanly on BREAK (no unimplemented-opcode walls hit)
++ok:   LQ loaded the planted 128-bit pattern into r5
++ok:   QMTC2 r5->VF1 then QMFC2 VF1->r6 round-trips the full 128 bits exactly
++ok:   VSUB.xyzw VF2,VF1,VF1 yields exactly zero in all 4 lanes (self-subtract)
++ok:   QMFC2 VF0 reads the real-hardware-hardwired (0,0,0,1.0f) pattern
++ok:   QMTC2 into VF0 is silently discarded - VF0 still reads (0,0,0,1.0f) afterward
++ok:   VISWR.x stored VI11's value into VU0 mem[3].x
++ok:   VISWR.z stored the same VI11 value into VU0 mem[3].z (different lane, same word)
++ok:   VSQI stored all 4 VF1 lanes into VU0 mem[7] correctly
++ok:   VSQI post-incremented VI12 from 7 to 8
++
++0 check(s) failed
++ok:   Store TLB miss: Cause.ExcCode == TLBS (3), not TLBL
++ok:   Store TLB miss: EPC points at the faulting SW instruction
++ok:   Store TLB miss: BadVAddr == the faulting virtual address
++ok:   Delay-slot fault: Cause.BD == 1
++ok:   Delay-slot fault: EPC points at the BEQ, not the delay-slot LW
++ok:   Delay-slot fault: Cause.ExcCode == TLBL (it was a load)
++ok:   Fetch-exception setup: JR's own delay slot (canary ADDIU) executed normally before the jump
++ok:   Fetch TLB miss: Cause.ExcCode == TLBL
++ok:   Fetch TLB miss: EPC == the unmapped fetch address
++ok:   Fetch TLB miss: Cause.BD == 0 (not itself a delay slot)
++ok:   Fetch TLB miss: BadVAddr == the unmapped fetch address
++ok:   BEV vectoring setup: Status.BEV successfully cleared via MTC0
++ok:   BEV=0: TLB Refill vectors into RAM (0x80000000), not the boot-time ROM vector
++ok:   Nested-exception setup: first fault set Status.EXL
++ok:   Nested-exception setup: first fault's EPC recorded correctly
++ok:   Nested-exception setup: first fault vectored to the TLB Refill vector (offset 0)
++ok:   Nested exception: EPC unchanged (still points at the FIRST fault)
++ok:   Nested exception: vectors to the general-exception offset (0x180), not TLB Refill (0x0)
++ok:   Guard test: first call's BadVAddr recorded
++ok:   Guard test: first call's ExcCode (TLBL) recorded
++ok:   Guard test: second call's BadVAddr did NOT overwrite the first
++ok:   Guard test: second call's ExcCode (TLBS) did NOT overwrite the first (still TLBL)
++
++0 check(s) failed
++ok:   ADD.S: 2.0 + 3.0 = 5.0
++ok:   MUL.S: 3.0 * 2.0 = 6.0
++ok:   SUB.S: 3.0 - 2.0 = 1.0
++ok:   DIV.S: 3.0 / 2.0 = 1.5
++ok:   NEG.S+ABS.S: -(-2.0) via abs = 2.0
++ok:   C.EQ.S set the FCR31 condition bit (2.0 == 2.0)
++
++0 check(s) failed
++ok:   SQRT.S test: core halted on BREAK
++ok:   SQRT.S: sqrt(9.0) == 3.0 (source read from Ft, not Fs)
++ok:   SQRT.S of a negative Ft (-4.0) takes sqrt(fabs()) = 2.0, not NaN
++ok:   RSQRT.S: 16.0 / sqrt(4.0) == 8.0
++ok:   RSQRT.S with Ft==0.0 returns +Fmax (real hardware special case), not a crash/NaN
++ok:   MAX.S(-5.0, -2.0) == -2.0 (bit-level comparison correctly reversed for both-negative case)
++ok:   MIN.S(-5.0, -2.0) == -5.0
++ok:   MAX.S(3.0, -7.0) == 3.0 (mixed-sign case)
++ok:   BC1T branches when the FP condition flag is SET (landed on the branch target, skipped the other LUI)
++ok:   BC1F branches when the FP condition flag is CLEAR
++ok:   BC1T correctly does NOT branch when the FP condition flag is clear
++
++0 check(s) failed
++ok:   ADDA.S test: core halted on BREAK
++ok:   ADDA.S: ACC = 3.0 + 4.0 == 7.0
++ok:   SUBA.S: ACC = 10.0 - 4.0 == 6.0
++ok:   MULA.S: ACC = 3.0 * 5.0 == 15.0
++ok:   MADD.S: fd = ACC(2.0) + 3.0*4.0 == 14.0
++ok:   MSUB.S: fd = ACC(20.0) - 3.0*4.0 == 8.0
++ok:   MADDA.S: ACC = 1.0 + 2.0*3.0 == 7.0
++ok:   MSUBA.S: ACC = 10.0 - 2.0*3.0 == 4.0
++ok:   MADD.S asymmetry case: fd = fpuDouble(-Fmax) + fpuDouble(clamped +inf product) == 0.0 exactly
++ok:   MADDA.S asymmetry case: SAME inputs give ACC == +Fmax (raw product not pre-clamped, sum overflows to +inf, THEN clamped) - proves the double-fpuDouble()-pass difference is real
++
++0 check(s) failed
++ok:   BC1TL (taken): landed on branch target
++ok:   BC1TL (taken): delay slot DID execute (r5 set)
++ok:   BC1TL (not taken): fell through past the nullified delay slot
++ok:   BC1TL (not taken): delay slot was NULLIFIED (r5 still 0)
++ok:   BC1FL (taken): landed on branch target
++ok:   BC1FL (taken): delay slot DID execute (r5 set)
++ok:   BC1FL (not taken): fell through past the nullified delay slot
++ok:   BC1FL (not taken): delay slot was NULLIFIED (r5 still 0)
++
++0 failures
++ok:   PCGTW test: core halted on BREAK
++ok:   PCGTW lane0: 5 > 3 -> all-1s mask
++ok:   PCGTW lane1: -3 > -3 is false -> all-0s mask
++ok:   PCGTW lane2: 100 > -50 -> all-1s mask
++ok:   PCGTW lane3: -100 > 200 is false -> all-0s mask
++ok:   PMAXW lane0: max(5,3) == 5
++ok:   PMAXW lane1: max(-3,-3) == -3
++ok:   PMAXW lane2: max(100,-50) == 100
++ok:   PMAXW lane3: max(-100,200) == 200 (signed, not bit-pattern)
++ok:   PCGTH lane0: 10 > 1 -> all-1s mask
++ok:   PCGTH lane1: -5 > -5 is false -> all-0s mask
++ok:   PMAXH lane0: max(10,1) == 10
++ok:   PMAXH lane1: max(-5,-5) == -5
++ok:   PCGTB lane0: 20 > 5 -> all-1s mask
++ok:   PCGTB lane1: -10 > -10 is false -> all-0s mask
++ok:   PABSW lane0: abs(-7) == 7
++ok:   PABSW lane1: abs(INT32_MIN) clamps to INT32_MAX (real hardware quirk)
++ok:   PABSW lane2: abs(12) == 12 (already positive, unchanged)
++ok:   PCEQW lane0: 42 == 42 -> all-1s mask
++ok:   PCEQW lane1: 7 != 8 -> all-0s mask
++ok:   PMINW lane0: min(5,-3) == -3
++ok:   PMINW lane1: min(-100,-2) == -100
++ok:   PADSBH lane0 (low half): PSUBH -> 10-1=9
++ok:   PADSBH lane3 (low half): PSUBH -> 40-4=36
++ok:   PADSBH lane4 (high half): PADDH -> 50+5=55
++ok:   PADSBH lane7 (high half): PADDH -> 80+8=88
++ok:   PABSH lane0: abs(-9) == 9
++ok:   PABSH lane1: abs(INT16_MIN) clamps to INT16_MAX (real hardware quirk)
++ok:   PABSH lane2: abs(33) == 33 (already positive)
++ok:   PCEQH lane0: 15 == 15 -> all-1s mask
++ok:   PCEQH lane1: 9 != 10 -> all-0s mask
++ok:   PMINH lane0: min(7,3) == 3
++ok:   PMINH lane1: min(-20,-5) == -20
++ok:   PCEQB lane0: 0x7F == 0x7F -> all-1s mask
++ok:   PCEQB lane1: 0x11 != 0x22 -> all-0s mask
++
++0 check(s) failed
++ok:   MADD1: 5*3+0 == 15 in pipe-1 LO, HI stays 0, GPR3=15
++ok:   MADDU1: 0x80000000*2 == 0x100000000, LO(pipe1)=0, HI(pipe1)=1
++ok:   PMFHL LW word0/1: LO.ud0 low32 | HI.ud0 low32<<32
++ok:   PMFHL LW word2/3: LO.ud1 low32 | HI.ud1 low32<<32
++ok:   PMFHL SLW: pipe0 overflow clamps to INT32_MAX (0x7fffffff)
++ok:   PMFHL SLW: pipe1 in-range value (-10) passes through sign-extended
++ok:   PMTHL: lo.ud0 low32 replaced, upper 32 untouched
++ok:   PMTHL: hi.ud0 low32 replaced, upper 32 untouched
++ok:   PMTHL: lo.ud1 low32 replaced, upper 32 untouched
++ok:   PMTHL: hi.ud1 low32 replaced, upper 32 untouched
++ok:   QFSRV sa_reg=0: Rd == Rt (pure copy, no shift)
++ok:   QFSRV sa_reg=4 (sa_amt=32): ud0 == (Rt.ud0>>32)|(Rt.ud1<<32)
++ok:   QFSRV sa_reg=4 (sa_amt=32): ud1 == (Rt.ud1>>32)|(Rs.ud0<<32)
++ok:   PMADDW: 3*4+0=12 (pipe0), 100*5+0=500 (pipe1)
++ok:   PMSUBW: 50-(3*4)=38 (pipe0), 1000-(10*5)=950 (pipe1)
++ok:   PMULTW pipe0: 6*7 == 42
++ok:   PMULTW pipe1: -3*9 == -27, sign-extended 64-bit
++ok:   PDIVW pipe0: 17/5==3 rem 2
++ok:   PDIVW pipe1: -7/2==-3 rem -1 (truncate toward zero)
++ok:   PMADDH: all 8 lanes 1*1+0 == 1, GPR result word0..3 all == 1
++ok:   PHMADH: word0 == 9 (3*3) + 4 (2*2) == 13
++ok:   PMSUBH: 100 - (4*5) == 80 (word0)
++ok:   PHMSBH: word0 == 9-4 == 5
++ok:   PMULTH: GPR word0=lane0(2*4)=8, word1=lane2(2*4)=8 (odd lanes 1/3 never reach GPR, real hardware quirk)
++ok:   PMULTH: LO.ud0 == lane1(3*5=15)<<32 | lane0(2*4=8) - the full pair IS captured in LO/HI, just not GPR
++ok:   PDIVBW lane0: 20/5==4 rem 0
++ok:   PDIVBW lane1: 21/5==4 rem 1
++ok:   PDIVBW lane3: 23/5==4 rem 3 (same broadcast divisor)
++ok:   PMADDUW pipe0: 0xFFFFFFFF*2 == 0x1FFFFFFFE (lo=0xFFFFFFFE sign-ext, hi=1)
++ok:   PMADDUW pipe1: 2*3+0 == 6
++ok:   PSRAVW: 0x80000000 >> 4 (arithmetic) == 0xF8000000, sign-extended
++ok:   PSRAVW: 16 >> 2 == 4
++ok:   PMULTUW pipe0 GPR: full unsigned 64-bit product 0xFFFFFFFF*2 == 0x1FFFFFFFE (NOT sign-extended low32)
++ok:   PMULTUW pipe0 LO: low32 of the product (0xFFFFFFFE) sign-extended
++ok:   PMULTUW pipe1: 6*7 == 42
++ok:   PDIVUW pipe0: 20/6==3 rem 2
++ok:   PDIVUW pipe1 div-by-zero: LO==-1 (0xFFFFFFFF...), HI==dividend (7)
++
++0 check(s) failed
++ok:   PINTH test: core halted on BREAK
++ok:   PINTH US[0] == Rt.US[0]
++ok:   PINTH US[1] == Rs.US[4] (upper half of Rs, not lower)
++ok:   PINTH US[2] == Rt.US[1]
++ok:   PINTH US[3] == Rs.US[5]
++ok:   PINTH US[6] == Rt.US[3]
++ok:   PINTH US[7] == Rs.US[7]
++ok:   PINTEH US[0] == Rt.US[0]
++ok:   PINTEH US[1] == Rs.US[0] (even lane, not lane 4 like PINTH)
++ok:   PINTEH US[2] == Rt.US[2]
++ok:   PINTEH US[3] == Rs.US[2]
++ok:   PINTEH US[6] == Rt.US[6]
++ok:   PINTEH US[7] == Rs.US[6]
++ok:   PEXEH US[0] == Rt.US[2] (swapped with lane 2)
++ok:   PEXEH US[1] == Rt.US[1] (unchanged)
++ok:   PEXEH US[2] == Rt.US[0] (swapped with lane 0)
++ok:   PEXEH US[3] == Rt.US[3] (unchanged)
++ok:   PEXCH US[0] == Rt.US[0] (unchanged, unlike PEXEH)
++ok:   PEXCH US[1] == Rt.US[2] (swapped with lane 2)
++ok:   PEXCH US[2] == Rt.US[1] (swapped with lane 1)
++ok:   PEXCH US[3] == Rt.US[3] (unchanged)
++ok:   PREVH US[0] == Rt.US[3]
++ok:   PREVH US[1] == Rt.US[2]
++ok:   PREVH US[2] == Rt.US[1]
++ok:   PREVH US[3] == Rt.US[0]
++ok:   PREVH US[4] == Rt.US[7]
++ok:   PREVH US[7] == Rt.US[4]
++ok:   PCPYH: low 4 lanes all broadcast Rt.US[0]
++ok:   PCPYH: high 4 lanes all broadcast Rt.US[4]
++ok:   PEXEW UL[0] == Rt.UL[2] (swapped with lane 0)
++ok:   PEXEW UL[1] == Rt.UL[1] (unchanged)
++ok:   PEXEW UL[2] == Rt.UL[0] (swapped with lane 2)
++ok:   PEXEW UL[3] == Rt.UL[3] (unchanged)
++ok:   PEXCW UL[0] == Rt.UL[0] (unchanged, unlike PEXEW)
++ok:   PEXCW UL[1] == Rt.UL[2] (swapped with lane 2)
++ok:   PEXCW UL[2] == Rt.UL[1] (swapped with lane 1)
++ok:   PEXCW UL[3] == Rt.UL[3] (unchanged)
++ok:   PROT3W UL[0] == Rt.UL[1]
++ok:   PROT3W UL[1] == Rt.UL[2]
++ok:   PROT3W UL[2] == Rt.UL[0]
++ok:   PROT3W UL[3] == Rt.UL[3] (untouched by the rotation)
++
++0 check(s) failed
++ok:   PSLLVW test: core halted on BREAK
++ok:   PSLLVW ud0: 1 << 3 == 8, sign-extended (positive, upper 32 bits zero)
++ok:   PSLLVW ud1: 1 << (35 & 0x1F)=1<<3 == 8 (shift amount masked to 5 bits)
++ok:   PSLLVW: result with bit 31 set sign-extends to all-1s upper 32 bits
++ok:   PSRLVW ud0: 0x80000000 >> 4 == 0x08000000 (logical shift, no sign propagation into the shift)
++ok:   PSRLVW ud1: 2 >> 1 == 1
++
++0 check(s) failed
++ok:   PADDSW test: core halted on BREAK
++ok:   PADDSW lane0: 5+3=8 (no saturation needed)
++ok:   PADDSW lane1: INT32_MAX+100 saturates to INT32_MAX
++ok:   PADDSW lane2: INT32_MIN+(-100) saturates to INT32_MIN
++ok:   PSUBSW lane0: 10-3=7 (no saturation needed)
++ok:   PSUBSW lane1: INT32_MAX-(-100) saturates to INT32_MAX
++ok:   PSUBSW lane2: INT32_MIN-100 saturates to INT32_MIN
++ok:   PADDSH lane0: 5+3=8 (no saturation needed)
++ok:   PADDSH lane1: INT16_MAX+50 saturates to INT16_MAX
++ok:   PADDSH lane2: INT16_MIN+(-50) saturates to INT16_MIN
++ok:   PSUBSH lane0: 10-3=7 (no saturation needed)
++ok:   PSUBSH lane1: INT16_MAX-(-50) saturates to INT16_MAX
++ok:   PSUBSH lane2: INT16_MIN-50 saturates to INT16_MIN
++ok:   PADDSB lane0: 5+3=8 (no saturation needed)
++ok:   PADDSB lane1: INT8_MAX+10 saturates to INT8_MAX (0x7F)
++ok:   PADDSB lane2: INT8_MIN+(-10) saturates to INT8_MIN (0x80)
++ok:   PSUBSB lane0: 10-3=7 (no saturation needed)
++ok:   PSUBSB lane1: INT8_MAX-(-10) saturates to INT8_MAX (0x7F)
++ok:   PSUBSB lane2: INT8_MIN-10 saturates to INT8_MIN (0x80)
++ok:   PEXT5: R channel (bits 3-7) == 0x1F
++ok:   PEXT5: G channel (bits 11-15) == 0x03
++ok:   PEXT5: B channel (bits 19-23) == 0x00
++ok:   PEXT5: A bit (bit 31) == 1
++ok:   PPAC5: packs the unpacked layout back to the original 0x807F pixel (round-trip with PEXT5)
++
++0 check(s) failed
++/workspace/scratch/d50f06c0f7bf/gekko2-work/Gekko2-R1378-Grafik-Audit/tests/test_ee_mmi_unsigned_sat.c: In function ‘main’:
++/workspace/scratch/d50f06c0f7bf/gekko2-work/Gekko2-R1378-Grafik-Audit/tests/test_ee_mmi_unsigned_sat.c:4:41: warning: implicit declaration of function ‘system_init’ [-Wimplicit-function-declaration]
++    4 | int main(void){bios_image_t bios={0};if(system_init(&bios,&bios))return 2;ee_state_t*s=ee_core_get_state();unsigned fails=0;
++      |                                         ^~~~~~~~~~~
++Unsigned saturation: 0 failures across 48 genuine EE instructions
++PASS 6144 EE traps and synchronous/timer priority
++PASS vector memory proof: unmasked EA, page crossings, V/D, VF00 read proof and LWU
++PASS native IOP divide zero, signed overflow, signed remainder and unsigned paths
++ok:   thbase#4 -> CreateThread
++ok:   thbase#6 -> StartThread
++ok:   thbase#24 -> SleepThread
++ok:   thbase#33 -> DelayThread
++ok:   thbase#35 -> SetAlarm (Round 390: now implemented, no longer out of scope)
++ok:   thsemap#8 -> WaitSema
++ok:   thsemap#10 (real doc gap) -> no sentinel
++ok:   unrelated library -> no sentinel
++ok:   NULL module name -> no sentinel (no crash)
++ok:   CreateThread sentinel recognized
++ok:   CreateThread returns thread id 2 (root thread implicitly created as id 1)
++ok:   new thread starts DORMANT
++ok:   CreateThread returns to caller's ra
++ok:   root thread is id 1 before StartThread
++ok:   StartThread sentinel recognized
++ok:   StartThread causes a REAL context switch to the higher-priority new thread
++ok:   live pc now points at the new thread's real entry point
++ok:   live $a0 holds the real arg passed to StartThread
++ok:   live $ra points at the entry-return trampoline
++ok:   at least one real context switch was recorded
++ok:   entry-return trampoline recognized
++ok:   exited thread is DORMANT
++ok:   context switches back to the root thread after the child exits
++ok:   root thread resumes exactly at its saved return address
++ok:   CreateSema sentinel recognized
++ok:   CreateSema returns sema id 1
++ok:   lower-urgency waiter thread does not pre-empt root
++ok:   ChangeThreadPriority reschedule switches to the now-more-urgent waiter
++ok:   WaitSema sentinel recognized
++ok:   waiter thread is now WAIT (blocked on empty sema)
++ok:   blocking WaitSema switches back to the root thread
++ok:   wait_sema_blocked stat incremented
++ok:   SignalSema sentinel recognized
++ok:   waiter is RUN again after SignalSema wakes it
++ok:   SignalSema's wakeup causes a real pre-emptive switch back to the waiter
++ok:   resumed waiter's pc is exactly its own saved WaitSema return address
++ok:   resumed waiter sees WaitSema's real success return value (0)
++ok:   new equal/higher-priority thread is now live
++ok:   SleepThread sentinel recognized
++ok:   pending wakeup credit means SleepThread does NOT block
++ok:   SleepThread returns immediately to its own ra when a credit was pending
++ok:   started thread is live
++ok:   DelayThread sentinel recognized
++ok:   delayed thread is WAIT
++ok:   delayed thread genuinely wakes up once its real deadline (usec * 33.8688MHz) passes
++ok:   ReferThreadStatus sentinel recognized
++ok:   info.status matches real THS_DORMANT bit
++ok:   info.entry matches real entry point
++ok:   info.initPriority matches real priority
++ok:   info.currentPriority matches real priority
++ok:   ReferSemaStatus sentinel recognized
++ok:   sema info.initial matches
++ok:   sema info.max matches
++ok:   sema info.current matches initial count before any Wait/Signal
++
++0 failures
++ok:   core took the interrupt and halted on BREAK at the bootstrap vector (0xBFC00180)
++ok:   EPC == 0xBFC00020 - the marker instruction right after the enabling SW, correctly preempted
++ok:   both marker instructions after the SW were correctly never executed
++ok:   Cause.ExcCode == 0 (Interrupt), not left over from anything else
++ok:   Cause.IP2 (bit 10) is set, mirroring I_STAT & I_MASK == nonzero
++ok:   Status == 0x00400404 after the push: IEc correctly cleared (bit0=0), IEp correctly set to the pre-exception IEc (bit2=1), BEV/IM2 untouched
++ok:   with IEc=0, core reached and halted on the BREAK at 0x10 (not the bootstrap vector)
++ok:   the marker instruction at 0x0C executed normally - no interrupt preempted it despite I_STAT & I_MASK != 0
++ok:   exactly 4 instructions counted (LUI, ORI, MTC0, ORI-marker) before halting on BREAK - proves the marker genuinely ran as the 4th real instruction, not skipped by a wrongly-taken interrupt
++
++0 check(s) failed
++PASS IOP independent load-delay, merge forwarding, explicit-write cancellation, EPC/BD/TAR, alignment, overflow and IRQ flush oracles
++ok:   system_init succeeds with two independent images
++ok:   EE reached its BREAK as a real Breakpoint exception (ExcCode 9), not an unconditional halt
++ok:   IOP reached its BREAK as a real Breakpoint exception (ExcCode 9), not an unconditional halt (task #735)
++ok:   EE's MSCOM write landed in shared SIF state
++ok:   EE's MSFLAG OR-write set bit 0
++ok:   IOP read MSCOM and echoed the SAME value into SMCOM
++ok:   IOP's SMFLAG write set bit 0
++ok:   EE polled SMFLAG, then read SMCOM and got the IOP's echoed value back - full round trip
++
++0 check(s) failed
++ok:   VU1: program is not running after vu1_exec_micro() returns
++ok:   VU1: executed exactly 4 instructions (the E-bit one plus its real one-instruction delay slot, then stopped)
++ok:   VU1: all-zero words now genuinely decode as real (degenerate, no-effect) ADDbc/LQ instructions - see task #94 note above
++ok:   VU1: TPC ended up pointing at the (unexecuted) 5th instruction, not wrapped/misplaced
++ok:   VU1: MSCAL start_addr is correctly interpreted as an instruction-pair index (*8 for the byte offset)
++ok:   VU1: safety cap run also leaves running=0 afterward
++ok:   VU1: safety cap (65536 instructions) was hit, not a real E-bit stop
++ok:   VU1: I-flag instruction correctly loaded VI[21] (REG_I) from the lower word's raw bits
++ok:   VU1: vu1_micro_write32 stores little-endian, matching this project's other memory helpers
++ok:   VU1: micro-instruction memory address wraps at the real 16KB boundary
++ok:   VU0: program is not running after vu0_exec_micro() returns
++ok:   VU0: executed exactly 3 instructions (the plain one, the E-bit one, and its real delay slot)
++ok:   VU0: real TPC register (cop2_ctrl[26], REG_TPC) reflects the live program counter after execution
++ok:   VU0: micro memory at offset 0 is untouched by the earlier VU1-only writes (separate memories)
++ok:   VU1: real ADD (Class A funct 0x28) computes Fd = Fs + Ft per-lane
++ok:   VU1: real ADDA (writes ACC) followed by real MADD (reads ACC) - the accumulator register genuinely works
++ok:   VU1: real ADDbc broadcasts the selected lane (bc=2=z here) of Ft to every dest lane
++ok:   VU1: real ADDQ uses the Q register (vi[22]) as the second operand, not Ft
++ok:   VU1: real B branch - the delay-slot instruction (MOVE vf20) executed, the skipped one (MOVE vf21) did not
++ok:   VU1: real B branch - exactly 4 instructions retired (branch, delay slot, E-bit instr at target, its own delay slot)
++ok:   VU1: real IADD computes vi[rd] = vi[rs] + vi[rt]
++ok:   VU1: real IADDIU computes vi[It] = vi[Is] + real 15-bit unsigned immediate (100+5000=5100)
++ok:   VU1: real ISUBIU computes vi[It] = vi[Is] - real 15-bit unsigned immediate (100-30=70)
++ok:   VU1: real IADDIU with It=vi0 is correctly a no-op (real hardware's vi0 hardwired-zero guard)
++ok:   VU1: real SQ actually wrote the correct raw bytes into data memory (1.5f = 0x3FC00000 little-endian)
++ok:   VU1: real LQ reads back exactly what SQ wrote (full quadword round-trip through VU1 data memory)
++
++0 check(s) failed
++PASS 48 VU0/VU1 D/T gate, shared control, E priority and pair-retirement oracles
++PASS EFU/P, flag queries, CLIP ordering and deferred wrapped PATH1
++PASS VU selectors, Q issue/WAITQ/reissue/flags/E-bit and VF pair hazards
++R1326 VU REG_R LFSR semantics: PASS
++{"generated_blocks": 392, "ee_comparisons": 4704, "vu_comparisons": 1928, "iop_comparisons": 255, "legacy_regressions": 39, "all_passed": true, "wii_execution_verified": false}
+diff --git a/validation/aot3-owner-report.json b/validation/aot3-owner-report.json
+new file mode 100644
+index 0000000..a4da829
+--- /dev/null
++++ b/validation/aot3-owner-report.json
+@@ -0,0 +1,11 @@
++{
++  "observed_build": "Gekko2-R1378-AOT2",
++  "reported_date": "2026-10-12",
++  "timezone": "Europe/Berlin",
++  "source": "owner message in this conversation",
++  "bios_boot_time_relative_to_previous_build": "approximately halved",
++  "tekken_fps": "nearly 0.30",
++  "timing_logs_supplied": false,
++  "repeat_runs_known": false,
++  "aot3_hardware_verified": false
++}
+diff --git a/validation/aot3-ppc.log b/validation/aot3-ppc.log
+new file mode 100644
+index 0000000..371b3a5
+--- /dev/null
++++ b/validation/aot3-ppc.log
+@@ -0,0 +1,4 @@
++{"linked_ppc_comparisons": 34, "aot_exercised_comparisons": 34, "all_passed": true, "physical_wii_verified": false}
++{"iop_linked_ppc_comparisons": 32, "iop_aot_exercised": 32, "all_passed": true}
++{"vu_linked_ppc_comparisons": 48, "vu_aot_exercised": 48, "all_passed": true, "physical_wii_verified": false}
++{"bc2_linked_ppc_oracles": 8, "jump_region_ppc_oracles": 6, "production_xgkick_ppc_oracles": 2, "all_passed": true, "physical_wii_verified": false}
+diff --git a/validation/aot3-vector-ppc.log b/validation/aot3-vector-ppc.log
+new file mode 100644
+index 0000000..71f5cab
+--- /dev/null
++++ b/validation/aot3-vector-ppc.log
+@@ -0,0 +1,6 @@
++PASS native compiled DS, first-op jumps, mutated delay source, scalar fault BD and delayed IRQ
++EE_DELAY_SIGNATURE 2fb65cdad3d193c9a3b93edbb86c44c0bea312b32f650dbcea583658ead79aae
++PASS 256 control+ALU/memory delay programs with exact retirement
++EE_VECTOR_SIGNATURE e3c274fb323283ed32e56d01c57841ad99f1884fb2fe3f0558285f1545be5bbb
++EE_CHAIN_SIGNATURE 273227e319bf1633c1c5c445322af43273f8c53d1d27682b3110487547f77ad6
++PASS 60 LWU/vector programs, VF00 constants, unmasked/cross-page addresses and seven chain budgets

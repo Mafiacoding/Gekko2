@@ -1,4 +1,10 @@
 #include "core/hw/frontend_runtime.h"
+uint16_t frontend_pad_latch_update(frontend_pad_latch *latch,uint16_t held,uint32_t samples)
+{
+ if(samples!=latch->samples){latch->pending=0;latch->samples=samples;}
+ latch->pending|=held&~latch->previous;latch->previous=held;
+ return held|latch->pending;
+}
 uint32_t frontend_next_budget(uint32_t previous,uint32_t elapsed_ms,uint32_t target_ms)
 {
     if(!elapsed_ms)elapsed_ms=1;

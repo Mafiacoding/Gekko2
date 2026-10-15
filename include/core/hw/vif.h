@@ -21,8 +21,8 @@
  * A VIF DMA transfer is a stream of 32-bit "VIFcode" words
  * interspersed with data - NOT the 128-bit-tag-plus-PACKED-rows
  * format GIF uses. Each VIFcode word: bits 0-15 = IMM, bits 16-23 =
- * NUM, bits 24-30 = CMD (7 bits), bit 31 = I (interrupt request,
- * not modeled - no VIF interrupt delivery exists in this project).
+ * NUM, bits 24-30 = CMD (7 bits), bit 31 = I (interrupt request). R1330-G models command-completion IRQ
+ * delivery and preserves the remaining stream while VIS stalls VIF.
  *
  * Implemented this round (see vif.c for the full per-command table):
  *   NOP, STCYCL, OFFSET/BASE (VIF1 only), ITOP, STMOD, MARK - trivial
@@ -132,6 +132,11 @@ typedef struct {
                   * to an error/null handler. */
 
     uint32_t code;              /* last VIFcode word processed */
+    uint32_t stat;              /* observable VIF_STAT subset: VIS/INT */
+    uint64_t interrupts_raised; /* diagnostic count of completed I-bit commands */
+    int      irq_stalled;       /* I-bit command completed; wait for FBRST.STC */
+    uint32_t stall_words;       /* unconsumed stream words preserved across STC */
+    uint8_t  stall_buffer[4096]; /* bounded remainder for synchronous DMA chunks */
     uint8_t  cycle_cl, cycle_wl; /* STCYCL */
     uint32_t mode;               /* STMOD */
     uint32_t mark;                /* MARK */
@@ -235,6 +240,7 @@ typedef struct {
     uint32_t direct_needed_words;
     uint32_t direct_have_words;
     uint8_t direct_buffer[65536u * 16u];
+    uint32_t direct_sent_words,direct_hl;
 } vif_state_t;
 
 void vif_init(void);
@@ -250,4 +256,15 @@ void vif1_process_quadwords(int channel, const uint8_t *data, uint32_t qwc);
 void vif0_process_tag_words(int channel, const uint8_t *data, uint32_t words);
 void vif1_process_tag_words(int channel, const uint8_t *data, uint32_t words);
 
+/* EE VIF register window subset used by the IRQ/event compatibility path. */
+int vif_mmio_read32(uint32_t addr, uint32_t *out);
+int vif_mmio_write32(uint32_t addr, uint32_t value);
+
+uint32_t vif_accept_quadwords(int channel,const uint8_t *data,uint32_t qwc);
+void vif_service(void);
+
+/* Stable read-only scheduler views. Point at the same state as getters;
+ * no cached activity flags to invalidate after MMIO or checkpoint restore. */
+extern const vif_state_t * const vif0_scheduler_view;
+extern const vif_state_t * const vif1_scheduler_view;
 #endif

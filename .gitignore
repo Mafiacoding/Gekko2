@@ -1,62 +1,56 @@
-build/
-*.dol
-*.elf
-*.map
-data/pcsx2/bios/*.bin
-tools/elf2dol_native
-
-# compiled host-native test binaries (built ad hoc per tests/README.md,
-# never meant to be committed - only the .c sources are)
-tests/test_*
-!tests/test_*.c
-!tests/README.md
-*.bundle
-
-# Round 817 (task #822, per the user's explicit request): checkpoint
-# files must NEVER be committed - they embed real BIOS/disc-derived
-# RAM content (see docs/checkpoint.h's own leak-prevention note and
-# the standing mandatory leak-check rule). Persisted checkpoints now
-# live under checkpoints/ on the user's own outputs folder (which
-# survives on their machine, unlike /tmp scratch) specifically so
-# they are NOT lost between sessions, while remaining permanently
-# untracked/uncommitted here as defense-in-depth alongside the
-# pre-commit leak-check grep.
-checkpoints/
-*.ckpt
-
-# R1250 verification/build mode outputs
-build-r1250-*/
-outputs/
-*.so
-
-# Public repository: local builds and private runtime material
-build-r*/
+# Gekko2: generated builds / private user assets
+/build/
+/build-*/
+/build*/
+/outputs/
+/validation/*-host/
+/validation/*-host*/
+/**/__pycache__/
+*.py[cod]
 *.o
-*.a
 *.d
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+*.elf
+*.dol
+*.map
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+# Never commit BIOS, games, snapshots, personal runtime data
 *.iso
-*.chd
 *.bin
 *.cue
-*.mdf
-*.mds
-*.z[0-9][0-9]
-*.zip
-*.7z
-*.log
-*.ckpt*
-*.raw
-*.ppm
-*.pgm
-*.tar*
+*.chd
+*.cso
 *.gz
-*.tmp
-__pycache__/
-.private*/
-private*/
-screenshots/
-captures/
-
-# Source history belongs in Git, not copied backup trees
-backups/
-*.bak
+*.wbfs
+*.gcm
+*.nkit.iso
+*.vag
+*.sav
+*.state
+*.raw
+*.mem
+*.nvram
+*.rom
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+.env.*
+/sdk/
+/devkitpro/
+/data/pcsx2/bios/*
+!/data/pcsx2/bios/README.txt
+# Safe, small, synthetic regression fixtures only
+!/tests/fixtures/chd-r1378/
+!/tests/fixtures/chd-r1378/*.chd
+!/tests/fixtures/chd-r1378/*.iso

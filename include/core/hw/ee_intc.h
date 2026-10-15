@@ -89,11 +89,37 @@ uint32_t ee_intc_get_sbus_event_pending(void);
  * calls this every step, mirroring ee_check_timer_interrupt()'s
  * Cause.IP7 pattern for this new external line. */
 int ee_intc_pending(void);
+/* R1345: reads the same live state as ee_intc_pending; no cached IRQ result. */
+#ifdef GEKKO
+extern ee_intc_state_t gekko2_intc_live;
+#endif
+static inline int ee_intc_pending_fast(void)
+{
+#ifdef GEKKO
+    return (gekko2_intc_live.stat & gekko2_intc_live.mask) != 0u;
+#else
+    return ee_intc_pending();
+#endif
+}
+
 
 /* Round 716 (task #696-699): real per-cause IRQ-raise hit counter,
  * mirroring ee_timers_get_irq_count() (Round 715). Purely diagnostic -
  * does not affect emulated behavior. */
 uint32_t ee_intc_get_raise_count(int irq);
 uint32_t ee_intc_get_sbus_ack_count(void);
+/* BETA12.7: guest-observed INTC_STAT vs. VBLANK acknowledgement counts.
+ * No invented IRQs or guest register changes. */
+typedef struct {
+    uint64_t stat_reads;
+    uint64_t vblank_seen_reads;
+    uint64_t vblank_clear_reads;
+    uint64_t vblank_w1c;
+    uint32_t last_guest_pc;
+    uint32_t last_guest_value;
+} ee_intc_poll_trace_t;
+void ee_intc_note_guest_stat_read(uint32_t guest_pc, uint32_t value);
+void ee_intc_poll_trace_snapshot(ee_intc_poll_trace_t *out);
+
 
 #endif

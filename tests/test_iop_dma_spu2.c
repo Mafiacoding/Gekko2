@@ -33,7 +33,7 @@ int main(void)
     CHECK(iop_dma_get_spu2_transfer_count() == 0, "SPU2 DMA: transfer count starts at 0");
 
     /* Real SPU2 DMA channel base = 0x1F801500 (s_ranges[] in iop_dma.c) */
-    const uint32_t SPU2_DMA_BASE = 0x1F801500u;
+    const uint32_t SPU2_DMA_BASE = 0x1F8010C0u;
 
     /* --- source data in IOP RAM: 32 bytes (2 quadwords) of a
      * recognizable pattern --- */
@@ -44,7 +44,7 @@ int main(void)
      * write needed for this first transfer. */
     iop_dma_mmio_write32(SPU2_DMA_BASE + 0x00u, 0x2000u); /* MADR = source in IOP RAM */
     iop_dma_mmio_write32(SPU2_DMA_BASE + 0x04u, 2u);       /* BCR: BS=2 words, BA=0 -> plain 2-word count */
-    iop_dma_mmio_write32(SPU2_DMA_BASE + 0x08u, 0x01000000u); /* CHCR: STR=1 (start) */
+    iop_dma_mmio_write32(SPU2_DMA_BASE + 0x08u, 0x01000001u); /* CHCR: STR=1 (start) */
 
     CHECK(iop_dma_get_spu2_transfer_count() == 1, "SPU2 DMA: real STR-bit kick performs exactly one transfer");
 
@@ -61,15 +61,15 @@ int main(void)
     uint16_t tsa_hi = 0xFFFFu, tsa_lo = 0xFFFFu;
     iop_spu2_mmio_read16(iop_spu2_core_reg_addr(0, SPU2_C_TSA_HI), &tsa_hi);
     iop_spu2_mmio_read16(iop_spu2_core_reg_addr(0, SPU2_C_TSA_LO), &tsa_lo);
-    CHECK(tsa_hi == 0 && tsa_lo == 1,
-          "SPU2 DMA: real TSA register auto-advances by the transferred 8-byte-unit count (0 -> 1)");
+    CHECK(tsa_hi == 0 && tsa_lo == 4,
+          "SPU2 DMA: real TSA register auto-advances by the transferred 16-bit-word count (0 -> 4)");
 
     /* --- second kick continues from the advanced TSA, proving
      * consecutive DMA blocks chain correctly without IOP intervention --- */
     for (int i = 0; i < 16; i++) g_iop_ram[0x3000 + i] = (uint8_t)(0xC0 + i);
     iop_dma_mmio_write32(SPU2_DMA_BASE + 0x00u, 0x3000u);
     iop_dma_mmio_write32(SPU2_DMA_BASE + 0x04u, 4u); /* 4 words = 16 bytes = 2 more 8-byte units */
-    iop_dma_mmio_write32(SPU2_DMA_BASE + 0x08u, 0x01000000u);
+    iop_dma_mmio_write32(SPU2_DMA_BASE + 0x08u, 0x01000001u);
 
     CHECK(iop_dma_get_spu2_transfer_count() == 2, "SPU2 DMA: second real STR-bit kick counted");
     CHECK(memcmp(spu2_ram + 8, g_iop_ram + 0x3000, 16) == 0,
@@ -78,13 +78,13 @@ int main(void)
     /* --- explicit TSA reprogramming (real BIOS/game usage: point at a
      * fresh voice's waveform region before each new sample upload) --- */
     iop_spu2_mmio_write16(iop_spu2_core_reg_addr(0, SPU2_C_TSA_HI), 0);
-    iop_spu2_mmio_write16(iop_spu2_core_reg_addr(0, SPU2_C_TSA_LO), 0x1000u); /* unit 0x1000 -> byte 0x8000 */
+    iop_spu2_mmio_write16(iop_spu2_core_reg_addr(0, SPU2_C_TSA_LO), 0x1000u); /* unit 0x1000 -> byte 0x2000 */
     for (int i = 0; i < 8; i++) g_iop_ram[0x4000 + i] = (uint8_t)(0xE0 + i);
     iop_dma_mmio_write32(SPU2_DMA_BASE + 0x00u, 0x4000u);
     iop_dma_mmio_write32(SPU2_DMA_BASE + 0x04u, 2u);
-    iop_dma_mmio_write32(SPU2_DMA_BASE + 0x08u, 0x01000000u);
+    iop_dma_mmio_write32(SPU2_DMA_BASE + 0x08u, 0x01000001u);
 
-    CHECK(memcmp(spu2_ram + 0x8000, g_iop_ram + 0x4000, 8) == 0,
+    CHECK(memcmp(spu2_ram + 0x2000, g_iop_ram + 0x4000, 8) == 0,
           "SPU2 DMA: real BIOS-style explicit TSA reprogram correctly redirects the destination within SPU2 RAM");
 
     /* --- out-of-bounds source (past IOP RAM): dropped, not read past
@@ -92,7 +92,7 @@ int main(void)
     uint32_t before = iop_dma_get_spu2_transfer_count();
     iop_dma_mmio_write32(SPU2_DMA_BASE + 0x00u, (uint32_t)sizeof(g_iop_ram) - 4u);
     iop_dma_mmio_write32(SPU2_DMA_BASE + 0x04u, 100u); /* 400 bytes - well past the RAM boundary from that MADR */
-    iop_dma_mmio_write32(SPU2_DMA_BASE + 0x08u, 0x01000000u);
+    iop_dma_mmio_write32(SPU2_DMA_BASE + 0x08u, 0x01000001u);
     CHECK(iop_dma_get_spu2_transfer_count() == before,
           "SPU2 DMA: out-of-bounds IOP-RAM source is safely dropped, not read past the end");
 

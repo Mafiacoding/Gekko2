@@ -1,3 +1,4 @@
+#include "core/hw/iop_service_hle.h"
 /*
  * iop_module_loader.c - see include/core/hw/iop_module_loader.h for
  * scope, mechanism, and citations.
@@ -332,7 +333,7 @@ static uint32_t bump_alloc(uint32_t size)
     return addr;
 }
 
-static void export_registry_add(const char *name, uint32_t fptr_table_addr, uint32_t fptr_count)
+static void export_registry_add(iop_state_t *st,const char *name, uint32_t fptr_table_addr, uint32_t fptr_count)
 {
     if (g.export_count >= EXPORT_REGISTRY_MAX) return;
     export_registry_entry_t *e = &g.exports[g.export_count++];
@@ -340,6 +341,7 @@ static void export_registry_add(const char *name, uint32_t fptr_table_addr, uint
     e->name[8] = '\0';
     e->fptr_table_addr = fptr_table_addr;
     e->fptr_count = fptr_count;
+    iop_service_hle_register(st,name,fptr_table_addr,fptr_count);
 }
 
 static const export_registry_entry_t *export_registry_find(const char *name)
@@ -657,7 +659,7 @@ static uint32_t load_only_one(iop_state_t *st, const char *name, iop_elf_load_re
      * executing the real ROM code that would otherwise derive it. */
     if (!module_has_i_twin(name)) {
         for (int i = 0; i < out->export_count; i++) {
-            export_registry_add(out->exports[i].name,
+            export_registry_add(st,out->exports[i].name,
                                  out->exports[i].addr + 20u /* fptrs[0] - see iop_elf.h layout */,
                                  out->exports[i].fptr_count);
         }

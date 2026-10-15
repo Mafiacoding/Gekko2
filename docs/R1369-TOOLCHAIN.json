@@ -1,0 +1,10 @@
+{
+  "image": "devkitpro/devkitppc:latest",
+  "amd64_manifest": "sha256:4c919aa26151dd43d88ca28c922d1fe2409579a8ba60ef56517baf1abdfb1a48",
+  "sdk_layer": {
+    "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+    "digest": "sha256:3727f0a7f966b9fae8b3cdbe70e976d2bd28a4c1409c525278ebd104577bc15a",
+    "size": 336235051
+  },
+  "gcc": "16.1.0"
+}

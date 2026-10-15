@@ -1,3 +1,6 @@
+extern void ee_core_event_notify(void) __attribute__((weak));
+extern void system_shared_sync(void) __attribute__((weak));
+extern void system_shared_sync_reason(unsigned reason) __attribute__((weak));
 /*
  * dma.c - EE DMA controller register skeleton
  *
@@ -8,7 +11,15 @@
  */
 
 #include "core/hw/dma.h"
+#include "core/hw/graphics_scheduler.h"
+#include "core/hw/gif.h"
+#include "core/hw/vif.h"
 #include "core/hw/ee_intc.h"
+#include "core/hw/gs.h"
+#include "core/hw/ipu.h"
+extern uint32_t ipu_input_write(const uint8_t *,uint32_t) __attribute__((weak));
+extern uint32_t ipu_output_read(uint8_t *,uint32_t) __attribute__((weak));
+extern void ipu_service(void) __attribute__((weak));
 #include <string.h>
 
 /* Local alias, matching the existing per-file-local-constant convention
@@ -21,9 +32,15 @@
 #include <stdio.h>
 #endif
 
-static dma_state_t g_dma;
+/* Canonical DMAC state; no mirrored pending flag or invalidation scheme. */
+dma_state_t gekko2_dma_live;
+const dma_state_t * const dma_scheduler_view = &gekko2_dma_live;
+#define g_dma gekko2_dma_live
 static uint8_t *g_ee_ram = NULL;
 static uint32_t g_ee_ram_size = 0;
+/* R1316: optional JIT source-generation observer. Kept as a callback so
+ * standalone DMA tests retain zero dependency on the EE core/recompiler. */
+static void (*g_ee_write_notify)(uint32_t phys_addr, uint32_t len) = NULL;
 /* Round 572: bound the same way g_ee_ram is (see dma_bind_ee_ram() /
  * dma_bind_scratchpad() below) rather than calling ee_core_get_state()
  * directly - dma.c must stay linkable standalone (several test source
@@ -80,6 +97,11 @@ void dma_bind_scratchpad(uint8_t *scratch, uint32_t scratch_size)
 {
     g_ee_scratch = scratch;
     g_ee_scratch_size = scratch_size;
+}
+
+void dma_set_ee_write_notify(void (*fn)(uint32_t phys_addr, uint32_t len))
+{
+    g_ee_write_notify = fn;
 }
 
 void dma_set_sink(int channel, dma_sink_fn fn)
@@ -197,9 +219,13 @@ static int transfer_quadwords(int channel, uint32_t addr, uint32_t qwc)
             (!ring && (uint64_t)phys + bytes > g_ee_ram_size)) return 0;
         uint32_t spr = ch->sadr & (EE_SCRATCH_SIZE - 16u);
         for (uint32_t i=0; i<qwc; i++) {
-            if (channel == DMA_CHANNEL_TOSPR)
+            if (channel == DMA_CHANNEL_TOSPR) {
                 memcpy(g_ee_scratch + spr, g_ee_ram + phys + i*16u, 16u);
-            else memcpy(g_ee_ram + (ring?mfifo_wrap(phys+i*16u):phys+i*16u), g_ee_scratch + spr, 16u);
+            } else {
+                uint32_t dst = ring ? mfifo_wrap(phys + i*16u) : phys + i*16u;
+                memcpy(g_ee_ram + dst, g_ee_scratch + spr, 16u);
+                if (g_ee_write_notify) g_ee_write_notify(dst, 16u);
+            }
             spr = (spr + 16u) & (EE_SCRATCH_SIZE - 1u);
         }
         ch->sadr = spr;
@@ -251,6 +277,184 @@ static int read_chain_tag(uint32_t tag_addr, uint32_t *qwc, uint32_t *id,
     return 1;
 }
 
+/* Fast answer for IPU service's frequent idle polls.  This is a pure
+ * observer; an active TO/FROM channel still receives normal servicing. */
+int dma_ipu_work_pending(void)
+{
+    return !!((g_dma.chan[DMA_CHANNEL_FROMIPU].chcr |
+               g_dma.chan[DMA_CHANNEL_TOIPU].chcr) & 0x100u);
+}
+
+/* R1335: independent bounded FIFO transfers, invoked by the IPU service.
+ * Do not use the old void sink: it cannot return partial consumption. */
+int dma_ipu_service(void)
+{
+ if(!ipu_input_write||!ipu_output_read)return 0;
+ int progress=0;
+ for(int channel=DMA_CHANNEL_FROMIPU;channel<=DMA_CHANNEL_TOIPU;channel++) {
+  dma_channel_t *ch=&g_dma.chan[channel];
+  if(!(ch->chcr&0x100u))continue;
+  unsigned mod=(ch->chcr>>2)&3;
+  if(mod>1||(channel==DMA_CHANNEL_FROMIPU&&mod)) {
+   ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;continue;
+  }
+  if(channel==DMA_CHANNEL_TOIPU&&mod==1&&!g_dma.ipu_tag_pending) {
+   uint32_t qwc,id,addr,irq;
+   if(!read_chain_tag(ch->tadr,&qwc,&id,&addr,&irq))goto bad_address;
+   uint32_t next=ch->tadr+16, payload=next;
+   g_dma.ipu_tag_end=(id==DMA_TAG_REFE||id==DMA_TAG_END||((ch->chcr&0x80u)&&irq));
+   if(id==DMA_TAG_REFE||id==DMA_TAG_REF||id==DMA_TAG_REFS)payload=addr;
+   else if(id==DMA_TAG_CNT||id==DMA_TAG_END)next+=qwc*16;
+   else if(id==DMA_TAG_NEXT)next=addr;
+   else if(id==DMA_TAG_CALL){
+    unsigned asp=(ch->chcr>>4)&3;
+    if(asp>=2){ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;continue;}
+    if(asp==0)ch->asr0=payload+qwc*16;else ch->asr1=payload+qwc*16;
+    ch->chcr=(ch->chcr&~0x30u)|((asp+1)<<4);next=addr;
+   }else if(id==DMA_TAG_RET){
+    unsigned asp=(ch->chcr>>4)&3;
+    if(!asp||asp>2){g_dma.ipu_tag_end=1;next=payload+qwc*16;}
+    else{next=asp==2?ch->asr1:ch->asr0;ch->chcr=(ch->chcr&~0x30u)|((asp-1)<<4);}
+   }
+   ch->chcr=(ch->chcr&0xffffu)|((id<<28)|(irq<<31)) ;
+   ch->madr=payload;ch->qwc=qwc;ch->tadr=next;g_dma.ipu_tag_pending=1;progress=1;
+  }
+  if(ch->qwc) {
+   uint32_t wanted=ch->qwc>8?8:ch->qwc,done;uint8_t *p;
+   if(!dma_resolve_ptr(ch->madr,wanted*16,&p))goto bad_address;
+   if(channel==DMA_CHANNEL_TOIPU)done=ipu_input_write(p,wanted);
+   else {
+    done=ipu_output_read(p,wanted);
+    if(done&&g_ee_write_notify&&!(ch->madr&0x80000000u))g_ee_write_notify(ch->madr,done*16);
+   }
+   ch->madr+=done*16;ch->qwc-=done;ch->quadwords_transferred+=done;
+   progress|=done!=0;
+  }
+  if(!ch->qwc) {
+   if(channel==DMA_CHANNEL_TOIPU&&mod==1){g_dma.ipu_tag_pending=0;if(!g_dma.ipu_tag_end)continue;}
+   ch->chcr&=~0x100u;dma_channel_signal_done(channel);progress=1;
+  }
+  continue;
+ bad_address:
+  ch->last_error=DMA_ERR_OUT_OF_BOUNDS;ch->chcr&=~0x100u;
+  if(channel==DMA_CHANNEL_TOIPU)g_dma.ipu_tag_pending=0;
+ }
+ return progress;
+}
+
+/* Resumable GIF DMA. Architectural MADR/QWC advance only after GIF
+ * acceptance; tag stack and terminal/TIE decisions survive a stalled call. */
+static int dma_graphics_service_one(int channel) {
+    dma_channel_t *ch=&g_dma.chan[channel];
+    uint32_t *pending=channel==2?&g_dma.gif_tag_pending:&g_dma.vif_tag_pending[channel];
+    uint32_t *end=channel==2?&g_dma.gif_tag_end:&g_dma.vif_tag_end[channel];
+    uint32_t *tag_id=channel==2?&g_dma.gif_tag_id:&g_dma.vif_tag_id[channel];
+    int ring=mfifo_channel()==channel&&mfifo_valid();
+    if(!(ch->chcr&0x100u)||!g_ee_ram||!((channel==2&&g_sinks[channel]==gif_process_quadwords)||(channel==0&&g_sinks[channel]==vif0_process_quadwords)||(channel==1&&g_sinks[channel]==vif1_process_quadwords)))return 0;
+    if(channel==2&&gif_get_state()->fifo_count)return 0;
+    unsigned mode=(ch->chcr>>2)&3u;int progress=0;
+    /* GS reverse bus: VIF1 receives quadwords from GS into EE RAM.
+     * Never feed these bytes into the VIF command parser.  CHCR.DIR=0,
+     * BUSDIR=1 and normal DMA mode must all agree. */
+    if(channel==DMA_CHANNEL_VIF1 && (gs_get_state()->busdir&1u) && !(ch->chcr&1u)){
+        /* VIF1_STAT.FDR must select the GS reverse data path too. */
+        if(!(vif1_get_state()->stat & (1u<<23)))return 0;
+        if(mode!=0u){ch->last_error=DMA_ERR_UNSUPPORTED_TAG;return 0;}
+        if(!ch->qwc){ch->chcr&=~0x100u;dma_channel_signal_done(channel);return 1;}
+        uint32_t wanted=ch->qwc>8u?8u:ch->qwc;
+        uint8_t *dst;
+        if(!dma_resolve_ptr(ch->madr,wanted*16u,&dst)){
+            ch->last_error=DMA_ERR_OUT_OF_BOUNDS;return 0;
+        }
+        uint8_t fifo[8u*16u];
+        uint32_t got=gif_read_local_fifo(fifo,wanted);
+        if(!got)return 0; /* Do not signal a fake DMA completion. */
+        memcpy(dst,fifo,got*16u);
+        if(g_ee_write_notify && !(ch->madr&0x80000000u))
+            g_ee_write_notify(ch->madr,got*16u);
+        ch->madr+=got*16u;ch->qwc-=got;
+        ch->quadwords_transferred+=got;
+        if(!ch->qwc){ch->chcr&=~0x100u;dma_channel_signal_done(channel);}
+        return 1;
+    }
+    /* Reverse-directed VIF1 must not consume its target EE memory as
+     * outbound VIF commands while waiting for BUSDIR to reverse. */
+    if(channel==DMA_CHANNEL_VIF1 && !(ch->chcr&1u))return 0;
+    if(mode>1u){ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;return 0;}
+    for(unsigned guard=0;guard<4096u;guard++) {
+        if(mode==1u&&!*pending) {
+            if(ring){ch->tadr=mfifo_wrap(ch->tadr);if(!mfifo_available(ch->tadr))return progress;}
+            uint32_t qwc,id,addr,irq;
+            if(!read_chain_tag(ch->tadr,&qwc,&id,&addr,&irq))goto bad;
+            uint32_t tag=ch->tadr,next=tag+16u,payload=addr;
+            if(channel<2u&&(ch->chcr&0x40u)&&g_tag_sinks[channel]) {
+                const uint8_t *tag_data;
+                if(!ram_ptr(tag+8u,8u,&tag_data))goto bad;
+                vif_state_t *v=channel?vif1_get_state():vif0_get_state();
+                vif_service();if(v->irq_stalled||v->stall_words||(v->direct_needed_words&&v->direct_have_words==v->direct_needed_words))return progress;
+                g_tag_sinks[channel](channel,tag_data,2u);
+            }
+            unsigned asp=(ch->chcr>>4)&3u;
+            *end=id==DMA_TAG_REFE||id==DMA_TAG_END;
+            if(id==DMA_TAG_CNT||id==DMA_TAG_NEXT||id==DMA_TAG_CALL||id==DMA_TAG_RET||id==DMA_TAG_END)payload=tag+16u;
+            if(id==DMA_TAG_CNT||id==DMA_TAG_END)next=payload+qwc*16u;
+            else if(id==DMA_TAG_NEXT)next=addr;
+            else if(id==DMA_TAG_CALL) {
+                if(asp>=2u)goto unsupported;
+                if(!asp)ch->asr0=payload+qwc*16u;else ch->asr1=payload+qwc*16u;
+                ch->chcr=(ch->chcr&~0x30u)|((asp+1u)<<4);next=addr;
+            } else if(id==DMA_TAG_RET) {
+                if(!asp||asp>2u){*end=1;next=payload+qwc*16u;}
+                else {next=asp==2u?ch->asr1:ch->asr0;ch->chcr=(ch->chcr&~0x30u)|((asp-1u)<<4);}
+            }
+            if((ch->chcr&0x80u)&&irq)*end=1;
+            ch->chcr=(ch->chcr&0xffffu)|((id<<28)|(irq<<31));
+            if(ring){if(mfifo_contains(payload)||payload==g_dma.d_rbor+g_dma.d_rbsr+16u)payload=mfifo_wrap(payload);next=mfifo_wrap(next);}
+            ch->madr=payload;ch->qwc=qwc;ch->tadr=next;
+            *tag_id=id;*pending=1;
+        }
+        if(ch->qwc) {
+            uint32_t wanted=ch->qwc>128u?128u:ch->qwc;const uint8_t *p;
+            /* D_CTRL.STD=GIF, REFS: stop exactly at the producer STADR. */
+            if(mode==1u&&*tag_id==DMA_TAG_REFS&&((g_dma.d_ctrl>>6)&3u)==(channel==2?3u:channel==1?2u:0xffu)) {
+                uint32_t room=g_dma.d_stadr>ch->madr?(g_dma.d_stadr-ch->madr)/16u:0;
+                if(wanted>room)wanted=room;
+                if(!wanted){g_dma.d_stat|=1u<<13;return progress;}
+            }
+            if(ring&&mfifo_contains(ch->madr)) {
+                uint32_t available=mfifo_available(ch->madr),contiguous=(g_dma.d_rbor+g_dma.d_rbsr+16u-ch->madr)/16u;
+                if(wanted>available)wanted=available;if(wanted>contiguous)wanted=contiguous;
+                if(!wanted)return progress;
+            }
+            if(!ram_ptr(ch->madr,wanted*16u,&p))goto bad;
+            uint32_t done=channel==2?gif_try_process_quadwords(GIF_PATH_3,p,wanted):vif_accept_quadwords(channel,p,wanted);
+            ch->madr+=done*16u;ch->qwc-=done;ch->quadwords_transferred+=done;
+            if(ring&&done&&mfifo_contains(ch->madr-done*16u))ch->madr=mfifo_wrap(ch->madr);
+            if(done)progress=1;
+            if(done<wanted)return progress;
+        }
+        if(!ch->qwc) {
+            if(!mode||*end) {
+                *pending=0;ch->chcr&=~0x100u;dma_channel_signal_done(channel);return 1;
+            }
+            *pending=0;
+        }
+    }
+    return progress; /* bounded scheduling slice, retain STR */
+unsupported:
+    ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;*pending=0;return progress;
+bad:
+    ch->last_error=DMA_ERR_OUT_OF_BOUNDS;ch->chcr&=~0x100u;*pending=0;return progress;
+}
+
+int dma_gif_service(void) {
+    /* Idle EE retirements need no VIF parser frame or DMA tag walk. */
+    if(!dma_graphics_work_pending_fast())return 0;
+    vif_service();gif_fifo_service();int progress=0;
+    for(int channel=0;channel<3;channel++)progress|=dma_graphics_service_one(channel);
+    return progress;
+}
+
 void dma_channel_kick(int channel)
 {
     if (channel < 0 || channel >= DMA_CHANNEL_COUNT)
@@ -265,6 +469,10 @@ void dma_channel_kick(int channel)
         return;
     }
 
+    if((channel==DMA_CHANNEL_GIF&&g_sinks[channel]==gif_process_quadwords)||
+       (channel==DMA_CHANNEL_VIF0&&g_sinks[channel]==vif0_process_quadwords)||
+       (channel==DMA_CHANNEL_VIF1&&g_sinks[channel]==vif1_process_quadwords)){dma_gif_service();return;}
+    if ((channel==DMA_CHANNEL_TOIPU||channel==DMA_CHANNEL_FROMIPU)&&ipu_service) {ipu_service();return;}
     uint32_t mod = (ch->chcr >> 2) & 0x3u;
 #ifdef R933_DMA_KICK_TRACE
     fprintf(stderr, "[R933DMA] kick channel=%d chcr=0x%08x madr=0x%08x qwc=%u tadr=0x%08x mod=%u sink=%p\n",
@@ -289,10 +497,8 @@ void dma_channel_kick(int channel)
     }
 
     if (mod == 1) {
-        /* CHAIN mode: walk tags starting at TADR. Implements the four
-         * most common tag IDs (REFE/CNT/NEXT/END); REF/REFS/CALL/RET
-         * are flagged as unsupported rather than silently mishandled -
-         * see docs/ROADMAP.md. */
+        /* CHAIN mode: walk standard DMAC tags. CALL/RET use the real
+         * two-entry ASR stack and CHCR.ASP; no synthetic completion. */
         const int MAX_TAGS_PER_KICK = 4096; /* guards against a corrupt/cyclic chain hanging us forever */
         for (int guard = 0; guard < MAX_TAGS_PER_KICK; guard++) {
             uint32_t qwc, id, addr, irq;
@@ -307,9 +513,21 @@ void dma_channel_kick(int channel)
 
             if(ring && (id==DMA_TAG_CNT || id==DMA_TAG_NEXT || id==DMA_TAG_END || id==5u || id==6u) && available<qwc+1u)return;
 
+            /* R1357: toSPR TTE copies the entire 128-bit DMA tag into
+             * scratchpad before its payload (PCSX2 SPR.cpp SPR1transfer(ptag,1)).
+             * VIF TTE below has a different, upper-64-bit interface.
+             * Tekken reads the copied tag's QWC to size its MFIFO submission. */
+            if (channel == DMA_CHANNEL_TOSPR && (ch->chcr & 0x40u)) {
+                if (!transfer_quadwords(channel, ch->tadr, 1u)) {
+                    ch->last_error = DMA_ERR_OUT_OF_BOUNDS;
+                    ch->chcr &= ~0x100u;
+                    return;
+                }
+            }
+
             /* CHCR.TTE sends the tag's upper two words to VIF before
              * the associated data, including tags with QWC=0. */
-            if ((ch->chcr & 0x40u) && g_tag_sinks[channel]) {
+            if ((ch->chcr & 0x40u) && channel != DMA_CHANNEL_TOSPR && g_tag_sinks[channel]) {
                 const uint8_t *tag_data;
                 if (!ram_ptr(ch->tadr + 8u, 8u, &tag_data)) {
                     ch->last_error = DMA_ERR_OUT_OF_BOUNDS;
@@ -381,14 +599,39 @@ void dma_channel_kick(int channel)
                 if(ring)ch->tadr=mfifo_wrap(ch->tadr);
                 continue;
 
-            default: /* CALL/RET - not implemented (no evidence yet this project's
-                 * traces ever need the address-stack mechanism these two tag
-                 * types require; left honestly unsupported per task #447/#521's
-                 * evidence-only-implement standard, unlike REF/REFS above which
-                 * were directly observed and confirmed against real PCSX2 source). */
-                ch->last_error = DMA_ERR_UNSUPPORTED_TAG;
-                ch->chcr &= ~0x100u;
-                return;
+            case DMA_TAG_CALL: { /* inline payload, push return TADR */
+                unsigned asp=(ch->chcr>>4)&3u;
+                if(asp>=2u){ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;return;}
+                uint32_t payload=ring?mfifo_wrap(ch->tadr+16u):ch->tadr+16u;
+                if(!transfer_quadwords(channel,payload,qwc)){
+                    ch->last_error=DMA_ERR_OUT_OF_BOUNDS;return;
+                }
+                uint32_t ret=ch->tadr+16u+qwc*16u;
+                if(ring)ret=mfifo_wrap(ret);
+                if(asp==0u)ch->asr0=ret;else ch->asr1=ret;
+                ch->chcr=(ch->chcr&~0x30u)|((asp+1u)<<4);
+                ch->tadr=ring?mfifo_wrap(addr):addr;
+                continue;
+            }
+            case DMA_TAG_RET: { /* inline payload, pop return TADR */
+                unsigned asp=(ch->chcr>>4)&3u;
+                if(!transfer_quadwords(channel,ring?mfifo_wrap(ch->tadr+16u):ch->tadr+16u,qwc)){
+                    ch->last_error=DMA_ERR_OUT_OF_BOUNDS;return;
+                }
+                if(!asp||asp>2u){
+                    /* Empty stack: RET terminates the chain on real DMAC. */
+                    ch->tadr+=16u+qwc*16u;
+                    if(ring)ch->tadr=mfifo_wrap(ch->tadr);
+                    ch->chcr&=~0x100u;dma_channel_signal_done(channel);return;
+                }
+                ch->tadr=asp==2u?ch->asr1:ch->asr0;
+                if(asp==2u)ch->asr1=0;else ch->asr0=0;
+                ch->chcr=(ch->chcr&~0x30u)|((asp-1u)<<4);
+                if(ring)ch->tadr=mfifo_wrap(ch->tadr);
+                continue;
+            }
+            default:
+                ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;return;
             }
         }
         /* Fell out of the loop via the guard counter - treat as an error
@@ -413,6 +656,7 @@ void dma_channel_kick(int channel)
  */
 void dma_channel_signal_done(int channel)
 {
+    if(ee_core_event_notify)ee_core_event_notify();
     if (channel < 0 || channel >= DMA_CHANNEL_COUNT)
         return;
     g_dma.d_stat |= (1u << channel);
@@ -454,7 +698,9 @@ int dma_channel_receive_quadwords(int channel, const uint8_t *data, uint32_t qwc
         }
     }
 #endif
-    memcpy(g_ee_ram + ch->madr, data, len);
+    uint32_t written_madr = ch->madr;
+    memcpy(g_ee_ram + written_madr, data, len);
+    if (g_ee_write_notify) g_ee_write_notify(written_madr, len);
     ch->madr += len;
     ch->qwc = (ch->qwc > qwc) ? (ch->qwc - qwc) : 0u;
     ch->quadwords_transferred += qwc;
@@ -640,6 +886,10 @@ static uint32_t *ctrl_reg_ptr(uint32_t addr)
 
 int dma_mmio_read32(uint32_t addr, uint32_t *out_val)
 {
+    if((addr&0xfffff000u)==0x1000c000u){
+        if(system_shared_sync_reason)system_shared_sync_reason(14u);
+        else if(system_shared_sync)system_shared_sync();
+    }
     if (addr >= DMAC_BASE && addr < DMAC_CHAN_END) {
         uint32_t off;
         int ch = decode_channel(addr, &off);
@@ -666,12 +916,23 @@ int dma_mmio_read32(uint32_t addr, uint32_t *out_val)
 
 int dma_mmio_write32(uint32_t addr, uint32_t val)
 {
+    if(((addr>=DMAC_BASE&&addr<DMAC_CHAN_END)||(addr>=DMAC_CTRL_BASE&&addr<DMAC_CTRL_END)||
+        addr==0x1000f520u||addr==0x1000f590u)&&ee_core_event_notify)ee_core_event_notify();
+    if((addr&0xfffff000u)==0x1000c000u){
+        if(system_shared_sync_reason)system_shared_sync_reason(15u);
+        else if(system_shared_sync)system_shared_sync();
+    }
     if (addr >= DMAC_BASE && addr < DMAC_CHAN_END) {
         uint32_t off;
         int ch = decode_channel(addr, &off);
         if (ch < 0) return 1; /* consumed, ignored - unknown sub-register */
         uint32_t *reg = channel_reg_ptr(&g_dma.chan[ch], off);
         if (reg) {
+            if(off==0&&!(val&0x100u)) {
+                if(ch==2)g_dma.gif_tag_pending=g_dma.gif_tag_end=0;
+                if(ch<2)g_dma.vif_tag_pending[ch]=g_dma.vif_tag_end[ch]=0;
+            }
+            if(ch==DMA_CHANNEL_TOIPU&&off==0&&!(val&0x100u))g_dma.ipu_tag_pending=g_dma.ipu_tag_end=0;
             *reg = val;
             /* Writing CHCR (offset 0x00) with STR (bit 8) set kicks off
              * a real transfer - see dma_channel_kick(). */

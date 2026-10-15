@@ -28,7 +28,7 @@ int main(void){
     if(g_gif.rgba!=0x78563412)return puts("FAIL PACKED RGBA alpha"),1;
     le32(packet+8,GS_REG_ST);le32(packet+16,0x3f800000);le32(packet+20,0x40000000);le32(packet+24,0x40400000);
     gif_process_quadwords(GIF_PATH_1,packet,2);
-    if(g_gif.cur_s!=1||g_gif.cur_t!=2||g_gif.cur_q!=3)return puts("FAIL PACKED STQ"),1;
+    if(g_gif.cur_s!=1||g_gif.cur_t!=2||g_gif.gif_q_bits!=0x40400000u||g_gif.cur_q!=1)return puts("FAIL PACKED STQ"),1;
     le32(packet+8,GS_REG_UV);le32(packet+16,33<<4);le32(packet+20,71<<4);
     gif_process_quadwords(GIF_PATH_1,packet,2);
     if(g_gif.cur_u!=33||g_gif.cur_v!=71)return puts("FAIL PACKED UV"),1;

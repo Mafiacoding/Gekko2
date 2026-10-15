@@ -11,7 +11,7 @@ static int namecmp(const char *a,const char *b)
  return (unsigned char)*a-(unsigned char)*b;
 }
 int frontend_browser_is_image(const char *name)
-{const char *p=strrchr(name,'.');return p&&(!namecmp(p,".iso")||!namecmp(p,".bin"));}
+{const char *p=strrchr(name,'.');return p&&(!namecmp(p,".iso")||!namecmp(p,".bin")||!namecmp(p,".chd"));}
 static int order(const void *aa,const void *bb)
 {
  const frontend_browser_entry *a=aa,*b=bb;

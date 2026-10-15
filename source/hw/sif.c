@@ -1,3 +1,5 @@
+extern void system_shared_sync(void) __attribute__((weak));
+extern void system_shared_sync_reason(unsigned reason) __attribute__((weak));
 /*
  * sif.c - EE-side SIF/SBUS mailbox register model. See sif.h for the
  * exact per-register semantics and PCSX2 source cross-reference.
@@ -151,8 +153,24 @@ void sif_init(void)
 
 sif_state_t *sif_get_state(void) { return &g_sif; }
 
+/* Synchronize only claimed registers. Failed MMIO probes must not trim
+ * an EE event window or catch up the IOP. Reasons 0..6 are reads,
+ * 7..13 writes, in the contiguous 16-byte mailbox register order. */
+static void sif_sync_register(uint32_t addr, unsigned write)
+{
+    unsigned reason=(addr-SIF_MSCOM)>>4;
+    if(system_shared_sync_reason)system_shared_sync_reason(reason+write*7u);
+    else if(system_shared_sync)system_shared_sync();
+}
+static int sif_claims_register(uint32_t addr)
+{
+    return addr>=SIF_MSCOM && addr<=SIF_F260 && !(addr&15u);
+}
+
 int sif_mmio_read32(uint32_t addr, uint32_t *out)
 {
+    if(!sif_claims_register(addr))return 0;
+    sif_sync_register(addr,0u);
     switch (addr) {
         case SIF_MSCOM:  *out = g_sif.mscom;  return 1;
         case SIF_SMCOM:  *out = g_sif.smcom;  return 1;
@@ -197,6 +215,8 @@ int sif_mmio_read32(uint32_t addr, uint32_t *out)
 
 int sif_mmio_write32(uint32_t addr, uint32_t value)
 {
+    if(!sif_claims_register(addr))return 0;
+    sif_sync_register(addr,1u);
     switch (addr) {
         case SIF_MSCOM:
             /* Plain assignment - real hardware/PCSX2 has no special
@@ -582,6 +602,8 @@ int sif_ee_loadexecps2_seen(void)
  * points, matching this project's own precedent for this class of
  * "must still fire even mid-branch-delay-slot, real hardware doesn't
  * skip a beat" tick function). */
+int sif_ee_tick_pending(void){return g_sif_extra.bootend_reassert_pending!=0;}
+
 void sif_ee_tick(void)
 {
     if (!g_sif_extra.bootend_reassert_pending)

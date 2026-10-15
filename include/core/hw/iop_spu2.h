@@ -3,84 +3,14 @@
 
 #include <stdint.h>
 
-/*
- * iop_spu2.h - SPU2 (sound processor) register scaffold (task #95,
- * "time permitting").
- *
- * SCOPE, read before extending: this is a register-file SCAFFOLD, not
- * an audio implementation. What IS real and cited: the real IOP-side
- * base address (0x1F900000 - consistent across every public PS2
- * hardware reference this project is aware of, e.g. ps2tek/PCSX2's
- * own IopHw address map) and the fact that real SPU2 registers are
- * natively 16-BIT (unlike most other IOP peripherals this project has
- * modeled so far, which are 32-bit) - real IOP code accesses them via
- * LH/SH, not LW/SW. What is NOT implemented: any per-register meaning
- * (voice VOLL/VOLR/PITCH/ADSR, core MMIX/master-volume/control,
- * ENDX flags, the two real per-core offsets, etc - this project does
- * not have a verified, cited exact register offset table the way
- * iop_intc.h's I_STAT/I_MASK/I_CTRL layout was directly ported from
- * real PCSX2 source) and, critically, no actual audio synthesis or
- * DMA-to-SPU2 data pipeline of any kind. What this DOES provide: any
- * real BIOS/game IOP code that reads or writes an SPU2 register in
- * the real address range now lands in a real, persistent, byte-
- * addressable 16-bit-granularity register file (readback returns
- * whatever was last written) instead of silently falling through to
- * unrelated IOP RAM/BIOS memory or being dropped - a genuine step
- * from "unmodeled address range" to "real, if semantically inert,
- * hardware register block," matching the same honest-scaffold pattern
- * this project already used for iop_hle_modules.c's registry before
- * task #92 made it real.
- *
- * Size: 0x800 bytes (2KB) - covers real Core0's full documented
- * register block plus headroom; Core1 (real offset +0x400 from
- * Core0 on actual hardware) falls within this same window since this
- * scaffold does not yet distinguish core-specific semantics anyway.
- */
-
+/* Native SPU2 beta: two 24-voice cores, register/FIFO/DMA addressing,
+ * guest-clock ADPCM synthesis and optional Wii PCM output.
+ * Sources: PCSX2 SPU2/{RegTable,spu2sys,Dma,Mixer,ReadInput}.cpp and
+ * ps2sdk common/include/libsd-common.h. Reverb, noise, PMON, sweep,
+ * Gaussian interpolation, AC3 and CDDA32 remain unsupported. */
 #define IOP_SPU2_BASE 0x1F900000u
 #define IOP_SPU2_SIZE 0x0800u
 
-/*
- * ---------------------------------------------------------------
- * Round 185 addition: real per-register offset/meaning table
- * ---------------------------------------------------------------
- * Sources (architectural facts only, paraphrased, no verbatim
- * excerpts per this project's clean-room discipline; direct quotes
- * kept under 15 words where used):
- *   - ps2tek (https://psi-rockin.github.io/ps2tek/) memory-map page:
- *     confirms two independent cores, Core1's register block starting
- *     exactly +0x400 past Core0's.
- *   - PCSX2's historical ZeroSPU2 plugin header (GPL-2.0, same
- *     citation tier already used elsewhere in this project for real
- *     PCSX2-derived architectural facts), reg.h: independently
- *     confirms the same +0x400 Core1 offset for every register, and
- *     provides the per-voice and core-level register names/offsets
- *     below.
- *   - PCSX2's own wiki ("SPU2 is more than just sound!" page): notes
- *     SPU2 timing/behavior is commonly relied upon by real games, but
- *     does NOT name any specific boot-gate status bit or register.
- *
- * NOT documented by any of the above (explicitly - not an oversight):
- * real power-on/reset values for any SPU2 register (this project's
- * existing memset-to-zero `iop_spu2_init()` is therefore the most
- * defensible default, not a citable "real reset value"), and no
- * specific boot-time "audio ready" polling condition. Nothing in this
- * round should be read as claiming otherwise.
- *
- * SCOPE: this is a NAMING/ADDRESSING increment only, same "real
- * address space, no fabricated hardware behavior" discipline as the
- * original scaffold. The underlying storage remains the existing
- * flat, byte-addressable register file (`iop_spu2_mmio_*`) - every
- * offset below is READ/WRITE passthrough, identical to the pre-
- * existing behavior, just now given a real, cited, symbolic name
- * instead of being an anonymous blob. No envelope generation, no
- * hardware-driven ENDX/status auto-set, no actual audio synthesis or
- * DMA-to-SPU2 pipeline - unchanged, honest scope limit from the
- * original header (task #95/Round 136 precedent).
- *
- * Per-voice register block (24 voices, stride 0x10, base = core
- * base + 0x000):
- */
 #define SPU2_CORE1_OFFSET 0x400u /* add to every offset below for Core1 */
 
 #define SPU2_VOICE_STRIDE   0x10u
@@ -126,19 +56,35 @@
 #define SPU2_C_ADMAS        0x1B0u /* AutoDMA status */
 #define SPU2_C_ENDX0        0x340u /* end-point-passed flags, voices 0-15 */
 #define SPU2_C_ENDX1        0x342u /* end-point-passed flags, voices 16-23 */
-#define SPU2_C_STATX        0x344u /* status register (real meaning of
-                                     * individual bits not conclusively
-                                     * documented by any source checked -
-                                     * modeled as a plain register, no
-                                     * bit-level semantics assumed) */
+#define SPU2_C_STATX        0x344u /* bit10: transfer in progress (ps2sdk) */
 
-/* Shared (non-per-core) registers - single instance, NOT affected by
- * SPU2_CORE1_OFFSET, at absolute offsets from IOP_SPU2_BASE. */
+/* Output parameters: core0 at 0x760; core1 at 0x788 (+0x28). */
 #define SPU2_S_MVOLL        0x760u /* master volume left */
 #define SPU2_S_MVOLR        0x762u /* master volume right */
 #define SPU2_S_EVOLL        0x764u /* effect volume left */
 #define SPU2_S_EVOLR        0x766u /* effect volume right */
 
+#define SPU2_S_EXTVOLL 0x768u
+#define SPU2_S_EXTVOLR 0x76au
+#define SPU2_S_INPVOLL 0x76cu
+#define SPU2_S_INPVOLR 0x76eu
+#define SPU2_S_IRQINFO 0x7c2u
+/* Internal raw status writes bypass trigger side effects. */
+void iop_spu2_set_raw16(uint32_t addr,uint16_t value);
+void iop_spu2_sync(uint64_t sched_ticks);
+void iop_spu2_sync_now(void);
+unsigned iop_spu2_event_distance(unsigned maximum);
+void iop_spu2_check_ram_irq(uint32_t word_address,uint32_t words);
+int iop_spu2_adma_begin(int core,uint32_t madr,uint32_t bytes);
+void iop_spu2_adma_sample(int core,int16_t out[2]);
+void iop_spu2_adma_cancel(int core);
+uint32_t iop_spu2_audio_stat(unsigned index);
+uint32_t iop_spu2_snapshot_size(void);
+void iop_spu2_snapshot_save(void *out);
+int iop_spu2_snapshot_valid(const void *data,uint64_t ticks,uint32_t ram_size);
+void iop_spu2_snapshot_load(const void *data);
+void iop_spu2_restore_legacy(uint64_t ticks);
+extern uint32_t g_spu2_irq_clock_required,g_spu2_next_sample;
 void iop_spu2_init(void);
 
 /* Same convention as every other *_mmio_read16/write16 helper in this

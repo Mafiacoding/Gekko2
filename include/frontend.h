@@ -1,3 +1,5 @@
+#include "build_version.h"
+#include "core/recompiler/optimization.h"
 /* R1269 native launcher. Font rasterized from DejaVu Sans (see license). */
 #ifndef FRONTEND_H
 #define FRONTEND_H
@@ -5,6 +7,7 @@
 #include <stdio.h>
 #include "core/hw/frontend_browser.h"
 typedef void (*ui_rect_fn)(int,int,int,int,uint8_t,uint8_t,uint8_t);
+enum {UI_BIOS,UI_DISC,UI_COLD_BOOT,UI_SELECT_DISC,UI_SETTINGS,UI_ABOUT,UI_EXIT,UI_MENU_COUNT};
 static const uint8_t ui_font[95][14]={
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0},
 {0,4,4,4,4,4,4,0,4,4,0,0,0,0},
@@ -116,20 +119,20 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  rect(36,35,4,51,67,182,255);
  if(ui_logo_renderer)ui_logo_renderer(54,8);
  else ui_text(rect,54,32,3,"GEKKO2",204,232,255);
- ui_text(rect,344,84,1,"W I I  /  R1304",78,163,229);
+ ui_text(rect,344,84,1,"W I I  /  " GEKKO2_RELEASE "",78,163,229);
  /* Geometric 2 motif, inspired by the console's blue line art. */
  rect(526,35,72,3,55,133,225);rect(595,35,3,20,55,133,225);
  rect(526,52,72,3,55,133,225);rect(526,52,3,20,55,133,225);
  rect(526,69,72,3,55,133,225);
  rect(36,110,568,2,24,61,99);
  ui_text(rect,38,129,1,page==1?"SYSTEM SETTINGS":page==2?"ABOUT THIS PROJECT":"PLAYSTATION 2 EMULATION",100,166,215);
- const char *labels[6]={"BIOS / OSDSYS","START DISC","SELECT DISC","SETTINGS","ABOUT","EXIT TO HBC"};
- const char *desc[6]={"Cold boot without a disc","Boot the selected ISO / BIN","Browse files on the SD card","Display and scheduling options","Build and controller information","Return to the Homebrew Channel"};
+ const char *labels[UI_MENU_COUNT]={"BIOS / OSDSYS","START DISC","COLD BOOT / NEW LOG","SELECT DISC","SETTINGS","ABOUT","EXIT TO HBC"};
+ const char *desc[UI_MENU_COUNT]={"New BIOS session and log","New selected ISO / BIN session","Restart current mode; keep old logs","Browse files on the SD card","Display and scheduling options","Build and controller information","Return to the Homebrew Channel"};
  if(page==0){
- for(int i=0;i<6;i++){int y=152+i*37;int on=i==selected;
- rect(36,y,370,33,on?16:9,on?43:22,on?76:41);rect(36,y,3,33,on?65:20,on?183:49,on?255:76);
- ui_text(rect,51,y+5,1,labels[i],on?228:148,on?242:176,on?255:207);
- ui_text(rect,51,y+18,1,desc[i],on?115:75,on?188:116,on?235:157);}
+ for(int i=0;i<UI_MENU_COUNT;i++){int y=152+i*32;int on=i==selected;
+ rect(36,y,370,31,on?16:9,on?43:22,on?76:41);rect(36,y,3,31,on?65:20,on?183:49,on?255:76);
+ ui_text(rect,51,y+3,1,labels[i],on?228:148,on?242:176,on?255:207);
+ ui_text(rect,51,y+17,1,desc[i],on?115:75,on?188:116,on?235:157);}
  ui_text(rect,433,173,1,"ENGINE",91,144,188);ui_text(rect,433,194,1,engine,185,221,250);
  ui_text(rect,433,240,1,"SESSION",91,144,188);ui_text(rect,433,261,1,running?"PAUSED":"READY",185,221,250);
  }else if(page==1){
@@ -139,17 +142,35 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  ui_text(rect,48,269,1,gx?"> GX (EXPERIMENTAL): ON":"> GX (EXPERIMENTAL): OFF",221,237,255);
  ui_text(rect,48,299,1,"A: HUD    1 / GC X: update    2 / GC Y: FPS",106,171,223);
  ui_text(rect,48,324,1,"LEFT / RIGHT: toggle GX",106,171,223);
- ui_text(rect,48,349,1,"MINUS+PLUS: HUD    HOME: pause to launcher.",106,171,223);
+ ui_text(rect,48,349,1,"DOWN: CPU / GX OPTIMIZATIONS",106,171,223);
  }else{
  ui_text(rect,48,170,1,"Experimental PS2 emulator for Nintendo Wii",221,237,255);
  ui_text(rect,48,207,1,"Native launcher / devkitPPC / libogc",106,171,223);
  ui_text(rect,48,244,1,"This screen is the emulator launcher.",106,171,223);
  ui_text(rect,48,269,1,"Early alpha: BIOS stability comes first.",106,171,223);
- ui_text(rect,48,310,1,"HOME: pause   HOME + MINUS: exit to HBC.",106,171,223);
+ ui_text(rect,48,310,1,"PLUS/START: pause/resume. MINUS+A: PS2 START.",106,171,223);
+ ui_text(rect,48,337,1,"HOME: pause. HOME+MINUS: exit to HBC.",106,171,223);
  }
  rect(36,381,568,1,24,61,99);
  ui_text(rect,38,397,1,notice?notice:"",117,186,237);
  ui_text(rect,38,437,1,page?"B  BACK":"D-PAD/STICK SELECT  A OPEN  +/START RESUME",209,227,246);
+}
+static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested,uint32_t available,const char *message)
+{
+ for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
+ ui_text(rect,36,28,2,"CPU / GX OPTIMIZATIONS",204,232,255);
+ ui_text(rect,36,65,1,"CPU/GX: cold boot. ARM/IOS: exit and restart app.",106,171,223);
+ unsigned first=((unsigned)selected/13u)*13u;
+ for(unsigned n=first;n<GEKKO2_OPT_COUNT&&n<first+13u;n++){
+  int y=92+(int)(n-first)*19,on=(int)n==selected;char row[90];
+  rect(32,y-2,576,18,on?16:9,on?43:22,on?76:41);
+  snprintf(row,sizeof(row),"%s %-28s %s",on?">":" ",gekko2_opt_name(n),
+      !(available&GEKKO2_OPT_BIT(n))?"UNAVAILABLE":n==GEKKO2_OPT_ARM_IOS222?(requested&GEKKO2_OPT_BIT(n)?"IOS222":"CURRENT"):(requested&GEKKO2_OPT_BIT(n)?"ON":"OFF"));
+  ui_text(rect,40,y,1,row,on?228:148,on?242:176,on?255:207);
+ }
+ ui_text(rect,36,365,1,gekko2_opt_description((unsigned)selected),117,186,237);
+ ui_text(rect,36,397,1,message?message:"",117,186,237);
+ ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT TOGGLE   B BACK",209,227,246);
 }
 static void ui_browser_draw(ui_rect_fn rect,const frontend_browser *browser,const char *message)
 {
@@ -168,6 +189,6 @@ static void ui_browser_draw(ui_rect_fn rect,const frontend_browser *browser,cons
  snprintf(line,sizeof(line),"%u / %u%s",browser->count?browser->selected+1:0,browser->count,browser->truncated?"  (memory limit)":"");
  ui_text(rect,36,373,1,line,100,166,215);
  if(message)ui_text(rect,36,402,1,message,209,227,246);
- ui_text(rect,36,438,1,"A SELECT  B PARENT  C/Z PAGE  +/START BACK",209,227,246);
+ ui_text(rect,36,438,1,"A SELECT  B PARENT/BACK  C/Z PAGE",209,227,246);
 }
 #endif

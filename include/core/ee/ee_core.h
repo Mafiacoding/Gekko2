@@ -5,6 +5,16 @@
 #include "core/bios_loader.h"
 #include "core/hw/vu.h"
 
+/* Internal TLB fault classification shared by the EE memory/exception path
+ * and white-box regression tests. Keep these values aligned with
+ * ee_mem_ptr()'s mem_tlb_miss encoding. */
+enum {
+    EE_TLB_FAULT_NONE = 0,
+    EE_TLB_FAULT_MISS = 1,
+    EE_TLB_FAULT_INVALID = 2,
+    EE_TLB_FAULT_MODIFIED = 3
+};
+
 /*
  * Emotion Engine (R5900) CPU state.
  *
@@ -275,8 +285,16 @@ typedef struct {
     /* Native resident copies are invalid after an external GPR mutation. */
     uint32_t gpr_generation;
     vu_pipeline_t vu0_pipeline;
+    /* Literal returned by the selected real LOADFILE legacy RPC getter;
+     * zero means no verified provider. Cold-boot/reset/checkpoint state. */
+    uint32_t loadfile_rpc_version;
+    vu_timing_t vu0_timing;
+    /* Selected real FILEIO provider's legacy RPC 0xff literal;
+     * unknown/absent providers return zero, never synthetic success. */
+    uint32_t fileio_rpc_version;
 } ee_state_t;
 
+void vu0_sync_macro(ee_state_t *st);
 int  ee_core_init(const bios_image_t *bios);
 void ee_core_run(const bios_image_t *bios);
 void ee_core_rebind_dma_sinks(void); /* Round 449 - checkpoint-resume-safe DMA sink re-registration, see .c citation */
@@ -306,10 +324,25 @@ uint64_t ee_core_get_loadfile_reply_count(void);
 /* Single-step entry point, for the interleaved EE/IOP scheduler
  * in core/system.h. See its definition in ee_core.c for details. */
 int ee_core_step(void);
-/* R1165: execute up to n EE instructions while preserving the exact
- * ee_step() epilogue at every guest-instruction boundary. Returns the
- * number of guest instructions actually retired. */
+/* Execute at most n EE scheduler slots, preserving each step's epilogue.
+ * Idle park ticks and scalar fault/redirect attempts consume slots without
+ * fabricating retirements. Returns guest instructions actually retired. */
 unsigned ee_core_step_n(unsigned n);
+/* Wii scheduler: after eight EE slots (including idle), service one IOP tick.
+ * The callback returns zero to end this grant (e.g. IOP halted).
+ * Native blocks cannot straddle a quantum; native chains may span quanta. */
+unsigned ee_core_step_interleaved_n(unsigned quanta,int (*after_quantum)(void));
+extern unsigned ee_core_interleave_quantum; /* UINT32_MAX outside a grant. */
+static inline unsigned ee_core_interleave_limit(unsigned budget)
+{return budget<ee_core_interleave_quantum?budget:ee_core_interleave_quantum;}
+void ee_core_interleave_account(unsigned slots);
+unsigned ee_core_step_event_n(unsigned quanta,unsigned width,int (*catch_up)(unsigned));
+void ee_core_event_sync(void);
+void ee_core_event_notify(void);
+unsigned ee_core_native_window_begin_cached(ee_state_t *,uint32_t,const uint32_t *,unsigned,unsigned,uint32_t);
+unsigned ee_core_native_window_begin_aot(ee_state_t *,uint32_t,const uint32_t *,unsigned,unsigned);
+unsigned ee_core_event_distance(unsigned maximum);
+uint64_t ee_core_event_deadline_stat(unsigned reason);
 void ee_core_shutdown(void);
 
 /* Round 781 (task #803): real elapsed-hardware-time tick, for use by
@@ -356,6 +389,19 @@ void ee_core_get_r1189_exception_diag(uint64_t *exc, uint64_t *nested, uint64_t 
                                       uint32_t *pc, uint32_t *va, uint32_t *iw,
                                       uint32_t *rs, uint32_t *rv, uint32_t *ea);
 ee_state_t *ee_core_get_state(void);
+/* BETA12.5: read-only transport diagnostics, not part of guest EE state. */
+typedef struct {
+    uint64_t version_calls, open_calls, open_success, open_fail;
+    uint64_t read_calls, read_bytes, close_calls;
+    uint64_t font_open_calls, font_open_success, font_open_fail;
+    uint64_t font_read_calls, font_read_bytes;
+    uint32_t last_read_fd, last_read_requested, last_read_returned;
+    int32_t last_open_result;
+    uint32_t last_open_offset;
+    char last_open_path[112], last_font_path[112];
+} ee_fileio_trace_t;
+void ee_core_fileio_trace(ee_fileio_trace_t *out);
+
 
 uint8_t  ee_mem_read8(ee_state_t *st, uint32_t addr);
 uint16_t ee_mem_read16(ee_state_t *st, uint32_t addr);
@@ -365,6 +411,10 @@ void     ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val);
 void     ee_mem_write16(ee_state_t *st, uint32_t addr, uint16_t val);
 void     ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val);
 void     ee_mem_write64(ee_state_t *st, uint32_t addr, uint64_t val);
+/* Whole guest quadword access: interpreter and scalar JIT share MMIO semantics.
+ * Values use host register representation; FIFO bytes are guest little-endian. */
+void ee_mem_read128(ee_state_t *st, uint32_t addr, ee_reg128_t *out);
+void ee_mem_write128(ee_state_t *st, uint32_t addr, const ee_reg128_t *value);
 
 /* VU0 micro mode (see this struct's vu0_micro comment above and
  * include/core/hw/vu.h) - called from vif.c's VIF0 MPG/MSCAL/MSCNT/
@@ -441,6 +491,7 @@ typedef struct {
 } ee_pad_checkpoint_t;
 /* Diagnostic actual emitted VBLANK edges since core reset; no guest effect. */
 uint64_t ee_core_get_vblank_events(void);
+uint64_t ee_core_vblank_fast_wait_stat(unsigned which);
 void ee_core_pad_checkpoint_save(ee_pad_checkpoint_t *out);
 void ee_core_pad_checkpoint_load(const ee_pad_checkpoint_t *in);
 
@@ -469,16 +520,39 @@ void ee_core_display_clock_load(uint64_t ticks);
 
 /* Precise block-JIT callbacks; mapped code is reread at every boundary. */
 int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word);
+/* Returns UINT32_MAX for immutable BIOS source, otherwise the EE RAM 4 KiB page. */
+int ee_core_block_source_page(ee_state_t *st,uint32_t pc,uint32_t *page);
 unsigned ee_core_block_words(ee_state_t *st,uint32_t pc,uint32_t *words,unsigned limit);
 int ee_core_block_prepare(ee_state_t *st,uint32_t pc,uint32_t instruction);
 int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc);
 uint32_t ee_core_block_memory_resolve(const ee_state_t *st,uint32_t instruction);
+uint32_t ee_core_block_memory_resolve_precise(const ee_state_t *st,uint32_t instruction);
 uint32_t ee_core_block_prepare_memory_resolved(ee_state_t *st,uint32_t pc,uint32_t instruction);
 int ee_core_block_memory_safe(const ee_state_t *st,uint32_t instruction);
 int ee_core_block_prepare_memory(ee_state_t *st,uint32_t pc,uint32_t instruction);
 uint32_t ee_core_block_prepare_delay(ee_state_t *st,uint32_t pc,uint32_t instruction);
 void ee_core_block_commit(ee_state_t *st);
+uint32_t ee_core_block_boundary(ee_state_t *,uint32_t,uint32_t);
+uint32_t ee_core_block_memory_boundary(ee_state_t *,uint32_t,uint32_t);
+uint32_t ee_core_block_delay_boundary(ee_state_t *,uint32_t,uint32_t);
+uint64_t ee_core_get_fused_boundaries(void);
 void ee_core_raise_trap(ee_state_t *st);
 void ee_core_raise_overflow(ee_state_t *st);
 
+
+/* R1331: mapping cache lifecycle; any external TLB writer must invalidate. */
+void ee_fastmem_invalidate(void);
+uint64_t ee_fastmem_stat(unsigned n);
+unsigned ee_core_native_window_begin(ee_state_t *,uint32_t,const uint32_t *,unsigned,unsigned);
+unsigned ee_core_native_window_begin_with_addresses(ee_state_t *,uint32_t,const uint32_t *,unsigned,unsigned,uint32_t);
+uint64_t ee_core_vu_window_stat(unsigned);
+uint64_t ee_core_cpu_fifo_stat(unsigned);
+uint64_t ee_core_native_window_stat(unsigned);
+uint64_t ee_core_arm_boot_stat(unsigned);
+extern uint32_t ee_native_window_memory[32];
+/* Scheduler/idle admission used by the optional BETA11 paths. */
+unsigned ee_core_idle_active(void);
+#ifdef GEKKO2_IDLE_SKIP
+int ee_core_idle_pc(uint32_t pc);
+#endif
 #endif

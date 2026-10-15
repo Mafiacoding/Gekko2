@@ -45,6 +45,7 @@ static void build_synth_iso(const char *path)
         if (s == 16) {
             sector[0] = 1;
             memcpy(&sector[1], "CD001", 5);
+            sector[6] = 1;
             uint8_t *root = &sector[156];
             root[0] = 34;
             write_both32(&root[2], 20);   /* extent LBA */

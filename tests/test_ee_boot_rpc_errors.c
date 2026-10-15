@@ -6,12 +6,18 @@
 
 static void le32(uint8_t *p, uint32_t v){for(int i=0;i<4;i++)p[i]=(uint8_t)(v>>(8*i));}
 static void le16(uint8_t *p, uint16_t v){p[0]=v;p[1]=v>>8;}
+static const char *fileio_test_open_path;
+static unsigned fileio_test_open_offset;
 static void call(ee_state_t *s, uint32_t sid, uint32_t fno, uint32_t command, uint32_t recvsize){
     const uint32_t d=0x80002000,p=0x80003000,h=0x80004000,c=0x80005000,r=0x80006000;
     memset(s->ram+0x2000,0,0x5000);
     ee_mem_write32(s,d,p);ee_mem_write32(s,d+4,0x10000);ee_mem_write32(s,d+8,128);
     ee_mem_write32(s,d+16,h);ee_mem_write32(s,d+20,0x11000);ee_mem_write32(s,d+24,64);
     ee_mem_write32(s,p,command);
+    if(fileio_test_open_path){
+       for(unsigned j=0;fileio_test_open_path[j];j++)ee_mem_write8(s,p+fileio_test_open_offset+j,(uint8_t)fileio_test_open_path[j]);
+       ee_mem_write8(s,p+fileio_test_open_offset+(unsigned)strlen(fileio_test_open_path),0);
+    }
     ee_mem_write32(s,h,64);ee_mem_write32(s,h+8,SIF_CMD_RPC_CALL);
     ee_mem_write32(s,h+0x1c,c);ee_mem_write32(s,h+0x20,fno);
     ee_mem_write32(s,h+0x28,r);ee_mem_write32(s,h+0x2c,recvsize);
@@ -33,6 +39,57 @@ int main(void){
     le32(e+96,0x70000080);le32(e+108,132);le32(e+112,26);le16(e+156,0x0306);
     if(system_init(&bios,&bios))return 1;
     ee_state_t *s=ee_core_get_state();
+    s->loadfile_rpc_version=0x34333231u;
+    call(s,SIF_SID_LOADFILE,255,0,4);
+    if(ee_mem_read32(s,0x80006000)!=0x34333231u || ee_mem_read32(s,0x80006004)!=0xcafef00d)return puts("FAIL LOADFILE protocol reply/bounds"),1;
+    for(unsigned bytes=0;bytes<4;bytes++){
+        call(s,SIF_SID_LOADFILE,255,0,bytes);
+        if(ee_mem_read32(s,0x80006000)!=0xfeedface)return puts("FAIL short LOADFILE protocol reply overwritten"),1;
+    }
+    s->fileio_rpc_version=0x30313132u; /* ASCII "2110" - synthetic provider */
+    call(s,SIF_SID_FILEIO,255,0,4);
+    if(ee_mem_read32(s,0x80006000)!=0x30313132u||ee_mem_read32(s,0x80006004)!=0xcafef00d)return puts("FAIL FILEIO version reply"),1;
+    for(unsigned bytes=0;bytes<4;bytes++){
+        call(s,SIF_SID_FILEIO,255,0,bytes);
+        if(ee_mem_read32(s,0x80006000)!=0xfeedface)return puts("FAIL FILEIO short reply overwritten"),1;
+    }
+    for(unsigned layout=0;layout<2;layout++){
+        fileio_test_open_path="rom0:XPADMAN";
+        fileio_test_open_offset=layout?0u:4u;
+        call(s,SIF_SID_FILEIO,0,0,4);
+        int fd=(int)ee_mem_read32(s,0x80006000);
+        if(fd<0)return printf("FAIL FILEIO open layout %u returned %d\n",layout,fd),1;
+        fileio_test_open_path=NULL;
+        /* Close the record for the next layout. */
+        ee_fio_rom_fd_close(fd);
+    }
+    s->fileio_rpc_version=0;
+    call(s,SIF_SID_FILEIO,255,0,4);
+    if(ee_mem_read32(s,0x80006000))return puts("FAIL unknown FILEIO version invented"),1;
+    /* Optional private-disc regression: both request layouts must open
+     * the actual font which the E3 game requests. This binary never
+     * includes, redistributes or hardcodes any asset bytes. */
+    const char *private_disc=getenv("GEKKO2_CRASH_E3_BIN");
+    if(private_disc && *private_disc) {
+        if(iop_cdvd_mount_iso(private_disc)!=0)return puts("FAIL private Crash disc mount"),1;
+        for(unsigned layout=0;layout<3;layout++){
+            fileio_test_open_path=layout==2?"cdrom0:\\fonts\\ariel32.fnt":"cdrom0:\\FONTS\\ARIEL32.FNT;1";
+            fileio_test_open_offset=layout==1?0u:4u;
+            call(s,SIF_SID_FILEIO,0,0,4);
+            int fd=(int32_t)ee_mem_read32(s,0x80006000);
+            fileio_test_open_path=NULL;
+            if(fd<0)return printf("FAIL Crash font FILEIO OPEN layout=%u fd=%d\n",layout,fd),1;
+            ee_fio_rom_fd_t *r=ee_fio_rom_fd_get(fd);
+            if(!r || r->rom_size!=2208u || r->kind!=EE_FIO_FD_KIND_DISC)
+                return puts("FAIL Crash font FILEIO record"),1;
+            ee_fio_rom_fd_close(fd);
+        }
+        iop_cdvd_unmount_iso();
+        puts("PASS private Crash font present/openable with both FILEIO OPEN layouts");
+    }
+    s->loadfile_rpc_version=0;
+    call(s,SIF_SID_LOADFILE,255,0,4);
+    if(ee_mem_read32(s,0x80006000))return puts("FAIL unknown LOADFILE protocol invented"),1;
     call(s,0x12,5,0,256);
     if((int32_t)ee_mem_read32(s,0x80006000)!=-3||ee_mem_read32(s,0x80006004)!=0xcafef00d)return puts("FAIL absent XFROM boot image reply"),1;
     call(s,0x12,1,0,4);
@@ -56,5 +113,12 @@ int main(void){
     if(ee_mem_read32(s,0x80006000)!=0xfeedface)return puts("FAIL RTC zero-size reply overwrite"),1;
     le32(e+108,0xfffffff0);
     if(ee_rom_module_version(&bios,"XPADMAN")!=0)return puts("FAIL malformed ELF accepted"),1;
+    s->pc=0x80007000;s->next_pc=0x80007004;s->cop0[12]=0;s->cop0[13]=0;
+    s->branch_pending=0;s->halted=0;s->idle=0;s->gpr[3].ud0=61;
+    s->gpr[4].ud0=0x00100000;s->gpr[5].ud0=0xffffffff;s->gpr[2].ud0=0xdeadbeef;
+    ee_step();
+    if(s->pc!=0x80000180 || (s->cop0[13]&0x7c)!=0x20 || s->cop0[14]!=0x80007000 ||
+       s->gpr[4].ud0!=0x00100000 || s->gpr[5].ud0!=0xffffffff || s->gpr[2].ud0!=0xdeadbeef)
+        return puts("FAIL SetupHeap must reach real BIOS with original arguments"),1;
     puts("PASS real SifSetDma RPC dispatch: absent boot devices, response bounds, PAD module version");return 0;
 }

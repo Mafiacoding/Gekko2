@@ -57,7 +57,7 @@ int main(void)
 {
     /* At centroid (3,3), weights are 1/3. GS interpolates S,T,Q
      * before division: S=3, Q=2, so S/Q=1.5. The existing nearest
-     * sampler rounds this to texel 2. Reciprocal-Q interpolation
+     * sampler selects floor(S/Q), texel 1. Reciprocal-Q interpolation
      * incorrectly produces texel 4. */
     gs_mem_init();
     gif_init();
@@ -97,12 +97,12 @@ int main(void)
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 3, 3); /* the exact centroid */
-        CHECK(chan(px, 0) == 2u * 20u,
-              "STQ varying Q: interpolated S=3 divided by Q=2 samples texel 2");
+        CHECK(chan(px, 0) == 1u * 20u,
+              "STQ varying Q: interpolated S=3 divided by Q=2 samples texel 1");
     }
 
     /* Constant Q=2 must still divide coordinates: centroid S=3,
-     * S/Q=1.5, nearest texel 2. This catches accidental Q cancellation. */
+     * S/Q=1.5, nearest texel 1. This catches accidental Q cancellation. */
     gs_mem_init();
     gif_init();
     {
@@ -136,7 +136,7 @@ int main(void)
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 3, 3);
-        CHECK(chan(px, 0) == 2u * 20u,
+        CHECK(chan(px, 0) == 1u * 20u,
               "STQ constant Q=2: centroid S=3 remains divided by Q");
     }
 

@@ -30,9 +30,9 @@ if enabled and resolved:
  u.mem_write(ram+0x300000,struct.pack('<I',11));u.mem_write(ram+0x302000,struct.pack('<I',22))
  seen=[0]
  def remap(uc,address,size,user):
-  if address==syms['ee_core_block_prepare_memory_resolved']:
+  if address in {syms['ee_core_block_prepare_memory_resolved'],syms.get('ee_core_block_memory_boundary',0)} and seen[0]==0 and uc.reg_read(UC_PPC_REG_4)==base+4:
    seen[0]+=1
-   if seen[0]==2:word(state+tlb+16+8,(0x302<<6)|6)
+   if seen[0]==1:word(state+tlb+16+8,(0x302<<6)|6)
  hook=u.hook_add(UC_HOOK_CODE,remap);before=executed();assert call('ee_jit_try_execute_block',state,8)==8
  u.hook_del(hook);assert reg2()==22 and executed()==before+8
  # A revoked mapping must stop before memory or PC is changed for that op.
@@ -41,9 +41,9 @@ if enabled and resolved:
   for n in range(8):u.mem_write(ram+base+4*n,struct.pack('<I',(0x2b<<26)|(3<<21)|(2<<16)))
   seen=[0]
   def revoke_mapping(uc,address,size,user):
-   if address==syms['ee_core_block_prepare_memory_resolved']:
+   if address in {syms['ee_core_block_prepare_memory_resolved'],syms.get('ee_core_block_memory_boundary',0)} and seen[0]==0 and uc.reg_read(UC_PPC_REG_4)==base+4:
     seen[0]+=1
-    if seen[0]==2:
+    if seen[0]==1:
      if revoke=='V':word(state+tlb+24,(0x300<<6)|4)
      if revoke=='D':word(state+tlb+24,(0x300<<6)|2)
      if revoke=='ASID':word(state+tlb+20,0x300008)

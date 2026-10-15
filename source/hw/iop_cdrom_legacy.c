@@ -54,26 +54,8 @@ typedef enum {
 } pending_kind_t;
 
 static struct {
-    uint32_t bank;             /* RA, 2 bits */
-    uint8_t  param_fifo[PARAM_FIFO_SIZE];
-    int      param_count;
-    uint8_t  result_fifo[RESULT_FIFO_SIZE];
-    int      result_count;
-    int      result_pos;
-    uint8_t  intsts;           /* 0-7, real HINTSTS bits 0-2 */
-    uint8_t  intmsk;           /* real HINTMSK bits 0-4 */
-    uint8_t  stat;             /* real status(stat) byte */
-    uint8_t  mode;             /* last Setmode value */
-    uint8_t  filter_file, filter_channel;
-    uint32_t loc_mm, loc_ss, loc_ff; /* real BCD MSF from Setloc */
-    pending_kind_t pending;
-
+    iop_cdrom_legacy_checkpoint_t state;
     iso_image_t disc;
-    int         disc_mounted;
-
-    uint8_t  data_buf[SECTOR_SIZE];
-    int      data_len;
-    int      data_pos;
 } g;
 
 /* Real, well-known, public CD-Audio Red Book MSF<->LBA convention
@@ -92,16 +74,16 @@ static uint32_t msf_to_lba(uint32_t mm_bcd, uint32_t ss_bcd, uint32_t ff_bcd)
     return (abs_frame >= 150u) ? (abs_frame - 150u) : 0u;
 }
 
-static void result_clear(void) { g.result_count = 0; g.result_pos = 0; }
-static void result_push(uint8_t b) { if (g.result_count < RESULT_FIFO_SIZE) g.result_fifo[g.result_count++] = b; }
+static void result_clear(void) { g.state.result_count = 0; g.state.result_pos = 0; }
+static void result_push(uint8_t b) { if (g.state.result_count < RESULT_FIFO_SIZE) g.state.result_fifo[g.state.result_count++] = b; }
 
 static void raise_int(uint8_t which)
 {
-    g.intsts = which & 0x07u;
+    g.state.intsts = which & 0x07u;
     /* Real, cited: "The CD-ROM drive fires an interrupt whenever
      * (HINTMSK & HINTSTS) is non-zero" - real IOP_IRQ_CDROM is 2
      * (psx-spx Interrupts page, directly cited: "2 IRQ2 CDROM"). */
-    if (g.intmsk & g.intsts)
+    if (g.state.intmsk & g.state.intsts)
         iop_intc_raise(2);
 
     /* Round 148 (task #301): real kernel event delivery - see this
@@ -129,10 +111,10 @@ static void update_stat_bits(void)
 {
     /* PRMEMPT/PRMWRDY/RSLRRDY/DRQSTS/BUSYSTS live in the ADDRESS/HSTS
      * byte, computed on read - see mmio_read8. stat (the command
-     * response byte) is tracked separately in g.stat. */
+     * response byte) is tracked separately in g.state.stat. */
 }
 
-static int have_disc(void) { return g.disc_mounted; }
+static int have_disc(void) { return g.state.disc_mounted; }
 
 /* Real, cited no-disc error convention: "80h - Cannot respond yet...
  * also appears if no disk inserted at all", delivered as INT5 with
@@ -140,9 +122,9 @@ static int have_disc(void) { return g.disc_mounted; }
 static void respond_no_disc(void)
 {
     result_clear();
-    result_push((uint8_t)(g.stat | IOP_CDROM_STAT_ERROR));
+    result_push((uint8_t)(g.state.stat | IOP_CDROM_STAT_ERROR));
     result_push(0x80u);
-    g.pending = PENDING_NONE;
+    g.state.pending = PENDING_NONE;
     raise_int(IOP_CDROM_INT5);
 }
 
@@ -151,43 +133,43 @@ static void respond_no_disc(void)
 static void respond_invalid_command(void)
 {
     result_clear();
-    result_push((uint8_t)(g.stat | IOP_CDROM_STAT_ERROR));
+    result_push((uint8_t)(g.state.stat | IOP_CDROM_STAT_ERROR));
     result_push(0x40u);
-    g.pending = PENDING_NONE;
+    g.state.pending = PENDING_NONE;
     raise_int(IOP_CDROM_INT5);
 }
 
 static void ack_stat_only(void)
 {
     result_clear();
-    result_push(g.stat);
+    result_push(g.state.stat);
     raise_int(IOP_CDROM_INT3);
 }
 
 static void begin_pending_int2(void)
 {
     ack_stat_only();
-    g.pending = PENDING_INT2_STAT;
+    g.state.pending = PENDING_INT2_STAT;
 }
 
 static void deliver_pending(void)
 {
-    switch (g.pending) {
+    switch (g.state.pending) {
     case PENDING_INT2_STAT:
         result_clear();
-        result_push(g.stat);
-        g.pending = PENDING_NONE;
+        result_push(g.state.stat);
+        g.state.pending = PENDING_NONE;
         raise_int(IOP_CDROM_INT2);
         break;
     case PENDING_INT1_READ:
         result_clear();
-        result_push(g.stat | IOP_CDROM_STAT_READ);
-        g.pending = PENDING_NONE;
+        result_push(g.state.stat | IOP_CDROM_STAT_READ);
+        g.state.pending = PENDING_NONE;
         raise_int(IOP_CDROM_INT1);
         /* Real: "sector data must be read separately via RDDATA or
          * DMA" after this INT1 - data_buf/data_len were already
          * filled by the ReadN/ReadS handler below. */
-        g.data_pos = 0;
+        g.state.data_pos = 0;
         break;
     case PENDING_INT2_GETID:
         result_clear();
@@ -201,12 +183,12 @@ static void deliver_pending(void)
              * for the cited failure case) are modeled; content bytes
              * below are an honest, clearly-labeled placeholder, not
              * a claimed-verified hardware value. */
-            result_push(g.stat);
+            result_push(g.state.stat);
             result_push(0x00u); /* flags: placeholder, "licensed" */
             result_push(0x00u); /* type: placeholder, "Mode2" */
             result_push(0x00u); /* atip: placeholder */
             result_push('S'); result_push('C'); result_push('E'); result_push('x');
-            g.pending = PENDING_NONE;
+            g.state.pending = PENDING_NONE;
             raise_int(IOP_CDROM_INT2);
         } else {
             respond_no_disc();
@@ -220,24 +202,24 @@ static void deliver_pending(void)
 void iop_cdrom_legacy_init(void)
 {
     memset(&g, 0, sizeof(g));
-    g.stat = 0; /* motor off, no error, shell state unknown/closed default */
-    g.intmsk = 0;
-    g.pending = PENDING_NONE;
-    g.disc_mounted = 0;
+    g.state.stat = 0; /* motor off, no error, shell state unknown/closed default */
+    g.state.intmsk = 0;
+    g.state.pending = PENDING_NONE;
+    g.state.disc_mounted = 0;
 }
 
 int iop_cdrom_legacy_mount_iso(const char *path)
 {
-    if (g.disc_mounted) iso_close(&g.disc);
-    if (iso_open(path, &g.disc) != 0) { g.disc_mounted = 0; return -1; }
-    g.disc_mounted = 1;
-    g.stat |= IOP_CDROM_STAT_MOTOR;
+    if (g.state.disc_mounted) iso_close(&g.disc);
+    if (iso_open(path, &g.disc) != 0) { g.state.disc_mounted = 0; return -1; }
+    g.state.disc_mounted = 1;
+    g.state.stat |= IOP_CDROM_STAT_MOTOR;
     return 0;
 }
 
 void iop_cdrom_legacy_unmount_iso(void)
 {
-    if (g.disc_mounted) { iso_close(&g.disc); g.disc_mounted = 0; }
+    if (g.state.disc_mounted) { iso_close(&g.disc); g.state.disc_mounted = 0; }
 }
 
 /* Round 449 (task #247 final root cause, part 2): see the identically-
@@ -247,26 +229,26 @@ void iop_cdrom_legacy_unmount_iso(void)
  * iso_close() call inside iop_cdrom_legacy_mount_iso()). */
 int iop_cdrom_legacy_rebind_iso(const char *path)
 {
-    if (iso_open(path, &g.disc) != 0) { g.disc_mounted = 0; return -1; }
-    g.disc_mounted = 1;
-    g.stat |= IOP_CDROM_STAT_MOTOR;
+    if (iso_open(path, &g.disc) != 0) { g.state.disc_mounted = 0; return -1; }
+    g.state.disc_mounted = 1;
+    g.state.stat |= IOP_CDROM_STAT_MOTOR;
     return 0;
 }
 
 static void do_read(int mode_s)
 {
     if (!have_disc()) { respond_no_disc(); return; }
-    uint32_t lba = msf_to_lba(g.loc_mm, g.loc_ss, g.loc_ff);
-    if (iso_read_sector(&g.disc, lba, g.data_buf) != 0) {
+    uint32_t lba = msf_to_lba(g.state.loc_mm, g.state.loc_ss, g.state.loc_ff);
+    if (iso_read_sector(&g.disc, lba, g.state.data_buf) != 0) {
         respond_no_disc();
         return;
     }
-    g.data_len = SECTOR_SIZE;
+    g.state.data_len = SECTOR_SIZE;
     /* Real: ReadN(06h)/ReadS(1Bh) both -> INT3(stat) first, then
      * INT1(stat) once the sector is ready. */
     (void)mode_s;
     ack_stat_only();
-    g.pending = PENDING_INT1_READ;
+    g.state.pending = PENDING_INT1_READ;
 }
 
 /* Round 153 (task #307): labeled, NON-cited HLE boot-unblock
@@ -302,15 +284,15 @@ static void cdrom_boot_kick_complete(void *user_data)
 
 static void dispatch_command(uint8_t cmd)
 {
-    uint8_t *p = g.param_fifo;
-    int n = g.param_count;
+    uint8_t *p = g.state.param_fifo;
+    int n = g.state.param_count;
 
     switch (cmd) {
     case 0x01: /* Nop -> INT3(stat) */
         ack_stat_only();
         break;
     case 0x02: /* Setloc(min,sec,frame) -> INT3(stat) */
-        if (n >= 3) { g.loc_mm = p[0]; g.loc_ss = p[1]; g.loc_ff = p[2]; }
+        if (n >= 3) { g.state.loc_mm = p[0]; g.state.loc_ss = p[1]; g.state.loc_ff = p[2]; }
         ack_stat_only();
         /* Round 153 (task #307): queue the boot-unblock completion -
          * see cdrom_boot_kick_complete()'s comment above for exactly
@@ -326,20 +308,20 @@ static void dispatch_command(uint8_t cmd)
         do_read(0);
         break;
     case 0x07: /* Standby -> INT3(stat) -> INT2(stat) */
-        g.stat |= IOP_CDROM_STAT_MOTOR;
+        g.state.stat |= IOP_CDROM_STAT_MOTOR;
         begin_pending_int2();
         break;
     case 0x08: /* Stop -> INT3(stat) -> INT2(stat) */
-        g.stat &= (uint8_t)~IOP_CDROM_STAT_MOTOR;
+        g.state.stat &= (uint8_t)~IOP_CDROM_STAT_MOTOR;
         begin_pending_int2();
         break;
     case 0x09: /* Pause -> INT3(stat) -> INT2(stat) */
-        g.stat &= (uint8_t)~(IOP_CDROM_STAT_READ | IOP_CDROM_STAT_PLAY | IOP_CDROM_STAT_SEEK);
+        g.state.stat &= (uint8_t)~(IOP_CDROM_STAT_READ | IOP_CDROM_STAT_PLAY | IOP_CDROM_STAT_SEEK);
         begin_pending_int2();
         break;
     case 0x0A: /* Init -> INT3(stat) -> INT2(stat) */
-        g.mode = 0;
-        g.stat = (uint8_t)((g.stat & IOP_CDROM_STAT_SHELLOPEN) | IOP_CDROM_STAT_MOTOR);
+        g.state.mode = 0;
+        g.state.stat = (uint8_t)((g.state.stat & IOP_CDROM_STAT_SHELLOPEN) | IOP_CDROM_STAT_MOTOR);
         begin_pending_int2();
         break;
     case 0x0B: /* Mute -> INT3(stat) */
@@ -347,31 +329,31 @@ static void dispatch_command(uint8_t cmd)
         ack_stat_only();
         break;
     case 0x0D: /* Setfilter(file,channel) -> INT3(stat) */
-        if (n >= 2) { g.filter_file = p[0]; g.filter_channel = p[1]; }
+        if (n >= 2) { g.state.filter_file = p[0]; g.state.filter_channel = p[1]; }
         ack_stat_only();
         break;
     case 0x0E: /* Setmode(mode) -> INT3(stat) */
-        if (n >= 1) g.mode = p[0];
+        if (n >= 1) g.state.mode = p[0];
         ack_stat_only();
         break;
     case 0x0F: /* Getparam -> INT3(stat,mode,0,file,channel) */
         result_clear();
-        result_push(g.stat);
-        result_push(g.mode);
+        result_push(g.state.stat);
+        result_push(g.state.mode);
         result_push(0x00u);
-        result_push(g.filter_file);
-        result_push(g.filter_channel);
+        result_push(g.state.filter_file);
+        result_push(g.state.filter_channel);
         raise_int(IOP_CDROM_INT3);
         break;
     case 0x10: /* GetlocL -> INT3(min,sec,frame,mode,file,channel,sm,ci) */
         if (!have_disc()) { respond_no_disc(); break; }
         result_clear();
-        result_push((uint8_t)g.loc_mm);
-        result_push((uint8_t)g.loc_ss);
-        result_push((uint8_t)g.loc_ff);
-        result_push(g.mode);
-        result_push(g.filter_file);
-        result_push(g.filter_channel);
+        result_push((uint8_t)g.state.loc_mm);
+        result_push((uint8_t)g.state.loc_ss);
+        result_push((uint8_t)g.state.loc_ff);
+        result_push(g.state.mode);
+        result_push(g.state.filter_file);
+        result_push(g.state.filter_channel);
         result_push(0x00u); /* sm: submode, not modeled beyond placeholder */
         result_push(0x00u); /* ci: coding info, not modeled beyond placeholder */
         raise_int(IOP_CDROM_INT3);
@@ -382,9 +364,9 @@ static void dispatch_command(uint8_t cmd)
         result_push(bin_to_bcd(1)); /* track: single real data track, see scope note */
         result_push(bin_to_bcd(1)); /* index */
         result_push(0x00u); result_push(0x02u); result_push(0x00u); /* relative MSF (real 2s pregap) */
-        result_push((uint8_t)g.loc_mm);
-        result_push((uint8_t)g.loc_ss);
-        result_push((uint8_t)g.loc_ff);
+        result_push((uint8_t)g.state.loc_mm);
+        result_push((uint8_t)g.state.loc_ss);
+        result_push((uint8_t)g.state.loc_ff);
         raise_int(IOP_CDROM_INT3);
         break;
     case 0x12: /* Setsession(session) -> INT3(stat) -> INT2(stat) */
@@ -393,7 +375,7 @@ static void dispatch_command(uint8_t cmd)
     case 0x13: /* GetTN -> INT3(stat,first,last) */
         if (!have_disc()) { respond_no_disc(); break; }
         result_clear();
-        result_push(g.stat);
+        result_push(g.state.stat);
         result_push(bin_to_bcd(1)); /* first: single real data track */
         result_push(bin_to_bcd(1)); /* last */
         raise_int(IOP_CDROM_INT3);
@@ -402,7 +384,7 @@ static void dispatch_command(uint8_t cmd)
                 * header scope note (no real TOC/session parsing). */
         if (!have_disc()) { respond_no_disc(); break; }
         result_clear();
-        result_push(g.stat);
+        result_push(g.state.stat);
         result_push(bin_to_bcd(0));
         result_push(bin_to_bcd(2)); /* real 2-second lead-in convention */
         raise_int(IOP_CDROM_INT3);
@@ -410,7 +392,7 @@ static void dispatch_command(uint8_t cmd)
     case 0x15: /* SeekL -> INT3(stat) -> INT2(stat) */
     case 0x16: /* SeekP -> INT3(stat) -> INT2(stat) */
         if (!have_disc()) { respond_no_disc(); break; }
-        g.stat |= IOP_CDROM_STAT_SEEK;
+        g.state.stat |= IOP_CDROM_STAT_SEEK;
         begin_pending_int2();
         break;
     case 0x19: /* Test - only sub-function 20h (BIOS date/version) is
@@ -429,7 +411,7 @@ static void dispatch_command(uint8_t cmd)
         break;
     case 0x1A: /* GetID -> INT3(stat) -> INT2/5(...) */
         ack_stat_only();
-        g.pending = PENDING_INT2_GETID;
+        g.state.pending = PENDING_INT2_GETID;
         break;
     case 0x1B: /* ReadS -> INT3(stat) -> INT1(stat) -> datablock */
         do_read(1);
@@ -439,7 +421,7 @@ static void dispatch_command(uint8_t cmd)
                 * on the same step (see header scope note), so the
                 * post-reset state is applied immediately. */
         iop_cdrom_legacy_init();
-        g.result_count = 0; /* init() already cleared everything */
+        g.state.result_count = 0; /* init() already cleared everything */
         result_push(0x00u);
         raise_int(IOP_CDROM_INT3);
         break;
@@ -451,16 +433,16 @@ static void dispatch_command(uint8_t cmd)
         respond_invalid_command();
         break;
     }
-    g.param_count = 0;
+    g.state.param_count = 0;
 }
 
 static uint8_t read_hsts(void)
 {
-    uint8_t v = (uint8_t)(g.bank & 0x03u);
-    if (g.result_pos < g.result_count) v |= IOP_CDROM_LEGACY_STATUS_RSLRRDY;
-    if (g.param_count < PARAM_FIFO_SIZE) v |= IOP_CDROM_LEGACY_STATUS_PRMWRDY;
-    if (g.param_count == 0) v |= IOP_CDROM_LEGACY_STATUS_PRMEMPT;
-    if (g.data_pos < g.data_len) v |= IOP_CDROM_LEGACY_STATUS_DRQSTS;
+    uint8_t v = (uint8_t)(g.state.bank & 0x03u);
+    if (g.state.result_pos < g.state.result_count) v |= IOP_CDROM_LEGACY_STATUS_RSLRRDY;
+    if (g.state.param_count < PARAM_FIFO_SIZE) v |= IOP_CDROM_LEGACY_STATUS_PRMWRDY;
+    if (g.state.param_count == 0) v |= IOP_CDROM_LEGACY_STATUS_PRMEMPT;
+    if (g.state.data_pos < g.state.data_len) v |= IOP_CDROM_LEGACY_STATUS_DRQSTS;
     /* BUSYSTS always reads 0 - this project's commands complete
      * synchronously (see header scope note on timing). */
     return v;
@@ -476,9 +458,9 @@ int iop_cdrom_legacy_mmio_read8(uint32_t addr, uint8_t *out)
     if (off == 0u) { *out = read_hsts(); return 1; }
 
     if (off == 1u) { /* RESULT - real: all banks read the same result FIFO */
-        if (g.result_count > 0) {
-            uint8_t v = g.result_fifo[g.result_pos];
-            if (g.result_pos < g.result_count - 1) g.result_pos++;
+        if (g.state.result_count > 0) {
+            uint8_t v = g.state.result_fifo[g.state.result_pos];
+            if (g.state.result_pos < g.state.result_count - 1) g.state.result_pos++;
             *out = v;
         } else {
             *out = 0x00u;
@@ -487,12 +469,12 @@ int iop_cdrom_legacy_mmio_read8(uint32_t addr, uint8_t *out)
     }
 
     if (off == 2u) { /* RDDATA - real: all banks read the sector buffer */
-        if (g.data_pos < g.data_len) {
-            *out = g.data_buf[g.data_pos++];
-        } else if (g.data_len > 0) {
+        if (g.state.data_pos < g.state.data_len) {
+            *out = g.state.data_buf[g.state.data_pos++];
+        } else if (g.state.data_len > 0) {
             /* Real: "repeat the byte at index [800h-8]... as padding" -
              * simplified to repeating the last real byte read. */
-            *out = g.data_buf[g.data_len - 1];
+            *out = g.state.data_buf[g.state.data_len - 1];
         } else {
             *out = 0x00u;
         }
@@ -500,13 +482,13 @@ int iop_cdrom_legacy_mmio_read8(uint32_t addr, uint8_t *out)
     }
 
     if (off == 3u) { /* HINTSTS (banks 1/3) or HINTMSK (banks 0/2) on read */
-        if (g.bank == 1u || g.bank == 3u) {
+        if (g.state.bank == 1u || g.state.bank == 3u) {
             /* Real: bits 0-2 INTSTS, bits 3-4 BFEMPT/BFWRDY (not
              * modeled - no real XA-ADPCM sound-map path), bits 5-7
                always 1. */
-            *out = (uint8_t)(g.intsts | 0xE0u);
+            *out = (uint8_t)(g.state.intsts | 0xE0u);
         } else {
-            *out = (uint8_t)(g.intmsk | 0xE0u);
+            *out = (uint8_t)(g.state.intmsk | 0xE0u);
         }
         return 1;
     }
@@ -523,12 +505,12 @@ int iop_cdrom_legacy_mmio_write8(uint32_t addr, uint8_t value)
     uint32_t off = phys - IOP_CDROM_LEGACY_BASE;
 
     if (off == 0u) { /* ADDRESS - selects bank */
-        g.bank = value & 0x03u;
+        g.state.bank = value & 0x03u;
         return 1;
     }
 
     if (off == 1u) {
-        if (g.bank == 0u) { /* COMMAND */
+        if (g.state.bank == 0u) { /* COMMAND */
             dispatch_command(value);
         }
         /* bank 1 WRDATA / bank 2 CI / bank 3 ATV2: audio/debug paths,
@@ -537,30 +519,30 @@ int iop_cdrom_legacy_mmio_write8(uint32_t addr, uint8_t value)
     }
 
     if (off == 2u) {
-        if (g.bank == 0u) { /* PARAMETER */
-            if (g.param_count < PARAM_FIFO_SIZE)
-                g.param_fifo[g.param_count++] = value;
-        } else if (g.bank == 1u) { /* HINTMSK (write) */
-            g.intmsk = value & 0x1Fu;
+        if (g.state.bank == 0u) { /* PARAMETER */
+            if (g.state.param_count < PARAM_FIFO_SIZE)
+                g.state.param_fifo[g.state.param_count++] = value;
+        } else if (g.state.bank == 1u) { /* HINTMSK (write) */
+            g.state.intmsk = value & 0x1Fu;
         }
         /* bank 2 ATV0 / bank 3 ATV3: audio mixing, no side effect. */
         return 1;
     }
 
     if (off == 3u) {
-        if (g.bank == 0u) {
+        if (g.state.bank == 0u) {
             /* HCHPCTL - BFRD/BFWR request sector buffer access; this
              * project's RDDATA is always ready once a read completes
              * (see read_hsts's DRQSTS), so no explicit action is
              * needed beyond accepting the write. */
-        } else if (g.bank == 1u) { /* HCLRCTL */
+        } else if (g.state.bank == 1u) { /* HCLRCTL */
             if (value & 0x07u) {
-                g.intsts = IOP_CDROM_INT_NONE;
-                if (g.pending != PENDING_NONE)
+                g.state.intsts = IOP_CDROM_INT_NONE;
+                if (g.state.pending != PENDING_NONE)
                     deliver_pending();
             }
             if (value & 0x40u) { /* CLRPRM */
-                g.param_count = 0;
+                g.state.param_count = 0;
             }
             if (value & 0x80u) { /* CHPRST */
                 iop_cdrom_legacy_init();
@@ -572,4 +554,20 @@ int iop_cdrom_legacy_mmio_write8(uint32_t addr, uint8_t value)
 
     (void)update_stat_bits;
     return 1;
+}
+
+void iop_cdrom_legacy_checkpoint_save(iop_cdrom_legacy_checkpoint_t *out)
+{ if(out)*out=g.state; }
+int iop_cdrom_legacy_checkpoint_valid(const iop_cdrom_legacy_checkpoint_t *s)
+{
+ return s && s->bank<=3u && s->param_count>=0 && s->param_count<=16 &&
+ s->result_count>=0 && s->result_count<=16 && s->result_pos>=0 && s->result_pos<=s->result_count &&
+ s->intsts<=7u && s->intmsk<=31u && s->loc_mm<=255u && s->loc_ss<=255u && s->loc_ff<=255u &&
+ s->pending<=PENDING_INT2_GETID && s->disc_mounted>=0 && s->disc_mounted<=1 &&
+ s->data_len>=0 && s->data_len<=2048 && s->data_pos>=0 && s->data_pos<=s->data_len;
+}
+int iop_cdrom_legacy_checkpoint_load(const iop_cdrom_legacy_checkpoint_t *state)
+{
+ if(!iop_cdrom_legacy_checkpoint_valid(state))return -1;
+ g.state=*state;return 0;
 }

@@ -3,24 +3,8 @@
 
 #include <stdint.h>
 
-/*
- * gs_wii_output - converts a rectangular region of our (simplified,
- * linear) GS local memory PSMCT32 data into the Wii's YUV (Y1CbY2Cr,
- * packed 2 pixels per 32-bit word) external framebuffer format and
- * writes it directly into an XFB buffer.
- *
- * The RGB->YCbCr conversion (RGB8_to_YCbCr below) is ported from
- * libogc's own console.c (BSD-style license, see libogc_license.txt)
- * rather than reinvented, since the Wii's video hardware expects this
- * exact packed format and libogc's implementation is the authoritative
- * reference for it (clamped to 16-240 broadcast range, BT.601-ish
- * integer coefficients).
- *
- * This is the first actual "pixels reach a real display" path in the
- * project - previously nothing produced visible output. It is NOT
- * hooked up to the GIF/DMA pipeline yet (no primitive actually gets
- * drawn into GS memory by emulated PS2 code) - see docs/ROADMAP.md.
- */
+/* CPU scanout from swizzled GS VRAM to Wii XFB, display-region decoding
+ * and bounded source-color probes. GX presentation uses a separate path. */
 
 /* xfb: pointer to a Wii external framebuffer (as set up by
  * SYS_AllocateFramebuffer / VIDEO_SetNextFramebuffer).
@@ -73,4 +57,16 @@ void gs_blit_scaled_psmct32_to_xfb(void *xfb, uint32_t dst_w, uint32_t dst_h,
 /* Sample the displayed rectangle for actual RGB content. Alpha-only black
  * pixels do not count. This is a presentation probe, never a guest mutation. */
 int gs_display_has_rgb(uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t sw,uint32_t sh);
+/* 8x8 grid: samples, average R/G/B, maximum approximate luma, nonblack.
+ * Reads coherent CPU-visible VRAM; it does not measure TV brightness. */
+void gs_scanout_probe_rgb(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,uint32_t w,uint32_t h,uint32_t stats[6]);
+/* Guest-selected display PSM. 0=CT32, 1=CT24, 2=CT16, 10=CT16S.
+ * These APIs never reinterpret CT16 as CT32 or change guest VRAM. */
+uint32_t gs_scanout_read_rgb(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,uint32_t psm);
+void gs_blit_scaled_psm_to_xfb(void *xfb,uint32_t dst_w,uint32_t dst_h,
+                               uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,
+                               uint32_t sw,uint32_t sh,uint32_t psm);
+int gs_display_has_rgb_psm(uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t sw,uint32_t sh,uint32_t psm);
+void gs_scanout_probe_rgb_psm(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
+                              uint32_t w,uint32_t h,uint32_t psm,uint32_t stats[6]);
 #endif

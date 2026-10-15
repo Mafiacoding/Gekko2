@@ -1,3 +1,6 @@
+#include "core/hw/gs_triangle_coverage.h"
+#include "core/runtime_profile.h"
+#include "core/recompiler/optimization.h"
 /*
  * gif.c - see include/core/hw/gif.h for scope notes and references.
  */
@@ -5,18 +8,61 @@
 #include "core/hw/gif.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_gx.h"
+#include "core/hw/gs.h"
+#include "core/hw/ee_intc.h"
+#ifdef GEKKO
+#include "core/ee/ee_core.h"
+#endif
 #include <string.h>
 #include <math.h> /* Round 28: log2() for mipmap LOD selection - see rasterize_sprite()'s mip-level logic */
 
 static gif_state_t g_gif;
+const gif_state_t * const gif_scheduler_view = &g_gif;
+static uint64_t g_date_stats[2];
+uint64_t gif_date_stat(unsigned i){return i<2?g_date_stats[i]:0;}
 static int g_gx_opaque; /* CT24 GPU import preserves destination alpha. */
 static int g_texel_cache_enabled;
 static uint32_t g_texel_tags[128],g_texel_values[128];
 static double g_sprite_u[640];
-static uint64_t g_sprite_cached_draws,g_sprite_fast_rows;
+static uint64_t g_sprite_cached_draws,g_sprite_fast_rows,g_triangle_cached_draws;
 static uint64_t g_draw_routes[10]; /* overlapping state reasons, per primitive */
 uint64_t gif_get_render_work(unsigned index)
 {if(index<10u)return g_draw_routes[index];return index==10u?g_sprite_cached_draws:index==11u?g_sprite_fast_rows:0;}
+
+/* R1330-K Gouraud accounting (see gif.h).  Pure diagnostics: nothing here feeds
+ * back into drawing decisions. */
+static uint64_t g_gst[GIF_GOURAUD_STAT_COUNT],g_gfb[GIF_GFB_COUNT];
+static struct {uint32_t key;uint64_t n;} g_gstate[64];
+static unsigned g_gstate_used;static uint64_t g_gstate_overflow;
+static struct {int32_t xy[6];uint32_t prim;} g_gdeg[16];
+uint64_t gif_get_triangle_texture_cache_draws(void){return g_triangle_cached_draws;}
+uint64_t gif_get_gouraud_stat(unsigned index){return index<GIF_GOURAUD_STAT_COUNT?g_gst[index]:0;}
+uint64_t gif_get_gouraud_fallback(unsigned index){return index<GIF_GFB_COUNT?g_gfb[index]:0;}
+const char *gif_gouraud_fallback_name(unsigned index)
+{
+    static const char *const names[GIF_GFB_COUNT]={"none","gx_inactive","build_disabled","small","large",
+        "texture","alpha_test","dither_fba","fbmask","depth","blend","fog","psm","scanmsk_field","gx_rejected","alpha_varies"};
+    return index<GIF_GFB_COUNT?names[index]:"?";
+}
+unsigned gif_get_degenerate_sample(unsigned index,int32_t *xy6,uint32_t *prim)
+{
+    unsigned n=(unsigned)(g_gst[GIF_GOURAUD_DEGENERATE]<16u?g_gst[GIF_GOURAUD_DEGENERATE]:16u);
+    if(index>=n)return 0;
+    if(xy6)memcpy(xy6,g_gdeg[index].xy,sizeof(g_gdeg[index].xy));
+    if(prim)*prim=g_gdeg[index].prim;return 1;
+}
+unsigned gif_get_gouraud_state(unsigned index,uint32_t *key,uint64_t *count)
+{
+    if(index>=g_gstate_used)return 0;
+    if(key)*key=g_gstate[index].key;if(count)*count=g_gstate[index].n;return 1;
+}
+uint64_t gif_get_gouraud_state_overflow(void){return g_gstate_overflow;}
+static void gouraud_state_record(uint32_t key)
+{
+    for(unsigned i=0;i<g_gstate_used;i++)if(g_gstate[i].key==key){g_gstate[i].n++;return;}
+    if(g_gstate_used<64u){g_gstate[g_gstate_used].key=key;g_gstate[g_gstate_used].n=1;g_gstate_used++;}
+    else g_gstate_overflow++;
+}
 static int g_opaque_pixel; /* Recomputed after context activation per draw. */
 
 /* GIFtag.NLOOP is a 15-bit qword count: every legal IMAGE payload
@@ -32,10 +78,54 @@ static int g_opaque_pixel; /* Recomputed after context activation per draw. */
  * existing signature/call sites elsewhere in this file). */
 static uint32_t s_gif_active_path = GIF_PATH_3;
 
+static uint32_t vertex_source[4][10],vertex_source_used,vertex_encoding;
+unsigned gif_get_vertex_source(unsigned n,uint32_t out[10])
+{if(!out||n>=vertex_source_used)return 0;memcpy(out,vertex_source[n],40);return 1;}
+
+static uint64_t g_gif_local_copy_ok,g_gif_local_copy_declines,g_gif_local_copy_pixels;
+static uint32_t g_gif_read_fifo_qword;
+static uint64_t g_gif_read_ok,g_gif_read_bytes,g_gif_read_errors;
+uint64_t gif_local_host_stat(unsigned which)
+{ return which==0?g_gif_read_ok:which==1?g_gif_read_bytes:g_gif_read_errors; }
+uint32_t gif_read_local_fifo(uint8_t *out,uint32_t qwc)
+{
+    if(!out||!qwc||g_gif.trx_xdir!=TRXDIR_LOCAL_TO_HOST)return 0;
+    gs_local_copy_desc_t d={
+      .sbp=g_gif.trx_sbp,.sbw=g_gif.trx_sbw,.spsm=g_gif.trx_spsm,
+      .ssax=g_gif.trx_ssax,.ssay=g_gif.trx_ssay,
+      .rrw=g_gif.trx_rrw,.rrh=g_gif.trx_rrh,
+      .dirx=g_gif.trx_dirx,.diry=g_gif.trx_diry
+    };
+    uint32_t n=gs_mem_read_local_qwords(&d,g_gif_read_fifo_qword,out,qwc);
+    if(!n){g_gif_read_errors++;return 0;}
+    g_gif_read_fifo_qword+=n;
+    g_gif_read_ok++;g_gif_read_bytes+=(uint64_t)n*16u;
+    if(g_gif_read_fifo_qword>=gs_mem_local_fifo_total_qwords(&d))
+        g_gif.trx_xdir=TRXDIR_OFF;
+    return n;
+}
+
+uint64_t gif_local_copy_stat(unsigned which)
+{
+    return which==0 ? g_gif_local_copy_ok :
+           which==1 ? g_gif_local_copy_declines : g_gif_local_copy_pixels;
+}
 void gif_init(void)
 {
+    s_gif_active_path=GIF_PATH_3;
+    vertex_source_used=vertex_encoding=0;memset(vertex_source,0,sizeof vertex_source);
     g_texel_cache_enabled=0;
+    g_sprite_cached_draws=g_sprite_fast_rows=g_triangle_cached_draws=0;
+    memset(g_draw_routes,0,sizeof(g_draw_routes));
+    memset(g_date_stats,0,sizeof(g_date_stats));
+    memset(g_gst,0,sizeof(g_gst));memset(g_gfb,0,sizeof(g_gfb));
+    memset(g_gstate,0,sizeof(g_gstate));memset(g_gdeg,0,sizeof(g_gdeg));
+    g_gstate_used=0;g_gstate_overflow=0;
+    g_gif_local_copy_ok=g_gif_local_copy_declines=g_gif_local_copy_pixels=0;
+    g_gif_read_fifo_qword=0;
+    g_gif_read_ok=g_gif_read_bytes=g_gif_read_errors=0;
     memset(&g_gif, 0, sizeof(g_gif));
+    g_gif.gif_q_bits=UINT32_C(0x3f800000);g_gif.cur_q=1.0f;
     g_gif.fbw = 640; /* sane default so an A+D FRAME write isn't strictly required for tests/demos */
     /* Round 27: both contexts' permanent storage gets the same guarded
      * default, so a PRIM.CTXT=1 draw before ANY FRAME_2 write behaves
@@ -218,13 +308,13 @@ static uint32_t gs_sample_texel_uncached(int32_t tex_x, int32_t tex_y)
     if (g_gif.tex_psm == 2u || g_gif.tex_psm == 10u)
         return gs_expand_16((g_gif.tex_psm == 10u ? gs_mem_read_psmct16s : gs_mem_read_psmct16)(g_gif.tex_tbp0 * 64u,
                               g_gif.tex_tbw, (uint32_t)tex_x, (uint32_t)tex_y));
-    uint32_t raw = gs_mem_read_psmct32_blk(g_gif.tex_tbp0, g_gif.tex_tbw,
-                                            (uint32_t)tex_x, (uint32_t)tex_y);
     if (g_gif.tex_psm == TEX_PSM_PSMT8 || g_gif.tex_psm == TEX_PSM_PSMT4 ||
         g_gif.tex_psm == TEX_PSM_PSMT8H || g_gif.tex_psm == TEX_PSM_PSMT4HL || g_gif.tex_psm == TEX_PSM_PSMT4HH) {
         uint32_t idx=gs_mem_read_index(g_gif.tex_tbp0*64u,g_gif.tex_tbw,(uint32_t)tex_x,(uint32_t)tex_y,g_gif.tex_psm);
         return gs_sample_clut(idx);
     }
+    uint32_t raw = gs_mem_read_psmct32_blk(g_gif.tex_tbp0, g_gif.tex_tbw,
+                                            (uint32_t)tex_x, (uint32_t)tex_y);
     if (g_gif.tex_psm == TEX_PSM_PSMCT24) {
         uint32_t rgb = raw & 0x00ffffffu;
         uint32_t alpha = g_gif.texa_aem && rgb == 0 ? 0 : g_gif.texa_ta0;
@@ -328,11 +418,56 @@ static int scanmsk_allows_y(int32_t yy)
     return 1; /* MSK=0 (normal) or MSK=1 (reserved, treated as normal) */
 }
 
+/* CT16 and CT16S have independent GS swizzles.  Decode the actual
+ * destination before alpha blend; AD is a single 0/0x80 alpha bit.
+ * CT24 has a fixed alpha coefficient 0x80 even when its stored high byte
+ * contains unrelated 32-bit-view data. */
+static uint32_t gs_framebuffer_rgb_for_blend(uint32_t x,uint32_t y)
+{
+    if(g_gif.frame_psm==TEX_PSM_PSMCT16||g_gif.frame_psm==TEX_PSM_PSMCT16S){
+        uint16_t packed=(g_gif.frame_psm==TEX_PSM_PSMCT16S?gs_mem_read_psmct16s:gs_mem_read_psmct16)
+            (g_gif.fbp,g_gif.fbw,x,y);
+        uint32_t r=packed&31u,g=(packed>>5)&31u,b=(packed>>10)&31u;
+        return ((packed&0x8000u)?0x80000000u:0u)|
+            (((b<<3)|(b>>2))<<16)|(((g<<3)|(g>>2))<<8)|((r<<3)|(r>>2));
+    }
+    uint32_t color=gs_mem_read_psmct32(g_gif.fbp,g_gif.fbw,x,y);
+    if(g_gif.frame_psm==TEX_PSM_PSMCT24)color=(color&0x00ffffffu)|0x80000000u;
+    return color;
+}
+/* Apply FRAME.FBMSK to the physical 16-bit destination halfword; the GS
+ * swizzle means two adjacent X coordinates need not share a 32-bit word. */
+static void gs_framebuffer_write16(uint32_t x,uint32_t y,uint32_t rgba)
+{
+    uint32_t offset=gs_mem_framebuffer16_offset(g_gif.fbp,g_gif.fbw,x,y,g_gif.frame_psm);
+    if(offset==UINT32_MAX)return;
+    uint16_t packed=(uint16_t)(((rgba>>3)&31u)|(((rgba>>11)&31u)<<5)|
+        (((rgba>>19)&31u)<<10)|((rgba&0x80000000u)?0x8000u:0u));
+    uint16_t mask=(uint16_t)(g_gif.fbmask>>((offset&2u)?16u:0u));
+    uint16_t old=(g_gif.frame_psm==TEX_PSM_PSMCT16S?gs_mem_read_psmct16s:gs_mem_read_psmct16)
+        (g_gif.fbp,g_gif.fbw,x,y);
+    packed=(uint16_t)((packed&~mask)|(old&mask));
+    if(g_gif.frame_psm==TEX_PSM_PSMCT16S)
+        gs_mem_write_psmct16s(g_gif.fbp,g_gif.fbw,x,y,packed);
+    else gs_mem_write_psmct16(g_gif.fbp,g_gif.fbw,x,y,packed);
+}
 static int gs_blend_shift7(int value)
 {return value>=0?value/128:-((-value+127)/128);}
 static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_t frag_z, int z_write_allowed)
 {
     if (!scanmsk_allows_y(yy)) return;
+    /* DATE rejects both color and depth writes. CT24 rejects all DATE
+     * draws (PCSX2 GSRendererHW hardware-test result), not alpha=0x80. */
+    if (g_gif.date) {
+        g_date_stats[0]++;
+        if (g_gif.frame_psm == 1u) {g_date_stats[1]++;return;}
+        uint32_t dst_alpha;
+        if (g_gif.frame_psm == 2u || g_gif.frame_psm == 10u)
+            dst_alpha = ((g_gif.frame_psm == 10u ? gs_mem_read_psmct16s : gs_mem_read_psmct16)
+                (g_gif.fbp,g_gif.fbw,(uint32_t)xx,(uint32_t)yy) >> 15) & 1u;
+        else dst_alpha = gs_mem_read_psmct32(g_gif.fbp,g_gif.fbw,(uint32_t)xx,(uint32_t)yy) >> 31;
+        if (dst_alpha != (uint32_t)g_gif.datm) {g_date_stats[1]++;return;}
+    }
 
     uint32_t frag_r = rgba_channel(frag_color, 0);
     uint32_t frag_g = rgba_channel(frag_color, 8);
@@ -389,10 +524,7 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
              * alpha is always the fragment's own source alpha (As),
              * matching real GS hardware (see gif.h's ALPHA field
              * comment). */
-            uint32_t dst = gs_mem_read_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);
-            /* RGB24 destinations contribute a fixed 0x80 destination alpha,
-             * independent of the byte preserved in physical VRAM (PCSX2 AlphaBlend). */
-            if (g_gif.frame_psm == TEX_PSM_PSMCT24) dst = (dst & 0xffffffu) | 0x80000000u;
+            uint32_t dst=gs_framebuffer_rgb_for_blend((uint32_t)xx,(uint32_t)yy);
             uint32_t dst_r = rgba_channel(dst, 0),  dst_g = rgba_channel(dst, 8);
             uint32_t dst_b = rgba_channel(dst, 16), dst_a = rgba_channel(dst, 24);
 
@@ -432,7 +564,8 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
             out_b = gs_colclamp_channel(b);
         }
 
-        if (alpha_test_failed && g_gif.afail == GS_AFAIL_RGB_ONLY) {
+        if (alpha_test_failed && g_gif.afail == GS_AFAIL_RGB_ONLY &&
+            g_gif.frame_psm==TEX_PSM_PSMCT32) {
             /* Real AFAIL=RGB_ONLY-on-fail: RGB channels still write,
              * but the alpha channel keeps its OLD framebuffer value
              * (exact real-hardware behavior for a genuine 32-bit-
@@ -482,9 +615,13 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
             out_a = out_a | 0x80u;
         }
 
+        /* Native 16-bit framebuffer writes use the CT16/CT16S swizzle,
+         * two-byte physical pixels, single-bit alpha and per-halfword FBMSK. */
+        if(g_gif.frame_psm==TEX_PSM_PSMCT16||g_gif.frame_psm==TEX_PSM_PSMCT16S) {
+            gs_framebuffer_write16((uint32_t)xx,(uint32_t)yy,rgba_pack(out_r,out_g,out_b,out_a));
+        } else {
         /* FRAME.FBMSK is a bit mask: protected bits retain their old value.
-         * PSMCT24 additionally preserves the physical alpha byte. Native 16-bit
-         * framebuffer conversion remains separate and is not claimed here. */
+         * PSMCT24 additionally preserves the physical alpha byte. */
         uint32_t mask = g_gif.fbmask;
         if (g_gif.frame_psm == TEX_PSM_PSMCT24) mask |= 0xff000000u;
         uint32_t color = rgba_pack(out_r, out_g, out_b, out_a);
@@ -493,10 +630,12 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
             color = (color & ~mask) | (old & mask);
         }
         gs_mem_write_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, color);
+        }
     }
 
     if (z_write) {
-        gs_mem_write_z(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, g_gif.zpsm, frag_z);
+        gs_mem_write_z(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, g_gif.zpsm,
+                       gs_mem_clamp_raster_z(frag_z,g_gif.zpsm));
     }
 }
 
@@ -508,7 +647,7 @@ static inline __attribute__((always_inline)) void gs_finish_draw_pixel(
     if(g_opaque_pixel) {
         if(!scanmsk_allows_y(yy))return;
         gs_mem_write_psmct32(g_gif.fbp,g_gif.fbw,(uint32_t)xx,(uint32_t)yy,frag_color);
-        if(z_write_allowed)gs_mem_write_z(g_gif.zbp,g_gif.fbw,(uint32_t)xx,(uint32_t)yy,g_gif.zpsm,frag_z);
+        if(z_write_allowed)gs_mem_write_z(g_gif.zbp,g_gif.fbw,(uint32_t)xx,(uint32_t)yy,g_gif.zpsm,gs_mem_clamp_raster_z(frag_z,g_gif.zpsm));
     } else gs_finish_pixel(xx,yy,frag_color,frag_z,z_write_allowed);
 }
 
@@ -578,6 +717,7 @@ static void gs_activate_context(void)
         g_gif.zte = g_gif.ctx2_zte;
         g_gif.ztst = g_gif.ctx2_ztst;
         g_gif.ate = g_gif.ctx2_ate;
+        g_gif.date=g_gif.ctx2_date; g_gif.datm=g_gif.ctx2_datm;
         g_gif.atst = g_gif.ctx2_atst;
         g_gif.aref = g_gif.ctx2_aref;
         g_gif.afail = g_gif.ctx2_afail;
@@ -637,6 +777,7 @@ static void gs_activate_context(void)
         g_gif.zte = g_gif.ctx1_zte;
         g_gif.ztst = g_gif.ctx1_ztst;
         g_gif.ate = g_gif.ctx1_ate;
+        g_gif.date=g_gif.ctx1_date; g_gif.datm=g_gif.ctx1_datm;
         g_gif.atst = g_gif.ctx1_atst;
         g_gif.aref = g_gif.ctx1_aref;
         g_gif.afail = g_gif.ctx1_afail;
@@ -684,7 +825,7 @@ static void gs_activate_context(void)
     if(attr&PRIM_FGE_MASK)g_draw_routes[8]++;
     if((attr&PRIM_IIP_MASK)&&(g_gif.prim&7u)>=3u&&(g_gif.prim&7u)<=5u)g_draw_routes[9]++;
     /* Drawing attributes remain fixed during this synchronous primitive. */
-    g_gx_opaque=!g_gif.ate && !g_gif.dthe && !g_gif.fba && !g_gif.fbmask &&
+    g_gx_opaque=!g_gif.date && !g_gif.ate && !g_gif.dthe && !g_gif.fba && !g_gif.fbmask &&
         (g_gif.frame_psm==TEX_PSM_PSMCT32 || g_gif.frame_psm==TEX_PSM_PSMCT24) &&
         !(gs_effective_attr_prim()&PRIM_ABE_MASK);
     g_opaque_pixel=g_gx_opaque && g_gif.frame_psm==TEX_PSM_PSMCT32;
@@ -697,25 +838,38 @@ static int gs_depth_is_inactive(void)
 /* Conservative physical page envelopes cover all supported texture layouts.
  * A draw-local cache is safe only when framebuffer AND writable depth are
  * disjoint from the source. No persistent VRAM generation assumptions. */
-static uint64_t gs_page_end(uint64_t base,uint32_t bw,uint32_t width,uint32_t height)
+/* Conservative *physical eDRAM* extent, not a nominal PSMCT32-sized
+ * allocation.  Color, Z, 16S and indexed texture views can address the same
+ * pages even though their logical pixel rectangles have different sizes.
+ * The bound is intentionally an envelope, never a false-disjoint guess. */
+static uint64_t gs_page_end(uint64_t base,uint32_t bw,uint32_t width,uint32_t height,uint32_t psm)
 {
-    uint64_t pages=bw/64u;if(!pages)pages=1u;
-    return base+(((uint64_t)height+31u)/32u*pages+((uint64_t)width+63u)/64u)*8192u;
+    uint32_t pw=64u,ph=32u;
+    switch(psm) {
+    case 2u:case 10u:case 0x32u:case 0x3au:ph=64u;break;
+    case 0x13u:pw=128u;ph=64u;break;
+    case 0x14u:pw=128u;ph=128u;break;
+    default:break; /* 32/24/8H/4HL/4HH all use 64x32 pages */
+    }
+    uint64_t pages=bw/pw;if(!pages)pages=1u;
+    if(!width||!height)return base;
+    return base+((((uint64_t)(height-1u)/ph)*pages)+
+                 ((uint64_t)(width-1u)/pw)+1u)*8192u;
 }
-static int gs_sprite_cache_begin(int32_t sx0,int32_t sy0,int32_t sx1,int32_t sy1)
+static int gs_draw_texture_cache_begin(int32_t sx0,int32_t sy0,int32_t sx1,int32_t sy1)
 {
     if(sx0<0||sy0<0||sx1<=sx0||sy1<=sy0||
        (uint64_t)(sx1-sx0)*(uint32_t)(sy1-sy0)<512u||
        !g_gif.clamp_configured||g_gif.clamp_wms>1u||g_gif.clamp_wmt>1u||g_gif.tex_tw>10u||g_gif.tex_th>10u)return 0;
     uint64_t source=(uint64_t)g_gif.tex_tbp0*256u;
-    uint64_t source_end=gs_page_end(source,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th);
-    uint64_t frame=(uint64_t)g_gif.fbp*4u,frame_end=gs_page_end(frame,g_gif.fbw,sx1,sy1);
+    uint64_t source_end=gs_page_end(source,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.tex_psm);
+    uint64_t frame=(uint64_t)g_gif.fbp*4u,frame_end=gs_page_end(frame,g_gif.fbw,sx1,sy1,g_gif.frame_psm);
     if(source_end>GS_MEM_SIZE||frame_end>GS_MEM_SIZE||!(source_end<=frame||frame_end<=source))return 0;
     if(g_gif.zbuf_configured&&!g_gif.zmsk) {
-        uint64_t z=(uint64_t)g_gif.zbp*4u,z_end=gs_page_end(z,g_gif.fbw,sx1,sy1);
+        uint64_t z=(uint64_t)g_gif.zbp*4u,z_end=gs_page_end(z,g_gif.fbw,sx1,sy1,g_gif.zpsm);
         if(z_end>GS_MEM_SIZE||!(source_end<=z||z_end<=source))return 0;
     }
-    memset(g_texel_tags,0xff,sizeof(g_texel_tags));g_texel_cache_enabled=1;g_sprite_cached_draws++;return 1;
+    memset(g_texel_tags,0xff,sizeof(g_texel_tags));g_texel_cache_enabled=1;return 1;
 }
 
 /* Round 96: real SCISSOR clipping (GS Users Manual "SCISSOR_1/2:
@@ -859,164 +1013,97 @@ static uint32_t gs_sample_texture(double u, double v)
         }
         return result;
     }
-    int32_t x=(u<0.0)?0:(int32_t)(u+0.5), y=(v<0.0)?0:(int32_t)(v+0.5);
+    /* Nearest selects the containing texel (16.16 >> 16), not
+     * round-to-nearest. Preserve negative coordinates for REPEAT. */
+    if (!(u > -2147483647.0 && u < 2147483646.0 &&
+          v > -2147483647.0 && v < 2147483646.0)) return 0u;
+    int32_t x=(int32_t)u, y=(int32_t)v;
+    if (u < (double)x) --x;
+    if (v < (double)y) --y;
     x=gs_apply_clamp_wrap(x,g_gif.tex_tw,g_gif.clamp_wms,g_gif.clamp_minu,g_gif.clamp_maxu);
     y=gs_apply_clamp_wrap(y,g_gif.tex_th,g_gif.clamp_wmt,g_gif.clamp_minv,g_gif.clamp_maxv);
     return gs_sample_texel(x,y);
 }
 
-static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
-                                uint32_t c0, uint32_t c1, uint32_t c2,
-                                int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
-                                float s0, float t0, float q0, float s1, float t1, float q1, float s2, float t2, float q2,
-                                uint32_t z0, uint32_t z1, uint32_t z2,
-                                uint32_t f0, uint32_t f1, uint32_t f2)
+static uint32_t gs_gx_raw_texture_sample(int32_t x,int32_t y);
+
+/* R1330-K: first reason (priority order) why a visible IIP triangle cannot use
+ * the GX path in this build.  Size heuristics come last so that the counters
+ * show structural state blockers first.  GIF_GFB_NONE means eligible. */
+#ifndef GEKKO2_GOURAUD_GX_MIN_PIXELS
+#define GEKKO2_GOURAUD_GX_MIN_PIXELS 0u
+#endif
+static unsigned gouraud_gx_block_reason(int textured,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,uint32_t a0,uint32_t a1,uint32_t a2)
 {
-    gs_activate_context(); /* Round 27: dual-context - see its own comment */
-    int32_t minx = x0, maxx = x0, miny = y0, maxy = y0;
-    if (x1 < minx) minx = x1;
-    if (x1 > maxx) maxx = x1;
-    if (x2 < minx) minx = x2;
-    if (x2 > maxx) maxx = x2;
-    if (y1 < miny) miny = y1;
-    if (y1 > maxy) maxy = y1;
-    if (y2 < miny) miny = y2;
-    if (y2 > maxy) maxy = y2;
-    if (minx < 0) minx = 0;
-    if (miny < 0) miny = 0;
-    clamp_bbox_to_scissor(&minx, &maxx, &miny, &maxy, 0); /* triangle: inclusive loop */
+    if(!gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD))return GIF_GFB_BUILD_DISABLED;
+    if(!(!g_gif.date && gs_gx_render_active()))return GIF_GFB_GX_INACTIVE;
+#ifdef GEKKO2_GOURAUD_GX_DISABLE
+    return GIF_GFB_BUILD_DISABLED;
+#endif
+    uint32_t attr=gs_effective_attr_prim();
+    if(textured)return GIF_GFB_TEXTURE;
+    if(g_gif.ate)return GIF_GFB_ALPHA_TEST;
+    if(g_gif.dthe||g_gif.fba)return GIF_GFB_DITHER_FBA;
+    if(g_gif.fbmask)return GIF_GFB_FBMASK;
+    if(g_gif.zbuf_configured)return GIF_GFB_DEPTH;
+    if(attr&PRIM_ABE_MASK)return GIF_GFB_BLEND;
+    if(attr&PRIM_FGE_MASK)return GIF_GFB_FOG;
+    if(g_gif.frame_psm!=TEX_PSM_PSMCT32)return GIF_GFB_PSM;
+    /* K: EFB is RGB8 (no alpha); alpha is a per-triangle constant at import.
+     * Varying alpha stays in software (traceable fallback). */
+    if(a0!=a1||a1!=a2)return GIF_GFB_ALPHA_VARIES;
+    if(maxx-minx>=640||maxy-miny>=512)return GIF_GFB_LARGE;
+    if((uint64_t)(maxx-minx+1)*(uint64_t)(maxy-miny+1)<GEKKO2_GOURAUD_GX_MIN_PIXELS)return GIF_GFB_SMALL;
+    return GIF_GFB_NONE;
+}
 
-    /* Degenerate (zero-area) triangle - nothing to draw. Also guards
-     * against divide-by-zero-shaped edge cases below. */
-    int32_t area = edge(x0, y0, x1, y1, x2, y2);
-    if (area == 0) return;
-
-    int gouraud = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
-    int textured = (gs_effective_attr_prim() & PRIM_TME_MASK) != 0;
-    /* Flat shading uses the LAST vertex's color on real hardware
-     * (matches this rasterizer's pre-Gouraud behavior, which always
-     * used whichever RGBAQ was active when the triangle completed -
-     * i.e. exactly c2's value, since c2 is always the most-recently-
-     * kicked vertex's color). */
-    uint32_t flat_r = rgba_channel(c2, 0), flat_g = rgba_channel(c2, 8);
-    uint32_t flat_b = rgba_channel(c2, 16), flat_a = rgba_channel(c2, 24);
-
-    if(g_gx_opaque && !textured && !gouraud && gs_depth_is_inactive() &&
-       !(gs_effective_attr_prim()&PRIM_FGE_MASK)) {
-        int32_t xy[6]={x0,y0,x1,y1,x2,y2};
-        if(gs_gx_draw_flat_psm(g_gif.frame_psm,3,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,c2,g_gif.scanmsk)) {
-            g_gif.triangles_drawn++;return;
-        }
-    }
-    if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
-       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&gs_gx_render_active()) {
-        int32_t xy[6]={x0,y0,x1,y1,x2,y2};
-        gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
-            g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,z2,
-            !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
-            g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp};
-        if(gs_gx_draw_flat_pipeline(g_gif.frame_psm,3,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,c2,g_gif.scanmsk,&pipe)) {
-            g_gif.triangles_drawn++;return;
-        }
-    }
-    double inv_area = 1.0 / (double)area;
-
-    /* Round 29 continued (14th change): extends Round 28's mipmap
-     * support (previously SPRITE-only - see rasterize_sprite()'s own
-     * comment for the full scope/citation and the honest limitations
-     * this shares: per-PRIMITIVE not per-pixel LOD selection, no
-     * trilinear blending, only MTBA=0 explicit-MIPTBP lookup) to
-     * TRIANGLE. Uses the triangle's screen-space bounding box
-     * (maxx-minx, maxy-miny) as the "screen size" input to the exact
-     * same ratio-based LOD formula SPRITE already uses - the natural
-     * analog of SPRITE's own (sx1-sx0, sy1-sy0) size, since a
-     * triangle has no single well-defined width/height the way an
-     * axis-aligned SPRITE rectangle does. Like SPRITE, the override
-     * is scoped strictly to this one draw call and restored below. */
-    uint32_t saved_mip_tbp0 = g_gif.tex_tbp0;
-    uint32_t saved_mip_tbw = g_gif.tex_tbw;
-    if (textured && g_gif.tex1_mxl > 0 && g_gif.tex1_mmin >= GS_MMIN_MIPMAP_THRESHOLD && !g_gif.tex1_mtba) {
-        uint32_t lod = 0;
-        if (g_gif.tex1_lcm) {
-            double k = (double)g_gif.tex1_k / 16.0;
-            lod = (k <= 0.0) ? 0u : (uint32_t)(k + 0.5);
-        } else {
-            int32_t screen_w = maxx - minx, screen_h = maxy - miny;
-            double tex_w = (double)(1u << g_gif.tex_tw);
-            double tex_h = (double)(1u << g_gif.tex_th);
-            double ratio_w = (screen_w > 0) ? tex_w / (double)screen_w : 1.0;
-            double ratio_h = (screen_h > 0) ? tex_h / (double)screen_h : 1.0;
-            double ratio = (ratio_w > ratio_h) ? ratio_w : ratio_h;
-            if (ratio > 1.0) {
-                double lod_f = log2(ratio);
-                lod = (lod_f < 0.0) ? 0u : (uint32_t)lod_f;
+static int triangle_classify(int32_t x0,int32_t y0,int32_t x1,int32_t y1,int32_t x2,int32_t y2)
+{
+    const int gouraud_prim=(gs_effective_attr_prim()&PRIM_IIP_MASK)!=0;
+    const int32_t area=edge(x0,y0,x1,y1,x2,y2);
+    if (gouraud_prim) g_gst[GIF_GOURAUD_SUBMITTED]++; else g_gst[GIF_GOURAUD_FLAT_SUBMITTED]++;
+    if (area == 0) {
+        if (gouraud_prim) {
+            uint64_t n = g_gst[GIF_GOURAUD_DEGENERATE]++;
+            unsigned same = (x0 == x1 && y0 == y1) + (x1 == x2 && y1 == y2) + (x0 == x2 && y0 == y2);
+            g_gst[same >= 3u ? GIF_GOURAUD_DEG_IDENTICAL3 : same ? GIF_GOURAUD_DEG_TWO_SAME : GIF_GOURAUD_DEG_COLLINEAR]++;
+            if (!x0 && !y0 && !x1 && !y1 && !x2 && !y2) g_gst[GIF_GOURAUD_DEG_ORIGIN]++;
+            if (n < 16u) {
+                g_gdeg[n].xy[0] = x0; g_gdeg[n].xy[1] = y0; g_gdeg[n].xy[2] = x1;
+                g_gdeg[n].xy[3] = y1; g_gdeg[n].xy[4] = x2; g_gdeg[n].xy[5] = y2;
+                g_gdeg[n].prim = g_gif.prim;
             }
-        }
-        if (lod > g_gif.tex1_mxl) lod = g_gif.tex1_mxl;
-        if (lod > 0) {
-            g_gif.tex_tbp0 = g_gif.tex_mip_tbp[lod - 1];
-            g_gif.tex_tbw = g_gif.tex_mip_tbw[lod - 1];
-        }
+        } else g_gst[GIF_GOURAUD_FLAT_DEGENERATE]++;
+        return 0;
     }
+    return 1;
+}
+static int triangle_assembly_visible(void)
+{
+#ifdef GEKKO2_GOURAUD_EARLY_DEGENERATE
+    return triangle_classify(g_gif.tri_x[0],g_gif.tri_y[0],g_gif.tri_x[1],g_gif.tri_y[1],g_gif.tri_x[2],g_gif.tri_y[2]);
+#else
+    return 1;
+#endif
+}
 
-    const int fog_enabled=(gs_effective_attr_prim()&PRIM_FGE_MASK)!=0;
-    const int need_z=g_gif.zbuf_configured && (!g_gif.zmsk ||
-        (g_gif.zte && g_gif.ztst>=GS_ZTST_GEQUAL));
-    const int need_weights=gouraud||textured||fog_enabled||need_z;
-    for (int32_t yy = miny; yy <= maxy; yy++) {
-        for (int32_t xx = minx; xx <= maxx; xx++) {
-            int32_t w0 = edge(x1, y1, x2, y2, xx, yy);
-            int32_t w1 = edge(x2, y2, x0, y0, xx, yy);
-            int32_t w2 = edge(x0, y0, x1, y1, xx, yy);
-            /* Inside the triangle if all 3 edge signs match the
-             * overall winding (area's sign) - works for either
-             * winding direction, since GIF vertex order isn't
-             * guaranteed consistent. */
-            if ((area > 0 && w0 >= 0 && w1 >= 0 && w2 >= 0) ||
-                (area < 0 && w0 <= 0 && w1 <= 0 && w2 <= 0)) {
-                /* Barycentric weights (w0 corresponds to the vertex
-                 * OPPOSITE it, i.e. weights c0 by w0 etc - standard
-                 * edge-function barycentric convention). Used for
-                 * BOTH Gouraud color interpolation and (when TME is
-                 * set) texture-coordinate interpolation - on real
-                 * hardware texture coordinates always interpolate per
-                 * pixel when texturing is on, independent of the IIP
-                 * (color-shading) bit. Plain affine (screen-space)
-                 * interpolation, NOT the real GS's perspective-
-                 * corrected (1/Q) one - see gif.h's scope comment. */
-                double b0 = need_weights?(double)w0 * inv_area:0.0;
-                double b1 = need_weights?(double)w1 * inv_area:0.0;
-                double b2 = need_weights?(double)w2 * inv_area:0.0;
-
-                /* Z-buffer / depth test (task #89). Z is genuinely
-                 * screen-space-linear on real GS hardware (unlike
-                 * S/T - Z has already gone through the perspective
-                 * projection by the time it reaches the rasterizer,
-                 * so it interpolates the same plain barycentric way
-                 * as Gouraud color, no 1/Q correction needed - well-
-                 * known real-hardware behavior, not specific to this
-                 * project). Gated behind zbuf_configured (this
-                 * project's own safety gate - see gif.h) so draws
-                 * that never configured a Z buffer behave exactly as
-                 * before this round. */
-                double zf = need_z?(b0 * (double)z0 + b1 * (double)z1 + b2 * (double)z2):0.0;
-                uint32_t frag_z = (zf < 0.0) ? 0u : (uint32_t)(zf + 0.5);
-                int z_pass = 1;
-                if (g_gif.zbuf_configured && g_gif.zte) {
-                    uint32_t stored_z = g_gif.ztst>=GS_ZTST_GEQUAL?gs_mem_read_z(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, g_gif.zpsm):0u;
-                    switch (g_gif.ztst) {
-                    case GS_ZTST_NEVER:   z_pass = 0; break;
-                    case GS_ZTST_ALWAYS:  z_pass = 1; break;
-                    case GS_ZTST_GEQUAL:  z_pass = (frag_z >= stored_z); break;
-                    case GS_ZTST_GREATER: z_pass = (frag_z >  stored_z); break;
-                    default: z_pass = 1; break;
-                    }
-                }
-                if (!z_pass) {
-                    g_gif.pixels_ztest_failed++;
-                    continue;
-                }
-
+static struct {int32_t xy[6],uv[6],maxx,maxy;float stq[9];uint32_t colors[3];double inv;} gx_triangle;
+static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
+{
+ const int32_t *xy=gx_triangle.xy,*uv=gx_triangle.uv;const float *stq=gx_triangle.stq;
+ if(xx>gx_triangle.maxx||yy>gx_triangle.maxy)return 0;
+ double b0=(double)edge(xy[2],xy[3],xy[4],xy[5],xx,yy)*gx_triangle.inv;
+ double b1=(double)edge(xy[4],xy[5],xy[0],xy[1],xx,yy)*gx_triangle.inv;
+ double b2=(double)edge(xy[0],xy[1],xy[2],xy[3],xx,yy)*gx_triangle.inv;
+ int sign=gx_triangle.inv>0?1:-1;
+ if(!gs_triangle_edge_inside(edge(xy[2],xy[3],xy[4],xy[5],xx,yy),sign,gs_triangle_edge_inclusive(xy[2],xy[3],xy[4],xy[5],sign))||
+    !gs_triangle_edge_inside(edge(xy[4],xy[5],xy[0],xy[1],xx,yy),sign,gs_triangle_edge_inclusive(xy[4],xy[5],xy[0],xy[1],sign))||
+    !gs_triangle_edge_inside(edge(xy[0],xy[1],xy[2],xy[3],xx,yy),sign,gs_triangle_edge_inclusive(xy[0],xy[1],xy[2],xy[3],sign)))return 0;
+ uint32_t c0=gx_triangle.colors[0],c1=gx_triangle.colors[1],c2=gx_triangle.colors[2];
+ int32_t u0=uv[0],v0=uv[1],u1=uv[2],v1=uv[3],u2=uv[4],v2=uv[5];
+ float s0=stq[0],t0=stq[1],q0=stq[2],s1=stq[3],t1=stq[4],q1=stq[5],s2=stq[6],t2=stq[7],q2=stq[8];
+ int gouraud=!!(gs_effective_attr_prim()&PRIM_IIP_MASK),textured=1;
+ uint32_t flat_r=rgba_channel(c2,0),flat_g=rgba_channel(c2,8),flat_b=rgba_channel(c2,16),flat_a=rgba_channel(c2,24);
                 uint32_t shaded_r, shaded_g, shaded_b, shaded_a;
                 if (!gouraud) {
                     shaded_r = flat_r; shaded_g = flat_g; shaded_b = flat_b; shaded_a = flat_a;
@@ -1064,6 +1151,342 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
                     uint32_t texel = gs_sample_texture(tu, tv);
                     out = gs_texture_function(texel, rgba_pack(shaded_r, shaded_g, shaded_b, shaded_a));
                 }
+ return out;
+}
+
+static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                                uint32_t c0, uint32_t c1, uint32_t c2,
+                                int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
+                                float s0, float t0, float q0, float s1, float t1, float q1, float s2, float t2, float q2,
+                                uint32_t z0, uint32_t z1, uint32_t z2,
+                                uint32_t f0, uint32_t f1, uint32_t f2){
+    /* R1330-K: classify before any context work.  edge() is pure integer
+     * geometry, so the zero-area decision does not depend on the context. */
+    const int gouraud_prim = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
+    const int32_t area = edge(x0, y0, x1, y1, x2, y2);
+#ifndef GEKKO2_GOURAUD_EARLY_DEGENERATE
+    triangle_classify(x0,y0,x1,y1,x2,y2);
+#endif
+    if(area==0)return;
+    gs_activate_context(); /* Round 27: dual-context - see its own comment */
+    int32_t minx = x0, maxx = x0, miny = y0, maxy = y0;
+    if (x1 < minx) minx = x1;
+    if (x1 > maxx) maxx = x1;
+    if (x2 < minx) minx = x2;
+    if (x2 > maxx) maxx = x2;
+    if (y1 < miny) miny = y1;
+    if (y1 > maxy) maxy = y1;
+    if (y2 < miny) miny = y2;
+    if (y2 > maxy) maxy = y2;
+    if (minx < 0) minx = 0;
+    if (miny < 0) miny = 0;
+    clamp_bbox_to_scissor(&minx, &maxx, &miny, &maxy, 0); /* triangle: inclusive loop */
+
+    /* Degenerate (zero-area) triangle - nothing to draw. Also guards
+     * against divide-by-zero-shaped edge cases below. */
+    if (area == 0) return;
+    unsigned gouraud_reason = GIF_GFB_NONE;
+    if (gouraud_prim) {
+        if (maxx < minx || maxy < miny) g_gst[GIF_GOURAUD_OFFSCREEN]++;
+        else {
+            g_gst[GIF_GOURAUD_VISIBLE]++;
+            uint32_t a = gs_effective_attr_prim(), key = 0;
+            const uint32_t psm = g_gif.frame_psm;
+            if (a & PRIM_TME_MASK) key |= 1u << 0;
+            if (a & PRIM_ABE_MASK) key |= 1u << 1;
+            if (g_gif.zbuf_configured && !g_gif.zmsk) key |= 1u << 2;
+            if (g_gif.zbuf_configured && g_gif.zte && g_gif.ztst != GS_ZTST_ALWAYS) key |= 1u << 3;
+            if (a & PRIM_FGE_MASK) key |= 1u << 4;
+            if (g_gif.ate) key |= 1u << 5;
+            if (g_gif.dthe || g_gif.fba) key |= 1u << 6;
+            if (g_gif.fbmask) key |= 1u << 7;
+            key |= (psm == TEX_PSM_PSMCT32 ? 0u : psm == TEX_PSM_PSMCT24 ? 1u :
+                    (psm == TEX_PSM_PSMCT16 || psm == TEX_PSM_PSMCT16S) ? 2u : 3u) << 8;
+            if (z0 != z1 || z1 != z2) key |= 1u << 10;
+            if (a & PRIM_TME_MASK) {
+                key |= (g_gif.tex_tfx & 3u) << 11;
+                if (g_gif.tex1_mmag == 1u && g_gif.tex1_mmin == 1u) key |= 1u << 13;
+                if (a & PRIM_FST_MASK) key |= 1u << 14;
+            }
+            gouraud_state_record(key);
+        }
+    }
+
+    int gouraud = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
+    int textured = (gs_effective_attr_prim() & PRIM_TME_MASK) != 0;
+    const int interpolate_color=gouraud && (c0!=c1 || c1!=c2);
+    /* Flat shading uses the LAST vertex's color on real hardware
+     * (matches this rasterizer's pre-Gouraud behavior, which always
+     * used whichever RGBAQ was active when the triangle completed -
+     * i.e. exactly c2's value, since c2 is always the most-recently-
+     * kicked vertex's color). */
+    uint32_t flat_r = rgba_channel(c2, 0), flat_g = rgba_channel(c2, 8);
+    uint32_t flat_b = rgba_channel(c2, 16), flat_a = rgba_channel(c2, 24);
+
+#ifdef GEKKO2_GX_NATIVE_BIOS_TRI
+    uint32_t native_z_min=z0<z1?z0:z1;if(z2<native_z_min)native_z_min=z2;
+    int native_z_var=z0!=z1||z1!=z2;
+    int native_z_bound=!native_z_var||
+      ((!g_gif.zbuf_configured||g_gif.zmsk)&&
+       (g_gif.zpsm==0u||(g_gif.zpsm==1u&&z0<=0xffffffu&&z1<=0xffffffu&&z2<=0xffffffu)||
+        ((g_gif.zpsm==2u||g_gif.zpsm==10u)&&z0<=0xffffu&&z1<=0xffffu&&z2<=0xffffu)));
+    if(textured&&(!interpolate_color||(g_gif.tex_tfx==TEX_TFX_MODULATE&&g_gif.tex_tcc&&(c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&native_z_bound&&
+       !g_gif.ate&&!g_gif.date&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&!g_gif.tex1_mxl&&
+       g_gif.tex_tw>=2u&&g_gif.tex_th>=2u&&g_gif.tex_tw<=7u&&g_gif.tex_th<=7u&&
+       g_gif.clamp_configured&&g_gif.clamp_wms<=1u&&g_gif.clamp_wmt<=1u&&
+       (gs_effective_attr_prim()&PRIM_FST_MASK || (q0>0.0f&&q1>0.0f&&q2>0.0f&&isfinite(q0)&&isfinite(q1)&&isfinite(q2)))&&
+       gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD)&&gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)&&gs_gx_render_active()&&
+       maxx>=minx&&maxy>=miny&&gs_draw_texture_cache_begin(minx,miny,maxx+1,maxy+1)) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};float uv[6],qs[3]={q0,q1,q2};uint32_t colors[3]={c0,c1,c2};
+        if(gs_effective_attr_prim()&PRIM_FST_MASK){
+          uv[0]=(float)u0/(1u<<g_gif.tex_tw);uv[1]=(float)v0/(1u<<g_gif.tex_th);
+          uv[2]=(float)u1/(1u<<g_gif.tex_tw);uv[3]=(float)v1/(1u<<g_gif.tex_th);
+          uv[4]=(float)u2/(1u<<g_gif.tex_tw);uv[5]=(float)v2/(1u<<g_gif.tex_th);
+        qs[0]=qs[1]=qs[2]=1.0f;
+        }else{uv[0]=s0;uv[1]=t0;uv[2]=s1;uv[3]=t1;uv[4]=s2;uv[5]=t2;}
+        gs_gx_native_color native_color={c2,g_gif.tex_tcc,g_gif.tex_tfx,g_gif.scissor_configured?g_gif.scissor_y1+1u:0u};gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
+          g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,native_z_var?(native_z_min?native_z_min-1u:0u):z2,
+          !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
+          g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp,
+          g_gif.fbmask,g_gif.fba};
+        int accepted=gs_gx_draw_native_stq_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,
+          minx,miny,maxx,maxy,xy,uv,qs,interpolate_color?colors:NULL,1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.clamp_wms,g_gif.clamp_wmt,
+          g_gif.tex1_mmag==1u&&g_gif.tex1_mmin==1u,g_gif.scanmsk,gs_sample_texel_uncached,&pipe,native_z_var,&native_color);
+        g_texel_cache_enabled=0;
+        if(accepted){if(gouraud_prim){g_gst[GIF_GOURAUD_GX]++;g_gst[GIF_GOURAUD_GX_DEFERRED]++;}
+          g_gif.triangles_drawn++;return;}
+    }
+#endif
+
+    /* R1370: exact shaded screen snapshot -> resident GX blend/target.
+     * Constant Z and supported GS state only; no texture updates are dropped. */
+    if(textured&&gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD)&&
+       gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)&&(!g_gif.date && gs_gx_render_active())&&
+       (!(gs_effective_attr_prim()&PRIM_ABE_MASK)||g_gif.alpha_c!=0u||
+        (!g_gif.tex_tcc&&(c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&
+       z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&!g_gif.tex1_mxl&&
+       maxx>=minx&&maxy>=miny&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2},uv[6]={u0,v0,u1,v1,u2,v2};
+        float stq[9]={s0,t0,q0,s1,t1,q1,s2,t2,q2};uint32_t colors[3]={c0,c1,c2};
+        memcpy(gx_triangle.xy,xy,sizeof xy);memcpy(gx_triangle.uv,uv,sizeof uv);
+        memcpy(gx_triangle.stq,stq,sizeof stq);memcpy(gx_triangle.colors,colors,sizeof colors);
+        gx_triangle.inv=1.0/(double)area;gx_triangle.maxx=maxx;gx_triangle.maxy=maxy;
+        gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
+            g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,z2,
+            !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
+            g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp,
+          g_gif.fbmask,g_gif.fba};
+        if(gs_gx_draw_shaded_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,g_gif.scanmsk,gs_gx_triangle_sample,&pipe)){
+            if(gouraud){g_gst[GIF_GOURAUD_GX]++;g_gst[GIF_GOURAUD_GX_HYBRID]++;g_gst[GIF_GOURAUD_GX_DEFERRED]++;}
+            g_gif.triangles_drawn++;return;
+        }
+    }
+    if(textured&&(gs_effective_attr_prim()&PRIM_FST_MASK)&&g_gif.tex_tfx==TEX_TFX_DECAL&&
+       !g_gif.tex_tcc&&g_gif.tex1_mmag==0u&&g_gif.tex1_mmin==0u&&!gouraud&&
+       gs_depth_is_inactive()&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !(gs_effective_attr_prim()&(PRIM_FGE_MASK|PRIM_ABE_MASK))&&g_gif.frame_psm==0u&&(!g_gif.date && gs_gx_render_active())) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};float uv[6]={(float)u0,(float)v0,(float)u1,(float)v1,(float)u2,(float)v2};
+        if(gs_gx_draw_uv_decal_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,uv,
+            1u<<g_gif.tex_tw,1u<<g_gif.tex_th,c2>>24,g_gif.scanmsk,gs_gx_raw_texture_sample)) {
+            g_gif.triangles_drawn++;return;
+        }
+    }
+    if(g_gx_opaque && !textured && !gouraud && gs_depth_is_inactive() &&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK)) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};
+        if(gs_gx_draw_flat_psm(g_gif.frame_psm,3,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,c2,g_gif.scanmsk)) {
+            g_gif.triangles_drawn++;return;
+        }
+    }
+    if(gouraud&&maxx>=minx&&maxy>=miny) {
+        gouraud_reason=gouraud_gx_block_reason(textured,minx,miny,maxx,maxy,c0>>24,c1>>24,c2>>24);
+        if(gouraud_reason==GIF_GFB_NONE) {
+            int32_t xy[6]={x0,y0,x1,y1,x2,y2};uint32_t colors[3]={c0,c1,c2};
+            gs_gx_pipeline pipe={0};
+            if(gs_gx_draw_gouraud_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,
+                minx,miny,maxx,maxy,xy,colors,g_gif.scanmsk,&pipe)) {
+                g_gst[GIF_GOURAUD_GX]++;g_gst[GIF_GOURAUD_GX_DEFERRED]++;
+                g_gst[GIF_GOURAUD_GX_BBOX_PIXELS]+=(uint64_t)(maxx-minx+1)*(uint64_t)(maxy-miny+1);
+                g_gif.triangles_drawn++;return;
+            }
+            gouraud_reason=GIF_GFB_GX_REJECTED;
+        }
+    }
+    if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&(!g_gif.date && gs_gx_render_active())) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};
+        gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
+            g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,z2,
+            !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
+            g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp,
+          g_gif.fbmask,g_gif.fba};
+        if(gs_gx_draw_flat_pipeline(g_gif.frame_psm,3,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,c2,g_gif.scanmsk,&pipe)) {
+            g_gif.triangles_drawn++;return;
+        }
+    }
+    if(gouraud&&maxx>=minx&&maxy>=miny) {
+        g_gst[GIF_GOURAUD_SOFTWARE]++;g_gfb[gouraud_reason]++;
+        g_gst[GIF_GOURAUD_SW_BBOX_PIXELS]+=(uint64_t)(maxx-minx+1)*(uint64_t)(maxy-miny+1);
+    }
+    double inv_area = 1.0 / (double)area;
+
+    /* Round 29 continued (14th change): extends Round 28's mipmap
+     * support (previously SPRITE-only - see rasterize_sprite()'s own
+     * comment for the full scope/citation and the honest limitations
+     * this shares: per-PRIMITIVE not per-pixel LOD selection, no
+     * trilinear blending, only MTBA=0 explicit-MIPTBP lookup) to
+     * TRIANGLE. Uses the triangle's screen-space bounding box
+     * (maxx-minx, maxy-miny) as the "screen size" input to the exact
+     * same ratio-based LOD formula SPRITE already uses - the natural
+     * analog of SPRITE's own (sx1-sx0, sy1-sy0) size, since a
+     * triangle has no single well-defined width/height the way an
+     * axis-aligned SPRITE rectangle does. Like SPRITE, the override
+     * is scoped strictly to this one draw call and restored below. */
+    uint32_t saved_mip_tbp0 = g_gif.tex_tbp0;
+    uint32_t saved_mip_tbw = g_gif.tex_tbw;
+    if (textured && g_gif.tex1_mxl > 0 && g_gif.tex1_mmin >= GS_MMIN_MIPMAP_THRESHOLD && !g_gif.tex1_mtba) {
+        uint32_t lod = 0;
+        if (g_gif.tex1_lcm) {
+            double k = (double)g_gif.tex1_k / 16.0;
+            lod = (k <= 0.0) ? 0u : (uint32_t)(k + 0.5);
+        } else {
+            int32_t screen_w = maxx - minx, screen_h = maxy - miny;
+            double tex_w = (double)(1u << g_gif.tex_tw);
+            double tex_h = (double)(1u << g_gif.tex_th);
+            double ratio_w = (screen_w > 0) ? tex_w / (double)screen_w : 1.0;
+            double ratio_h = (screen_h > 0) ? tex_h / (double)screen_h : 1.0;
+            double ratio = (ratio_w > ratio_h) ? ratio_w : ratio_h;
+            if (ratio > 1.0) {
+                double lod_f = log2(ratio);
+                lod = (lod_f < 0.0) ? 0u : (uint32_t)lod_f;
+            }
+        }
+        if (lod > g_gif.tex1_mxl) lod = g_gif.tex1_mxl;
+        if (lod > 0) {
+            g_gif.tex_tbp0 = g_gif.tex_mip_tbp[lod - 1];
+            g_gif.tex_tbw = g_gif.tex_mip_tbw[lod - 1];
+        }
+    }
+
+    /* Per-draw memoization only when texture and both writable targets are
+     * disjoint. Mip selection is already final; no generation guesses. */
+    if(textured && maxx>=minx && maxy>=miny)
+        g_triangle_cached_draws+=gs_draw_texture_cache_begin(minx,miny,maxx+1,maxy+1);
+    const uint32_t draw_attributes=gs_effective_attr_prim();
+    const int texture_fst=!!(draw_attributes&PRIM_FST_MASK);
+    const double texture_width=(double)(1u<<g_gif.tex_tw);
+    const double texture_height=(double)(1u<<g_gif.tex_th);
+    const int fog_enabled=(draw_attributes&PRIM_FGE_MASK)!=0;
+    const int need_z=g_gif.zbuf_configured && (!g_gif.zmsk ||
+        (g_gif.zte && g_gif.ztst>=GS_ZTST_GEQUAL));
+    const int need_weights=interpolate_color||textured||fog_enabled||need_z;
+    const int coverage_sign=area>0?1:-1;
+    const int inc0=gs_triangle_edge_inclusive(x1,y1,x2,y2,coverage_sign);
+    const int inc1=gs_triangle_edge_inclusive(x2,y2,x0,y0,coverage_sign);
+    const int inc2=gs_triangle_edge_inclusive(x0,y0,x1,y1,coverage_sign);
+    for (int32_t yy = miny; yy <= maxy; yy++) {
+        int32_t ew0=edge(x1,y1,x2,y2,minx,yy),ew1=edge(x2,y2,x0,y0,minx,yy),ew2=edge(x0,y0,x1,y1,minx,yy);
+        for (int32_t xx = minx; xx <= maxx; xx++) {
+            /* Exact integer recurrence; advance before every possible continue. */
+            int32_t w0=ew0,w1=ew1,w2=ew2;
+            ew0-=y2-y1;ew1-=y0-y2;ew2-=y1-y0;
+            /* Inside the triangle if all 3 edge signs match the
+             * overall winding (area's sign) - works for either
+             * winding direction, since GIF vertex order isn't
+             * guaranteed consistent. */
+            if (gs_triangle_edge_inside(w0,coverage_sign,inc0)&&gs_triangle_edge_inside(w1,coverage_sign,inc1)&&gs_triangle_edge_inside(w2,coverage_sign,inc2)) {
+                /* Barycentric weights (w0 corresponds to the vertex
+                 * OPPOSITE it, i.e. weights c0 by w0 etc - standard
+                 * edge-function barycentric convention). Used for
+                 * BOTH Gouraud color interpolation and (when TME is
+                 * set) texture-coordinate interpolation - on real
+                 * hardware texture coordinates always interpolate per
+                 * pixel when texturing is on, independent of the IIP
+                 * (color-shading) bit. Plain affine (screen-space)
+                 * interpolation, NOT the real GS's perspective-
+                 * corrected (1/Q) one - see gif.h's scope comment. */
+                double b0 = need_weights?(double)w0 * inv_area:0.0;
+                double b1 = need_weights?(double)w1 * inv_area:0.0;
+                double b2 = need_weights?(double)w2 * inv_area:0.0;
+
+                /* Z-buffer / depth test (task #89). Z is genuinely
+                 * screen-space-linear on real GS hardware (unlike
+                 * S/T - Z has already gone through the perspective
+                 * projection by the time it reaches the rasterizer,
+                 * so it interpolates the same plain barycentric way
+                 * as Gouraud color, no 1/Q correction needed - well-
+                 * known real-hardware behavior, not specific to this
+                 * project). Gated behind zbuf_configured (this
+                 * project's own safety gate - see gif.h) so draws
+                 * that never configured a Z buffer behave exactly as
+                 * before this round. */
+                double zf = need_z?(b0 * (double)z0 + b1 * (double)z1 + b2 * (double)z2):0.0;
+                uint32_t frag_z = gs_mem_clamp_raster_z((zf < 0.0) ? 0u : (uint32_t)(zf + 0.5),g_gif.zpsm);
+                int z_pass = 1;
+                if (g_gif.zbuf_configured && g_gif.zte) {
+                    uint32_t stored_z = g_gif.ztst>=GS_ZTST_GEQUAL?gs_mem_read_z(g_gif.zbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy, g_gif.zpsm):0u;
+                    switch (g_gif.ztst) {
+                    case GS_ZTST_NEVER:   z_pass = 0; break;
+                    case GS_ZTST_ALWAYS:  z_pass = 1; break;
+                    case GS_ZTST_GEQUAL:  z_pass = (frag_z >= stored_z); break;
+                    case GS_ZTST_GREATER: z_pass = (frag_z >  stored_z); break;
+                    default: z_pass = 1; break;
+                    }
+                }
+                if (!z_pass) {
+                    g_gif.pixels_ztest_failed++;
+                    continue;
+                }
+
+                uint32_t shaded_r, shaded_g, shaded_b, shaded_a;
+                if (!interpolate_color) {
+                    shaded_r = flat_r; shaded_g = flat_g; shaded_b = flat_b; shaded_a = flat_a;
+                } else {
+                    uint32_t r = (uint32_t)(b0 * rgba_channel(c0, 0)  + b1 * rgba_channel(c1, 0)  + b2 * rgba_channel(c2, 0)  + 0.5);
+                    uint32_t g = (uint32_t)(b0 * rgba_channel(c0, 8)  + b1 * rgba_channel(c1, 8)  + b2 * rgba_channel(c2, 8)  + 0.5);
+                    uint32_t b = (uint32_t)(b0 * rgba_channel(c0, 16) + b1 * rgba_channel(c1, 16) + b2 * rgba_channel(c2, 16) + 0.5);
+                    uint32_t a = (uint32_t)(b0 * rgba_channel(c0, 24) + b1 * rgba_channel(c1, 24) + b2 * rgba_channel(c2, 24) + 0.5);
+                    r = gs_colclamp_channel((int32_t)r);
+                    g = gs_colclamp_channel((int32_t)g);
+                    b = gs_colclamp_channel((int32_t)b);
+                    a = gs_colclamp_channel((int32_t)a);
+                    shaded_r = r; shaded_g = g; shaded_b = b; shaded_a = a;
+                }
+
+                uint32_t out;
+                if (!textured) {
+                    out = rgba_pack(shaded_r, shaded_g, shaded_b, shaded_a);
+                } else {
+                    double tu, tv;
+                    if (texture_fst) {
+                        /* FST=1 (UV mode): plain affine interpolation,
+                         * exactly as before task #88 - UV is already
+                         * in integer texel units. */
+                        tu = b0 * (double)u0 + b1 * (double)u1 + b2 * (double)u2;
+                        tv = b0 * (double)v0 + b1 * (double)v1 + b2 * (double)v2;
+                    } else {
+                        /* GS STQ are homogeneous texture coordinates: interpolate
+                         * S, T and Q in screen space, then divide S/T by Q.
+                         * Reference: bundled PCSX2 GSDrawScanline.cpp,
+                         * DrawScanline: s/t/q setup, SampleTexture and Step.
+                         * Interpolating S/Q and 1/Q instead incorrectly cancels
+                         * a constant Q and changes varying-Q texture mapping. */
+                        double q_interp = b0 * (double)q0 + b1 * (double)q1 + b2 * (double)q2;
+                        double inv_q = (q_interp != 0.0) ? 1.0 / q_interp : 0.0;
+                        double s_norm = (b0 * (double)s0 + b1 * (double)s1 + b2 * (double)s2) * inv_q;
+                        double t_norm = (b0 * (double)t0 + b1 * (double)t1 + b2 * (double)t2) * inv_q;
+
+                        /* Scale normalized ST into texel space using
+                         * TEX0's real TW/TH (log2 texture width/
+                         * height) fields. */
+                        tu = s_norm * texture_width;
+                        tv = t_norm * texture_height;
+                    }
+                    uint32_t texel = gs_sample_texture(tu, tv);
+                    out = gs_texture_function(texel, rgba_pack(shaded_r, shaded_g, shaded_b, shaded_a));
+                }
                 /* Round 97 (138th finding, task #254): Fog effect -
                  * F interpolates the exact same plain-affine
                  * barycentric way as Z above (see tri_f's field
@@ -1085,6 +1508,7 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
             }
         }
     }
+    g_texel_cache_enabled=0;
     g_gif.triangles_drawn++;
 
     /* Round 29 continued (14th change): restore tex_tbp0/tex_tbw in
@@ -1094,6 +1518,18 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
     g_gif.tex_tbp0 = saved_mip_tbp0;
     g_gif.tex_tbw = saved_mip_tbw;
 }
+static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                                uint32_t c0, uint32_t c1, uint32_t c2,
+                                int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
+                                float s0, float t0, float q0, float s1, float t1, float q1, float s2, float t2, float q2,
+                                uint32_t z0, uint32_t z1, uint32_t z2,
+                                uint32_t f0, uint32_t f1, uint32_t f2)
+{
+ unsigned profile_previous=gp_enter(GP_GS_RASTER);
+ rasterize_triangle_profile_impl(x0,y0,x1,y1,x2,y2,c0,c1,c2,u0,v0,u1,v1,u2,v2,s0,t0,q0,s1,t1,q1,s2,t2,q2,z0,z1,z2,f0,f1,f2);
+ gp_leave(profile_previous);
+}
+
 
 /* SPRITE rasterizer (task #88 adds texturing here - previously
  * SPRITE was always flat-color only). Real hardware: SPRITE is a
@@ -1120,6 +1556,8 @@ static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, i
 static int32_t g_gx_sprite_columns[640],g_gx_sprite_rows[512];
 static double g_gx_sprite_v[512];
 static unsigned g_gx_sprite_linear,g_gx_sprite_fx,g_gx_sprite_fy,g_gx_sprite_textured;
+static uint32_t gs_gx_raw_texture_sample(int32_t x,int32_t y)
+{return gs_sample_texture((double)x,(double)y);}
 static uint32_t gs_gx_sprite_sample(int32_t x,int32_t y)
 {
     if(!g_gx_sprite_textured)return g_gif.rgba;
@@ -1137,7 +1575,7 @@ static int gs_gx_sprite_axis(int32_t *map,uint32_t n,double first,double step,un
             value-=0.5;int32_t i=(int32_t)value;if(value<(double)i)--i;
             unsigned fraction=(unsigned)((value-i)*16.0);
             if(k&&fraction!=selected)return 0;selected=fraction;map[k]=i;
-        }else map[k]=value<0.0?0:(int32_t)(value+0.5);
+        }else {int32_t i=(int32_t)value;if(value<(double)i)--i;map[k]=i;}
     }
     *phase=selected;return 1;
 }
@@ -1146,8 +1584,10 @@ static void gs_gx_sprite_key(void)
  uint64_t data=0;uint32_t valid=1;
  if(g_gx_sprite_textured) {
   uint64_t base=(uint64_t)g_gif.tex_tbp0*256u;
-  uint64_t end=gs_page_end(base,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th);
-  valid=end<=GS_MEM_SIZE&&end>=base&&end-base<=262144u&&gs_mem_hash_range(base,end-base,&data);
+  uint64_t end=gs_page_end(base,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.tex_psm);
+  valid=end<=GS_MEM_SIZE&&end>=base&&end-base<=262144u;
+  if(valid)valid=gs_mem_gpu_sync_alias_range((uint32_t)base,(uint32_t)end);
+  if(valid)valid=gs_mem_hash_range((uint32_t)base,(uint32_t)(end-base),&data);
  }
  uint32_t state[]={g_gx_sprite_textured,g_gx_sprite_linear,g_gx_sprite_fx,g_gx_sprite_fy,g_gif.rgba,
   g_gif.tex_tbp0,g_gif.tex_tbw,g_gif.tex_tw,g_gif.tex_th,g_gif.tex_psm,g_gif.tex_cbp,g_gif.tex_cpsm,
@@ -1158,11 +1598,10 @@ static void gs_gx_sprite_key(void)
  for(unsigned k=0;k<512;k++){a=(a^g_gif.clut_cache[k])*16777619u;b=((b<<5)|(b>>27))^g_gif.clut_cache[k];}
  gs_gx_source_key(a,b,valid);
 }
-static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
+static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
                               int32_t u0, int32_t v0, int32_t u1, int32_t v1,
                               float s0, float t0, float q0, float s1, float t1, float q1,
-                              uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1)
-{
+                              uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1){
     /* GS/reference DrawSprite covers [ceil(min),ceil(max)). Keep the
      * original 12.4 positions for the texture gradient and pre-step. */
     int32_t x0=(raw_x0+15)>>4,y0=(raw_y0+15)>>4;
@@ -1183,7 +1622,7 @@ static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1
      * signature symmetry with the other per-corner parameters but
      * is intentionally unused. */
     (void)z0;
-    uint32_t frag_z = z1;
+    uint32_t frag_z = gs_mem_clamp_raster_z(z1,g_gif.zpsm);
     /* Round 97 (138th finding, task #254): SPRITE Fog, same "flat,
      * second-vertex" convention this file already established for
      * SPRITE Z just above (real hardware does not interpolate either
@@ -1294,8 +1733,11 @@ static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1
         double fraction=x_span!=0.0?((double)x-pos_x0)/x_span:0.0;
         g_sprite_u[x-sx0]=tex_u0+fraction*(tex_u1-tex_u0);
     }
-    int safe_texture=textured?gs_sprite_cache_begin(sx0,sy0,sx1,sy1):0;
-    if((!textured||safe_texture)&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+    int safe_texture=textured?gs_draw_texture_cache_begin(sx0,sy0,sx1,sy1):0;
+    g_sprite_cached_draws+=safe_texture;
+    /* BETA12.20: Sprite snapshot can evaluate ATE/DATE late in the CPU
+     * importer. Resident GX depth/blend paths are independently excluded. */
+    if((!textured||safe_texture)&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
        (g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&gs_gx_render_active()&&
        sx1>sx0&&sy1>sy0&&sx1-sx0<=640&&sy1-sy0<=512&&
@@ -1312,7 +1754,9 @@ static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1
         gs_gx_pipeline pipeline={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
             g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,frag_z,
             !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
-            g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp};
+            g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp,
+          g_gif.fbmask,g_gif.fba,
+          g_gif.date,g_gif.datm,g_gif.ate,g_gif.atst,g_gif.aref,g_gif.afail};
         if(gs_gx_sprite_axis(g_gx_sprite_columns,sx1-sx0,first_u,du,g_gx_sprite_linear,&g_gx_sprite_fx,textured?g_sprite_u:NULL)&&
            gs_gx_sprite_axis(g_gx_sprite_rows,sy1-sy0,first_v,dv,g_gx_sprite_linear,&g_gx_sprite_fy,textured?g_gx_sprite_v:NULL)&&
            (gs_gx_sprite_key(),gs_gx_draw_texture_sprite(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,sx0,sy0,sx1-sx0,sy1-sy0,
@@ -1372,6 +1816,16 @@ static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1
     g_gif.tex_tbp0 = saved_mip_tbp0;
     g_gif.tex_tbw = saved_mip_tbw;
 }
+static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
+                              int32_t u0, int32_t v0, int32_t u1, int32_t v1,
+                              float s0, float t0, float q0, float s1, float t1, float q1,
+                              uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1)
+{
+ unsigned profile_previous=gp_enter(GP_GS_RASTER);
+ rasterize_sprite_12_4_profile_impl(raw_x0,raw_y0,raw_x1,raw_y1,u0,v0,u1,v1,s0,t0,q0,s1,t1,q1,z0,z1,f0,f1);
+ gp_leave(profile_previous);
+}
+
 
 /* Integer-coordinate entry used by native rasterizer tests. */
 static void rasterize_sprite(int32_t x0,int32_t y0,int32_t x1,int32_t y1,
@@ -1389,12 +1843,12 @@ static void rasterize_sprite(int32_t x0,int32_t y0,int32_t x1,int32_t y1,
  * `GS_POINT_CLASS`, i.e. there's only ever one vertex to begin with,
  * no interpolation of any kind), gated behind the same Z test every
  * other primitive uses. */
-static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uint32_t fog)
-{
+static void rasterize_point_profile_impl(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uint32_t fog){
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
     if (x < 0 || y < 0) return;
     if (!scissor_test(x, y)) return;
 
+    z=gs_mem_clamp_raster_z(z,g_gif.zpsm);
     int z_pass = 1;
     if (g_gif.zbuf_configured && g_gif.zte) {
         uint32_t stored_z = gs_mem_read_z(g_gif.zbp, g_gif.fbw, (uint32_t)x, (uint32_t)y, g_gif.zpsm);
@@ -1418,6 +1872,13 @@ static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uin
     gs_finish_draw_pixel(x, y, apply_fog(rgba, fog), z, g_gif.zbuf_configured && !g_gif.zmsk);
     g_gif.points_drawn++;
 }
+static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uint32_t fog)
+{
+ unsigned profile_previous=gp_enter(GP_GS_RASTER);
+ rasterize_point_profile_impl(x,y,rgba,z,fog);
+ gp_leave(profile_previous);
+}
+
 
 /* LINE/LINE_STRIP rasterizer (task: "GS coverage breadth"). Ported
  * from PCSX2's real `GSRasterizer::DrawEdgeLine` DDA algorithm: walk
@@ -1436,10 +1897,9 @@ static void rasterize_point(int32_t x, int32_t y, uint32_t rgba, uint32_t z, uin
  * `GSDrawScanline::CSetupPrim`, which selects `last=1` for
  * `GS_LINE_CLASS` (the same "flat uses the last vertex" convention
  * already established for triangles/sprites in this file). */
-static void rasterize_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+static void rasterize_line_profile_impl(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                             uint32_t c0, uint32_t c1, uint32_t z0, uint32_t z1,
-                            uint32_t f0, uint32_t f1)
-{
+                            uint32_t f0, uint32_t f1){
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
     int gouraud = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
     uint32_t flat_r = rgba_channel(c1, 0), flat_g = rgba_channel(c1, 8);
@@ -1473,7 +1933,7 @@ static void rasterize_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     for (int32_t i = 0; i <= steps; i++) {
         int32_t xx = (int32_t)(px + 0.5);
         int32_t yy = (int32_t)(py + 0.5);
-        uint32_t frag_z = (pz < 0.0) ? 0u : (uint32_t)(pz + 0.5);
+        uint32_t frag_z = gs_mem_clamp_raster_z((pz < 0.0) ? 0u : (uint32_t)(pz + 0.5),g_gif.zpsm);
 
         if (xx >= 0 && yy >= 0 && scissor_test(xx, yy)) {
             int z_pass = 1;
@@ -1515,6 +1975,15 @@ static void rasterize_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     }
     g_gif.lines_drawn++;
 }
+static void rasterize_line(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                            uint32_t c0, uint32_t c1, uint32_t z0, uint32_t z1,
+                            uint32_t f0, uint32_t f1)
+{
+ unsigned profile_previous=gp_enter(GP_GS_RASTER);
+ rasterize_line_profile_impl(x0,y0,x1,y1,c0,c1,z0,z1,f0,f1);
+ gp_leave(profile_previous);
+}
+
 
 static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int do_draw_kick)
 {
@@ -1558,6 +2027,16 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
     int32_t y = (raw_y - (int32_t)oy) >> 4;
 
     uint32_t ptype = g_gif.prim & 0x7u;
+    if(ptype>=PRIM_TYPE_TRIANGLE&&ptype<=PRIM_TYPE_TRIANGLE_FAN&&vertex_source_used<4u){
+     uint32_t *sample=vertex_source[vertex_source_used++];
+     sample[0]=s_gif_active_path;sample[1]=vertex_encoding;
+#ifdef GEKKO
+     sample[2]=ee_core_get_state()->pc;
+#endif
+     sample[3]=g_gif.prim;sample[4]=word0;sample[5]=word1;sample[6]=word2;
+     sample[7]=ox;sample[8]=oy;sample[9]=(uint32_t)do_draw_kick;
+    }
+
     if(ptype==PRIM_TYPE_SPRITE) {
         x=(raw_x-(int32_t)ox+15)>>4;
         y=(raw_y-(int32_t)oy+15)>>4;
@@ -1636,7 +2115,7 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
             g_gif.tri_q[slot] = g_gif.cur_q;
             g_gif.tri_z[slot] = raw_z;
             g_gif.tri_f[slot] = g_gif.cur_fog;
-            if (do_draw_kick && g_gif.tri_vseq % 3 == 0)
+            if (do_draw_kick && g_gif.tri_vseq % 3 == 0 && triangle_assembly_visible())
                 rasterize_triangle(g_gif.tri_x[0], g_gif.tri_y[0], g_gif.tri_x[1], g_gif.tri_y[1], g_gif.tri_x[2], g_gif.tri_y[2],
                                     g_gif.tri_rgba[0], g_gif.tri_rgba[1], g_gif.tri_rgba[2],
                                     g_gif.tri_u[0], g_gif.tri_v[0], g_gif.tri_u[1], g_gif.tri_v[1], g_gif.tri_u[2], g_gif.tri_v[2],
@@ -1667,7 +2146,7 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
             g_gif.tri_s[2] = g_gif.cur_s; g_gif.tri_t[2] = g_gif.cur_t; g_gif.tri_q[2] = g_gif.cur_q;
             g_gif.tri_z[2] = raw_z;
             g_gif.tri_f[2] = g_gif.cur_fog;
-            if (do_draw_kick && g_gif.tri_vseq >= 3)
+            if (do_draw_kick && g_gif.tri_vseq >= 3 && triangle_assembly_visible())
                 rasterize_triangle(g_gif.tri_x[0], g_gif.tri_y[0], g_gif.tri_x[1], g_gif.tri_y[1], g_gif.tri_x[2], g_gif.tri_y[2],
                                     g_gif.tri_rgba[0], g_gif.tri_rgba[1], g_gif.tri_rgba[2],
                                     g_gif.tri_u[0], g_gif.tri_v[0], g_gif.tri_u[1], g_gif.tri_v[1], g_gif.tri_u[2], g_gif.tri_v[2],
@@ -1697,7 +2176,7 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
                 g_gif.tri_s[2] = g_gif.cur_s; g_gif.tri_t[2] = g_gif.cur_t; g_gif.tri_q[2] = g_gif.cur_q;
                 g_gif.tri_z[2] = raw_z;
                 g_gif.tri_f[2] = g_gif.cur_fog;
-                if (do_draw_kick && g_gif.tri_vseq >= 3)
+                if (do_draw_kick && g_gif.tri_vseq >= 3 && triangle_assembly_visible())
                     rasterize_triangle(g_gif.tri_x[0], g_gif.tri_y[0], g_gif.tri_x[1], g_gif.tri_y[1], g_gif.tri_x[2], g_gif.tri_y[2],
                                         g_gif.tri_rgba[0], g_gif.tri_rgba[1], g_gif.tri_rgba[2],
                                         g_gif.tri_u[0], g_gif.tri_v[0], g_gif.tri_u[1], g_gif.tri_v[1], g_gif.tri_u[2], g_gif.tri_v[2],
@@ -1762,12 +2241,15 @@ static void apply_rgbaq(uint32_t r, uint32_t g, uint32_t b, uint32_t a)
 {
     g_gif.rgba = (r & 255u) | ((g & 255u) << 8) |
                  ((b & 255u) << 16) | ((a & 255u) << 24);
+    /* PACKED RGBA copies the GIF Q latch; A+D RGBAQ sets GS Q directly. */
+    g_gif.cur_q=u32_to_float((uint32_t)g_gif.gif_q_bits);
 }
 
 static void image_write_bytes(const uint8_t *q, uint32_t byte_count);
 
 static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
 {
+    vertex_encoding=1;
     switch (addr) {
     case GS_REG_PRIM:
         g_gif.prim = data_lo;
@@ -2079,6 +2561,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * interrupt-controller wiring). */
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_sigid = (g_gif.siglblid_sigid & ~idmsk) | (id & idmsk);
+        if (gs_raise_event(0u)) ee_intc_raise(0); /* INTC_GS */
     } break;
     case GS_REG_FINISH:
         /* Round 108 (149th finding, task #254 - FINAL): FINISH -
@@ -2090,6 +2573,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * as a real, distinct register (not falling through to an
          * unknown-register path). */
         g_gif.finish_pending++;
+        if (gs_raise_event(1u)) ee_intc_raise(0); /* INTC_GS */
         break;
     case GS_REG_LABEL: {
         /* Round 108 (149th finding, task #254 - FINAL): LABEL -
@@ -2149,9 +2633,8 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         /* GIFRegTEST bitfield cross-checked against PCSX2's own
          * GS/GSRegs.h (see TEST_ZTE_MASK, TEST_ZTST_xxx, TEST_ATE_MASK,
          * etc in gif.h). Round 23 adds real ATE/ATST/AREF/AFAIL
-         * (alpha test) - see gs_finish_draw_pixel() below. DATE/DATM
-         * (destination-alpha test) remain unmodeled, a separate,
-         * still-open gap. Round 27: also mirrors into ctx1_zte/
+         * (alpha test) - see gs_finish_draw_pixel() below. R1378 models DATE/DATM
+         * destination-alpha rejection before color and Z writes. Round 27: also mirrors into ctx1_zte/
          * ctx1_ztst/ctx1_ate/ctx1_atst/ctx1_aref/ctx1_afail. */
         g_gif.zte = (data_lo & TEST_ZTE_MASK) ? 1 : 0;
         g_gif.ztst = (int)((data_lo >> TEST_ZTST_SHIFT) & TEST_ZTST_MASK);
@@ -2159,6 +2642,8 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         g_gif.atst = (int)((data_lo >> TEST_ATST_SHIFT) & TEST_ATST_MASK);
         g_gif.aref = (data_lo >> TEST_AREF_SHIFT) & TEST_AREF_MASK;
         g_gif.afail = (int)((data_lo >> TEST_AFAIL_SHIFT) & TEST_AFAIL_MASK);
+        g_gif.date=g_gif.ctx1_date=(data_lo>>14)&1u;
+        g_gif.datm=g_gif.ctx1_datm=(data_lo>>15)&1u;
         g_gif.ctx1_zte = g_gif.zte;
         g_gif.ctx1_ztst = g_gif.ztst;
         g_gif.ctx1_ate = g_gif.ate;
@@ -2169,6 +2654,8 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
     case GS_REG_TEST_2: {
         /* Context 2's TEST - identical bitfield to TEST_1 above,
          * written ONLY into the ctx2_xxx permanent fields. */
+        g_gif.ctx2_date=(data_lo>>14)&1u;
+        g_gif.ctx2_datm=(data_lo>>15)&1u;
         g_gif.ctx2_zte = (data_lo & TEST_ZTE_MASK) ? 1 : 0;
         g_gif.ctx2_ztst = (int)((data_lo >> TEST_ZTST_SHIFT) & TEST_ZTST_MASK);
         g_gif.ctx2_ate = (data_lo & TEST_ATE_MASK) ? 1 : 0;
@@ -2382,15 +2869,11 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         if (g_gif.ctx2_tex_mip_tbw[5] == 0) g_gif.ctx2_tex_mip_tbw[5] = 640;
     } break;
     case GS_REG_BITBLTBUF: {
-        /* GIFRegBITBLTBUF (Round 26): word0 = SBP:14(0-13),
-         * SBW:6(16-21), SPSM:6(24-29); word1 = DBP:14(0-13),
-         * DBW:6(16-21), DPSM:6(24-29). Only the destination fields
-         * matter for the host-to-local path this project implements
-         * - source fields are parsed for completeness/documentation
-         * but unused (no local-to-host/local-to-local support - see
-         * this register's header comment). DBP/DBW used directly as
-         * this project's own gs_mem bp/bw convention, exactly like
-         * FRAME_1/TEX0_1/ZBUF_1 elsewhere. */
+        /* GS BITBLTBUF: source in low 32 bits, destination in high.
+         * Both fields are needed for XDIR=2 local-to-local transfers. */
+        g_gif.trx_sbp = data_lo & 0x3fffu;
+        g_gif.trx_sbw = ((data_lo >> 16) & 0x3fu) * 64u;
+        g_gif.trx_spsm = (data_lo >> 24) & 0x3fu;
         g_gif.trx_dbp = data_hi & 0x3FFFu;
         uint32_t dbw_field = (data_hi >> 16) & 0x3Fu;
         g_gif.trx_dbw = dbw_field * 64u;
@@ -2398,10 +2881,12 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         g_gif.trx_dpsm = (data_hi >> 24) & 0x3Fu;
     } break;
     case GS_REG_TRXPOS: {
-        /* GIFRegTRXPOS: word0 = SSAX:11(0-10), SSAY:11(16-26);
-         * word1 = DSAX:11(0-10), DSAY:11(16-26). Only DSAX/DSAY
-         * matter here (destination start position) - source position
-         * is parsed but unused, same scope note as BITBLTBUF. */
+        /* GS TRXPOS: 11-bit SSAX/SSAY and DSAX/DSAY;
+         * DIRX/DIRY are high-word bits 27/28. */
+        g_gif.trx_ssax = data_lo & 0x7ffu;
+        g_gif.trx_ssay = (data_lo >> 16) & 0x7ffu;
+        g_gif.trx_dirx = (data_hi >> 27) & 1u;
+        g_gif.trx_diry = (data_hi >> 28) & 1u;
         g_gif.trx_dsax = data_hi & 0x7FFu;
         g_gif.trx_dsay = (data_hi >> 16) & 0x7FFu;
     } break;
@@ -2443,20 +2928,30 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         if(g_gif.trx_xdir==TRXDIR_HOST_TO_LOCAL)image_write_bytes(bytes,8);
     } break;
     case GS_REG_TRXDIR: {
-        /* GIFRegTRXDIR: word0 = XDIR:2(0-1). Writing this register is
-         * what actually TRIGGERS the transfer on real hardware -
-         * resets the progress cursor to (0,0) relative to DSAX/DSAY.
-         * trx_active is only set for XDIR=host-to-local AND a
-         * PSMCT32 destination (the only format this project's gs_mem
-         * can actually store) - anything else (an unsupported
-         * direction, or a non-PSMCT32 destination format) leaves
-         * trx_active false, so a subsequent IMAGE packet's data is
-         * safely byte-skipped rather than misinterpreted (see
-         * process_one_packet's IMAGE-mode handling below). */
+        /* XDIR=2 performs a synchronous VRAM move immediately.
+         * XDIR=0 keeps the existing IMAGE/HWREG stream semantics.
+         * XDIR=1 is not supported and never fabricates host data. */
         g_gif.trx_xdir = data_lo & 0x3u;
         g_gif.trx_cur_x = 0;
         g_gif.trx_cur_y = 0;
+        g_gif_read_fifo_qword=0;
         g_gif.trx_partial_pixel = g_gif.trx_partial_bytes = 0;
+        if (g_gif.trx_xdir == TRXDIR_LOCAL_TO_LOCAL) {
+            gs_local_copy_desc_t d = {
+                .sbp=g_gif.trx_sbp,.sbw=g_gif.trx_sbw,.spsm=g_gif.trx_spsm,
+                .dbp=g_gif.trx_dbp,.dbw=g_gif.trx_dbw,.dpsm=g_gif.trx_dpsm,
+                .ssax=g_gif.trx_ssax,.ssay=g_gif.trx_ssay,
+                .dsax=g_gif.trx_dsax,.dsay=g_gif.trx_dsay,
+                .rrw=g_gif.trx_rrw,.rrh=g_gif.trx_rrh,
+                .dirx=g_gif.trx_dirx,.diry=g_gif.trx_diry
+            };
+            if (gs_mem_copy_local(&d)) {
+                g_gif_local_copy_ok++;
+                g_gif_local_copy_pixels+=(uint64_t)d.rrw*d.rrh;
+            } else g_gif_local_copy_declines++;
+            /* Hardware runs immediately; no following IMAGE payload. */
+            g_gif.trx_xdir=TRXDIR_OFF;
+        }
         g_gif.trx_active = (g_gif.trx_xdir == TRXDIR_HOST_TO_LOCAL) &&
                             (g_gif.trx_dpsm == TEX_PSM_PSMCT32 ||
                              g_gif.trx_dpsm == TEX_PSM_PSMCT24 ||
@@ -2529,13 +3024,14 @@ static void image_write_pixel_qwords(const uint8_t *q,uint32_t n_qwords)
 
 static void apply_packed_register(uint32_t reg_code, const uint8_t *q)
 {
+    vertex_encoding=0;
     uint32_t w0=rd_le32(q), w1=rd_le32(q+4), w2=rd_le32(q+8), w3=rd_le32(q+12);
             switch (reg_code) {
             case GIF_REG_PRIM:  g_gif.prim = w0; reset_tri_vseq(); break;
             case GS_REG_ST:
                 g_gif.cur_s = u32_to_float(w0);
                 g_gif.cur_t = u32_to_float(w1);
-                g_gif.cur_q = u32_to_float(w2);
+                g_gif.gif_q_bits = w2;
                 break;
             case GS_REG_UV:
                 g_gif.cur_u = (w0 & 0x3fffu) >> 4;
@@ -2680,6 +3176,10 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
      * comment for the full citation/rationale. */
     g_gif.gif_last_eop = eop;
 
+    /* GSState.cpp Transfer: every nonempty new tag resets temporary Q.
+     * Continued payload fragments keep the latch; GS RGBAQ.Q is unchanged. */
+    if(nloop)g_gif.gif_q_bits=UINT32_C(0x3f800000);
+
     /* Empty tags disregard everything except EOP; PRE applies only to PACKED.
      * Primary reference: GSState.cpp GIF transfer tag dispatch. */
     if (nloop && flg == 0u && pre) {
@@ -2728,6 +3228,7 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
                 image_write_pixel_qwords(p + consumed, avail_qwords);
 
             g_gif.image_carry_remaining_qwords = shortfall_qwords;
+            g_gif.image_eop_path[s_gif_active_path] = eop;
 
             return len; /* fully consumed - nothing left in this buffer to misparse as a fresh tag */
         }
@@ -2742,7 +3243,8 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
     return consumed;
 }
 
-void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
+static void gif_process_quadwords_impl(int channel, const uint8_t *data,
+                                       uint32_t qwc, int count_kick)
 {
     /* Round 542: `channel` is now a real GIF_PATH_1/2/3 selector (see
      * gif.h) - clamp defensively to PATH_3 for any out-of-range value
@@ -2756,7 +3258,7 @@ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
     /* Round 577 (task #551): real diagnostic counter - see gif.h's
      * gif_path1_transfers comment. Counts the call, not the quadword
      * count, matching "one XGKICK = one transfer" semantics. */
-    if (s_gif_active_path == GIF_PATH_1)
+    if (s_gif_active_path == GIF_PATH_1 && count_kick)
         g_gif.gif_path1_transfers++;
 
     uint32_t len = qwc * 16u;
@@ -2771,7 +3273,10 @@ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
         uint32_t take_qwords = owed_qwords < avail_qwords ? owed_qwords : avail_qwords;
         if (g_gif.trx_active) image_write_pixel_qwords(data, take_qwords);
         g_gif.image_carry_remaining_qwords = owed_qwords - take_qwords;
+        g_gif.image_carry_path[s_gif_active_path] = g_gif.image_carry_remaining_qwords;
         off = take_qwords * 16u;
+        if(!g_gif.image_carry_remaining_qwords && s_gif_active_path==GIF_PATH_1 &&
+           g_gif.image_eop_path[GIF_PATH_1])return;
     }
 
     gif_register_carry_t *carry=&g_gif.register_carry_path[s_gif_active_path];
@@ -2793,6 +3298,92 @@ void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
             break;
     }
     g_gif.image_carry_path[s_gif_active_path] = g_gif.image_carry_remaining_qwords;
+}
+
+/* Ownership persists across producer fragments until EOP. PATH3 IMAGE
+ * permits interruption only with IMT; M3R/M3P apply at packet boundaries.
+ * No unbounded queue or borrowed producer pointer survives a call. */
+uint32_t gif_try_process_quadwords(int path,const uint8_t *data,uint32_t qwc) {
+    if(path<0||path>2||!data)return 0;
+    uint32_t done=0;
+    for(;done<qwc;done++) {
+        unsigned owner=g_gif.arb_owner;
+        int slice=owner==3u&&path!=GIF_PATH_3&&(g_gif.gif_mode&4u)&&
+                  g_gif.image_carry_path[GIF_PATH_3];
+        if((g_gif.gif_ctrl&8u)||(owner&&owner!=(unsigned)path+1u&&!slice)||
+           (path==GIF_PATH_3&&owner!=3u&&((g_gif.gif_mode&1u)||g_gif.arb_m3p||
+            (g_gif.arb_pending&3u)))||
+           (path==GIF_PATH_2&&owner!=2u&&(g_gif.arb_pending&1u)))break;
+        if(!owner||slice)g_gif.arb_owner=(uint8_t)(path+1);
+        int tag=!g_gif.register_carry_path[path].remaining&&!g_gif.image_carry_path[path];
+        if(tag)g_gif.arb_eop[path]=!!(data[done*16u+1u]&0x80u);
+        uint32_t saved=s_gif_active_path;
+        gif_process_quadwords_impl(path,data+done*16u,1u,0);
+        s_gif_active_path=saved;
+        if(!g_gif.register_carry_path[path].remaining&&!g_gif.image_carry_path[path]&&g_gif.arb_eop[path])
+            g_gif.arb_owner=(path!=GIF_PATH_3&&g_gif.image_carry_path[GIF_PATH_3])?3u:0u;
+    }
+    if(done<qwc)g_gif.arb_pending|=(uint8_t)(1u<<path);
+    else g_gif.arb_pending&=(uint8_t)~(1u<<path);
+    return done;
+}
+void gif_set_path3_mask(int masked){g_gif.arb_m3p=!!masked;}
+/* Actual bounded PATH3 FIFO for CPU quadword writes. Producer memory is
+ * copied on acceptance; a full FIFO declines without overwriting bytes. */
+void gif_fifo_service(void) {
+    while(g_gif.fifo_count) {
+        if(!gif_try_process_quadwords(GIF_PATH_3,g_gif.fifo[g_gif.fifo_head],1))break;
+        g_gif.fifo_head=(g_gif.fifo_head+1u)&15u;g_gif.fifo_count--;
+    }
+}
+int gif_fifo_write(const uint8_t *quadword) {
+    gif_fifo_service();if(g_gif.fifo_count==16u)return 0;
+    unsigned tail=(g_gif.fifo_head+g_gif.fifo_count)&15u;
+    memcpy(g_gif.fifo[tail],quadword,16);g_gif.fifo_count++;
+    gif_fifo_service();return 1;
+}
+
+
+void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
+{
+    uint32_t saved=s_gif_active_path;
+    gif_process_quadwords_impl(channel,data,qwc,1);
+    s_gif_active_path=saved;
+}
+
+/* A synchronous XGKICK submits at most one complete VU1 ring traversal.
+ * PCSX2 GSState clears an incomplete PATH1 NLOOP at this boundary (BIOS
+ * packets can omit EOP). Do not let a stale tag consume the next kick.
+ * Generic DMA/DIRECT streams keep their cross-call continuation state. */
+void gif_process_xgkick(const uint8_t *data, uint32_t qwc)
+{
+    gif_begin_xgkick();
+    gif_process_xgkick_fragment(data,qwc);
+    gif_end_xgkick();
+}
+
+void gif_end_xgkick(void)
+{
+    g_gif.arb_pending&=~1u;
+    memset(&g_gif.register_carry_path[GIF_PATH_1], 0,
+           sizeof(g_gif.register_carry_path[GIF_PATH_1]));
+    g_gif.image_carry_path[GIF_PATH_1] = 0;
+    g_gif.image_eop_path[GIF_PATH_1] = 0;
+    if(g_gif.arb_owner==1u)g_gif.arb_owner=g_gif.image_carry_path[GIF_PATH_3]?3u:0;
+    if(s_gif_active_path==GIF_PATH_1)g_gif.image_carry_remaining_qwords = 0;
+}
+
+void gif_begin_xgkick(void)
+{
+    gif_end_xgkick();
+    g_gif.gif_path1_transfers++;
+}
+
+void gif_process_xgkick_fragment(const uint8_t *data,uint32_t qwc)
+{
+    uint32_t saved=s_gif_active_path;
+    gif_process_quadwords_impl(GIF_PATH_1,data,qwc,0);
+    s_gif_active_path=saved;
 }
 
 /* Round 542: real GIF MMIO register block (0x10003000-0x100030A0).
@@ -2819,7 +3410,13 @@ int gif_mmio_read32(uint32_t addr, uint32_t *out_val)
         uint32_t m3r = g_gif.gif_mode & 0x1u;
         uint32_t imt = (g_gif.gif_mode >> 2) & 0x1u;
         uint32_t pse = (g_gif.gif_ctrl >> 3) & 0x1u;
-        *out_val = m3r | (imt << 2) | (pse << 3);
+        *out_val = m3r | ((uint32_t)g_gif.arb_m3p<<1) | (imt << 2) | (pse << 3) |
+            ((uint32_t)g_gif.arb_owner<<10) | (g_gif.arb_owner?1u<<9:0u) |
+            ((uint32_t)g_gif.fifo_count<<24) |
+            ((g_gif.arb_owner&&g_gif.arb_owner!=3u&&g_gif.image_carry_path[GIF_PATH_3])?1u<<5:0u) |
+            ((g_gif.arb_pending&1u)?1u<<8:0u) |
+            ((g_gif.arb_pending&2u)?1u<<7:0u) |
+            ((g_gif.arb_pending&4u)?1u<<6:0u);
         return 1;
     }
     case GIF_TAG0_ADDR: *out_val = g_gif.gif_tag0; return 1;
@@ -2846,7 +3443,11 @@ int gif_mmio_write32(uint32_t addr, uint32_t val)
         if (val & 0x1u) {
             g_gif.gif_ctrl = 0;
             g_gif.gif_mode = 0;
-            /* gif_stat is derived, nothing to reset there directly. */
+            g_gif.arb_owner=g_gif.arb_pending=g_gif.arb_m3p=0;
+            g_gif.fifo_count=g_gif.fifo_head=0;
+            memset(g_gif.arb_eop,0,sizeof(g_gif.arb_eop));
+            memset(g_gif.register_carry_path,0,sizeof(g_gif.register_carry_path));
+            memset(g_gif.image_carry_path,0,sizeof(g_gif.image_carry_path));
         } else {
             g_gif.gif_ctrl = val & 0x8u; /* PSE only - bits 1-2/4-31 are reserved/unwritable */
         }

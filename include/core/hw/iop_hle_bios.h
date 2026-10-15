@@ -1,4 +1,9 @@
 /*
+ * R1335 NOTE: known RAM calls have an optional bounded bulk path.
+ * Strict BIOS HLE fallback (off by default) passes unimplemented calls
+ * to guest execution without altering pipeline/registers. The historical
+ * generic-zero path remains only for compatibility; it is not PCSX2 parity.
+ *
  * iop_hle_bios.h - IOP BIOS syscall trap (the "HLE BIOS replacement")
  *
  * IMPORTANT SCOPE NOTE, read this before extending or trusting this
@@ -54,10 +59,9 @@
  * as valid MIPS NOPs) or a halt-on-garbage-opcode into forward
  * progress for whatever boot code issued the call - a real,
  * meaningful improvement even without knowing what any specific
- * function number "really" does, matching how PCSX2 itself falls
- * back to "log it, return a default" for any IRX import it doesn't
- * have a specific C++ implementation for (see `irxImportExec`'s
- * fallback path).
+ * function number "really" does, a legacy Gekko2 approximation. PCSX2 irxImportExec returns 0 to
+ * decline an interception and continue guest execution, not to force a
+ * generic guest return value. R1335 exposes strict fallback separately.
  *
  * ONE EXCEPTION to "every call gets a generic default": C(07h),
  * InstallExceptionHandlers - see the real-BIOS-testing investigation
@@ -412,6 +416,7 @@ typedef struct {
 } iop_hle_bios_state_t;
 
 void iop_hle_bios_init(void);
+uint64_t iop_hle_bios_route_stat(unsigned n);
 
 /* Returns 1 if `pc` is one of the three trap addresses (in which case
  * the call has been fully "handled" - st->pc/st->next_pc have already

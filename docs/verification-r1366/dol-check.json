@@ -1,0 +1,15 @@
+{
+  "dol": "Gekko2-R1366.dol",
+  "sha256": "80bce936b8c24bd426f522a8d906aef5aa6eedb72a67d9f0a46e49cf37b41c73",
+  "bytes": 1903256,
+  "entry": "0x80003f00",
+  "sections": 2,
+  "load_end": "0x801d4898",
+  "bss_end": "0x81502110",
+  "wii_hid4_markers": [
+    "0x80003f20",
+    "0x8011db5c"
+  ],
+  "elf_section_bytes_match": true,
+  "runtime_boot_verified": false
+}

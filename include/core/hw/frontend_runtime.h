@@ -9,6 +9,9 @@ int frontend_allow_gx_output(int requested,int first_image,unsigned psm);
 uint32_t frontend_next_budget(uint32_t previous,uint32_t elapsed_ms,uint32_t target_ms);
 uint32_t frontend_rate_milli(uint64_t count,uint64_t milliseconds);
 int frontend_present_due(uint64_t now_ms,uint64_t last_ms,uint64_t events,uint64_t last_events);
+/* Keep a real host press until a guest controller sample observes it. */
+typedef struct { uint32_t samples;uint16_t pending,previous; } frontend_pad_latch;
+uint16_t frontend_pad_latch_update(frontend_pad_latch *latch,uint16_t held,uint32_t samples);
 
 #define FRONTEND_FPS_SAMPLES 12
 /* Twelve five-second samples: up to one minute of measured wall time. */

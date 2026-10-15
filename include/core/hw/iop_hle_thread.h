@@ -387,6 +387,7 @@ const iop_hle_thread_stats_t *iop_hle_thread_get_stats(void);
  * size in bytes (do not hardcode the size in callers - it will change
  * if IOP_HLE_THREAD_MAX_* limits are ever tuned). */
 void *iop_hle_thread_get_checkpoint_blob(uint32_t *size_out);
+uint64_t iop_hle_thread_deadline_stat(unsigned n);
 
 /* Diagnostic accessors, used by host-native tests. */
 int iop_hle_thread_get_thread_count(void);
@@ -446,4 +447,5 @@ int iop_hle_thread_get_wait_id(int thid);
  * same idle state on its own (no special-casing needed here). */
 void iop_hle_thread_retire_root_thread(iop_state_t *st);
 
+unsigned iop_hle_thread_event_distance(const iop_state_t *st,unsigned maximum);
 #endif

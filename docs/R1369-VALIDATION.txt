@@ -1,0 +1,99 @@
+event-chain.log
+PASS 120 complete EE/timer/display/IRQ comparisons, budgets, first-word mutation, notified interior mutation and Compare IRQ
+EVENT_CHAIN_SELECTED 123
+WARM_COST {"8": {"event_chain": 1269, "separate_windows": 1290}, "16": {"event_chain": 3440, "separate_windows": 2667}, "32": {"event_chain": 5262, "separate_windows": 5421}, "64": {"event_chain": 8906, "separate_windows": 10929}, "128": {"event_chain": 16194, "separate_windows": 21945}}
+
+
+memory-chain-final.log
+PASS 14 full state, evolving proven RAM loads, partial/full budgets and callee-saved ABI; selected 31
+
+
+chain-cost-base-final.log
+{"ppc_instructions": 21690, "state_sha256": "1c753cba87cb5cebdc4b6d72ddcea9b82a7e651ddb2c1a4bc26e7c7924211291", "selected_successors": 0, "retired": 128}
+
+
+chain-cost-final.log
+{"ppc_instructions": 13516, "state_sha256": "1c753cba87cb5cebdc4b6d72ddcea9b82a7e651ddb2c1a4bc26e7c7924211291", "selected_successors": 15, "retired": 128}
+
+
+chain-abi.log
+{"ppc_instructions": 16196, "state_sha256": "1c753cba87cb5cebdc4b6d72ddcea9b82a7e651ddb2c1a4bc26e7c7924211291", "selected_successors": 15, "retired": 128}
+
+
+window-base.log
+{"8": {"ppc_instructions": 102542, "retired": 808, "state_sha256": "71f03a86626b1e631a837075f5aa87b1c7109bda491e9eb953ed34aa96b5ec18"}, "16": {"ppc_instructions": 108942, "retired": 1616, "state_sha256": "5b54b497d2fe996940fa60933647becc6a7a8a78a74cdbcdd9007f149fea1314"}, "32": {"ppc_instructions": 121642, "retired": 3232, "state_sha256": "1f5650821e2b9ed0b8d9eccbb7296c0a3601a8e73127ee94022c78680d5d1e52"}}
+
+
+window-final.log
+{"8": {"ppc_instructions": 102042, "retired": 808, "state_sha256": "71f03a86626b1e631a837075f5aa87b1c7109bda491e9eb953ed34aa96b5ec18"}, "16": {"ppc_instructions": 105842, "retired": 1616, "state_sha256": "5b54b497d2fe996940fa60933647becc6a7a8a78a74cdbcdd9007f149fea1314"}, "32": {"ppc_instructions": 113342, "retired": 3232, "state_sha256": "1f5650821e2b9ed0b8d9eccbb7296c0a3601a8e73127ee94022c78680d5d1e52"}}
+
+
+prefix.log
+PASS 12 mixed owner prefixes length2..7; complete EE/timer/IRQ/display state and following RAM store
+PASS cached prefix windows under full foreign arena; all owner variants released at teardown
+WARM_PREFIX_COST {"2": {"precise": 105200, "native": 93700}, "3": {"precise": 134000, "native": 94100}, "4": {"precise": 162800, "native": 94500}, "5": {"precise": 191600, "native": 94900}, "6": {"precise": 220400, "native": 95300}, "7": {"precise": 249200, "native": 95700}}
+
+
+chains.log
+PASS required warm native successor, all nonvolatile registers and allocation-failure fallback
+EE_NATIVE_CHAIN_SIGNATURE dc31389850cd8e187655dd34ac53def15da76a22a4a6f8c0d16683bb4df5826a
+PASS 126 cold/warm chain budgets, modified successor source and timer boundaries
+
+
+events.log
+CHECK 1 0
+CHECK 1 234881024
+CHECK 2 0
+CHECK 2 234881024
+CHECK 3 0
+CHECK 3 234881024
+CHECK 7 0
+CHECK 7 234881024
+CHECK 8 0
+CHECK 8 234881024
+CHECK 9 0
+CHECK 9 234881024
+CHECK 16 0
+CHECK 16 234881024
+CHECK 17 0
+CHECK 17 234881024
+CHECK 31 0
+CHECK 31 234881024
+CHECK 63 0
+CHECK 63 234881024
+CHECK 64 0
+CHECK 64 234881024
+CHECK 65 0
+CHECK 65 234881024
+CHECK 257 0
+CHECK 257 234881024
+PASS 26 full EE/IOP/timer state comparisons against exact 8:1 interleave
+BATCH_COST {64: {'legacy': 1837581, 'event': 2096425}, 65: {'legacy': 1839862, 'event': 2203516}, 257: {'legacy': 2420333, 'event': 4752173}}
+PASS 6 shared mailbox publication / echo grants with exact tick ratio
+PASS event batches and shared barriers actually exercised
+WARM_SCHEDULER_COST {'legacy': 773897, 'event_only': 1017680, 'event_long_idle': 778927, 'slices': 256}
+
+
+gx.log
+PASS 6 source packs: miss/hit, deferred upload after rejection, generation/invalid-key/origin changes; unchanged pixels and four required CPU flushes
+PASS fresh scanout flushes repacked data before GX viewport; rendering not modeled
+
+
+dol-check.json
+{
+  "dol": "Gekko2-R1369.dol",
+  "sha256": "d1cb76d8f9676251528e0c90a608865f55c2c2c1e6a667736f60e5f12ba5c086",
+  "bytes": 1907960,
+  "entry": "0x80003f00",
+  "sections": 2,
+  "load_end": "0x801d5ad8",
+  "bss_end": "0x815033b0",
+  "wii_hid4_markers": [
+    "0x80003f20",
+    "0x8011ebc8"
+  ],
+  "elf_section_bytes_match": true,
+  "runtime_boot_verified": false
+}
+
+Native tests passed: 39

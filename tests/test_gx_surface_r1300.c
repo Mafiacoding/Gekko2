@@ -24,6 +24,41 @@ int main(void){
  memcpy(expected,vram,GS_MEM_SIZE);memcpy(saved,s,sizeof(*s));CHECK(!gs_gx_surface_import(s,actual,GS_MEM_SIZE,pixels,sizeof(pixels)-1));CHECK(!memcmp(saved,s,sizeof(*s)));
  gs_gx_flat_draw bad={0};bad.bp=64;bad.bw=128;bad.x=127;bad.width=4;bad.height=4;CHECK(!gs_gx_surface_mark(s,&bad));CHECK(!memcmp(saved,s,sizeof(*s)));
  CHECK(gs_gx_surface_import(s,actual,GS_MEM_SIZE,pixels,sizeof(pixels)));CHECK(!memcmp(expected,actual,GS_MEM_SIZE));CHECK(!s->active);
+ /* Partial tiled imports must equal the full import, including untouched
+  * VRAM and the independent exact CT32/CT24 alpha shadow. */
+ {
+  memcpy(s,saved,sizeof(*s));memcpy(actual,vram,GS_MEM_SIZE);
+  uint32_t x=s->dirty_x0&~3u,y=s->dirty_y0&~3u;
+  uint32_t w=((s->dirty_x1+3u)&~3u)-x,h=((s->dirty_y1+3u)&~3u)-y;
+  uint8_t *part=malloc(w*h*4u);CHECK(part);if(!part)return 1;
+  for(unsigned yy=0;yy<h;yy++)for(unsigned xx=0;xx<w;xx++) {
+   unsigned a=tile(128,x+xx,y+yy),b=tile(w,xx,yy);
+   part[b]=pixels[a];part[b+1]=pixels[a+1];part[b+32]=pixels[a+32];part[b+33]=pixels[a+33];
+  }
+  CHECK(!gs_gx_surface_import_rect(s,actual,GS_MEM_SIZE,part,w*h*4u-1,x,y,w,h));
+  CHECK(s->active);CHECK(!gs_gx_surface_import_rect(s,actual,GS_MEM_SIZE,part,w*h*4u,x+4,y,w-4,h));
+  CHECK(gs_gx_surface_import_rect(s,actual,GS_MEM_SIZE,part,w*h*4u,x,y,w,h));
+  CHECK(!memcmp(expected,actual,GS_MEM_SIZE));free(part);
+ }
+ for(unsigned n=0;n<100;n++) {
+  memcpy(actual,vram,GS_MEM_SIZE);CHECK(gs_gx_surface_begin(s,64,128,128,64));
+  gs_gx_flat_draw d={0};d.bp=64;d.bw=128;d.x=(n*11)%116;d.y=(n*7)%52;
+  d.width=9;d.height=9;d.psm=n&1;d.rgba=0x81336699;
+  for(unsigned yy=0;yy<9;yy++){d.left[yy]=yy%3;d.right[yy]=9-yy%2;}
+  CHECK(gs_gx_surface_mark(s,&d));
+  uint32_t x=s->dirty_x0&~3u,y=s->dirty_y0&~3u;
+  uint32_t w=((s->dirty_x1+3u)&~3u)-x,h=((s->dirty_y1+3u)&~3u)-y;
+  uint8_t part[16*16*4];memset(part,0,sizeof(part));
+  for(unsigned yy=0;yy<h;yy++)for(unsigned xx=0;xx<w;xx++){
+   unsigned t=tile(w,xx,yy);part[t]=255;part[t+1]=0x99;part[t+32]=0x66;part[t+33]=0x33;
+  }
+  for(unsigned yy=0;yy<9;yy++)for(unsigned xx=d.left[yy];xx<d.right[yy];xx++) {
+   uint32_t old=gs_mem_read_psmct32(64,128,d.x+xx,d.y+yy);
+   gs_mem_write_psmct32(64,128,d.x+xx,d.y+yy,d.psm?(old&0xff000000)|0x336699:d.rgba);
+  }
+  CHECK(gs_gx_surface_import_rect(s,actual,GS_MEM_SIZE,part,sizeof(part),x,y,w,h));
+  CHECK(!memcmp(vram,actual,GS_MEM_SIZE));
+ }
  CHECK(!gs_gx_surface_begin(s,0xffffffff,128,128,64));free(s);free(saved);free(expected);free(actual);
  printf("160 overlapping surface draws, mixed CT32/CT24 alpha, SCANMSK, full VRAM and atomic rejection: %d failures\n",failures);return !!failures;
 }

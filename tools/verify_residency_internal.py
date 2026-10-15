@@ -25,7 +25,7 @@ for epoch in [0,0xfffffffe]:
    expected=[a0,b0];observed=[]
    # The two input registers alone form the independent guest oracle.
    def observer(uc,address,size,user):
-    if address!=syms['ee_core_block_commit']:return
+    if address not in {syms['ee_core_block_commit'],syms.get('ee_core_block_boundary',0)}:return
     v=expected[0]|expected[1];assert qreg(state,dest)==v,('canonical EE helper view',change,dest,len(observed))
     if dest<3:expected[dest-1]=v
     observed.append(v)

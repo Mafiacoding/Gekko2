@@ -133,6 +133,19 @@
 #define IOP_CDROM_INT4     4u
 #define IOP_CDROM_INT5     5u
 
+/* R1357: controller-only snapshot. Process-local ISO/FILE handles are excluded. */
+typedef struct {
+    uint32_t bank;
+    uint8_t param_fifo[16]; int32_t param_count;
+    uint8_t result_fifo[16]; int32_t result_count,result_pos;
+    uint8_t intsts,intmsk,stat,mode,filter_file,filter_channel;
+    uint32_t loc_mm,loc_ss,loc_ff,pending;
+    int32_t disc_mounted;
+    uint8_t data_buf[2048]; int32_t data_len,data_pos;
+} iop_cdrom_legacy_checkpoint_t;
+void iop_cdrom_legacy_checkpoint_save(iop_cdrom_legacy_checkpoint_t *out);
+int iop_cdrom_legacy_checkpoint_valid(const iop_cdrom_legacy_checkpoint_t *state);
+int iop_cdrom_legacy_checkpoint_load(const iop_cdrom_legacy_checkpoint_t *state);
 void iop_cdrom_legacy_init(void);
 
 /* Optional: mount a real ISO9660/BIN disc image (via iso_loader.c,

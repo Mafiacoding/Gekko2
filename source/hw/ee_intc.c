@@ -1,3 +1,4 @@
+extern void ee_core_event_notify(void) __attribute__((weak));
 /*
  * ee_intc.c - EE interrupt controller register model. See
  * ee_intc.h for exact per-register semantics and PCSX2 source
@@ -9,7 +10,9 @@
 #define EE_INTC_STAT 0x1000F000u
 #define EE_INTC_MASK 0x1000F010u
 
-static ee_intc_state_t g_intc;
+/* Canonical controller state, also read by the inline retirement probe. */
+ee_intc_state_t gekko2_intc_live;
+#define g_intc gekko2_intc_live
 
 /* Round 716 (task #696-699, per the user's "make the code work that
  * would wake it up" directive): per-cause real IRQ-raise hit counter,
@@ -30,6 +33,24 @@ static uint32_t g_sbus_ack_count;
  * already asserted. Preserve those completion events until BIOS W1C acks
  * them one-by-one instead of collapsing N completions into one level bit. */
 static uint32_t g_sbus_event_pending;
+static ee_intc_poll_trace_t g_vblank_poll_trace;
+void ee_intc_note_guest_stat_read(uint32_t guest_pc, uint32_t value)
+{
+    /* Sample only this identifiable, read-only VBLANK polling code path.
+     * No extra guest-memory access, no IRQ acknowledgement, no PC change. */
+    if (guest_pc < 0x001fc970u || guest_pc > 0x001fc98cu)
+        return;
+    g_vblank_poll_trace.stat_reads++;
+    if (value & 4u) g_vblank_poll_trace.vblank_seen_reads++;
+    else g_vblank_poll_trace.vblank_clear_reads++;
+    g_vblank_poll_trace.last_guest_pc = guest_pc;
+    g_vblank_poll_trace.last_guest_value = value;
+}
+void ee_intc_poll_trace_snapshot(ee_intc_poll_trace_t *out)
+{
+    if (out) *out = g_vblank_poll_trace;
+}
+
 
 uint32_t ee_intc_get_raise_count(int irq)
 {
@@ -44,6 +65,7 @@ void ee_intc_init(void)
     memset(&g_raise_count, 0, sizeof(g_raise_count));
     g_sbus_ack_count = 0;
     g_sbus_event_pending = 0;
+    memset(&g_vblank_poll_trace, 0, sizeof(g_vblank_poll_trace));
 }
 
 ee_intc_state_t *ee_intc_get_state(void) { return &g_intc; }
@@ -51,6 +73,7 @@ uint32_t ee_intc_get_sbus_ack_count(void) { return g_sbus_ack_count; }
 
 void ee_intc_raise(int irq)
 {
+    if(ee_core_event_notify)ee_core_event_notify();
     if (irq < 0 || irq > 31)
         return;
     g_intc.stat |= (1u << irq);
@@ -60,6 +83,7 @@ void ee_intc_raise(int irq)
 
 void ee_intc_raise_sbus_event(void)
 {
+    if(ee_core_event_notify)ee_core_event_notify();
     if (g_sbus_event_pending != 0xffffffffu) g_sbus_event_pending++;
     g_intc.stat |= (1u << 1);
     g_raise_count[1]++;
@@ -87,8 +111,10 @@ int ee_intc_mmio_read32(uint32_t addr, uint32_t *out)
 
 int ee_intc_mmio_write32(uint32_t addr, uint32_t value)
 {
+    if((addr==EE_INTC_STAT||addr==EE_INTC_MASK)&&ee_core_event_notify)ee_core_event_notify();
     switch (addr) {
         case EE_INTC_STAT:
+            if (value & 4u) g_vblank_poll_trace.vblank_w1c++;
             if (value & (1u << 1)) {
                 g_sbus_ack_count++;
                 if (g_sbus_event_pending) g_sbus_event_pending--;

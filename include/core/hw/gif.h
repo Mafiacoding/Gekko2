@@ -136,19 +136,11 @@
  * research pass over PCSX2's GS/GSRegs.h GIF_A_D_REG enum. */
 #define GS_REG_ALPHA_1    0x42
 
-/* Round 26: BITBLTBUF/TRXPOS/TRXREG/TRXDIR - the real GS registers
- * that configure and trigger a host<->local (or local<->local)
- * memory transfer, whose actual pixel payload arrives as an IMAGE-
- * mode GIF packet (or is read out that way, for local-to-host). Real
- * addresses (well-known, standard GS register set - this round's
- * research pass again hit a session limit, see docs/STATUS.md's "GS
- * Round 26" section for the citation-honesty note, same caveat as
- * Rounds 24-25). Only host-to-local (XDIR=0) transfers into a
- * PSMCT32 destination are actually implemented - see gif.c's IMAGE-
- * mode handling for the full scope; local-to-host/local-to-local
- * (XDIR=1/2) are parsed but not acted on (documented gap, consistent
- * with this project not having a local-to-local blit engine at all
- * and no host-readback path either). */
+/* BITBLTBUF/TRXPOS/TRXREG/TRXDIR configure GS transfers. BETA12.9
+ * implements XDIR=2 (local-to-local) for matching known PSM layouts,
+ * including directional overlapping moves. XDIR=0 host uploads retain
+ * their established behavior. XDIR=1 local-to-host remains unsupported;
+ * unsupported format conversions are declined, never fabricated. */
 /* Round 27: GS Context 2 (dual-context support). Real hardware has
  * TWO independent rendering contexts, each with its own full set of
  * FRAME/ZBUF/XYOFFSET/TEX0/TEST/ALPHA (and more this project doesn't
@@ -634,6 +626,10 @@
 #define CLUT_CSA_UNIT    16u
 
 void gif_init(void);
+/* GS->EE readback FIFO used by VIF1 reverse DMA (BUSDIR=1). */
+uint32_t gif_read_local_fifo(uint8_t *out, uint32_t qwc);
+uint64_t gif_local_host_stat(unsigned which);
+
 
 /* Real GIF hardware transfer-path identifiers (APATH source paths).
  * Values match PCSX2's own 0-indexed GIF_PATH enum (Gif_Unit.h)
@@ -644,7 +640,7 @@ void gif_init(void);
  * DIRECTHL forwarding or a VU1 XGKICK). See Gif.h's GIF_TRANSFER_TYPE
  * comment ("lower byte contains path minus 1") for the same
  * convention in PCSX2's own transfer-type enum. */
-#define GIF_PATH_1 0u /* VU1 XGKICK - not modeled; see vu.c (real, pre-existing, documented gap) */
+#define GIF_PATH_1 0u /* VU1 XGKICK; log indices are zero based (0=PATH1,1=PATH2,2=PATH3). */
 #define GIF_PATH_2 1u /* VIF1 DIRECT/DIRECTHL forwarding - see vif.c's VIF_CMD_DIRECT/DIRECTHL case */
 #define GIF_PATH_3 2u /* GIF DMA channel (=DMA_CHANNEL_GIF) - real disc/DMA GS packet delivery */
 
@@ -671,6 +667,12 @@ void gif_init(void);
  * now it drives the real transfer-arbitration register model added
  * this round (see gif_mmio_read32/write32 below). */
 void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc);
+/* Complete bounded synchronous VU1 XGKICK, not a DMA fragment. */
+void gif_process_xgkick(const uint8_t *data, uint32_t qwc);
+/* Fragment calls preserve PATH1 state until the bounded kick ends. */
+void gif_begin_xgkick(void);
+void gif_process_xgkick_fragment(const uint8_t *data, uint32_t qwc);
+void gif_end_xgkick(void);
 
 /* Real GIF MMIO register read/write, for wiring into the EE bus
  * dispatch chain (ee_core.c's ee_mem_read32/write32), same pattern
@@ -725,16 +727,11 @@ typedef struct {
     uint32_t tex_psm;
     uint32_t tex_cbp, tex_cpsm, tex_csa, tex_cld;
 
-    /* Round 26: host-to-local IMAGE transfer state (BITBLTBUF/
-     * TRXPOS/TRXREG/TRXDIR - see their definitions above for the
-     * scope). trx_active becomes true only when TRXDIR is written
-     * with XDIR=0 (host-to-local) AND the destination PSM is PSMCT32
-     * (the only format this project's gs_mem actually stores) -
-     * anything else leaves trx_active false, so a subsequent IMAGE-
-     * mode packet's data is safely skipped (byte-accounted, not
-     * interpreted) rather than misinterpreted. trx_cur_x/trx_cur_y
-     * are the transfer's progress cursor, relative to (dsax,dsay),
-     * reset to (0,0) each time TRXDIR triggers a new transfer. */
+    /* BETA12.9: both source and destination transfer registers.
+     * Host-to-local IMAGE uses the existing destination cursor;
+     * local-to-local TRXDIR=2 executes a synchronous GS memory move. */
+    uint32_t trx_sbp, trx_sbw, trx_spsm;
+    uint32_t trx_ssax, trx_ssay, trx_dirx, trx_diry;
     uint32_t trx_dbp, trx_dbw, trx_dpsm;
     uint32_t trx_dsax, trx_dsay;
     uint32_t trx_rrw, trx_rrh;
@@ -1187,10 +1184,74 @@ typedef struct {
     /* R1297: first SPRITE vertex before fractional coordinate loss.
      * Appended for backward-compatible checkpoint restoration. */
     uint64_t sprite_pos16;
+    /* Appended to preserve existing diagnostic/fixture offsets. */
+    int date, datm, ctx1_date, ctx1_datm, ctx2_date, ctx2_datm;
+    /* Appended so older GIF checkpoint field offsets remain stable. */
+    uint8_t image_eop_path[3];
+    uint8_t arb_owner,arb_eop[3],arb_pending,arb_m3p;
+    uint8_t fifo[16][16],fifo_head,fifo_count;
+    /* GIF temporary Q: low IEEE-754 word, separate from GS RGBAQ.Q.
+     * uint64 alignment appends after the complete legacy checkpoint prefix. */
+    uint64_t gif_q_bits;
 } gif_state_t;
 
 gif_state_t *gif_get_state(void);
 /* Per-draw overlapping state reasons 0..9; cached sprites=10, fast rows=11. */
 uint64_t gif_get_render_work(unsigned index);
 
+/* R1330-K: triangle/Gouraud accounting.  Every counter is incremented once per
+ * rasterize_triangle() call and the groups below are mutually exclusive:
+ *   submitted == degenerate + offscreen + visible          (IIP triangles)
+ *   visible   == gx + software                              (IIP triangles)
+ *   software  == sum(GIF_GFB_*)                             (first blocking reason)
+ * "degenerate" means integer-pixel edge() area == 0 (the software rasterizer
+ * draws nothing).  "offscreen" means non-degenerate but the scissor/clip box is
+ * empty.  GX acceptance means the triangle was handled by a GX path; CPU work
+ * that still remains for that triangle is reported in the GIF_GCPU_* group. */
+enum {
+    GIF_GOURAUD_SUBMITTED=0, GIF_GOURAUD_DEGENERATE, GIF_GOURAUD_OFFSCREEN,
+    GIF_GOURAUD_VISIBLE, GIF_GOURAUD_GX, GIF_GOURAUD_SOFTWARE,
+    GIF_GOURAUD_DEG_IDENTICAL3, GIF_GOURAUD_DEG_TWO_SAME, GIF_GOURAUD_DEG_COLLINEAR,
+    GIF_GOURAUD_DEG_ORIGIN,         /* degenerate and every vertex x,y == 0,0 */
+    GIF_GOURAUD_FLAT_SUBMITTED,     /* non-IIP triangles, for context */
+    GIF_GOURAUD_FLAT_DEGENERATE,
+    GIF_GOURAUD_SW_BBOX_PIXELS,     /* sum of clipped bbox pixels left in software */
+    GIF_GOURAUD_GX_BBOX_PIXELS,     /* same for GX-accepted */
+    GIF_GOURAUD_GX_HYBRID,          /* GX shaded, CPU finished raster-ops per pixel */
+    GIF_GOURAUD_GX_DEFERRED,        /* GX shaded, deferred VRAM import (no CPU raster-ops) */
+    GIF_GOURAUD_GX_CPU_PIXELS,      /* pixels visited by the CPU after GX shading */
+    GIF_GOURAUD_STAT_COUNT
+};
+enum {
+    GIF_GFB_NONE=0, GIF_GFB_GX_INACTIVE, GIF_GFB_BUILD_DISABLED, GIF_GFB_SMALL,
+    GIF_GFB_LARGE, GIF_GFB_TEXTURE, GIF_GFB_ALPHA_TEST, GIF_GFB_DITHER_FBA, GIF_GFB_FBMASK,
+    GIF_GFB_DEPTH, GIF_GFB_BLEND, GIF_GFB_FOG, GIF_GFB_PSM, GIF_GFB_SCANMSK_OR_FIELD,
+    GIF_GFB_GX_REJECTED, GIF_GFB_ALPHA_VARIES, GIF_GFB_COUNT
+};
+uint64_t gif_date_stat(unsigned index); /* tested, rejected */
+uint64_t gif_get_triangle_texture_cache_draws(void);
+uint64_t gif_get_gouraud_stat(unsigned index);
+uint64_t gif_get_gouraud_fallback(unsigned index);
+const char *gif_gouraud_fallback_name(unsigned index);
+/* Small ring of the first degenerate IIP triangles (x0,y0,x1,y1,x2,y2,prim). */
+unsigned gif_get_degenerate_sample(unsigned index,int32_t *xy6,uint32_t *prim);
+/* Visible-state histogram: key bits 0 TME,1 ABE,2 ZWRITE,3 ZTEST,4 FGE,5 ATE,
+ * 6 DTHE|FBA,7 FBMASK,8-9 PSM(0 CT32,1 CT24,2 CT16/16S,3 other),10 Z varies,
+ * 11-12 TFX,13 texture linear filter,14 FST. Returns count or 0 past the end. */
+unsigned gif_get_gouraud_state(unsigned index,uint32_t *key,uint64_t *count);
+uint64_t gif_get_gouraud_state_overflow(void);
+
+unsigned gif_get_vertex_source(unsigned index,uint32_t out[10]);
+
+/* Partial consumption: callers retain unaccepted bytes and retry. */
+uint32_t gif_try_process_quadwords(int path,const uint8_t *data,uint32_t qwc);
+void gif_set_path3_mask(int masked);
+int gif_fifo_write(const uint8_t *quadword);
+void gif_fifo_service(void);
+
+/* Stable read-only scheduler views. Point at the same state as getters;
+ * no cached activity flags to invalidate after MMIO or checkpoint restore. */
+extern const gif_state_t * const gif_scheduler_view;
+/* GS Local-to-Local transfer counters (success, declines, pixels). */
+uint64_t gif_local_copy_stat(unsigned which);
 #endif

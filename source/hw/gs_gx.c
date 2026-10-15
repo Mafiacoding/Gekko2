@@ -1,13 +1,41 @@
+#include "core/runtime_profile.h"
+#include "core/recompiler/optimization.h"
 /* Experimental GX presentation and gated flat GS triangle/sprite spans. */
+#include "build_version.h"
 #include "core/hw/gs_gx.h"
 #include "core/hw/gs_mem.h"
+#include "core/hw/gs_gx_dump.h"
+#include "core/hw/gs_gx_additive.h"
 #include "core/hw/gs_gx_surface.h"
+#include "core/hw/gs_triangle_coverage.h"
+#include <stdio.h>
 #include <stddef.h>
 #include <string.h>
-static uint8_t broadcast(uint32_t x) {x&=255u;return x<16u?16u:x>240u?240u:(uint8_t)x;}
-__attribute__((noinline,noclone)) uint32_t gs_gx_pack_rgba8(void *dst,uint32_t capacity,uint32_t bp,uint32_t bw,
-                        uint32_t sx,uint32_t sy,uint32_t width,uint32_t height)
-{
+#include <math.h>
+#ifdef GEKKO2_GX_DUMP_LAZY
+#define GXD_FLUSH() ((void)0)
+#else
+#define GXD_FLUSH() gs_gx_dump_flush(NULL)
+#endif
+/* R1389-WD10: vertex accounting. Every GX_Begin declares a vertex count; a
+ * mismatch with the positions actually written desyncs the GP command stream. */
+static unsigned gx_vexp,gx_vcnt,gx_vline,gx_in_begin,gx_begins_since_wait,gx_last_line,gx_ctx_begins;static uint64_t gx_vmis[3];
+static void gx_vtx_report(unsigned endline);
+#define GX_Position3f32(x,y,z) (gx_vcnt++,GX_Position3f32((x),(y),(z)))
+#define GX_End() do{gx_vtx_report(__LINE__);GX_End();}while(0)
+#ifdef GEKKO2_GX_DUMP
+#define GXB(t,f,n) do{unsigned gxb_n=(unsigned)(n);gs_gx_dump_record(gxb_n>65535u?"BEGIN_OVER16":"BEGIN",(uint32_t)(t),gxb_n,__LINE__,0);gx_vexp=(uint16_t)gxb_n;gx_vcnt=0;gx_vline=__LINE__;gx_last_line=__LINE__;gx_begins_since_wait++;gx_in_begin=1;GX_Begin((t),(f),(n));}while(0)
+#else
+#define GXB(t,f,n) do{unsigned gxb_n=(unsigned)(n);gx_vexp=(uint16_t)gxb_n;gx_vcnt=0;gx_vline=__LINE__;gx_last_line=__LINE__;gx_begins_since_wait++;gx_in_begin=1;GX_Begin((t),(f),(n));}while(0)
+#endif
+
+/* GX receives full-range RGB. Its display-copy engine converts to XFB
+ * YCbCr; applying a studio-range clamp here raises RGB black to gray. */
+static uint8_t scanout_rgb(uint32_t x) {return (uint8_t)x;}
+static uint64_t additive_counts[3];
+uint64_t gs_gx_additive_stat(unsigned n){return n<3u?additive_counts[n]:0;}
+__attribute__((noinline,noclone)) uint32_t gs_gx_pack_rgba8_profile_impl(void *dst,uint32_t capacity,uint32_t bp,uint32_t bw,
+                        uint32_t sx,uint32_t sy,uint32_t width,uint32_t height){
     if(!dst||!width||!height||width>1024u||height>512u)return 0;
     uint32_t tw=(width+3u)&~3u,th=(height+3u)&~3u,bytes=tw*th*4u;
     if(capacity<bytes)return 0;
@@ -22,13 +50,22 @@ __attribute__((noinline,noclone)) uint32_t gs_gx_pack_rgba8(void *dst,uint32_t c
             for(uint32_t k=0;k<4u;k++) {
                 uint32_t source=x+k;
                 uint32_t p=row[source<width?source:width-1u];
-                ar[k*2u]=255u;ar[k*2u+1u]=broadcast(p);
-                ar[32u+k*2u]=broadcast(p>>8);ar[33u+k*2u]=broadcast(p>>16);
+                ar[k*2u]=255u;ar[k*2u+1u]=scanout_rgb(p);
+                ar[32u+k*2u]=scanout_rgb(p>>8);ar[33u+k*2u]=scanout_rgb(p>>16);
             }
         }
     }
     return bytes;
 }
+__attribute__((noinline,noclone)) uint32_t gs_gx_pack_rgba8(void *dst,uint32_t capacity,uint32_t bp,uint32_t bw,
+                        uint32_t sx,uint32_t sy,uint32_t width,uint32_t height)
+{
+ unsigned profile_previous=gp_enter(GP_GX_UPLOAD);
+ uint32_t result=gs_gx_pack_rgba8_profile_impl(dst,capacity,bp,bw,sx,sy,width,height);
+ gp_leave(profile_previous);
+ return result;
+}
+
 static uint64_t target_offset(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y)
 {
     uint32_t pages=bw/64u;if(!pages)pages=1;
@@ -65,7 +102,8 @@ int gs_gx_unpack_psmct32(uint8_t *vram,uint32_t size,const void *rgba8,uint32_t 
     return 1;
 }
 static int render_enabled;
-void gs_gx_set_render_enabled(int enabled){render_enabled=!!enabled;}
+static int gx_wait_failed;
+void gs_gx_set_render_enabled(int enabled){render_enabled=!!enabled&&!gx_wait_failed;}
 static int64_t floor_div(int64_t n,int64_t d)
 {int64_t q=n/d;return q-((n%d)<0);}
 int gs_gx_prepare_flat(gs_gx_flat_draw *d,uint32_t kind,uint32_t bp,uint32_t bw,
@@ -80,7 +118,9 @@ int gs_gx_prepare_flat(gs_gx_flat_draw *d,uint32_t kind,uint32_t bp,uint32_t bw,
     if(w>bw||(uint32_t)minx>bw-w||!gs_gx_target_valid(GS_MEM_SIZE,bp,bw,minx,miny,tw,th))return 0;
     int sign=1;
     if(kind==3u) {
-        for(unsigned n=0;n<6;n++)if(xy[n]<0||xy[n]>2047)return 0;
+        /* GS vertices may lie outside the viewport after XYOFFSET. The
+         * clipped bbox stays bounded; signed edges are computed in int64. */
+        for(unsigned n=0;n<6;n++)if(xy[n]<-8192||xy[n]>8191)return 0;
         int64_t area=(int64_t)(xy[2]-xy[0])*(xy[5]-xy[1])-(int64_t)(xy[3]-xy[1])*(xy[4]-xy[0]);
         if(!area)return 0;sign=area>0?1:-1;
     }
@@ -93,6 +133,7 @@ int gs_gx_prepare_flat(gs_gx_flat_draw *d,uint32_t kind,uint32_t bp,uint32_t bw,
             unsigned a=e*2,b=((e+1)%3)*2;
             int64_t dx=xy[b]-xy[a],dy=xy[b+1]-xy[a+1];
             int64_t A=-dy*sign,B=(dx*(y-xy[a+1])+dy*xy[a])*sign;
+            if(!gs_triangle_edge_inclusive(xy[a],xy[a+1],xy[b],xy[b+1],sign))B--;
             if(A>0){int64_t bound=-floor_div(B,A);if(bound>lo)lo=bound;}
             else if(A<0){int64_t bound=floor_div(B,-A);if(bound<hi)hi=bound;}
             else if(B<0){hi=lo-1;break;}
@@ -158,8 +199,7 @@ int gs_gx_prepare_texture(gs_gx_texture_draw *d,uint32_t psm,uint32_t bp,uint32_
 }
 static uint32_t texture_tile(uint32_t w,uint32_t x,uint32_t y)
 {return ((y/4u)*(w/4u)+x/4u)*64u+(y&3u)*8u+(x&3u)*2u;}
-uint32_t gs_gx_pack_texture(void *out,uint32_t capacity,const gs_gx_texture_draw *d,gs_gx_texel_fn sample)
-{
+uint32_t gs_gx_pack_texture_profile_impl(void *out,uint32_t capacity,const gs_gx_texture_draw *d,gs_gx_texel_fn sample){
     if(!out||!d||!sample||!d->tw||!d->th||d->tw>1024u||d->th>512u||
        (d->tw&3u)||(d->th&3u)||capacity<d->tw*d->th*4u)return 0;
     uint8_t *p=out;
@@ -169,13 +209,69 @@ uint32_t gs_gx_pack_texture(void *out,uint32_t capacity,const gs_gx_texture_draw
     }
     return d->tw*d->th*4u;
 }
+uint32_t gs_gx_pack_texture(void *out,uint32_t capacity,const gs_gx_texture_draw *d,gs_gx_texel_fn sample)
+{
+ unsigned profile_previous=gp_enter(GP_GX_UPLOAD);
+ uint32_t result=gs_gx_pack_texture_profile_impl(out,capacity,d,sample);
+ gp_leave(profile_previous);
+ return result;
+}
+
 static uint32_t raw_z(const uint8_t *vram,uint32_t off,uint32_t psm)
 {
     unsigned n=(psm==2u||psm==10u)?2u:(psm==1u?3u:4u);uint32_t value=0;
     for(unsigned k=0;k<n;k++)value|=(uint32_t)vram[off+k]<<(8*k);return value;
 }
+/* GS Z16/Z24 compare their native width, not the upper discarded bits of
+ * the EE's interpolated 32-bit Z. Z16S uses the same 16-bit comparison range.
+ * Keep this check in the CPU-GX import path as well as the main rasterizer. */
+uint32_t gs_gx_depth_normalize(uint32_t z,uint32_t psm)
+{
+    /* PS2 raster Z is SATURATED to the destination width, not wrapped. */
+    uint32_t maximum=(psm==2u||psm==10u)?0xffffu:(psm==1u?0xffffffu:UINT32_MAX);
+    return z>maximum?maximum:z;
+}
 static int depth_pass(const gs_gx_pipeline *p,uint32_t stored)
-{return !p->ztest||p->ztst==1u||(p->ztst==2u?p->z>=stored:p->ztst==3u?p->z>stored:0);}
+{
+    uint32_t incoming=gs_gx_depth_normalize(p->z,p->zpsm);
+    return !p->ztest||p->ztst==1u||(p->ztst==2u?incoming>=stored:p->ztst==3u?incoming>stored:0);
+}
+uint32_t gs_gx_framebuffer_store(uint32_t source,uint32_t dest,
+                                  uint32_t mask,uint32_t fba,uint32_t psm)
+{
+    if(fba && psm==0u)source|=0x80000000u;
+    if((psm==2u||psm==10u)) { /* CT16/CT16S bit 15 is the alpha MSB. */
+        if(fba)source|=0x8000u;
+        return (source&~mask&0xffffu)|(dest&mask&0xffffu);
+    }
+    if(psm==1u)mask|=0xff000000u; /* PSMCT24 never writes alpha */
+    return (source&~mask)|(dest&mask);
+}
+/* GS TEST_1/2: source alpha comparison. The destination alpha test is
+ * evaluated separately and rejects *both* colour and Z writes. */
+static int gx_alpha_test_pass(const gs_gx_pipeline *p,unsigned a)
+{
+    if(!p->ate)return 1;
+    unsigned ref=p->aref&255u;
+    switch(p->atst&7u){
+    case 0: return 0; /* NEVER */
+    case 1: return 1; /* ALWAYS */
+    case 2: return a<ref;
+    case 3: return a<=ref;
+    case 4: return a==ref;
+    case 5: return a>=ref;
+    case 6: return a>ref;
+    default:return a!=ref;
+    }
+}
+static int gx_date_pass(const gs_gx_pipeline *p,uint32_t dst,uint32_t psm)
+{
+    if(!p->date)return 1;
+    /* PCSX2's PS2-hardware-tested rule: DATE on CT24 rejects all pixels.
+     * CT16 is outside the bounded RGBA import route. */
+    if(psm==1u)return 0;
+    return ((dst>>31)&1u)==(p->datm&1u);
+}
 static int blend_div128(int n){return n>=0?n/128:-((-n+127)/128);}
 static uint32_t blend_rgb(uint32_t src,uint32_t dst,const gs_gx_pipeline *p,uint32_t psm)
 {
@@ -219,11 +315,27 @@ int gs_gx_import_texture(uint8_t *vram,uint32_t size,const void *pixels,uint32_t
         uint32_t c=(uint32_t)p[t+1]|((uint32_t)p[t+32]<<8)|((uint32_t)p[t+33]<<16)|((uint32_t)tex[s]<<24);
         uint32_t off=(uint32_t)target_offset(d->coverage.bp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y);
         uint32_t dst=(uint32_t)vram[off]|((uint32_t)vram[off+1]<<8)|((uint32_t)vram[off+2]<<16)|((uint32_t)vram[off+3]<<24);
-        if(!d->hardware_blend)c=blend_rgb(c,dst,pipe,d->coverage.psm);
-        vram[off]=c;vram[off+1]=c>>8;vram[off+2]=c>>16;if(!d->coverage.psm)vram[off+3]=c>>24;
-        if(pipe->zwrite) {
+        /* Import is a late GS write, not a raw RGBA image copy: DATE
+         * happens before ATE and rejects Z as well as colour writes.
+         * AFAIL changes the permitted destinations independently. */
+        if(!gx_date_pass(pipe,dst,d->coverage.psm))continue;
+        int alpha_failed=!gx_alpha_test_pass(pipe,c>>24);
+        unsigned afail=pipe->afail&3u;
+        int write_color=!(alpha_failed&&(afail==0u||afail==2u));
+        int write_z=pipe->zwrite&&!(alpha_failed&&(afail==0u||afail==1u||afail==3u));
+        if(write_color){
+            if(!d->hardware_blend)c=blend_rgb(c,dst,pipe,d->coverage.psm);
+            /* RGB_ONLY preserves destination alpha before applying FBA. */
+            if(alpha_failed&&afail==3u&&d->coverage.psm==0u)
+                c=(c&0x00ffffffu)|(dst&0xff000000u);
+            c=gs_gx_framebuffer_store(c,dst,pipe->fbmask,pipe->fba,d->coverage.psm);
+            vram[off]=c;vram[off+1]=c>>8;vram[off+2]=c>>16;
+            if(!d->coverage.psm)vram[off+3]=c>>24;
+        }
+        if(write_z) {
             unsigned bytes=pipe->zpsm==1u?3u:(pipe->zpsm==2u||pipe->zpsm==10u)?2u:4u;
-            for(unsigned k=0;k<bytes;k++)vram[zo+k]=(uint8_t)(pipe->z>>(k*8));
+            uint32_t bounded_z=gs_gx_depth_normalize(pipe->z,pipe->zpsm);
+            for(unsigned k=0;k<bytes;k++)vram[zo+k]=(uint8_t)(bounded_z>>(k*8));
         }
     }
     return 1;
@@ -231,14 +343,38 @@ int gs_gx_import_texture(uint8_t *vram,uint32_t size,const void *pixels,uint32_t
 int gs_gx_draw_flat(uint32_t kind,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,
                     int32_t maxx,int32_t maxy,const int32_t *xy,uint32_t rgba,uint32_t scanmsk)
 {return gs_gx_draw_flat_psm(0,kind,bp,bw,minx,miny,maxx,maxy,xy,rgba,scanmsk);}
+static uint64_t shaded_triangle_counts[3];
+uint64_t gs_gx_shaded_triangle_stat(unsigned n){return n<3u?shaded_triangle_counts[n]:0;}
 #ifndef GEKKO
 int gs_gx_draw_flat_pipeline(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,uint32_t rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
 {(void)psm;(void)kind;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)rgba;(void)scanmsk;(void)pipeline;return 0;}
+int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
+{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)rgba;(void)scanmsk;(void)pipeline;return 0;}
+int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,uint32_t tex_w,uint32_t tex_h,uint32_t alpha,uint32_t scanmsk,gs_gx_texel_fn sample)
+{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;(void)tex_w;(void)tex_h;(void)alpha;(void)scanmsk;(void)sample;return 0;}
 int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,const int32_t *columns,const int32_t *rows,double step_x,double step_y,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
 {(void)pipeline;(void)psm;(void)bp;(void)bw;(void)x;(void)y;(void)w;(void)h;(void)columns;(void)rows;(void)step_x;(void)step_y;(void)scanmsk;(void)sample;return 0;}
 int gs_gx_ready(void){return 0;}
 int gs_gx_render_active(void){return 0;}
 uint64_t gs_gx_work_count(unsigned index){(void)index;return 0;}
+uint64_t gs_gx_sync_count(unsigned index){(void)index;return 0;}
+uint64_t gs_gx_watchdog_count(unsigned index){(void)index;return 0;}
+int gs_gx_draw_native_affine_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *uv,uint32_t tex_w,uint32_t tex_h,uint32_t ws,uint32_t wt,
+ uint32_t linear,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipe)
+{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;
+ (void)tex_w;(void)tex_h;(void)ws;(void)wt;(void)linear;(void)scanmsk;(void)sample;(void)pipe;return 0;}
+int gs_gx_draw_native_stq_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *uv,const float *q,const uint32_t *rgba,uint32_t tw,uint32_t th,
+ uint32_t ws,uint32_t wt,uint32_t linear,uint32_t scanmsk,
+ gs_gx_texel_fn sample,const gs_gx_pipeline *p,uint32_t conservative_z,const gs_gx_native_color *color)
+{(void)color;(void)conservative_z;(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;(void)q;(void)rgba;(void)tw;(void)th;(void)ws;(void)wt;(void)linear;(void)scanmsk;(void)sample;(void)p;return 0;}
+
+uint64_t gs_gx_native_affine_stat(unsigned n){(void)n;return 0;}
+int gs_gx_draw_shaded_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
+{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)scanmsk;(void)sample;(void)pipeline;return 0;}
 int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,
  const int32_t *xy,const int32_t *columns,const int32_t *rows,double du,double dv,uint32_t scanmsk,
  gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
@@ -246,6 +382,7 @@ int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,in
 uint64_t gs_gx_texture_count(unsigned n){(void)n;return 0;}
 uint64_t gs_gx_pipeline_count(unsigned n){(void)n;return 0;}
 uint64_t gs_gx_surface_count(unsigned n){(void)n;return 0;}
+uint64_t gs_gx_resident_pipeline_count(unsigned n){(void)n;return 0;}
 int gs_gx_set_residency_enabled(int enabled){(void)enabled;return 1;}
 void gs_gx_source_key(uint32_t lo,uint32_t hi,int valid){(void)lo;(void)hi;(void)valid;}
 uint64_t gs_gx_source_cache_count(unsigned n){(void)n;return 0;}
@@ -257,10 +394,120 @@ int gs_gx_draw_flat_psm(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,int32
 #include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #define GX_PRESENT_FIFO (256u*1024u)
 #define GX_PRESENT_TEXTURE (1024u*512u*4u)
 static void *fifo,*texture;
 static int initialized;
+/* R1330-I: retain CPU fences only at actual memory ownership transfers.
+ * GPU copy -> GPU sample is ordered inside the FIFO with PixModeSync. */
+static int texture_in_flight;
+static uint64_t sync_counts[8];
+uint64_t gs_gx_sync_count(unsigned n){return n<8u?sync_counts[n]:0;}
+/* R1389-WD: GX_DrawDone() sleeps until the PE-finish interrupt wakes it. A lost
+ * interrupt or stalled GP therefore froze the whole console with no log line.
+ * Same command (DrawDone) and same interrupt, but the CPU polls a flag with a
+ * time limit. On timeout the GX path is switched off so the console keeps
+ * running and the log shows where. Untested on hardware. */
+#define GX_WAIT_LIMIT_TB ((60750000u*4u)/10u)
+#define GX_LOST_IRQ_GRACE_TB (60750000u/20u)
+static volatile int gx_done_flag;
+static uint32_t gx_diag[8];static int gx_diag_taken;
+static uint64_t gx_wd[8]; /* timeouts, last reason, last gpu_pending, max wait tb, bounded waits, callbacks */
+uint64_t gs_gx_watchdog_count(unsigned n){return n<8u?gx_wd[n]:0;}
+static void gx_done_callback(void){gx_done_flag=1;gx_wd[5]++;}
+static void gx_vtx_report(unsigned endline)
+{
+ if(!gx_in_begin)return;
+ gx_in_begin=0;
+ if(gx_vcnt==gx_vexp)return;
+ gx_vmis[0]++;
+ if(gx_vmis[0]>32u)return;
+ FILE *f=fopen("sd:/pcsx2/logs/" GEKKO2_RELEASE "-gx-timeout.txt","ab");
+ if(!f)return;
+ fprintf(f,"GX_VTX_MISMATCH begin_line=%u end_line=%u declared=%u written=%u total=%llu\n",gx_vline,endline,gx_vexp,gx_vcnt,(unsigned long long)gx_vmis[0]);
+ fflush(f);fclose(f);
+}
+static void gx_wait_timeout_marker(unsigned reason)
+{
+ FILE *f=fopen("sd:/pcsx2/logs/" GEKKO2_RELEASE "-gx-timeout.txt","ab");
+ if(!f)return;
+ fprintf(f,"GX_LOST_IRQ_DIAG pe_isr=%04x pi_intsr=%08x pi_intmr=%08x ovh=%u und=%u rdi=%u cmi=%u brk=%u tex_in_flight=%d\n",
+  gx_diag[0],gx_diag[1],gx_diag[2],gx_diag[3],gx_diag[4],gx_diag[5],gx_diag[6],gx_diag[7],texture_in_flight);
+ fprintf(f,"GX_WAIT_TIMEOUT reason=%u gpu_pending=%d limit_tb=%u timeouts=%llu waits=%llu\n",
+  reason,(int)gs_mem_gpu_pending(),GX_WAIT_LIMIT_TB,(unsigned long long)gx_wd[0],(unsigned long long)gx_wd[4]);
+ fprintf(f,"GX_WD11_CTX begins_before_wait=%u last_begin_line=%u recoveries=%llu\n",gx_ctx_begins,gx_last_line,(unsigned long long)gx_wd[7]);
+ fflush(f);fclose(f);
+}
+static void gx_bounded_draw_done(unsigned reason)
+{
+ gx_done_flag=0;gx_diag_taken=0;gx_ctx_begins=gx_begins_since_wait;gx_begins_since_wait=0;
+ GX_SetDrawDoneCallback(gx_done_callback);
+ GX_SetDrawDone();
+ uint32_t begin,now;__asm__ volatile("mftb %0":"=r"(begin));
+ gx_wd[4]++;
+ while(!gx_done_flag) {
+  __asm__ volatile("mftb %0":"=r"(now));
+  /* R1389-WD7: WD6 timeout file showed the GP idle (readidle=1 cmdidle=1, FIFO
+   * rd==wr, no overflow) while the finish callback never arrived: the finish
+   * interrupt was lost, not the GP stalled. After a 50 ms grace period an idle
+   * GP with a drained FIFO counts as finished (the DrawDone token is the last
+   * command in the FIFO), so rendering continues instead of switching GX off.
+   * Untested on hardware. */
+  if((uint32_t)(now-begin)>GX_LOST_IRQ_GRACE_TB) {
+   /* Only plain register reads here: GX_GetCPUFifo()/__GX_SaveFifo() blocked
+    * the console in WD7 (hang-pc report: WAITING inside GX_GetCPUFifo). */
+   u8 ovh=0,und=0,rdi=0,cmi=0,brk=0;
+   GX_GetGPStatus(&ovh,&und,&rdi,&cmi,&brk);
+   uint16_t pe=*(volatile uint16_t*)0xCC00100Au;
+   uint32_t pis=*(volatile uint32_t*)0xCC003000u,pim=*(volatile uint32_t*)0xCC003004u;
+   if(!gx_diag_taken){gx_diag[0]=pe;gx_diag[1]=pis;gx_diag[2]=pim;gx_diag[3]=ovh;gx_diag[4]=und;gx_diag[5]=rdi;gx_diag[6]=cmi;gx_diag[7]=brk;gx_diag_taken=1;}
+   if(rdi&&cmi&&((uint32_t)(now-begin)>GX_LOST_IRQ_GRACE_TB*2u)){gx_wd[6]++;gx_done_flag=1;gx_wait_timeout_marker(100u+reason);break;}
+  }
+  if((uint32_t)(now-begin)>GX_WAIT_LIMIT_TB) {
+   gx_wd[0]++;gx_wd[1]=reason;gx_wd[2]=(uint64_t)(unsigned)gs_mem_gpu_pending();
+   gx_wait_timeout_marker(200u+reason);
+   /* R1389-WD10 beta: try GX_AbortFrame() (libogc's documented GP reset) up to
+    * twice before giving up. Not tested on hardware. */
+   if(gx_wd[7]<8u) {
+    gx_wd[7]++;
+    GX_AbortFrame();
+    gx_done_flag=0;GX_SetDrawDoneCallback(gx_done_callback);GX_SetDrawDone();
+    uint32_t b2,n2;__asm__ volatile("mftb %0":"=r"(b2));
+    do{__asm__ volatile("mftb %0":"=r"(n2));}while(!gx_done_flag&&(uint32_t)(n2-b2)<60750000u);
+    if(gx_done_flag){gx_wait_timeout_marker(300u+reason);return;}
+   }
+   gx_wait_failed=1;render_enabled=0;
+#ifdef GEKKO2_GX_DUMP
+   gs_gx_dump_record("WAIT_TIMEOUT",reason,(uint32_t)gs_mem_gpu_pending(),0,0);gs_gx_dump_flush(NULL);
+#endif
+   gx_wait_timeout_marker(reason);
+   return;
+  }
+ }
+ __asm__ volatile("mftb %0":"=r"(now));
+ if((uint32_t)(now-begin)>gx_wd[3])gx_wd[3]=(uint32_t)(now-begin);
+}
+static void gx_cpu_wait_profile_impl(unsigned reason){
+#ifdef GEKKO2_GX_DUMP
+ gs_gx_dump_record("WAIT_ENTER",reason,gs_mem_gpu_pending(),0,0);GXD_FLUSH();
+#endif
+ uint32_t begin,end;__asm__ volatile("mftb %0":"=r"(begin));
+ if(!gx_wait_failed)gx_bounded_draw_done(reason);
+ __asm__ volatile("mftb %0":"=r"(end));
+ sync_counts[reason]++;sync_counts[4u+reason]+=(uint32_t)(end-begin);
+ texture_in_flight=0;
+#ifdef GEKKO2_GX_DUMP
+ gs_gx_dump_record("WAIT_DONE",reason,gs_mem_gpu_pending(),end-begin,0);GXD_FLUSH();
+#endif
+}
+static void gx_cpu_wait(unsigned reason)
+{
+ unsigned profile_previous=gp_enter(GP_GX_WAIT);
+ gx_cpu_wait_profile_impl(reason);
+ gp_leave(profile_previous);
+}
+
 int gs_gx_ready(void){return initialized;}
 int gs_gx_render_active(void){return initialized&&render_enabled;}
 static uint32_t efb_width,efb_height;
@@ -271,27 +518,49 @@ static int capture_texture;
 static gs_gx_surface *surface;
 static void *surface_pixels;
 static int surface_texture_valid;
-static uint64_t surface_counts[6];
+static uint64_t surface_counts[11];
+static uint8_t surface_seeded[GS_GX_SURFACE_PIXELS/16u];
+static uint64_t resident_pipeline_counts[11];
+uint64_t gs_gx_resident_pipeline_count(unsigned n){return n<11u?resident_pipeline_counts[n]:0;}
 static uint32_t source_key_lo,source_key_hi,source_key_valid;
 static struct {uint32_t lo,hi,valid;int32_t x,y;uint32_t w,h;gs_gx_texel_fn sample;} source_cache;
-static uint64_t source_cache_counts[3];
+static uint64_t source_cache_counts[5]; /* [4] no-write GX texture-cache invalidations avoided */
+static unsigned source_upload_pending;
+static gs_gx_texel_fn additive_source;
+static uint32_t additive_fix;
+static uint32_t additive_sample(int32_t x,int32_t y)
+{return gs_gx_additive_pixel(additive_source(x,y),additive_fix);}
 void gs_gx_source_key(uint32_t lo,uint32_t hi,int valid){source_key_lo=lo;source_key_hi=hi;source_key_valid=!!valid;}
-uint64_t gs_gx_source_cache_count(unsigned n){return n<3u?source_cache_counts[n]:0;}
+uint64_t gs_gx_source_cache_count(unsigned n){return n<5u?source_cache_counts[n]:0;}
 static uint32_t source_pack(gs_gx_texture_draw *d,gs_gx_texel_fn sample)
 {
  uint32_t lo=source_key_lo,hi=source_key_hi,valid=source_key_valid;source_key_valid=0;
- if(valid&&source_cache.valid&&lo==source_cache.lo&&hi==source_cache.hi&&sample==source_cache.sample&&
+ if(gekko2_opt_enabled(GEKKO2_OPT_GX_SOURCE_CACHE)&&valid&&source_cache.valid&&lo==source_cache.lo&&hi==source_cache.hi&&sample==source_cache.sample&&
     d->origin_x==source_cache.x&&d->origin_y==source_cache.y&&d->tw==source_cache.w&&d->th==source_cache.h) {
   source_cache_counts[0]++;return d->tw*d->th*4u;
  }
- if(surface&&surface->active)GX_DrawDone(); /* finish previous sampling before CPU buffer reuse */
+ if(texture_in_flight)gx_cpu_wait(0); /* CPU overwrites a sampled buffer. */
  uint32_t bytes=gs_gx_pack_texture(texture,GX_PRESENT_TEXTURE,d,sample);source_cache_counts[1]++;
+ if(bytes)source_upload_pending=1u;
  source_cache.valid=valid&&bytes;source_cache.lo=lo;source_cache.hi=hi;source_cache.x=d->origin_x;source_cache.y=d->origin_y;
  source_cache.w=d->tw;source_cache.h=d->th;source_cache.sample=sample;source_cache_counts[2]+=bytes;return bytes;
 }
-uint64_t gs_gx_surface_count(unsigned n){return n<6u?surface_counts[n]:0;}
+static __attribute__((noinline)) void source_upload(uint32_t bytes)
+{
+ /* Cache hits preserve the same bytes in the same allocation. Keep a
+  * pending upload across rejected draws so the first successful consumer
+  * still flushes newly packed CPU data. GX texture invalidation remains. */
+ /* A decoded source-cache hit neither writes the aligned texture buffer nor
+  * changes its GX-visible bytes. Only invalidate GX texture cache after
+  * actually flushing a newly packed source. Never skip if a rejected draw
+  * left an upload pending: that source still needs the first invalidation. */
+ if(source_upload_pending){DCFlushRange(texture,bytes);GX_InvalidateTexAll();source_upload_pending=0u;}
+ else {source_cache_counts[3]+=bytes;source_cache_counts[4]++;}
+}
+uint64_t gs_gx_surface_count(unsigned n){return n<11u?surface_counts[n]:0;}
 static int surface_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t width,uint32_t height);
 static int surface_draw_flat(const gs_gx_flat_draw *draw);
+static void pipeline_shader_target(const gs_gx_texture_draw *d,void *pixels,uint32_t w,uint32_t h);
 static gs_gx_texture_draw texture_draw;
 static uint32_t geometry_kind,geometry_rgba;
 static int32_t geometry_xy[6];
@@ -310,17 +579,24 @@ uint64_t gs_gx_texture_count(unsigned n){return n<4u?texture_counts[n]:0;}
 static uint64_t work_counts[5];
 uint64_t gs_gx_work_count(unsigned index){return index<5u?work_counts[index]:0;}
 static struct {uint32_t bp,bw,x,y,width,height,alpha,bytes;} capture;
-static int resolve_capture(void *opaque,uint8_t *vram,uint32_t size)
-{
+static int resolve_capture_profile_impl(void *opaque,uint8_t *vram,uint32_t size){
     (void)opaque;
     work_counts[3]++;
-    GX_DrawDone(); /* GPU copy must finish before invalidating CPU cache. */
+    gx_cpu_wait(1); /* GPU copy must finish before invalidating CPU cache. */
     DCInvalidateRange(readback,capture.bytes);
     if(capture_texture)return gs_gx_import_texture(vram,size,readback,capture.bytes,texture,texture_draw.tw*texture_draw.th*4u,&texture_draw);
     if(capture_flat)return gs_gx_import_flat(vram,size,readback,capture.bytes,&flat_draw);
     return gs_gx_unpack_psmct32(vram,size,readback,capture.bytes,capture.bp,capture.bw,
                                capture.x,capture.y,capture.width,capture.height,capture.alpha);
 }
+static int resolve_capture(void *opaque,uint8_t *vram,uint32_t size)
+{
+ unsigned profile_previous=gp_enter(GP_GX_READBACK);
+ int result=resolve_capture_profile_impl(opaque,vram,size);
+ gp_leave(profile_previous);
+ return result;
+}
+
 int gs_gx_capture_vram_psmct32(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
                              uint32_t width,uint32_t height,uint32_t alpha)
 {
@@ -373,13 +649,23 @@ static void surface_texture(void *pixels,uint32_t w,uint32_t h,int filter)
 }
 static void surface_quad(uint32_t w,uint32_t h)
 {
- GX_Begin(GX_QUADS,GX_VTXFMT0,4);vertex(0,0,0,0);vertex(w,0,1,0);vertex(w,h,1,1);vertex(0,h,0,1);GX_End();
+ GXB(GX_QUADS,GX_VTXFMT0,4);vertex(0,0,0,0);vertex(w,0,1,0);vertex(w,h,1,1);vertex(0,h,0,1);GX_End();
 }
 static void surface_copy(void *pixels,uint32_t x,uint32_t y,uint32_t w,uint32_t h)
 {
+#ifdef GEKKO2_GX_DUMP
+ gs_gx_dump_record("COPY_RECT",x,y,w,h);
+ gs_gx_dump_record("COPY_ENTER",(uint32_t)pixels,w*h*4u,0,0);GXD_FLUSH();
+#endif
  static uint8_t samples[12][2],filter[7];
+ /* R1389-WD11 beta: drain pending draws into the pixel engine before the EFB copy. */
+ GX_Flush();GX_PixModeSync();
  GX_SetCopyFilter(GX_FALSE,samples,GX_FALSE,filter);GX_SetTexCopySrc(x,y,w,h);
- GX_SetTexCopyDst(w,h,GX_TF_RGBA8,GX_FALSE);GX_CopyTex(pixels,GX_FALSE);GX_DrawDone();GX_InvalidateTexAll();
+ GX_SetTexCopyDst(w,h,GX_TF_RGBA8,GX_FALSE);GX_CopyTex(pixels,GX_FALSE);
+ GX_PixModeSync();GX_InvalidateTexAll();
+#ifdef GEKKO2_GX_DUMP
+ gs_gx_dump_record("COPY_DONE",(uint32_t)pixels,w*h*4u,0,0);GXD_FLUSH();
+#endif
 }
 static int surface_snapshot(void)
 {
@@ -387,18 +673,37 @@ static int surface_snapshot(void)
  if(!surface_texture_valid){surface_copy(surface_pixels,0,0,surface->width,surface->height);surface_texture_valid=1;surface_counts[3]++;}
  return 1;
 }
-static int resolve_surface(void *opaque,uint8_t *vram,uint32_t size)
-{
- (void)opaque;int had_snapshot=surface_texture_valid;
- if(!surface_snapshot())return 0;if(had_snapshot)GX_DrawDone();
- uint32_t bytes=surface->width*surface->height*4;
- DCInvalidateRange(surface_pixels,bytes);
- if(!gs_gx_surface_import(surface,vram,size,surface_pixels,bytes))return 0;
+static int resolve_surface_profile_impl(void *opaque,uint8_t *vram,uint32_t size){
+ (void)opaque;
+ if(!surface||!surface->active)return 0;
+ /* A seed has no guest-visible dirty pixels. Still drain its queued read
+  * before returning CPU ownership of the seed allocation. */
+ if(!surface->dirty_pixels){gx_cpu_wait(1);surface->active=0;surface_counts[8]++;return 1;}
+ uint32_t x=surface->dirty_x0&~3u,y=surface->dirty_y0&~3u;
+ uint32_t w=((surface->dirty_x1+3u)&~3u)-x,h=((surface->dirty_y1+3u)&~3u)-y;
+ uint32_t bytes=w*h*4u;
+ if(!readback)readback=memalign(32,GX_PRESENT_TEXTURE);
+ if(!readback)return 0;
+ /* A distinct destination never overwrites a seed texture that GX may
+  * still sample. Copy only the aligned dirty bounding rectangle. */
+ surface_copy(readback,x,y,w,h);gx_cpu_wait(1);
+ DCInvalidateRange(readback,bytes);
+ if(!gs_gx_surface_import_rect(surface,vram,size,readback,bytes,x,y,w,h))return 0;
+ surface_texture_valid=0;
+ surface_counts[7]+=(uint64_t)surface->width*surface->height*4u-bytes;
  surface_counts[2]++;work_counts[3]++;work_counts[2]+=bytes;return 1;
 }
-static int surface_ensure(const gs_gx_flat_draw *draw)
+static int resolve_surface(void *opaque,uint8_t *vram,uint32_t size)
 {
- uint32_t h=efb_height<512u?efb_height&~3u:512u;
+ unsigned profile_previous=gp_enter(GP_GX_READBACK);
+ int result=resolve_surface_profile_impl(opaque,vram,size);
+ gp_leave(profile_previous);
+ return result;
+}
+
+static int surface_ensure_height(const gs_gx_flat_draw *draw,uint32_t h)
+{
+ if(h>512u||h>efb_height||(h&3u))return 0;
  if(!surface_enabled||!h||draw->bw>efb_width||draw->bw>640u||draw->x+draw->width>draw->bw||
     draw->y+draw->height>h||!gs_gx_target_valid(GS_MEM_SIZE,draw->bp,draw->bw,0,0,draw->bw,h))return 0;
  if(surface&&surface->active&&(surface->bp!=draw->bp||surface->bw!=draw->bw||surface->height!=h)) {
@@ -409,20 +714,49 @@ static int surface_ensure(const gs_gx_flat_draw *draw)
   if(!surface)surface=memalign(32,sizeof(*surface));
   if(!surface_pixels)surface_pixels=memalign(32,GX_PRESENT_TEXTURE);
   if(!surface||!surface_pixels)return 0;
-  uint8_t *vram=gs_mem_get();if(!vram)return 0;
   if(!gs_mem_gpu_bind(resolve_surface,NULL)||!gs_gx_surface_begin(surface,draw->bp,draw->bw,draw->bw,h))return 0;
   if(!gs_mem_gpu_protect_range(draw->bp*4u,(uint32_t)target_offset(draw->bp,draw->bw,draw->bw-1,h-1)+4u)){surface->active=0;return 0;}
-  uint8_t *pixels=surface_pixels;
-  for(uint32_t y=0;y<h;y++)for(uint32_t x=0;x<draw->bw;x++) {
-   uint32_t o=(uint32_t)target_offset(draw->bp,draw->bw,x,y),t=texture_tile(draw->bw,x,y);
-   pixels[t]=255;pixels[t+1]=vram[o];pixels[t+32]=vram[o+1];pixels[t+33]=vram[o+2];
-  }
-  DCFlushRange(surface_pixels,draw->bw*h*4);GX_InvalidateTexAll();
-  surface_state(draw->bw,h,1);surface_texture(surface_pixels,draw->bw,h,GX_NEAR);surface_quad(draw->bw,h);
-  surface_counts[0]++;surface_counts[5]+=draw->bw*h*4;
+  /* New target: retire all old allocation consumers before repacking it. */
+  if(texture_in_flight)gx_cpu_wait(0);
+  memset(surface_seeded,0,sizeof(surface_seeded));
+  surface_texture_valid=0;surface_counts[0]++;
  }
+ /* Seed only uninitialized 4x4 tiles touched by this draw. A seeded tile
+  * may already contain GX output, so never overwrite it from CPU VRAM. */
+ uint32_t x0=draw->x&~3u,y0=draw->y&~3u;
+ uint32_t x1=(draw->x+draw->width+3u)&~3u,y1=(draw->y+draw->height+3u)&~3u;
+ const uint8_t *vram=NULL;uint32_t uploaded=0;
+ for(uint32_t y=y0;y<y1;y+=4u)for(uint32_t x=x0;x<x1;) {
+  uint32_t index=(y/4u)*(draw->bw/4u)+x/4u;
+  if(surface_seeded[index]){surface_counts[10]++;x+=4u;continue;}
+  uint32_t end=x+4u;
+  while(end<x1&&!surface_seeded[(y/4u)*(draw->bw/4u)+end/4u])end+=4u;
+  if(!vram){vram=gs_mem_read_range(0,0);if(!vram)return 0;}
+  /* The CPU reads only these new tile bytes. An explicit read per pixel
+   * would resolve our own pending target; new tiles are not GPU dirty. */
+  uint8_t *pixels=surface_pixels;
+  for(uint32_t yy=y;yy<y+4u;yy++)for(uint32_t xx=x;xx<end;xx++) {
+   uint32_t o=(uint32_t)target_offset(draw->bp,draw->bw,xx,yy),t=texture_tile(draw->bw,xx,yy);
+   pixels[t]=255;pixels[t+1]=vram[o];pixels[t+32]=vram[o+1];pixels[t+33]=vram[o+2];
+   surface->alpha[yy*draw->bw+xx]=vram[o+3];
+  }
+  uint32_t bytes=(end-x)*4u*4u;
+  DCFlushRange(pixels+texture_tile(draw->bw,x,y),bytes);GX_InvalidateTexAll();
+  surface_state(draw->bw,h,1);surface_texture(surface_pixels,draw->bw,h,GX_NEAR);
+  GXB(GX_QUADS,GX_VTXFMT0,4);
+  vertex(x,y,(float)x/draw->bw,(float)y/h);vertex(end,y,(float)end/draw->bw,(float)y/h);
+  vertex(end,y+4u,(float)end/draw->bw,(float)(y+4u)/h);vertex(x,y+4u,(float)x/draw->bw,(float)(y+4u)/h);GX_End();
+  for(uint32_t xx=x;xx<end;xx+=4u)surface_seeded[(y/4u)*(draw->bw/4u)+xx/4u]=1;
+  texture_in_flight=1;surface_texture_valid=0;
+  if(!gs_mem_gpu_mark_pending()){gx_cpu_wait(0);surface->active=0;return 0;}
+  uploaded+=bytes;surface_counts[9]++;x=end;
+ }
+ surface_counts[5]+=uploaded;
+
  return 1;
 }
+static int surface_ensure(const gs_gx_flat_draw *draw)
+{return surface_ensure_height(draw,efb_height<512u?efb_height&~3u:512u);}
 static int surface_draw_flat(const gs_gx_flat_draw *draw)
 {
  if(!surface_ensure(draw))return 0;
@@ -433,7 +767,10 @@ static int surface_draw_flat(const gs_gx_flat_draw *draw)
   uint32_t end=y+1;while(end<draw->height&&draw->left[end]==draw->left[y]&&draw->right[end]==draw->right[y])end++;
   if(draw->right[y]>draw->left[y])quads++;y=end;
  }
- if(quads)GX_Begin(GX_QUADS,GX_VTXFMT0,quads*4);
+ #ifdef GEKKO2_GX_DUMP
+ if(quads){gs_gx_dump_record("DRAW_ENTER",quads*4u,gs_mem_gpu_pending(),0,0);GXD_FLUSH();}
+#endif
+ if(quads)GXB(GX_QUADS,GX_VTXFMT0,quads*4);
  for(uint32_t y=0;y<draw->height;) {
   uint32_t end=y+1,l=draw->left[y]+draw->x,r=draw->right[y]+draw->x;
   while(end<draw->height&&draw->left[end]==draw->left[y]&&draw->right[end]==draw->right[y])end++;
@@ -444,10 +781,17 @@ static int surface_draw_flat(const gs_gx_flat_draw *draw)
  if(!gs_mem_gpu_mark_pending())return 0;
  surface_counts[1]++;work_counts[0]++;work_counts[1]+=quads;return 1;
 }
-static int surface_draw_textured(gs_gx_texture_draw *d,gs_gx_texel_fn sample)
+static int surface_draw_textured(gs_gx_texture_draw *d,uint32_t bytes)
 {
- if((!surface||!surface->active)&&!gs_mem_sync())return 0;
- uint32_t bytes=source_pack(d,sample);if(!bytes||!surface_ensure(&d->coverage))return 0;
+ if(!bytes||!surface_ensure(&d->coverage))return 0;
+ if(d->hardware_blend==1u) {
+  /* A resident blend samples only its aligned destination rectangle.
+   * Allocate the maximum once: never free a buffer still sampled by GX. */
+  if(destination_capacity<GS_GX_SURFACE_PIXELS*4u && texture_in_flight)gx_cpu_wait(0);
+  if(!grow_texture(&destination_texture,&destination_capacity,GS_GX_SURFACE_PIXELS*4u))return 0;
+  surface_copy(destination_texture,d->coverage.x,d->coverage.y,d->coverage.width,d->coverage.height);
+  resident_pipeline_counts[10]+=(uint64_t)d->coverage.width*d->coverage.height*4u;
+ }
  gs_gx_flat_draw alpha_mark=d->coverage;alpha_mark.psm=1;
  if(!gs_gx_surface_mark(surface,&alpha_mark))return 0;
  if(!d->coverage.psm) {
@@ -458,43 +802,52 @@ static int surface_draw_textured(gs_gx_texture_draw *d,gs_gx_texel_fn sample)
    surface->dirty[i]|=2;surface->alpha[i]=source[t];
   }
  }
- DCFlushRange(texture,bytes);GX_InvalidateTexAll();surface_state(surface->width,surface->height,1);
+ source_upload(bytes);surface_state(surface->width,surface->height,1);
  surface_texture(texture,d->tw,d->th,GX_NEAR);
  uint32_t quads=0;
  for(uint32_t y=0;y<d->coverage.height;) {
   uint32_t end=y+1;while(end<d->coverage.height&&d->coverage.left[end]==d->coverage.left[y]&&d->coverage.right[end]==d->coverage.right[y])end++;
   if(d->coverage.right[y]>d->coverage.left[y])quads++;y=end;
  }
- if(quads)GX_Begin(GX_QUADS,GX_VTXFMT0,quads*4);
- for(uint32_t y=0;y<d->coverage.height;) {
+ uint32_t passes=d->hardware_blend==1u&&d->pipeline.pabe?2u:1u;
+ for(uint32_t pass=0;pass<passes;pass++) {
+  gs_gx_texture_draw shader=*d;
+  if(passes==2u&&pass==0u)shader.hardware_blend=0;
+  /* Reset the state between complementary PABE passes. */
+  surface_state(surface->width,surface->height,1);surface_texture(texture,d->tw,d->th,GX_NEAR);
+  if(shader.hardware_blend==2u)GX_SetBlendMode(GX_BM_BLEND,GX_BL_ONE,GX_BL_ONE,GX_LO_COPY);
+  else pipeline_shader_target(&shader,destination_texture,d->coverage.width,d->coverage.height);
+  if(passes==2u)GX_SetAlphaCompare(pass?GX_GEQUAL:GX_LESS,128,GX_AOP_AND,GX_ALWAYS,0);
+  #ifdef GEKKO2_GX_DUMP
+ if(quads){gs_gx_dump_record("DRAW_ENTER",quads*4u,gs_mem_gpu_pending(),0,0);GXD_FLUSH();}
+#endif
+ if(quads)GXB(GX_QUADS,GX_VTXFMT0,quads*4);
+  for(uint32_t y=0;y<d->coverage.height;) {
   uint32_t end=y+1,l=d->coverage.left[y],r=d->coverage.right[y];
   while(end<d->coverage.height&&d->coverage.left[end]==l&&d->coverage.right[end]==r)end++;
   if(r>l) {
    float s0=d->s0+(d->s1-d->s0)*(float)l/d->columns,s1=d->s0+(d->s1-d->s0)*(float)r/d->columns;
    float t0=d->t0+(d->t1-d->t0)*(float)y/d->rows,t1=d->t0+(d->t1-d->t0)*(float)end/d->rows;
-   vertex(d->coverage.x+l,d->coverage.y+y,s0,t0);vertex(d->coverage.x+r,d->coverage.y+y,s1,t0);
-   vertex(d->coverage.x+r,d->coverage.y+end,s1,t1);vertex(d->coverage.x+l,d->coverage.y+end,s0,t1);
+   float vx[4]={d->coverage.x+l,d->coverage.x+r,d->coverage.x+r,d->coverage.x+l};
+   float vy[4]={d->coverage.y+y,d->coverage.y+y,d->coverage.y+end,d->coverage.y+end};
+   float ss[4]={s0,s1,s1,s0},tt[4]={t0,t0,t1,t1};
+   for(unsigned k=0;k<4;k++) {
+    vertex(vx[k],vy[k],ss[k],tt[k]);
+    if(shader.hardware_blend==1u)GX_TexCoord2f32((vx[k]-d->coverage.x)/d->coverage.width,(vy[k]-d->coverage.y)/d->coverage.height);
+   }
   }y=end;
+  }
+  if(quads){GX_End();texture_in_flight=1;}
  }
- if(quads)GX_End();surface_texture_valid=0;if(!gs_mem_gpu_mark_pending())return 0;
- surface_counts[1]++;work_counts[0]++;work_counts[1]+=quads;
+ GX_SetAlphaCompare(GX_ALWAYS,0,GX_AOP_AND,GX_ALWAYS,0);
+ surface_texture_valid=0;if(!gs_mem_gpu_mark_pending())return 0;
+#ifdef GEKKO2_GX_RESIDENT_FENCE
+ /* Diagnostic ownership boundary: finish resident commands before the
+  * caller changes GS state or falls back to CPU work. */
+ gx_cpu_wait(0);
+#endif
+ surface_counts[1]++;work_counts[0]++;work_counts[1]+=quads*passes;
  texture_counts[1]++;texture_counts[2]+=bytes;return 1;
-}
-/* Preserve the old broadcast clamp BEFORE linear scanout filtering, entirely
- * on GX. Raw resident RGB is backed up first and restored after presentation. */
-static void surface_broadcast(void)
-{
- GXColor lo={16,16,16,255},hi={240,240,240,255};GX_SetTevColor(GX_TEVREG0,lo);GX_SetTevColor(GX_TEVREG1,hi);
- GX_SetNumTevStages(5);
- for(unsigned stage=1;stage<5;stage++) {
-  u8 input=stage==1||stage==2?GX_CC_C0:GX_CC_CPREV;
-  u8 d=stage<3?GX_CC_CPREV:GX_CC_C1;
-  GX_SetTevOrder(stage,GX_TEXCOORDNULL,GX_TEXMAP_NULL,GX_COLORNULL);
-  GX_SetTevColorIn(stage,input,input,GX_CC_ZERO,d);
-  GX_SetTevColorOp(stage,stage==2?GX_TEV_ADD:GX_TEV_SUB,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
-  GX_SetTevAlphaIn(stage,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_APREV);
-  GX_SetTevAlphaOp(stage,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
- }
 }
 static int surface_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t width,uint32_t height)
 {
@@ -505,13 +858,15 @@ static int surface_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,ui
  if(copy_h>mode->xfbHeight)return 0;
  if(!surface_snapshot())return 0;
  surface_state(surface->width,surface->height,1);surface_texture(surface_pixels,surface->width,surface->height,GX_NEAR);
- surface_broadcast();surface_quad(surface->width,surface->height);
+ /* Keep resident RGB unmodified before the GX display-copy conversion. */
+ surface_quad(surface->width,surface->height);
  source_cache.valid=0;surface_copy(texture,sx,sy,width,height);
  surface_state(mode->fbWidth,mode->efbHeight,1);surface_texture(texture,width,height,GX_LINEAR);
  GX_SetDispCopySrc(0,0,mode->fbWidth,mode->efbHeight);GX_SetDispCopyDst(mode->fbWidth,copy_h);
  GX_SetCopyFilter(GX_FALSE,mode->sample_pattern,GX_TRUE,mode->vfilter);
  GX_SetFieldMode(mode->field_rendering,mode->viHeight==2*mode->xfbHeight);GX_SetDispCopyGamma(GX_GM_1_0);
- surface_quad(mode->fbWidth,mode->efbHeight);GX_CopyDisp(xfb,GX_FALSE);GX_DrawDone();
+ surface_quad(mode->fbWidth,mode->efbHeight);texture_in_flight=1;
+ GX_CopyDisp(xfb,GX_FALSE);gx_cpu_wait(2);
  surface_state(surface->width,surface->height,1);surface_texture(surface_pixels,surface->width,surface->height,GX_NEAR);
  surface_quad(surface->width,surface->height);surface_counts[4]++;return 1;
 }
@@ -529,16 +884,18 @@ static void vertex(float x,float y,float s,float t)
 int gs_gx_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
                   uint32_t sx,uint32_t sy,uint32_t width,uint32_t height)
 {
-    if(surface&&surface->active&&surface_present(xfb,mode,bp,bw,sx,sy,width,height))return 1;
+    /* Sparse targets resolve dirty tiles, then ordinary scanout reads coherent VRAM. */
     if(!gs_mem_sync())return 0;
-    if(!xfb||!mode||!width||!height||width>1024u||height>512u||mode->aa)return 0;
+    if(!xfb||!mode||!width||!height||width>1024u||height>512u||mode->aa||gx_wait_failed)return 0;
     if(!initialize())return 0;
     /* Previous copy finishes before CPU texture reuse; DrawDone below also
      * completes the EFB->XFB copy before the software FPS overlay writes. */
+    if(texture_in_flight)gx_cpu_wait(0);
     source_cache.valid=0;
     uint32_t bytes=gs_gx_pack_rgba8(texture,GX_PRESENT_TEXTURE,bp,bw,sx,sy,width,height);
     if(!bytes)return 0;
-    DCFlushRange(texture,bytes);GX_InvalidateTexAll();
+    /* Scanout always repacks this buffer; it is not a source-cache hit. */
+    DCFlushRange(texture,bytes);source_upload_pending=0;GX_InvalidateTexAll();
     GX_SetViewport(0,0,mode->fbWidth,mode->efbHeight,0,1);
     GX_SetScissor(0,0,mode->fbWidth,mode->efbHeight);
     GX_SetDispCopySrc(0,0,mode->fbWidth,mode->efbHeight);
@@ -569,10 +926,10 @@ int gs_gx_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
     GX_LoadTexObj(&object,GX_TEXMAP0);
     float s=(float)width/tw,t=(float)height/th;
     efb_width=mode->fbWidth;efb_height=mode->efbHeight;
-    GX_Begin(GX_QUADS,GX_VTXFMT0,4);
+    GXB(GX_QUADS,GX_VTXFMT0,4);
     vertex(0,0,0,0);vertex(mode->fbWidth,0,s,0);
     vertex(mode->fbWidth,mode->efbHeight,s,t);vertex(0,mode->efbHeight,0,t);
-    GX_End();GX_CopyDisp(xfb,GX_FALSE);GX_DrawDone();
+    GX_End();texture_in_flight=1;GX_CopyDisp(xfb,GX_FALSE);gx_cpu_wait(2);
     return 1;
 }
 static void color_vertex(float x,float y,uint32_t rgba)
@@ -622,7 +979,7 @@ int gs_gx_draw_flat_psm(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,int32
     }
     /* At most 512 quads / 2048 vertices, safely within GX's u16 count.
      * Submit the exact same span rectangles in one FIFO primitive batch. */
-    if(quads)GX_Begin(GX_QUADS,GX_VTXFMT0,(uint16_t)(quads*4u));
+    if(quads)GXB(GX_QUADS,GX_VTXFMT0,(uint16_t)(quads*4u));
     for(uint32_t y=0;y<flat_draw.height;) {
         uint32_t l=flat_draw.left[y],r=flat_draw.right[y],end=y+1u;
         while(end<flat_draw.height&&flat_draw.left[end]==l&&flat_draw.right[end]==r)end++;
@@ -641,7 +998,7 @@ int gs_gx_draw_flat_psm(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,int32
  * remains software, preserving write order. Z32 outside 24 bits stays hybrid. */
 static int pipeline_prepare(gs_gx_texture_draw *d)
 {
-    gs_gx_pipeline *p=&d->pipeline;uint8_t *vram=gs_mem_get();if(!vram)return 0;
+    gs_gx_pipeline *p=&d->pipeline;const uint8_t *vram=gs_mem_read_range(0,GS_MEM_SIZE);if(!vram)return 0;
     if(p->ztst>3u||p->a>2u||p->b>2u||p->c>2u||p->d>2u||p->fix>255u)return 0;
     uint32_t zlo=UINT32_MAX,zhi=0,flo=UINT32_MAX,fhi=0;
     unsigned destination_alpha=0,alpha_seen=0,alpha_constant=1;
@@ -666,6 +1023,10 @@ static int pipeline_prepare(gs_gx_texture_draw *d)
         }
     }
     if((p->ztest||p->zwrite)&&!(zhi<=flo||fhi<=zlo))return 0;
+    /* DATE/ATE depends on the exact destination and shaded alpha of
+     * each pixel. Do not let GX perform early Z writes or hardware blends:
+     * the late software import handles AFAIL / DATE and the Z update. */
+    if(p->date||p->ate){d->hardware_depth=0;d->hardware_blend=0;return 1;}
     d->hardware_depth=(p->ztest||p->zwrite)&&exact24;
     /* Z32 compares high 8 bits with late alpha and low 24 bits with GX Z.
      * Complementary high-less / high-equal passes preserve unsigned ordering.
@@ -710,11 +1071,14 @@ static void pipeline_source_alpha(gs_gx_texture_draw *d,const uint8_t *source)
 {
     gs_gx_pipeline *p=&d->pipeline;
     if(!p->blend||(!p->pabe&&p->c!=0u))return;
-    unsigned first=source[0],constant=1,low=1,high=1;
-    for(uint32_t y=0;y<d->th;y++)for(uint32_t x=0;x<d->tw;x++) {
-        unsigned a=source[texture_tile(d->tw,x,y)];
-        if(a!=first)constant=0;if(a>=128u)low=0;else high=0;
+    unsigned first=0,seen=0,constant=1,low=1,high=1;
+    /* Only sampled passing fragments define AS/PABE. Triangle padding and
+     * rejected Z fragments are not source pixels of this GS draw. */
+    for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++) {
+        unsigned a=source[texture_tile(d->tw,d->column[x]-d->origin_x,d->row[y]-d->origin_y)];
+        if(!seen){first=a;seen=1;}else if(a!=first)constant=0;if(a>=128u)low=0;else high=0;
     }
+    if(!seen)return;
     if(p->pabe) {
         if(low) {p->pabe=0;p->a=p->b=p->d=0;p->c=2;p->fix=0;return;}
         if(high)p->pabe=0;
@@ -736,7 +1100,7 @@ static void depth_preload(const gs_gx_texture_draw *d)
     GX_LoadPosMtxImm(model,GX_PNMTX0);GX_SetCurrentMtx(GX_PNMTX0);GX_LoadProjectionMtx(projection,GX_ORTHOGRAPHIC);
     GXTexObj obj;GX_InitTexObj(&obj,depth_texture,d->coverage.width,d->coverage.height,GX_TF_RGBA8,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&obj,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);GX_LoadTexObj(&obj,GX_TEXMAP0);
-    GX_Begin(GX_QUADS,GX_VTXFMT0,4);vertex(0,0,0,0);vertex(d->coverage.width,0,1,0);
+    GXB(GX_QUADS,GX_VTXFMT0,4);vertex(0,0,0,0);vertex(d->coverage.width,0,1,0);
     vertex(d->coverage.width,d->coverage.height,1,1);vertex(0,d->coverage.height,0,1);GX_End();
     GX_SetZTexture(GX_ZT_DISABLE,GX_TF_Z24X8,0);
 }
@@ -749,13 +1113,13 @@ static void tev_copy(u8 stage,u8 map,u8 coord,u8 reg)
     GX_SetTevAlphaIn(stage,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_TEXA);
     GX_SetTevAlphaOp(stage,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_FALSE,reg);
 }
-static void pipeline_shader(const gs_gx_texture_draw *d)
+static void pipeline_shader_target(const gs_gx_texture_draw *d,void *destination,uint32_t destination_w,uint32_t destination_h)
 {
     unsigned stages=1;const gs_gx_pipeline *p=&d->pipeline;
     if(d->hardware_blend) {
         GX_SetNumTexGens(2);GX_SetTexCoordGen(GX_TEXCOORD1,GX_TG_MTX2x4,GX_TG_TEX1,GX_IDENTITY);
         GX_SetVtxDesc(GX_VA_TEX1,GX_DIRECT);GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_TEX1,GX_TEX_ST,GX_F32,0);
-        GXTexObj obj;GX_InitTexObj(&obj,destination_texture,d->coverage.width,d->coverage.height,GX_TF_RGBA8,GX_CLAMP,GX_CLAMP,GX_FALSE);
+        GXTexObj obj;GX_InitTexObj(&obj,destination,destination_w,destination_h,GX_TF_RGBA8,GX_CLAMP,GX_CLAMP,GX_FALSE);
         GX_InitTexObjLOD(&obj,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);GX_LoadTexObj(&obj,GX_TEXMAP1);
         tev_copy(0,GX_TEXMAP0,GX_TEXCOORD0,GX_TEVREG0);tev_copy(1,GX_TEXMAP1,GX_TEXCOORD1,GX_TEVREG1);
         unsigned coeff=p->c==2u?p->fix:128u;
@@ -831,6 +1195,317 @@ static void pipeline_shader(const gs_gx_texture_draw *d)
     }
     GX_SetNumTevStages(stages);
 }
+static void pipeline_shader(const gs_gx_texture_draw *d)
+{pipeline_shader_target(d,destination_texture,d->coverage.width,d->coverage.height);}
+
+/* Keep color on GX, and exact GS Z in a disjoint CPU shadow. Unsupported
+ * fragmented masks/alpha coefficients return to the existing compact path. */
+static int surface_draw_pipeline(gs_gx_texture_draw *d,gs_gx_texel_fn sample,const gs_gx_pipeline *input)
+{
+ if(input&&(input->ate||input->date))return 0; /* never skip late TEST/DATE in resident EFB */
+ if(!input||input->fbmask||input->fba)return 0; /* unsupported late writes remain on the software GS path */
+ resident_pipeline_counts[0]++;
+ if(!sample||!input)return 0;
+#ifdef GEKKO2_GX_RESIDENT_BLEND_DISABLE
+ if(input->blend){resident_pipeline_counts[8]++;return 0;}
+#endif
+#ifdef GEKKO2_GX_NATIVE_ADDITIVE
+ if(input->blend&&!gs_gx_additive_supported(input)){resident_pipeline_counts[8]++;return 0;}
+#endif
+#ifdef GEKKO2_GX_DUMP
+ gs_gx_dump_record("RESIDENT_TARGET",d->coverage.bp,d->coverage.bw,d->coverage.x,d->coverage.y);
+ gs_gx_dump_record("RESIDENT_STATE",d->coverage.width,d->coverage.height,input->blend,input->z);
+#endif
+ d->pipeline=*input;
+ uint32_t h=efb_height<512u?efb_height&~3u:512u;
+ if(!h||d->coverage.bw>efb_width||d->coverage.bw>640u||
+    d->coverage.x+d->coverage.width>d->coverage.bw||d->coverage.y+d->coverage.height>h||
+    !gs_gx_target_valid(GS_MEM_SIZE,d->coverage.bp,d->coverage.bw,0,0,d->coverage.bw,h)) {
+  resident_pipeline_counts[9]++;return 0;
+ }
+ uint32_t clo=d->coverage.bp*4u,chi=(uint32_t)target_offset(d->coverage.bp,d->coverage.bw,d->coverage.bw-1,h-1)+4u;
+ uint32_t zlo=0,zhi=0;uint64_t tested=0,failed=0;
+ if((input->ztest||input->zwrite)&&!gs_gx_surface_depth_range(d,input,clo,chi,&zlo,&zhi)) {
+  resident_pipeline_counts[7]++;return 0;
+ }
+ /* Read the depth range before opening/changing the resident target. Any
+  * overlap with the previous target follows the normal resolve barrier. */
+ const uint8_t *depth=NULL;
+ if(input->ztest&&input->ztst>=2u&&zhi) {
+  depth=gs_mem_read_range(zlo,zhi-zlo);if(!depth)return 0;
+ }
+ if(!gs_gx_surface_depth_clip(d,input,depth,zlo,zhi-zlo,&tested,&failed)) {
+  resident_pipeline_counts[7]++;return 0;
+ }
+ gs_gx_pipeline *p=&d->pipeline;
+ if(p->blend&&(!p->colclamp||p->a>2u||p->b>2u||p->c>2u||p->d>2u||p->fix>255u)) {
+  resident_pipeline_counts[8]++;return 0;
+ }
+ if((!surface||!surface->active)&&!gs_mem_sync())return 0;
+ int additive=0;
+#ifdef GEKKO2_GX_NATIVE_ADDITIVE
+ additive=gs_gx_additive_supported(input);
+#endif
+ if(additive){
+  /* Never reuse an unscaled snapshot or scale a cached snapshot twice. */
+  source_key_valid=source_cache.valid=0;
+  additive_source=sample;additive_fix=input->fix;sample=additive_sample;
+ }
+ uint32_t bytes=source_pack(d,sample);if(!bytes)return 0;
+ pipeline_source_alpha(d,texture);
+ if(!surface_ensure(&d->coverage)){resident_pipeline_counts[9]++;return 0;}
+ if(p->blend&&p->c==1u&&d->coverage.psm==0u&&p->a!=p->b) {
+  unsigned seen=0,value=0;
+  for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++) {
+   unsigned a=surface->alpha[(d->coverage.y+y)*surface->width+d->coverage.x+x];
+   if(seen&&a!=value){resident_pipeline_counts[8]++;return 0;}value=a;seen=1;
+  }
+  p->c=2u;p->fix=value;
+ }
+ if(p->blend&&p->c==0u&&p->a!=p->b){resident_pipeline_counts[8]++;return 0;}
+ d->hardware_blend=additive?2u:p->blend;d->hardware_depth=0;
+ /* CPU preplanned every passing fragment. GX does RGB/TEV, not the Z test. */
+ p->ztest=0;p->zwrite=0;
+ if(!surface_draw_textured(d,bytes))return 0;
+ if(additive){additive_counts[0]++;additive_counts[1]+=(uint64_t)d->columns*d->rows;additive_counts[2]+=(uint64_t)d->coverage.width*d->coverage.height*4u;}
+ uint64_t written=0;
+ if(input->zwrite)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++) {
+  gs_mem_write_z(input->zbp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y,input->zpsm,gs_mem_clamp_raster_z(input->z,input->zpsm));written++;
+ }
+ resident_pipeline_counts[1]++;resident_pipeline_counts[2]+=tested;resident_pipeline_counts[3]+=failed;
+ resident_pipeline_counts[4]+=written;resident_pipeline_counts[5]+=!!input->blend;
+ resident_pipeline_counts[6]+=(uint64_t)d->coverage.width*d->coverage.height*4u;
+ if(input->ztest||input->zwrite)pipeline_counts[1]++;
+ if(input->blend)pipeline_counts[2]++;
+ return 1;
+}
+static uint64_t native_affine_stats[11];
+uint64_t gs_gx_native_affine_stat(unsigned n){return n<11u?native_affine_stats[n]:0;}
+static uint8_t native_alpha_texels[128u*128u];
+static uint32_t native_alpha_function(uint32_t a,const gs_gx_native_color *c)
+{
+ if(!c)return a;
+ uint32_t va=c->rgba>>24;
+ if(!c->tcc)return va;
+ if(c->tfx==0u)a=a*va/128u;
+ else if(c->tfx==2u)a+=va;
+ return a>255u?255u:a;
+}
+static int32_t native_wrap(int32_t n,uint32_t size,uint32_t clamp)
+{return clamp?(n<0?0:(n>=(int32_t)size?(int32_t)size-1:n)):(n&(size-1u));}
+static uint32_t native_alpha_at(double u,double v,uint32_t tw,uint32_t th,uint32_t ws,uint32_t wt,uint32_t linear)
+{
+ if(linear){u-=0.5;v-=0.5;}
+ if(!(u>-2147483647.0&&u<2147483646.0&&v>-2147483647.0&&v<2147483646.0))return 0;
+ int32_t x=(int32_t)u,y=(int32_t)v;if(u<x)x--;if(v<y)y--;
+ uint32_t x0=native_wrap(x,tw,ws),y0=native_wrap(y,th,wt);
+ uint32_t a=native_alpha_texels[y0*tw+x0];if(!linear)return a;
+ uint32_t fx=(uint32_t)((u-x)*16.0),fy=(uint32_t)((v-y)*16.0);
+ uint32_t x1=native_wrap(x+1,tw,ws),y1=native_wrap(y+1,th,wt);
+ uint32_t top=(a*(16u-fx)+native_alpha_texels[y0*tw+x1]*fx)>>4;
+ uint32_t bot=(native_alpha_texels[y1*tw+x0]*(16u-fx)+native_alpha_texels[y1*tw+x1]*fx)>>4;
+ return (top*(16u-fy)+bot*fy)>>4;
+}
+static int32_t native_edge(int32_t ax,int32_t ay,int32_t bx,int32_t by,int32_t x,int32_t y)
+{return (x-ax)*(by-ay)-(y-ay)*(bx-ax);}
+static uint32_t native_fragment_alpha(int32_t x,int32_t y,const int32_t *xy,const float *uv,const float *q,
+ uint32_t tw,uint32_t th,uint32_t ws,uint32_t wt,uint32_t linear,const gs_gx_native_color *c,double inv)
+{
+ double b0=(double)native_edge(xy[2],xy[3],xy[4],xy[5],x,y)*inv;
+ double b1=(double)native_edge(xy[4],xy[5],xy[0],xy[1],x,y)*inv;
+ double b2=(double)native_edge(xy[0],xy[1],xy[2],xy[3],x,y)*inv;
+ double s=b0*uv[0]+b1*uv[2]+b2*uv[4],t=b0*uv[1]+b1*uv[3]+b2*uv[5];
+ if(q){double qi=b0*q[0]+b1*q[1]+b2*q[2];double iq=qi!=0?1.0/qi:0;s*=iq;t*=iq;}
+ return native_alpha_function(native_alpha_at(s*tw,t*th,tw,th,ws,wt,linear),c);
+}
+static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *uv,const float *q,const uint32_t *rgba,uint32_t tw,uint32_t th,uint32_t ws,uint32_t wt,
+ uint32_t linear,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *p,uint32_t conservative_z,const gs_gx_native_color *color)
+{
+#if !defined(GEKKO2_GX_NATIVE_BIOS_TRI)
+ (void)color;(void)conservative_z;(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;
+ (void)q;(void)rgba;(void)tw;(void)th;(void)ws;(void)wt;(void)linear;(void)scanmsk;(void)sample;(void)p;return 0;
+#else
+ native_affine_stats[0]++;
+ uint32_t constant_colors[3];int vertex_gouraud=rgba!=NULL;
+ if(color&&color->tfx>1u)return 0; /* HIGHLIGHT needs another TEV stage. */
+ if(color&&color->tfx==0u&&!rgba){
+  constant_colors[0]=constant_colors[1]=constant_colors[2]=color->rgba;
+  rgba=constant_colors; /* MODULATE runs after filtering in GX, including flat color. */
+ }
+
+ if(!gs_gx_render_active()||!surface_enabled||!xy||!uv||!sample||!p||psm>1u||
+    tw<4u||th<4u||tw>128u||th>128u||(tw&(tw-1u))||(th&(th-1u))||ws>1u||wt>1u||
+    (conservative_z&&p->zwrite)||p->pabe||p->ztst>3u||!p->colclamp||p->a>2u||p->b>2u||p->c>2u||p->d>2u||p->fix>255u)
+    return 0;
+ for(unsigned i=0;i<6;i++)if(!isfinite(uv[i])||fabsf(uv[i])>65536.0f)return 0;
+ Mtx tm;int projective=q!=NULL;
+ if(rgba&&((rgba[0]>>24)!=(rgba[1]>>24)||(rgba[1]>>24)!=(rgba[2]>>24)))return 0;
+ if(projective){
+  double dx1=(double)xy[2]-xy[0],dy1=(double)xy[3]-xy[1];
+  double dx2=(double)xy[4]-xy[0],dy2=(double)xy[5]-xy[1],det=dx1*dy2-dx2*dy1;
+  if(!isfinite(det)||fabs(det)<1.0)return 0;
+  for(unsigned v=0;v<3;v++)if(!isfinite(q[v])||q[v]<=0.0f)return 0;
+  for(unsigned row=0;row<3;row++){
+   double f0=row==2?q[0]:uv[row],f1=row==2?q[1]:uv[2+row],f2=row==2?q[2]:uv[4+row];
+   double a=((f1-f0)*dy2-(f2-f0)*dy1)/det,b=(dx1*(f2-f0)-dx2*(f1-f0))/det;
+   double c=f0-a*(xy[0]+0.5)-b*(xy[1]+0.5);
+   if(!isfinite(a)||!isfinite(b)||!isfinite(c)||fabs(a)>65536||fabs(b)>65536||fabs(c)>65536)return 0;
+   tm[row][0]=(float)a;tm[row][1]=(float)b;tm[row][2]=0;tm[row][3]=(float)c;
+  }
+ }
+ int additive=p->blend&&gs_gx_additive_supported(p);
+ int additive_alpha=p->blend&&p->a==0u&&p->b==2u&&p->c==0u&&p->d==1u;
+ int alpha_blend=p->blend&&p->a==0u&&p->b==1u&&p->d==1u&&
+                 (p->c==0u||(p->c==2u&&p->fix<=128u));
+ if(p->blend&&!additive&&!alpha_blend&&!additive_alpha)return 0;
+ gs_gx_texture_draw *d=&texture_draw;memset(d,0,sizeof(*d));
+ if(!gs_gx_prepare_flat(&d->coverage,3,bp,bw,minx,miny,maxx,maxy,xy,0,scanmsk))return 0;
+ d->coverage.psm=psm;d->tw=tw;d->th=th;d->columns=d->coverage.width;d->rows=d->coverage.height;
+ if(tw*th>d->columns*d->rows*4u)return 0;
+ uint32_t h=efb_height<512u?efb_height&~3u:512u;
+ if(color&&color->target_height){
+  uint32_t gh=(color->target_height+3u)&~3u;
+  if(color->target_height>512u)return 0;
+  if(gh<h)h=gh;
+ }
+ if(!h||bw>efb_width||bw>640u||d->coverage.x+d->coverage.width>bw||d->coverage.y+d->coverage.height>h||
+    !gs_gx_target_valid(GS_MEM_SIZE,bp,bw,0,0,bw,h))return 0;
+ d->pipeline=*p;uint32_t clo=bp*4u,chi=(uint32_t)target_offset(bp,bw,bw-1u,h-1u)+4u;
+ uint32_t zlo=0,zhi=0;uint64_t tested=0,failed=0;const uint8_t *depth=NULL;
+ if((p->ztest||p->zwrite)&&!gs_gx_surface_depth_range(d,p,clo,chi,&zlo,&zhi))return 0;
+ if(p->ztest&&p->ztst>=2u&&zhi){depth=gs_mem_read_range(zlo,zhi-zlo);if(!depth)return 0;}
+ if(!gs_gx_surface_depth_clip(d,p,depth,zlo,zhi-zlo,&tested,&failed))return 0;
+ /* Variable Z: the caller supplies a lower bound. Every covered sample must
+  * pass that bound, and Z writes are forbidden; otherwise scalar fallback. */
+ if(conservative_z&&failed)return 0;
+ /* Pack raw, constant-color GS texels once, never shaded screen pixels. */
+ source_key_valid=source_cache.valid=0;
+ if(texture_in_flight)gx_cpu_wait(0);
+ uint32_t alpha=0,bytes=tw*th*4u;
+ int uniform_required=!color&&(!psm||(alpha_blend&&p->c==0u));
+ int varying_alpha=0;uint32_t max_alpha=0,min_alpha=255;
+ /* R1389: stop at the first differing alpha; do not decode the rest
+  * of a texture that is guaranteed to fall back. No target changes yet. */
+ for(uint32_t y=0;y<th;y++)for(uint32_t x=0;x<tw;x++){
+  uint32_t c=sample((int32_t)x,(int32_t)y),a=c>>24,k=texture_tile(tw,x,y);
+  native_affine_stats[3]++;
+  if(!x&&!y)alpha=a;
+  else if(a!=alpha){if(uniform_required){native_affine_stats[4]++;return 0;}varying_alpha=1;}
+  native_alpha_texels[y*tw+x]=a;
+  uint32_t fa=native_alpha_function(a,color);if(fa>max_alpha)max_alpha=fa;if(fa<min_alpha)min_alpha=fa;
+  if(color&&alpha_blend&&p->c==0u&&fa>128u){native_affine_stats[4]++;return 0;}
+  if(color&&!rgba){
+   uint32_t out=0,va=color->rgba>>24;
+   for(unsigned k=0;k<3;k++){
+    uint32_t ch=(c>>(k*8))&255u;
+    if(color->tfx!=1u){ch=ch*((color->rgba>>(k*8))&255u)/128u;if(color->tfx>=2u)ch+=va;}
+    if(ch>255u)ch=255u;out|=ch<<(k*8);
+   }c=(a<<24)|out;
+  }
+  uint8_t *v=texture;v[k]=a;v[k+1]=c;v[k+32]=c>>8;v[k+33]=c>>16;
+ }
+ source_upload_pending=1u;
+ if(color){alpha=native_alpha_function(alpha,color);varying_alpha=min_alpha!=max_alpha;}
+ else if(rgba)alpha=(alpha*(rgba[0]>>24))>>7;
+ if(alpha>255u)alpha=255u;
+ if(alpha_blend){
+  uint32_t factor=p->c==2u?p->fix:alpha;if((p->c==0u?max_alpha:factor)>128u)return 0;
+  /* GS alpha uses 128 for unity; GX uses 255. This test build maps
+   * the constant coefficient, retaining original GS alpha metadata. */
+  uint8_t gx_alpha=(uint8_t)((factor*255u+64u)/128u);
+  for(uint32_t y=0;y<th;y++)for(uint32_t x=0;x<tw;x++){
+   uint32_t a=(color&&p->c==0u)?(native_alpha_function(native_alpha_texels[y*tw+x],color)*255u+64u)/128u:gx_alpha;
+   ((uint8_t*)texture)[texture_tile(tw,x,y)]=(uint8_t)a;
+  }
+ }
+ if(additive_alpha&&color)for(uint32_t y=0;y<th;y++)for(uint32_t x=0;x<tw;x++)
+  ((uint8_t*)texture)[texture_tile(tw,x,y)]=(uint8_t)native_alpha_function(native_alpha_texels[y*tw+x],color);
+ if(additive)for(uint32_t y=0;y<th;y++)for(uint32_t x=0;x<tw;x++) {
+   uint32_t k=texture_tile(tw,x,y);uint8_t *v=texture;
+   v[k+1]=((uint32_t)v[k+1]*p->fix)>>7;
+   v[k+32]=((uint32_t)v[k+32]*p->fix)>>7;
+   v[k+33]=((uint32_t)v[k+33]*p->fix)>>7;
+ }
+ if(!surface_ensure_height(&d->coverage,h))return 0;
+ d->coverage.rgba=alpha<<24;
+ if(!gs_gx_surface_mark(surface,&d->coverage))return 0;
+ if(color&&varying_alpha&&!psm){
+  double inv=1.0/(double)native_edge(xy[0],xy[1],xy[2],xy[3],xy[4],xy[5]);
+  for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
+   uint32_t px=d->coverage.x+x,py=d->coverage.y+y;
+   surface->alpha[py*surface->bw+px]=(uint8_t)native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,inv);
+   native_affine_stats[9]++;
+  }
+ }
+
+ source_upload(bytes);surface_state(surface->width,surface->height,1);
+ GXTexObj obj;GX_InitTexObj(&obj,texture,tw,th,GX_TF_RGBA8,ws?GX_CLAMP:GX_REPEAT,wt?GX_CLAMP:GX_REPEAT,GX_FALSE);
+ GX_InitTexObjLOD(&obj,linear?GX_LINEAR:GX_NEAR,linear?GX_LINEAR:GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
+ GX_LoadTexObj(&obj,GX_TEXMAP0);
+ if(projective){GX_LoadTexMtxImm(tm,GX_TEXMTX0,GX_MTX3x4);
+  GX_SetTexCoordGen(GX_TEXCOORD0,GX_TG_MTX3x4,GX_TG_POS,GX_TEXMTX0);}
+ if(rgba){
+  GX_SetNumChans(1);GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,GX_LIGHTNULL,GX_DF_NONE,GX_AF_NONE);
+  GX_SetVtxDesc(GX_VA_CLR0,GX_DIRECT);GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_CLR0,GX_CLR_RGBA,GX_RGBA8,0);
+  GX_SetTevOrder(GX_TEVSTAGE0,GX_TEXCOORD0,GX_TEXMAP0,GX_COLOR0A0);
+  GX_SetTevColorIn(GX_TEVSTAGE0,GX_CC_ZERO,GX_CC_TEXC,GX_CC_RASC,GX_CC_ZERO);
+  GX_SetTevColorOp(GX_TEVSTAGE0,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_2,GX_TRUE,GX_TEVPREV);
+ }
+
+ if(additive_alpha){
+  /* The BIOS fog uses (Cs - 0)*As + Cd. Keep the filtered RGB and
+   * filtered alpha separate until TEV multiplication, then ONE+ONE.
+   * Pre-multiplying source texels would alter bilinear edge colors. */
+  GX_SetNumTevStages(2);
+  GX_SetTevOrder(GX_TEVSTAGE1,GX_TEXCOORD0,GX_TEXMAP0,GX_COLORNULL);
+  GX_SetTevColorIn(GX_TEVSTAGE1,GX_CC_ZERO,GX_CC_CPREV,GX_CC_TEXA,GX_CC_ZERO);
+  GX_SetTevColorOp(GX_TEVSTAGE1,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_2,GX_TRUE,GX_TEVPREV);
+  GX_SetTevAlphaIn(GX_TEVSTAGE1,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_APREV);
+  GX_SetTevAlphaOp(GX_TEVSTAGE1,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
+  GX_SetBlendMode(GX_BM_BLEND,GX_BL_ONE,GX_BL_ONE,GX_LO_COPY);
+ }
+ if(additive)GX_SetBlendMode(GX_BM_BLEND,GX_BL_ONE,GX_BL_ONE,GX_LO_COPY);
+ if(alpha_blend)GX_SetBlendMode(GX_BM_BLEND,GX_BL_SRCALPHA,GX_BL_INVSRCALPHA,GX_LO_COPY);
+ /* Exact CPU coverage/depth mask, but hardware texture sampling and RGB.
+  * Group matching rows; no per-output-pixel texture or color callback. */
+ uint32_t submitted=0;
+ for(uint32_t y=0;y<d->rows;){uint32_t end=y+1,l=d->coverage.left[y],r=d->coverage.right[y];
+   while(end<d->rows&&d->coverage.left[end]==l&&d->coverage.right[end]==r)end++;
+   if(r>l){GX_SetScissor(d->coverage.x+l,d->coverage.y+y,r-l,end-y);
+    GXB(GX_TRIANGLES,GX_VTXFMT0,3);
+    for(unsigned v=0;v<3;v++){
+     GX_Position3f32((float)xy[v*2]+0.5f,(float)xy[v*2+1]+0.5f,0);
+     if(rgba)GX_Color4u8(rgba[v]&255u,(rgba[v]>>8)&255u,(rgba[v]>>16)&255u,rgba[v]>>24);
+     GX_TexCoord2f32(uv[v*2],uv[v*2+1]);
+    }
+    GX_End();submitted+=3u;}y=end;
+ }
+ GX_SetScissor(0,0,surface->width,surface->height);texture_in_flight=1;surface_texture_valid=0;
+ if(!gs_mem_gpu_mark_pending())return 0;
+ if(p->zwrite)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++)
+   gs_mem_write_z(p->zbp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y,p->zpsm,gs_mem_clamp_raster_z(p->z,p->zpsm));
+ native_affine_stats[1]++;native_affine_stats[2]+=(uint64_t)d->columns*d->rows;
+ native_affine_stats[5]+=submitted;
+ native_affine_stats[6]+=projective;native_affine_stats[7]+=vertex_gouraud;native_affine_stats[8]+=color&&varying_alpha;native_affine_stats[10]+=additive_alpha;
+ resident_pipeline_counts[2]+=tested;resident_pipeline_counts[3]+=failed;
+ return 1;
+#endif
+}
+
+int gs_gx_draw_native_affine_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *uv,uint32_t tw,uint32_t th,uint32_t ws,uint32_t wt,
+ uint32_t linear,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *p)
+{return native_triangle(psm,bp,bw,minx,miny,maxx,maxy,xy,uv,NULL,NULL,tw,th,ws,wt,linear,scanmsk,sample,p,0,NULL);}
+int gs_gx_draw_native_stq_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *uv,const float *q,const uint32_t *rgba,uint32_t tw,uint32_t th,
+ uint32_t ws,uint32_t wt,uint32_t linear,uint32_t scanmsk,
+ gs_gx_texel_fn sample,const gs_gx_pipeline *p,uint32_t conservative_z,const gs_gx_native_color *color)
+{return native_triangle(psm,bp,bw,minx,miny,maxx,maxy,xy,uv,q,rgba,tw,th,ws,wt,linear,scanmsk,sample,p,conservative_z,color);}
+
 static void pipeline_vertex(float x,float y,float s,float t,const gs_gx_texture_draw *d)
 {
     vertex(x,y,s,t);if(d->hardware_blend||d->hardware_depth==2u)GX_TexCoord2f32(x/d->coverage.width,y/d->coverage.height);
@@ -841,14 +1516,23 @@ int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,
 {
     if(!render_enabled||!initialized)return 0;
     work_counts[4]++;texture_counts[0]++;
-    if(surface_enabled&&sample&&pipeline&&!pipeline->blend&&!pipeline->zwrite&&(!pipeline->ztest||pipeline->ztst==1u)) {
+#ifdef GEKKO2_GX_DUMP
+    gs_gx_dump_record("TEXTURE_TARGET",bp,bw,x,y);
+    gs_gx_dump_record("TEXTURE_STATE",w,h,pipeline?pipeline->blend:0,pipeline?pipeline->z:0);
+#endif
+    if(surface_enabled&&sample&&pipeline
+       &&(gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)||(!pipeline->blend&&!pipeline->zwrite&&(!pipeline->ztest||pipeline->ztst==1u)))
+#ifdef GEKKO2_GX_RESIDENT_PIPELINE_DISABLE
+       &&!pipeline->blend&&!pipeline->zwrite&&(!pipeline->ztest||pipeline->ztst==1u)
+#endif
+       ) {
         gs_gx_texture_draw resident_draw;
         if(gs_gx_prepare_texture(&resident_draw,psm,bp,bw,x,y,w,h,columns,rows,step_x,step_y,scanmsk)) {
             if(geometry_kind) {
                 if(!gs_gx_prepare_flat(&resident_draw.coverage,geometry_kind,bp,bw,x,y,x+w-1,y+h-1,geometry_xy,0,scanmsk))return 0;
                 resident_draw.coverage.psm=psm;
             }
-            if(surface_draw_textured(&resident_draw,sample))return 1;
+            if(surface_draw_pipeline(&resident_draw,sample,pipeline))return 1;
         }
     }
     if(!gs_mem_sync())return 0;
@@ -870,7 +1554,7 @@ int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,
     if(!readback||!gs_mem_gpu_bind(resolve_capture,NULL))return 0;
     flat_draw=texture_draw.coverage;
     if(texture_draw.hardware_depth)depth_preload(&texture_draw);
-    DCFlushRange(texture,bytes);GX_InvalidateTexAll();
+    source_upload(bytes);
     GX_SetViewport(0,0,flat_draw.width,flat_draw.height,0,1);GX_SetScissor(0,0,flat_draw.width,flat_draw.height);
     GX_SetPixelFmt(GX_PF_RGB8_Z24,GX_ZC_LINEAR);GX_SetDither(GX_FALSE);GX_SetFieldMode(GX_FALSE,GX_FALSE);
     GX_SetCullMode(GX_CULL_NONE);GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);GX_SetZTexture(GX_ZT_DISABLE,GX_TF_Z24X8,0);
@@ -907,7 +1591,7 @@ int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,
             GX_SetZMode(GX_TRUE,pass?(texture_draw.pipeline.ztst==2u?GX_GEQUAL:GX_GREATER):GX_ALWAYS,
                 texture_draw.pipeline.zwrite?GX_TRUE:GX_FALSE);
         }
-        if(quads)GX_Begin(GX_QUADS,GX_VTXFMT0,quads*4u);
+        if(quads)GXB(GX_QUADS,GX_VTXFMT0,quads*4u);
         for(uint32_t row=0;row<flat_draw.height;) {
             uint32_t end=row+1;while(end<flat_draw.height&&flat_draw.left[end]==flat_draw.left[row]&&flat_draw.right[end]==flat_draw.right[row])end++;
             if(flat_draw.right[row]>flat_draw.left[row]) {
@@ -933,6 +1617,31 @@ int gs_gx_draw_texture_sprite(uint32_t psm,uint32_t bp,uint32_t bw,
     if(split_z32)pipeline_counts[4]++;if(split_pabe)pipeline_counts[5]++;
     GX_SetZTexture(GX_ZT_DISABLE,GX_TF_Z24X8,0);GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);return 1;
 }
+int gs_gx_draw_shaded_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
+{
+ shaded_triangle_counts[0]++;
+#ifdef GEKKO2_GX_DUMP
+ gs_gx_dump_record("SHADED_TARGET",bp,bw,psm,scanmsk);
+ gs_gx_dump_record("SHADED_BBOX",minx,miny,maxx,maxy);
+#endif
+ if(!render_enabled||!initialized||!surface_enabled||!sample||!xy||!pipeline||
+    !gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)||psm>1u||scanmsk>=2u||
+    maxx<minx||maxy<miny||maxx-minx>=640||maxy-miny>=512)return 0;
+ gs_gx_texture_draw d;memset(&d,0,sizeof d);
+ if(!gs_gx_prepare_flat(&d.coverage,3,bp,bw,minx,miny,maxx,maxy,xy,0,scanmsk))return 0;
+ d.coverage.psm=psm;d.columns=d.coverage.width;d.rows=d.coverage.height;
+ d.origin_x=minx;d.origin_y=miny;d.tw=(d.columns+3u)&~3u;d.th=(d.rows+3u)&~3u;
+ if(d.columns*d.rows<64u)return 0;
+ for(unsigned x=0;x<d.columns;x++)d.column[x]=minx+x;
+ for(unsigned y=0;y<d.rows;y++)d.row[y]=miny+y;
+ d.s0=0;d.s1=(float)d.columns/d.tw;d.t0=0;d.t1=(float)d.rows/d.th;
+ source_key_valid=0;
+ if(!surface_draw_pipeline(&d,sample,pipeline))return 0;
+ shaded_triangle_counts[1]++;shaded_triangle_counts[2]+=(uint64_t)d.columns*d.rows;
+ return 1;
+}
 int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,int32_t y,uint32_t w,uint32_t h,
  const int32_t *xy,const int32_t *columns,const int32_t *rows,double du,double dv,uint32_t scanmsk,
  gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
@@ -940,6 +1649,104 @@ int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,in
  if(!xy)return 0;geometry_kind=3;memcpy(geometry_xy,xy,sizeof(geometry_xy));
  int result=gs_gx_draw_texture_sprite(psm,bp,bw,x,y,w,h,columns,rows,du,dv,scanmsk,sample,pipeline);
  geometry_kind=0;return result;
+}
+int gs_gx_draw_gouraud_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+    int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+    const uint32_t *rgba,uint32_t scanmsk,const gs_gx_pipeline *pipeline)
+{
+    if(!render_enabled||!initialized||!xy||!rgba||!pipeline||psm!=0u||
+       maxx<minx||maxy<miny||maxx-minx>=640||maxy-miny>=512||
+       pipeline->ztest||pipeline->zwrite||pipeline->blend)return 0;
+    gs_gx_flat_draw d;
+    if(!gs_gx_prepare_flat(&d,3,bp,bw,minx,miny,maxx,maxy,xy,0,scanmsk)||
+       d.width>efb_width||d.height>efb_height)return 0;
+    /* Keep RGB interpolation on GX and defer the readback until a real
+     * VRAM consumer. CPU alpha metadata is exact for constant-alpha vertices.
+     * Masked scanlines retain the existing coverage/capture fallback. */
+    if(surface_enabled && scanmsk<2u &&
+       (rgba[0]>>24)==(rgba[1]>>24) && (rgba[0]>>24)==(rgba[2]>>24)) {
+        d.rgba=rgba[0];
+        if(surface_ensure(&d) && gs_gx_surface_mark(surface,&d)) {
+            surface_state(surface->width,surface->height,0);
+            GXB(GX_TRIANGLES,GX_VTXFMT0,3);
+            for(unsigned i=0;i<3;i++) {
+                GX_Position3f32((float)xy[i*2]+0.5f,(float)xy[i*2+1]+0.5f,0);
+                GX_Color4u8(rgba[i]&255u,(rgba[i]>>8)&255u,
+                           (rgba[i]>>16)&255u,rgba[i]>>24);
+            }
+            GX_End();surface_texture_valid=0;
+            if(!gs_mem_gpu_mark_pending())return 0;
+            surface_counts[1]++;surface_counts[6]++;work_counts[0]++;work_counts[1]++;
+            return 1;
+        }
+    }
+    if(!gs_mem_sync())return 0;
+    if(!readback)readback=memalign(32,GX_PRESENT_TEXTURE);
+    if(!readback||!gs_mem_gpu_bind(resolve_capture,NULL))return 0;
+    GX_SetViewport(0,0,d.width,d.height,0,1);GX_SetScissor(0,0,d.width,d.height);
+    GX_SetPixelFmt(GX_PF_RGB8_Z24,GX_ZC_LINEAR);GX_SetDither(GX_FALSE);
+    GX_SetCullMode(GX_CULL_NONE);GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
+    GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    GX_SetColorUpdate(GX_TRUE);GX_SetAlphaUpdate(GX_FALSE);
+    GX_SetAlphaCompare(GX_ALWAYS,0,GX_AOP_AND,GX_ALWAYS,0);
+    GX_SetNumChans(1);GX_SetNumTexGens(0);GX_SetNumTevStages(1);
+    GX_SetChanCtrl(GX_COLOR0A0,GX_FALSE,GX_SRC_VTX,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
+    GX_SetTevOrder(GX_TEVSTAGE0,GX_TEXCOORDNULL,GX_TEXMAP_NULL,GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
+    GX_ClearVtxDesc();GX_SetVtxDesc(GX_VA_POS,GX_DIRECT);GX_SetVtxDesc(GX_VA_CLR0,GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_POS,GX_POS_XYZ,GX_F32,0);
+    GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_CLR0,GX_CLR_RGBA,GX_RGBA8,0);
+    Mtx model;Mtx44 projection;guMtxIdentity(model);guOrtho(projection,0,d.height,0,d.width,-1,1);
+    GX_LoadPosMtxImm(model,GX_PNMTX0);GX_SetCurrentMtx(GX_PNMTX0);GX_LoadProjectionMtx(projection,GX_ORTHOGRAPHIC);
+    GXB(GX_TRIANGLES,GX_VTXFMT0,3);
+    for(unsigned i=0;i<3;i++) {
+        /* K: +0.5 -> GX samples pixel centres, GS software samples corners. */
+        GX_Position3f32((float)(xy[i*2]-minx)+0.5f,(float)(xy[i*2+1]-miny)+0.5f,0);
+        GX_Color4u8(rgba[i]&255u,(rgba[i]>>8)&255u,(rgba[i]>>16)&255u,(rgba[i]>>24)&255u);
+    }
+    GX_End();
+    if(!gs_gx_capture_vram_psmct32(bp,bw,minx,miny,d.width,d.height,rgba[0]>>24))return 0;
+    d.rgba=rgba[0]&0xff000000u;capture_flat=1;capture_texture=0;flat_draw=d;work_counts[0]++;work_counts[1]++;work_counts[2]+=capture.bytes;
+    return 1;
+}
+int gs_gx_draw_uv_decal_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
+    int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,const float *uv,
+    uint32_t tex_w,uint32_t tex_h,uint32_t alpha,uint32_t scanmsk,gs_gx_texel_fn sample)
+{
+    if(!render_enabled||!initialized||psm!=0u||!xy||!uv||!sample||!tex_w||!tex_h||
+       maxx<minx||maxy<miny||maxx-minx>=640||maxy-miny>=512)return 0;
+    int32_t cols[640],rows[512];uint32_t w=maxx-minx+1u,h=maxy-miny+1u;
+    for(uint32_t x=0;x<w;x++)cols[x]=(int32_t)x;
+    for(uint32_t y=0;y<h;y++)rows[y]=(int32_t)y;
+    gs_gx_texture_draw d;
+    if(!gs_gx_prepare_texture(&d,psm,bp,bw,minx,miny,w,h,cols,rows,1,1,scanmsk)||
+       !gs_gx_prepare_flat(&d.coverage,3,bp,bw,minx,miny,maxx,maxy,xy,0,scanmsk)||
+       d.coverage.width>efb_width||d.coverage.height>efb_height||!gs_mem_sync())return 0;
+    d.coverage.psm=psm;d.origin_x=0;d.origin_y=0;d.tw=(tex_w+3u)&~3u;d.th=(tex_h+3u)&~3u;
+    if(d.tw>1024u||d.th>512u)return 0;
+    uint32_t bytes=source_pack(&d,sample);if(!bytes)return 0;
+    if(!readback)readback=memalign(32,GX_PRESENT_TEXTURE);
+    if(!readback||!gs_mem_gpu_bind(resolve_capture,NULL))return 0;
+    flat_draw=d.coverage;texture_draw=d;source_upload(bytes);
+    GX_SetViewport(0,0,d.coverage.width,d.coverage.height,0,1);GX_SetScissor(0,0,d.coverage.width,d.coverage.height);
+    GX_SetPixelFmt(GX_PF_RGB8_Z24,GX_ZC_LINEAR);GX_SetDither(GX_FALSE);GX_SetCullMode(GX_CULL_NONE);
+    GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    GX_SetColorUpdate(GX_TRUE);GX_SetAlphaUpdate(GX_FALSE);GX_SetAlphaCompare(GX_ALWAYS,0,GX_AOP_AND,GX_ALWAYS,0);
+    GX_SetNumChans(0);GX_SetNumTexGens(1);GX_SetNumTevStages(1);
+    GX_SetTexCoordGen(GX_TEXCOORD0,GX_TG_MTX2x4,GX_TG_TEX0,GX_IDENTITY);
+    GX_SetTevOrder(GX_TEVSTAGE0,GX_TEXCOORD0,GX_TEXMAP0,GX_COLORNULL);GX_SetTevOp(GX_TEVSTAGE0,GX_REPLACE);
+    GX_ClearVtxDesc();GX_SetVtxDesc(GX_VA_POS,GX_DIRECT);GX_SetVtxDesc(GX_VA_TEX0,GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_POS,GX_POS_XYZ,GX_F32,0);GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_TEX0,GX_TEX_ST,GX_F32,0);
+    Mtx model;Mtx44 projection;guMtxIdentity(model);guOrtho(projection,0,d.coverage.height,0,d.coverage.width,-1,1);
+    GX_LoadPosMtxImm(model,GX_PNMTX0);GX_SetCurrentMtx(GX_PNMTX0);GX_LoadProjectionMtx(projection,GX_ORTHOGRAPHIC);
+    GXTexObj object;GX_InitTexObj(&object,texture,d.tw,d.th,GX_TF_RGBA8,GX_CLAMP,GX_CLAMP,GX_FALSE);
+    GX_InitTexObjLOD(&object,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);GX_LoadTexObj(&object,GX_TEXMAP0);
+    GXB(GX_TRIANGLES,GX_VTXFMT0,3);
+    for(unsigned i=0;i<3;i++){GX_Position3f32((float)(xy[i*2]-minx),(float)(xy[i*2+1]-miny),0);GX_TexCoord2f32(uv[i*2]/d.tw,uv[i*2+1]/d.th);}
+    GX_End();
+    if(!gs_gx_capture_vram_psmct32(bp,bw,minx,miny,d.coverage.width,d.coverage.height,alpha))return 0;
+    d.coverage.rgba=alpha<<24;flat_draw=d.coverage;capture_flat=1;capture_texture=0;work_counts[0]++;work_counts[1]++;work_counts[2]+=capture.bytes;
+    texture_counts[1]++;texture_counts[2]+=bytes;return 1;
 }
 static uint32_t flat_pipeline_sample(int32_t x,int32_t y){(void)x;(void)y;return geometry_rgba;}
 int gs_gx_draw_flat_pipeline(uint32_t psm,uint32_t kind,uint32_t bp,uint32_t bw,
@@ -958,6 +1765,31 @@ void gs_gx_shutdown(void)
     /* GX keeps references to its FIFO. Retain buffers until process exit;
      * never free a bound command FIFO or leave queued texture accesses. */
     gs_gx_set_residency_enabled(0);
-    if(initialized)GX_DrawDone();
+    if(initialized)gx_cpu_wait(3);
+}
+int gs_gx_reset_boot_state(void)
+{
+#ifdef GEKKO2_GX_DUMP
+ gs_gx_dump_reset();gs_gx_dump_record("COLD_BOOT_RESET",0,0,0,0);
+#endif
+ /* Shutdown temporarily disables residency while draining GX. A cold boot
+  * must retain the requested policy, otherwise every later triangle falls
+  * back to software for the lifetime of the process. */
+ int requested_residency=surface_enabled;
+ if(!gs_mem_sync())return 0;
+ gs_gx_shutdown();
+ if(!gs_mem_gpu_bind(NULL,NULL))return 0;
+ if(surface)surface->active=0;
+ capture_flat=capture_texture=surface_texture_valid=0;
+ source_key_valid=source_cache.valid=source_upload_pending=0;geometry_kind=0;render_enabled=0;
+ memset(sync_counts,0,sizeof(sync_counts));memset(surface_counts,0,sizeof(surface_counts));
+ memset(resident_pipeline_counts,0,sizeof(resident_pipeline_counts));
+ memset(source_cache_counts,0,sizeof(source_cache_counts));
+ memset(texture_counts,0,sizeof(texture_counts));memset(pipeline_counts,0,sizeof(pipeline_counts));
+ memset(work_counts,0,sizeof(work_counts));gs_mem_reset_sync_stats();
+ memset(additive_counts,0,sizeof(additive_counts));
+ memset(native_affine_stats,0,sizeof(native_affine_stats));
+ surface_enabled=requested_residency;
+ return 1;
 }
 #endif

@@ -161,11 +161,12 @@ enum {
     VUL_IBGTZ  = 0x2D, VUL_IBLEZ  = 0x2E, VUL_IBGEZ = 0x2F
 };
 
-/* SPECIAL (opcode==0x40) sub-funct, full 6-bit bits5-0 value. Solid -
- * directly quoted (IADD/ISUB/IADDI/IOR/IAND). */
+/* SPECIAL (opcode==0x40), bits5-0. PCSX2 VUops.cpp
+ * LowerOP_OPCODE: 0x33 reserved, 0x34 IAND, 0x35 IOR.
+ * Tekken uses literal 0x80020875 (IOR VI1, VI1, VI2). */
 enum {
     VULS_IADD  = 0x30, VULS_ISUB = 0x31, VULS_IADDI = 0x32,
-    VULS_IOR   = 0x33, VULS_IAND = 0x34
+    VULS_IOR   = 0x35, VULS_IAND = 0x34
 };
 
 /* SPECIAL sub-groups identified by the fd slot (bits 10-6), each with
