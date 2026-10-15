@@ -1,5 +1,10 @@
 # Batch 2: experimentelle saubere native Registerübergabe
 
+**Fortschreibung:** [BETA12.21](BETA12.21-EXPERIMENTAL-OPTIONS.md) ergänzt
+bedarfsgewählte Karten, separaten Cold-Boot-Schalter sowie geprüfte RAM-/Integer-
+Sprungkörper mit vollständigem Nachladen an allen Ausstiegen. Die folgenden
+Angaben zur festen Karte und ALU-only-Abdeckung beschreiben den ursprünglichen Batch.
+
 Basis: Batch-1-Branch bis `b7e0377`, BETA12.20. Kein Release-/Gameplaybeleg.
 
 ## Implementiert

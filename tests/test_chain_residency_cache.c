@@ -27,7 +27,7 @@ int main(void)
     ee_precise_reset_cache();
     assert(!slot->fn&&!slot->resident_fn&&!slot->resident_tested&&!precise_resident_chain_fn);
     assert(!precise_resident_map_ready&&!precise_resident_map.count);
-    assert(ee_jit_get_chain_residency_stat(0)==1);
+    assert(ee_jit_get_chain_residency_stat(0)==0); /* compiled is not enabled */
     for(unsigned i=1;i<5;i++)assert(!ee_jit_get_chain_residency_stat(i));
     puts("PASS native-ABI cache companion ownership, active pin, replacement and reset");
     return 0;

@@ -24,6 +24,26 @@ int main(void)
  assert(!ppc_dynarec_plan_ee_chain_map(hilo,4,1024,&map));valid(&map);assert(has(&map,512)&&has(&map,528));
  const uint32_t sa[]={(1u<<21)|0x29u,(1u<<11)|0x28u};
  assert(!ppc_dynarec_plan_ee_chain_map(sa,2,1024,&map));valid(&map);assert(has(&map,552));
+ const uint32_t memory[]={(0x1eu<<26)|(1u<<21)|(20u<<16),
+                          (0x1fu<<26)|(1u<<21)|(20u<<16)|32u};
+ assert(!ppc_dynarec_plan_ee_chain_map(memory,2,1024,&map));valid(&map);
+ assert(has(&map,320)&&has(&map,332));
+ ppc_codegen_ctx_t ctx;assert(!ppc_dynarec_init(&ctx,4));
+ size_t before=ctx.used_words;
+ assert(ppc_dynarec_translate_ee_chain_block(&ctx,0x200000,memory,2,1,0,0,2,&map)<0);
+ assert(ctx.used_words==before); /* Missing RAM-proof callback declines atomically. */
+ assert(!ppc_dynarec_translate_ee_chain_block(&ctx,0x200000,memory,2,1,3,0,2,&map));
+ const uint32_t branch[]={(3u<<26)|0x80008u,0u};
+ assert(!ppc_dynarec_plan_ee_chain_map(branch,2,1024,&map));valid(&map);assert(has(&map,31*16));
+ before=ctx.used_words;
+ assert(ppc_dynarec_translate_ee_chain_block(&ctx,0x200000,branch,2,1,3,0,2,&map)<0);
+ assert(ctx.used_words==before);
+ assert(!ppc_dynarec_translate_ee_chain_block(&ctx,0x200000,branch,2,1,3,4,2,&map));
+ before=ctx.used_words;
+ assert(ppc_dynarec_translate_ee_fused_chain_block(&ctx,0x200000,branch,2,1,3,4,2,0,6,7,&map)<0);
+ assert(ctx.used_words==before);
+ assert(!ppc_dynarec_translate_ee_fused_chain_block(&ctx,0x200000,branch,2,1,3,4,2,5,6,7,&map));
+ ppc_dynarec_free(&ctx);
  unsigned rejected=0;
  const uint32_t bad[]={0,12,(4u<<26)|1,(35u<<26)|(1u<<21)|(2u<<16)};
  for(unsigned i=0;i<4;i++){

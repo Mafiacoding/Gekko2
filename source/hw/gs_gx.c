@@ -413,6 +413,7 @@ uint64_t gs_gx_sync_count(unsigned n){return n<8u?sync_counts[n]:0;}
 #define GX_WAIT_LIMIT_TB ((60750000u*4u)/10u)
 #define GX_LOST_IRQ_GRACE_TB (60750000u/20u)
 static volatile int gx_done_flag;
+static uint16_t gx_fence_expected;
 static uint32_t gx_diag[8];static int gx_diag_taken;
 static uint64_t gx_wd[8]; /* timeouts, last reason, last gpu_pending, max wait tb, bounded waits, callbacks */
 uint64_t gs_gx_watchdog_count(unsigned n){return n<8u?gx_wd[n]:0;}
@@ -437,6 +438,8 @@ static void gx_wait_timeout_marker(unsigned reason)
   gx_diag[0],gx_diag[1],gx_diag[2],gx_diag[3],gx_diag[4],gx_diag[5],gx_diag[6],gx_diag[7],texture_in_flight);
  fprintf(f,"GX_WAIT_TIMEOUT reason=%u gpu_pending=%d limit_tb=%u timeouts=%llu waits=%llu\n",
   reason,(int)gs_mem_gpu_pending(),GX_WAIT_LIMIT_TB,(unsigned long long)gx_wd[0],(unsigned long long)gx_wd[4]);
+ fprintf(f,"GX_FENCE_TOKEN expected=%04x observed=%04x completion=ordered-PE-token\n",
+  gx_fence_expected,GX_GetDrawSync());
  fprintf(f,"GX_WD11_CTX begins_before_wait=%u last_begin_line=%u recoveries=%llu\n",gx_ctx_begins,gx_last_line,(unsigned long long)gx_wd[7]);
  fflush(f);fclose(f);
 }
@@ -445,16 +448,16 @@ static void gx_bounded_draw_done(unsigned reason)
  gx_done_flag=0;gx_diag_taken=0;gx_ctx_begins=gx_begins_since_wait;gx_begins_since_wait=0;
  GX_SetDrawDoneCallback(gx_done_callback);
  GX_SetDrawDone();
+ /* A unique PE token after DrawDone proves this fence even if the finish
+  * callback is lost. Idle CP bits and an older callback prove nothing. */
+ uint16_t token=(uint16_t)(GX_GetDrawSync()+1u);
+ gx_fence_expected=token;
+ GX_SetDrawSync(token);
  uint32_t begin,now;__asm__ volatile("mftb %0":"=r"(begin));
  gx_wd[4]++;
- while(!gx_done_flag) {
+ while(GX_GetDrawSync()!=token) {
   __asm__ volatile("mftb %0":"=r"(now));
-  /* R1389-WD7: WD6 timeout file showed the GP idle (readidle=1 cmdidle=1, FIFO
-   * rd==wr, no overflow) while the finish callback never arrived: the finish
-   * interrupt was lost, not the GP stalled. After a 50 ms grace period an idle
-   * GP with a drained FIFO counts as finished (the DrawDone token is the last
-   * command in the FIFO), so rendering continues instead of switching GX off.
-   * Untested on hardware. */
+  /* Capture diagnostic CP/PE state, but never use idle as completion. */
   if((uint32_t)(now-begin)>GX_LOST_IRQ_GRACE_TB) {
    /* Only plain register reads here: GX_GetCPUFifo()/__GX_SaveFifo() blocked
     * the console in WD7 (hang-pc report: WAITING inside GX_GetCPUFifo). */
@@ -463,21 +466,13 @@ static void gx_bounded_draw_done(unsigned reason)
    uint16_t pe=*(volatile uint16_t*)0xCC00100Au;
    uint32_t pis=*(volatile uint32_t*)0xCC003000u,pim=*(volatile uint32_t*)0xCC003004u;
    if(!gx_diag_taken){gx_diag[0]=pe;gx_diag[1]=pis;gx_diag[2]=pim;gx_diag[3]=ovh;gx_diag[4]=und;gx_diag[5]=rdi;gx_diag[6]=cmi;gx_diag[7]=brk;gx_diag_taken=1;}
-   if(rdi&&cmi&&((uint32_t)(now-begin)>GX_LOST_IRQ_GRACE_TB*2u)){gx_wd[6]++;gx_done_flag=1;gx_wait_timeout_marker(100u+reason);break;}
   }
   if((uint32_t)(now-begin)>GX_WAIT_LIMIT_TB) {
    gx_wd[0]++;gx_wd[1]=reason;gx_wd[2]=(uint64_t)(unsigned)gs_mem_gpu_pending();
    gx_wait_timeout_marker(200u+reason);
-   /* R1389-WD10 beta: try GX_AbortFrame() (libogc's documented GP reset) up to
-    * twice before giving up. Not tested on hardware. */
-   if(gx_wd[7]<8u) {
-    gx_wd[7]++;
-    GX_AbortFrame();
-    gx_done_flag=0;GX_SetDrawDoneCallback(gx_done_callback);GX_SetDrawDone();
-    uint32_t b2,n2;__asm__ volatile("mftb %0":"=r"(b2));
-    do{__asm__ volatile("mftb %0":"=r"(n2));}while(!gx_done_flag&&(uint32_t)(n2-b2)<60750000u);
-    if(gx_done_flag){gx_wait_timeout_marker(300u+reason);return;}
-   }
+   /* Abort discards submitted work. Never publish its EFB/readback as a
+    * successful guest draw or try to recover by accepting a fresh token. */
+   GX_AbortFrame();gx_wd[7]++;
    gx_wait_failed=1;render_enabled=0;
 #ifdef GEKKO2_GX_DUMP
    gs_gx_dump_record("WAIT_TIMEOUT",reason,(uint32_t)gs_mem_gpu_pending(),0,0);gs_gx_dump_flush(NULL);
@@ -487,9 +482,10 @@ static void gx_bounded_draw_done(unsigned reason)
   }
  }
  __asm__ volatile("mftb %0":"=r"(now));
+ if(!gx_done_flag)gx_wd[6]++;
  if((uint32_t)(now-begin)>gx_wd[3])gx_wd[3]=(uint32_t)(now-begin);
 }
-static void gx_cpu_wait_profile_impl(unsigned reason){
+static int gx_cpu_wait_profile_impl(unsigned reason){
 #ifdef GEKKO2_GX_DUMP
  gs_gx_dump_record("WAIT_ENTER",reason,gs_mem_gpu_pending(),0,0);GXD_FLUSH();
 #endif
@@ -501,12 +497,13 @@ static void gx_cpu_wait_profile_impl(unsigned reason){
 #ifdef GEKKO2_GX_DUMP
  gs_gx_dump_record("WAIT_DONE",reason,gs_mem_gpu_pending(),end-begin,0);GXD_FLUSH();
 #endif
+ return !gx_wait_failed;
 }
-static void gx_cpu_wait(unsigned reason)
+static int gx_cpu_wait(unsigned reason)
 {
  unsigned profile_previous=gp_enter(GP_GX_WAIT);
- gx_cpu_wait_profile_impl(reason);
- gp_leave(profile_previous);
+ int result=gx_cpu_wait_profile_impl(reason);
+ gp_leave(profile_previous);return result;
 }
 
 int gs_gx_ready(void){return initialized;}
@@ -540,7 +537,7 @@ static uint32_t source_pack(gs_gx_texture_draw *d,gs_gx_texel_fn sample)
     d->origin_x==source_cache.x&&d->origin_y==source_cache.y&&d->tw==source_cache.w&&d->th==source_cache.h) {
   source_cache_counts[0]++;return d->tw*d->th*4u;
  }
- if(texture_in_flight)gx_cpu_wait(0); /* CPU overwrites a sampled buffer. */
+ if(texture_in_flight&&!gx_cpu_wait(0))return 0; /* CPU overwrites a sampled buffer. */
  uint32_t bytes=gs_gx_pack_texture(texture,GX_PRESENT_TEXTURE,d,sample);source_cache_counts[1]++;
  if(bytes)source_upload_pending=1u;
  source_cache.valid=valid&&bytes;source_cache.lo=lo;source_cache.hi=hi;source_cache.x=d->origin_x;source_cache.y=d->origin_y;
@@ -583,7 +580,7 @@ static struct {uint32_t bp,bw,x,y,width,height,alpha,bytes;} capture;
 static int resolve_capture_profile_impl(void *opaque,uint8_t *vram,uint32_t size){
     (void)opaque;
     work_counts[3]++;
-    gx_cpu_wait(1); /* GPU copy must finish before invalidating CPU cache. */
+    if(!gx_cpu_wait(1))return 0; /* GPU copy must finish before invalidating CPU cache. */
     DCInvalidateRange(readback,capture.bytes);
     if(capture_texture)return gs_gx_import_texture(vram,size,readback,capture.bytes,texture,texture_draw.tw*texture_draw.th*4u,&texture_draw);
     if(capture_flat)return gs_gx_import_flat(vram,size,readback,capture.bytes,&flat_draw);
@@ -670,7 +667,7 @@ static void surface_copy(void *pixels,uint32_t x,uint32_t y,uint32_t w,uint32_t 
 }
 static int surface_snapshot(void)
 {
- if(!surface||!surface->active||!surface_pixels)return 0;
+ if(gx_wait_failed||!surface||!surface->active||!surface_pixels)return 0;
  if(!surface_texture_valid){surface_copy(surface_pixels,0,0,surface->width,surface->height);surface_texture_valid=1;surface_counts[3]++;}
  return 1;
 }
@@ -679,7 +676,7 @@ static int resolve_surface_profile_impl(void *opaque,uint8_t *vram,uint32_t size
  if(!surface||!surface->active)return 0;
  /* A seed has no guest-visible dirty pixels. Still drain its queued read
   * before returning CPU ownership of the seed allocation. */
- if(!surface->dirty_pixels){gx_cpu_wait(1);surface->active=0;surface_counts[8]++;return 1;}
+ if(!surface->dirty_pixels){if(!gx_cpu_wait(1))return 0;surface->active=0;surface_counts[8]++;return 1;}
  uint32_t x=surface->dirty_x0&~3u,y=surface->dirty_y0&~3u;
  uint32_t w=((surface->dirty_x1+3u)&~3u)-x,h=((surface->dirty_y1+3u)&~3u)-y;
  uint32_t bytes=w*h*4u;
@@ -687,7 +684,7 @@ static int resolve_surface_profile_impl(void *opaque,uint8_t *vram,uint32_t size
  if(!readback)return 0;
  /* A distinct destination never overwrites a seed texture that GX may
   * still sample. Copy only the aligned dirty bounding rectangle. */
- surface_copy(readback,x,y,w,h);gx_cpu_wait(1);
+ surface_copy(readback,x,y,w,h);if(!gx_cpu_wait(1))return 0;
  DCInvalidateRange(readback,bytes);
  if(!gs_gx_surface_import_rect(surface,vram,size,readback,bytes,x,y,w,h))return 0;
  surface_texture_valid=0;
@@ -718,7 +715,7 @@ static int surface_ensure_height(const gs_gx_flat_draw *draw,uint32_t h)
   if(!gs_mem_gpu_bind(resolve_surface,NULL)||!gs_gx_surface_begin(surface,draw->bp,draw->bw,draw->bw,h))return 0;
   if(!gs_mem_gpu_protect_range(draw->bp*4u,(uint32_t)target_offset(draw->bp,draw->bw,draw->bw-1,h-1)+4u)){surface->active=0;return 0;}
   /* New target: retire all old allocation consumers before repacking it. */
-  if(texture_in_flight)gx_cpu_wait(0);
+  if(texture_in_flight&&!gx_cpu_wait(0))return 0;
   memset(surface_seeded,0,sizeof(surface_seeded));
   surface_texture_valid=0;surface_counts[0]++;
  }
@@ -788,7 +785,7 @@ static int surface_draw_textured(gs_gx_texture_draw *d,uint32_t bytes)
  if(d->hardware_blend==1u) {
   /* A resident blend samples only its aligned destination rectangle.
    * Allocate the maximum once: never free a buffer still sampled by GX. */
-  if(destination_capacity<GS_GX_SURFACE_PIXELS*4u && texture_in_flight)gx_cpu_wait(0);
+  if(destination_capacity<GS_GX_SURFACE_PIXELS*4u && texture_in_flight&&!gx_cpu_wait(0))return 0;
   if(!grow_texture(&destination_texture,&destination_capacity,GS_GX_SURFACE_PIXELS*4u))return 0;
   surface_copy(destination_texture,d->coverage.x,d->coverage.y,d->coverage.width,d->coverage.height);
   resident_pipeline_counts[10]+=(uint64_t)d->coverage.width*d->coverage.height*4u;
@@ -845,14 +842,14 @@ static int surface_draw_textured(gs_gx_texture_draw *d,uint32_t bytes)
 #ifdef GEKKO2_GX_RESIDENT_FENCE
  /* Diagnostic ownership boundary: finish resident commands before the
   * caller changes GS state or falls back to CPU work. */
- gx_cpu_wait(0);
+ if(!gx_cpu_wait(0))return 0;
 #endif
  surface_counts[1]++;work_counts[0]++;work_counts[1]+=quads*passes;
  texture_counts[1]++;texture_counts[2]+=bytes;return 1;
 }
 static int surface_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t width,uint32_t height)
 {
- if(!xfb||!mode||mode->aa||!surface||!surface->active||bp!=surface->bp||bw!=surface->bw||
+ if(gx_wait_failed||!xfb||!mode||mode->aa||!surface||!surface->active||bp!=surface->bp||bw!=surface->bw||
     !width||!height||(width&3u)||(height&3u)||sx>surface->width||width>surface->width-sx||
     sy>surface->height||height>surface->height-sy||mode->fbWidth<surface->width||mode->efbHeight<surface->height)return 0;
  uint32_t copy_h=GX_SetDispCopyYScale(GX_GetYScaleFactor(mode->efbHeight,mode->xfbHeight));
@@ -867,7 +864,7 @@ static int surface_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,ui
  GX_SetCopyFilter(GX_FALSE,mode->sample_pattern,GX_TRUE,mode->vfilter);
  GX_SetFieldMode(mode->field_rendering,mode->viHeight==2*mode->xfbHeight);GX_SetDispCopyGamma(GX_GM_1_0);
  surface_quad(mode->fbWidth,mode->efbHeight);texture_in_flight=1;
- GX_CopyDisp(xfb,GX_FALSE);gx_cpu_wait(2);
+ GX_CopyDisp(xfb,GX_FALSE);if(!gx_cpu_wait(2))return 0;
  surface_state(surface->width,surface->height,1);surface_texture(surface_pixels,surface->width,surface->height,GX_NEAR);
  surface_quad(surface->width,surface->height);surface_counts[4]++;return 1;
 }
@@ -891,7 +888,7 @@ int gs_gx_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
     if(!initialize())return 0;
     /* Previous copy finishes before CPU texture reuse; DrawDone below also
      * completes the EFB->XFB copy before the software FPS overlay writes. */
-    if(texture_in_flight)gx_cpu_wait(0);
+    if(texture_in_flight&&!gx_cpu_wait(0))return 0;
     source_cache.valid=0;
     uint32_t bytes=gs_gx_pack_rgba8(texture,GX_PRESENT_TEXTURE,bp,bw,sx,sy,width,height);
     if(!bytes)return 0;
@@ -930,7 +927,7 @@ int gs_gx_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
     GXB(GX_QUADS,GX_VTXFMT0,4);
     vertex(0,0,0,0);vertex(mode->fbWidth,0,s,0);
     vertex(mode->fbWidth,mode->efbHeight,s,t);vertex(0,mode->efbHeight,0,t);
-    GX_End();texture_in_flight=1;GX_CopyDisp(xfb,GX_FALSE);gx_cpu_wait(2);
+    GX_End();texture_in_flight=1;GX_CopyDisp(xfb,GX_FALSE);if(!gx_cpu_wait(2))return 0;
     return 1;
 }
 static void color_vertex(float x,float y,uint32_t rgba)
@@ -1383,7 +1380,7 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  if(conservative_z&&failed)return 0;
  /* Pack raw, constant-color GS texels once, never shaded screen pixels. */
  source_key_valid=source_cache.valid=0;
- if(texture_in_flight)gx_cpu_wait(0);
+ if(texture_in_flight&&!gx_cpu_wait(0))return 0;
  uint32_t alpha=0,bytes=tw*th*4u;
  int uniform_required=!color&&(!psm||(alpha_blend&&p->c==0u));
  int varying_alpha=0;uint32_t max_alpha=0,min_alpha=255;

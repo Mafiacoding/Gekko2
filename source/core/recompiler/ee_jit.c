@@ -1,4 +1,5 @@
 #include "core/recompiler/cache_profile.h"
+#include "core/recompiler/experimental_options.h"
 #include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/dynarec_config.h"
 /*
@@ -970,7 +971,10 @@ static uint64_t precise_resident_runs,precise_resident_retired,precise_resident_
 uint64_t ee_jit_get_chain_residency_stat(unsigned n)
 {
 #ifdef GEKKO2_EE_CHAIN_RESIDENCY
- return n==0?1u:n==1?precise_resident_runs:n==2?precise_resident_retired:n==3?precise_resident_selected:0;
+ return n==0?(unsigned)(gekko2_experimental_enabled(GEKKO2_EXP_CHAIN)&&
+  gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)&&
+  gekko2_opt_enabled(GEKKO2_OPT_NATIVE_LINKS)&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY)):
+  n==1?precise_resident_runs:n==2?precise_resident_retired:n==3?precise_resident_selected:0;
 #else
  (void)n;return 0;
 #endif
@@ -1212,10 +1216,23 @@ static void ee_precise_make_resident(ee_precise_slot *slot)
   precise_resident_map_ready=1;
  }
  ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,slot->count*2u))return;
- if(ppc_dynarec_translate_ee_chain_block(&c,slot->pc,slot->words,slot->count,
-    (uint32_t)(uintptr_t)ee_core_block_prepare,0,0,
-    (uint32_t)(uintptr_t)ee_core_block_commit,&precise_resident_map)||
-    !ee_precise_make_room((c.used_words+1u)*4u,slot)){
+#ifdef GEKKO2_LEGACY_BOUNDARIES
+ int translation=ppc_dynarec_translate_ee_chain_block(&c,slot->pc,slot->words,slot->count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_delay,
+    (uint32_t)(uintptr_t)ee_core_block_commit,&precise_resident_map);
+#else
+ int translation=ppc_dynarec_translate_ee_fused_chain_block(&c,slot->pc,slot->words,slot->count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_delay,
+    (uint32_t)(uintptr_t)ee_core_block_commit,
+    (uint32_t)(uintptr_t)ee_core_block_boundary,
+    (uint32_t)(uintptr_t)ee_core_block_memory_boundary,
+    (uint32_t)(uintptr_t)ee_core_block_delay_boundary,&precise_resident_map);
+#endif
+ if(translation||!ee_precise_make_room((c.used_words+1u)*4u,slot)){
   ppc_dynarec_free(&c);return;
  }
  slot->resident_fn=(ee_precise_fn)ppc_dynarec_finalize(&c);
@@ -1391,7 +1408,7 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
 execute_slot:;
  int resident_chain=0;
 #ifdef GEKKO2_EE_CHAIN_RESIDENCY
- if(native_chain&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY)&&slot->count<=quantum_budget&&slot->count+2u<=budget){
+ if(gekko2_experimental_enabled(GEKKO2_EXP_CHAIN)&&native_chain&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY)&&slot->count<=quantum_budget&&slot->count+2u<=budget){
   ee_precise_make_resident(slot);
   if(slot->resident_fn){ee_precise_make_resident_chain();resident_chain=precise_resident_chain_fn!=0;}
  }

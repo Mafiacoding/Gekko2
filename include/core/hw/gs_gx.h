@@ -104,6 +104,7 @@ uint64_t gs_gx_work_count(unsigned index);
 /* CPU waits: 0 source reuse, 1 readback, 2 XFB present, 3 shutdown;
  * 4..7 corresponding Broadway time-base ticks (wrap-safe per wait). */
 uint64_t gs_gx_sync_count(unsigned index);
+uint64_t gs_gx_watchdog_count(unsigned index);
 /* 0 candidates, 1 accepted textured sprites, 2 uploaded bytes, 3 layout rejects. */
 uint64_t gs_gx_texture_count(unsigned index);
 /* 0 depth hardware, 1 depth hybrid, 2 blend hardware, 3 blend hybrid,

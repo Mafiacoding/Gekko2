@@ -456,6 +456,8 @@ static void gs_framebuffer_write16(uint32_t x,uint32_t y,uint32_t rgba)
         gs_mem_write_psmct16s(g_gif.fbp,g_gif.fbw,x,y,packed);
     else gs_mem_write_psmct16(g_gif.fbp,g_gif.fbw,x,y,packed);
 }
+static int gs_dither_active(void)
+{return g_gif.dthe&&(g_gif.frame_psm==TEX_PSM_PSMCT16||g_gif.frame_psm==TEX_PSM_PSMCT16S);}
 static int gs_blend_shift7(int value)
 {return value>=0?value/128:-((-value+127)/128);}
 static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_t frag_z, int z_write_allowed)
@@ -570,8 +572,7 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
             out_b = b;
         }
 
-        if (g_gif.dthe && (g_gif.frame_psm==TEX_PSM_PSMCT16 ||
-                          g_gif.frame_psm==TEX_PSM_PSMCT16S)) {
+        if (gs_dither_active()) {
             /* Round 102 (143rd finding, task #254): dithering - real
              * GS Users Manual "3.6.1 Dithering" formula, applied as
              * the final RGB transform before the pixel is written
@@ -804,11 +805,11 @@ static void gs_activate_context(void)
     if(g_gif.zbuf_configured&&g_gif.zte&&g_gif.ztst!=GS_ZTST_ALWAYS)g_draw_routes[4]++;
     if(g_gif.ate)g_draw_routes[5]++;
     if(g_gif.fbmask)g_draw_routes[6]++;
-    if(g_gif.dthe||g_gif.fba)g_draw_routes[7]++;
+    if(gs_dither_active()||g_gif.fba)g_draw_routes[7]++;
     if(attr&PRIM_FGE_MASK)g_draw_routes[8]++;
     if((attr&PRIM_IIP_MASK)&&(g_gif.prim&7u)>=3u&&(g_gif.prim&7u)<=5u)g_draw_routes[9]++;
     /* Drawing attributes remain fixed during this synchronous primitive. */
-    g_gx_opaque=!g_gif.date && !g_gif.ate && !g_gif.dthe && !g_gif.fba && !g_gif.fbmask &&
+    g_gx_opaque=!g_gif.date && !g_gif.ate && !gs_dither_active() && !g_gif.fba && !g_gif.fbmask &&
         (g_gif.frame_psm==TEX_PSM_PSMCT32 || g_gif.frame_psm==TEX_PSM_PSMCT24) &&
         !(gs_effective_attr_prim()&PRIM_ABE_MASK);
     g_opaque_pixel=g_gx_opaque && g_gif.frame_psm==TEX_PSM_PSMCT32;
@@ -1026,7 +1027,7 @@ static unsigned gouraud_gx_block_reason(int textured,int32_t minx,int32_t miny,i
     uint32_t attr=gs_effective_attr_prim();
     if(textured)return GIF_GFB_TEXTURE;
     if(g_gif.ate)return GIF_GFB_ALPHA_TEST;
-    if(g_gif.dthe||g_gif.fba)return GIF_GFB_DITHER_FBA;
+    if(gs_dither_active()||g_gif.fba)return GIF_GFB_DITHER_FBA;
     if(g_gif.fbmask)return GIF_GFB_FBMASK;
     if(g_gif.zbuf_configured)return GIF_GFB_DEPTH;
     if(attr&PRIM_ABE_MASK)return GIF_GFB_BLEND;
@@ -1181,7 +1182,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
             if (g_gif.zbuf_configured && g_gif.zte && g_gif.ztst != GS_ZTST_ALWAYS) key |= 1u << 3;
             if (a & PRIM_FGE_MASK) key |= 1u << 4;
             if (g_gif.ate) key |= 1u << 5;
-            if (g_gif.dthe || g_gif.fba) key |= 1u << 6;
+            if (gs_dither_active() || g_gif.fba) key |= 1u << 6;
             if (g_gif.fbmask) key |= 1u << 7;
             key |= (psm == TEX_PSM_PSMCT32 ? 0u : psm == TEX_PSM_PSMCT24 ? 1u :
                     (psm == TEX_PSM_PSMCT16 || psm == TEX_PSM_PSMCT16S) ? 2u : 3u) << 8;
@@ -1214,7 +1215,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
        (g_gif.zpsm==0u||(g_gif.zpsm==1u&&z0<=0xffffffu&&z1<=0xffffffu&&z2<=0xffffffu)||
         ((g_gif.zpsm==2u||g_gif.zpsm==10u)&&z0<=0xffffu&&z1<=0xffffu&&z2<=0xffffu)));
     if(textured&&(!interpolate_color||(g_gif.tex_tfx==TEX_TFX_MODULATE&&g_gif.tex_tcc&&(c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&native_z_bound&&
-       !g_gif.ate&&!g_gif.date&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !g_gif.ate&&!g_gif.date&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&!g_gif.tex1_mxl&&
        g_gif.tex_tw>=2u&&g_gif.tex_th>=2u&&g_gif.tex_tw<=7u&&g_gif.tex_th<=7u&&
        g_gif.clamp_configured&&g_gif.clamp_wms<=1u&&g_gif.clamp_wmt<=1u&&
@@ -1248,7 +1249,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
        gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)&&(!g_gif.date && gs_gx_render_active())&&
        (!(gs_effective_attr_prim()&PRIM_ABE_MASK)||g_gif.alpha_c!=0u||
         (!g_gif.tex_tcc&&(c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&
-       z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       z0==z1&&z1==z2&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&!g_gif.tex1_mxl&&
        maxx>=minx&&maxy>=miny&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2},uv[6]={u0,v0,u1,v1,u2,v2};
@@ -1268,7 +1269,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
     }
     if(textured&&(gs_effective_attr_prim()&PRIM_FST_MASK)&&g_gif.tex_tfx==TEX_TFX_DECAL&&
        !g_gif.tex_tcc&&g_gif.tex1_mmag==0u&&g_gif.tex1_mmin==0u&&!gouraud&&
-       gs_depth_is_inactive()&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       gs_depth_is_inactive()&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&(PRIM_FGE_MASK|PRIM_ABE_MASK))&&g_gif.frame_psm==0u&&(!g_gif.date && gs_gx_render_active())) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2};float uv[6]={(float)u0,(float)v0,(float)u1,(float)v1,(float)u2,(float)v2};
         if(gs_gx_draw_uv_decal_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,uv,
@@ -1297,7 +1298,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
             gouraud_reason=GIF_GFB_GX_REJECTED;
         }
     }
-    if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+    if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&(!g_gif.date && gs_gx_render_active())) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2};
         gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
@@ -1720,7 +1721,7 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     g_sprite_cached_draws+=safe_texture;
     /* BETA12.20: Sprite snapshot can evaluate ATE/DATE late in the CPU
      * importer. Resident GX depth/blend paths are independently excluded. */
-    if((!textured||safe_texture)&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+    if((!textured||safe_texture)&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        (g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&gs_gx_render_active()&&
        sx1>sx0&&sy1>sy0&&sx1-sx0<=640&&sy1-sy0<=512&&

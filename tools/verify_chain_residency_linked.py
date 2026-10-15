@@ -15,15 +15,20 @@ def clocks():
  call('ee_timers_init');u.mem_write(syms['g_ee_display_ticks'],struct.pack('>Q',1000))
  word(syms['g_ee_display_phase'],1000);u.mem_write(syms['g_ee_irq'],bytes(8));call('ee_timers_tick')
 
-def run(native,budget,change,irq,registers=(4,5,6)):
+def run(native,budget,change,irq,registers=(4,5,6),chain_mode=None,psm_mode=0,measure=False,program_words=None):
  extension_setup()
  call('dma_init')
+ call('gekko2_experimental_request',0,int(native if chain_mode is None else chain_mode))
+ call('gekko2_experimental_request',1,psm_mode);call('gekko2_experimental_apply_cold_boot')
+ call('gs_mem_set_local_extended_conversion',psm_mode)
  word(mask_address,flags if native else flags&~(1|8))
  clocks()
  # PAND/PXOR/POR/PNOR and scalar dependent updates; only synthetic words.
  program=[]
  for n in range(128):
   kind=n&3;program.append((28<<26)|(registers[0]<<21)|(registers[1]<<16)|(registers[2]<<11)|((18+(kind&1))<<6)|(9 if kind<2 else 41))
+ if program_words is not None:
+  assert len(program_words)==128;program=program_words
  u.mem_write(ram+base,struct.pack('<128I',*program))
  for r in registers:u.mem_write(state+r*16,struct.pack('>4I',0x12345678*r&0xffffffff,0x11111111*r&0xffffffff,0x22222222*r&0xffffffff,0x87654321))
  snapshot=bytes(u.mem_read(state,size))
@@ -48,7 +53,9 @@ def run(native,budget,change,irq,registers=(4,5,6)):
  saved=[0xa1000000+n for n in range(18)]
  for r,v in zip(range(14,32),saved):u.reg_write(UC_PPC_REG_0+r,v)
  saved_cr=u.reg_read(UC_PPC_REG_CR)&0x00fff000
- assert call('ee_core_step_n',budget)==budget
+ if measure:total[0]=0;active[0]=True
+ try:assert call('ee_core_step_n',budget)==budget
+ finally:active[0]=False
  assert [u.reg_read(UC_PPC_REG_0+r) for r in range(14,32)]==saved
  assert u.reg_read(UC_PPC_REG_CR)&0x00fff000==saved_cr
  selected=stat(3)-before

@@ -1,6 +1,6 @@
-# Gekko2 SPEED BETA12.20 – 15 October 2026
+# Gekko2 SPEED BETA12.21 – 15 October 2026
 
-**Aktueller Stand:** R1389-SPEED-BETA12.20-GX-ALPHA-FENCES. Quellcode und Host-Regressionen; Hardware-Gameplaytest steht noch aus. Persistente 128-Bit-PPC-Registerübergabe über unabhängige JIT-Blöcke und vollständige GS/GX-Hardwaretreue bleiben offen. Die darunter folgenden früheren Statuspunkte dokumentieren ältere Versionen.
+**Experimenteller Stand BETA12.21:** opt-in Native-to-Native-128-Bit-Ketten für geprüfte ALU/MMI-, LQ/SQ-/LD/SD- und Integer-Sprungblöcke; eigener gespeicherter Cold-Boot-Schalter, standardmäßig OFF. PSM ebenfalls OFF. Sichere GX-Abschluss-/Fehlerprüfung und CT32/24-DTHE-Zugang. [Bericht](docs/BETA12.21-EXPERIMENTAL-OPTIONS.md). Host-/PPC-Tests und Wii-Cross-Build ersetzen keinen realen Wii-Test; Crash-Schwarzbild und BIOS-Kacheln bleiben ohne Hardwarebestätigung. Die folgenden älteren Abschnitte sind historisch.
 
 ## Historischer Stand: BETA12.9
 

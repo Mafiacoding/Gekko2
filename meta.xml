@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <app version="1">
-  <name>Gekko2 SPEED BETA12.20 GX ALPHA</name>
+  <name>Gekko2 SPEED BETA12.21 OPTIONS</name>
   <coder>Mafiacoding</coder>
-  <version>BETA12.20 - GS DATE / ATE / AFAIL sprite import</version>
+  <version>BETA12.21 - experimental 128-bit chain / PSM</version>
   <release_date>20261015</release_date>
   <short_description>Experimental PlayStation 2 emulator for Wii</short_description>
-  <long_description>Experimental PS2 emulator for Wii. Adds native CT16/CT16S software draw writes, framebuffer FBA/FBMSK/DATE behavior, saturating Z writes, and EE JIT exception entry guards. Real Wii black-screen/gameplay result not yet verified. Bring your own legal BIOS and disc image.</long_description>
+  <long_description>Experimental PS2 emulator for Wii. Separate saved cold-boot switches for native 128-bit JIT chain residency and experimental PSM conversion; both default OFF. Audited ALU/MMI, LQ/SQ, LD/SD and integer-branch native companions. Safe GX completion and failure propagation. No confirmed Wii gameplay, speedup, Crash black-screen or BIOS-tile fix. Bring your own legal BIOS and disc image.</long_description>
 </app>

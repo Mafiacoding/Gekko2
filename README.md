@@ -1,6 +1,6 @@
-# Gekko2 — SPEED BETA12.20
+# Gekko2 — SPEED BETA12.21
 
-**Aktueller experimenteller Quellstand: BETA12.20.** Der reale Wii-Gameplaytest ist noch offen; Crash-E3-Blackscreens und unabhängige blockübergreifende 128-Bit-Registerresidenz sind nicht als gelöst bestätigt. Die folgenden älteren Versionsabschnitte sind historische Entwicklungsnotizen.
+**Experimenteller Stand BETA12.21:** opt-in Native-to-Native-128-Bit-Ketten für geprüfte ALU/MMI-, LQ/SQ-/LD/SD- und Integer-Sprungblöcke; eigener gespeicherter Cold-Boot-Schalter, standardmäßig OFF. PSM ebenfalls OFF. Sichere GX-Abschluss-/Fehlerprüfung und CT32/24-DTHE-Zugang. [Bericht](docs/BETA12.21-EXPERIMENTAL-OPTIONS.md). Host-/PPC-Tests und Wii-Cross-Build ersetzen keinen realen Wii-Test; Crash-Schwarzbild und BIOS-Kacheln bleiben ohne Hardwarebestätigung. Die folgenden älteren Abschnitte sind historisch.
 
 ## Historical note: BETA12.10 – GS Local-to-Local safety
 
@@ -12,7 +12,7 @@ No physical Wii compatibility/gameplay claim.
 
 # Gekko2 — PS2 emulator for Nintendo Wii
 
-**Current source checkpoint: R1389-SPEED-BETA12.20-GX-ALPHA-FENCES (15 October 2026).**
+**Current source checkpoint: R1389-SPEED-BETA12.21-EXPERIMENTAL-OPTIONS (15 October 2026).**
 Experimental Wii development build. No claim of playable game compatibility.
 
 ## BETA12.9 – targeted GS correctness and safe VBlank speed extension

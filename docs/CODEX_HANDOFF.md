@@ -1,5 +1,12 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Neuer experimenteller Arbeitsstand:** [BETA12.21](BETA12.21-EXPERIMENTAL-OPTIONS.md),
+Branch `codex/beta12-21-experimental-options`, auf IPU- und Integrationsbatches.
+Geprüfte 128-Bit-Native-Ketten einschließlich ausgewählter RAM-/Sprungkörper
+existieren jetzt opt-in; universeller Native-ABI/Dirty-Writeback bleiben offen.
+Die folgende main-/BETA12.20-Beschreibung ist der historische Ausgangspunkt.
+Keine bestätigte Crash-/BIOS-/Gameplaykorrektur auf echter Wii.
+
 > **START HIER.** Dieses Dokument bündelt die tatsächlich bekannte Projektgeschichte und die nächsten Entwicklungsarbeiten. Es ist ein **Engineering-Handoff**, kein Beweis vollständig implementierter PS2-Hardware. Zusätzlich `AGENTS.md`, `STATUS.md`, `README.md` und die einzelnen `docs/BETA12.*`-Berichte lesen. Den aktuell ausgecheckten Commit/Release-String immer selbst prüfen.
 
 ## 1. Projekt / Ziel / Stand

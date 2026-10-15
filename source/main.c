@@ -1,5 +1,6 @@
 #include "core/chd_reader.h"
 #include "build_version.h"
+#include "core/recompiler/experimental_options.h"
 #include "core/hw/iop_dma.h"
 #include "core/hw/audio_output.h"
 #include "core/hw/controller_input.h"
@@ -620,6 +621,14 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long long)ee_jit_get_chain_residency_stat(1),
         (unsigned long long)ee_jit_get_chain_residency_stat(2),
         (unsigned long long)ee_jit_get_chain_residency_stat(3));
+    fprintf(f,"EXPERIMENTAL_OPTIONS chain_compiled=%u chain_requested=%d chain_active=%d psm_requested=%d psm_active=%d apply=cold-boot\n",
+        (gekko2_experimental_available()>>GEKKO2_EXP_CHAIN)&1u,
+        gekko2_experimental_requested(GEKKO2_EXP_CHAIN),gekko2_experimental_enabled(GEKKO2_EXP_CHAIN),
+        gekko2_experimental_requested(GEKKO2_EXP_PSM),gs_mem_get_local_extended_conversion());
+    fprintf(f,"GX_FENCE completion=ordered-PE-token waits=%llu callbacks=%llu polled=%llu timeouts=%llu aborts=%llu last_reason=%llu\n",
+        (unsigned long long)gs_gx_watchdog_count(4),(unsigned long long)gs_gx_watchdog_count(5),
+        (unsigned long long)gs_gx_watchdog_count(6),(unsigned long long)gs_gx_watchdog_count(0),
+        (unsigned long long)gs_gx_watchdog_count(7),(unsigned long long)gs_gx_watchdog_count(1));
     /* R1358: capture the drain/producer pair in the existing log snapshot.
      * No new per-instruction polling or logging. */
     const dma_state_t *d=dma_get_state();
@@ -1036,7 +1045,6 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
  * the doc comment above draw_boot_progress_hud() for the full design.
  * Runs automatically once at startup (called from main()) and is also
  * reachable again from the launcher ("Re-run Boot Flow"). */
-static int g_extended_psm_option;
 static void run_real_boot_flow(void)
 {
     draw_gradient_background(6, 6, 22, 0, 0, 6);
@@ -1086,6 +1094,7 @@ static void run_real_boot_flow(void)
         vu_jit_reset_for_test();
         ppc_dynarec_reset_translation_stats();
         gekko2_opt_apply();
+        gekko2_experimental_apply_cold_boot();
         g_gx_present=g_gx_requested;
         g_boot_started=gettime();g_boot_log_next=0;g_guest_error_reported=0;g_fileio_trace_previous_total=0;
         if(frontend_log_begin(&g_session_log,"sd:/pcsx2/logs",g_boot_disc,g_gx_present)<0)
@@ -1104,7 +1113,7 @@ static void run_real_boot_flow(void)
         g_xfb_updates=g_xfb_guest_copies=g_xfb_hud_updates=0;
         gs_init();
         gs_mem_init();
-        gs_mem_set_local_extended_conversion(g_extended_psm_option);
+        gs_mem_set_local_extended_conversion(gekko2_experimental_enabled(GEKKO2_EXP_PSM));
         gs_mem_reset_local_copy_stats();
         save_boot_progress("BOOT");
     } else {
@@ -1354,22 +1363,12 @@ static void run_real_boot_flow(void)
 
 static void gs_compat_load(void)
 {
-    FILE *f=fopen("sd:/pcsx2/gs-compat.cfg","r");
-    int v=0;
-    if(f){if(fscanf(f,"GEKKO2_GS_EXTENDED_PSM %d",&v)==1)g_extended_psm_option=(v==1);fclose(f);}
+    gekko2_experimental_load(GEKKO2_EXP_PSM,"sd:/pcsx2/gs-compat.cfg");
+    gekko2_experimental_load(GEKKO2_EXP_CHAIN,"sd:/pcsx2/jit-chain.cfg");
 }
 static int gs_compat_save(void)
 {
-    FILE *f=fopen("sd:/pcsx2/gs-compat.cfg.tmp","w");
-    if(!f)return -1;
-    int ok=fprintf(f,"GEKKO2_GS_EXTENDED_PSM %d\n",g_extended_psm_option)>0;
-    if(fclose(f))ok=0;
-    if(!ok)return -1;
-    if(rename("sd:/pcsx2/gs-compat.cfg.tmp","sd:/pcsx2/gs-compat.cfg")!=0){
-        remove("sd:/pcsx2/gs-compat.cfg");
-        if(rename("sd:/pcsx2/gs-compat.cfg.tmp","sd:/pcsx2/gs-compat.cfg")!=0)return -1;
-    }
-    return 0;
+    return gekko2_experimental_save(GEKKO2_EXP_PSM,"sd:/pcsx2/gs-compat.cfg");
 }
 static int cold_boot_session(int disc)
 {
@@ -1421,6 +1420,10 @@ int main(int argc, char **argv)
 #endif
             );
             fprintf(boot,"OPTIONS load_status=%d requested=%08lx active=%08lx ios222=%d\n",opt_load_status,(unsigned long)gekko2_opt_requested(),(unsigned long)gekko2_optimization_mask,gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222));
+            fprintf(boot,"EXPERIMENTAL_OPTIONS chain_compiled=%u chain_requested=%d chain_active=%d psm_requested=%d psm_active=%d apply=next-cold-boot\n",
+                (gekko2_experimental_available()>>GEKKO2_EXP_CHAIN)&1u,
+                gekko2_experimental_requested(GEKKO2_EXP_CHAIN),gekko2_experimental_enabled(GEKKO2_EXP_CHAIN),
+                gekko2_experimental_requested(GEKKO2_EXP_PSM),gekko2_experimental_enabled(GEKKO2_EXP_PSM));
             fprintf(boot,"ARM_IOS status=%d original=%u active=%u\n",wii_arm_ios_status(),wii_arm_ios_original(),wii_arm_ios_active());
             fclose(boot);
         }
@@ -1437,8 +1440,13 @@ int main(int argc, char **argv)
             if(page==4){
                 ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
                 ui_text(launcher_rect,36,415,1,
-                  g_extended_psm_option?"X: EXPERIMENTAL PSM CONVERSION ON":"X: EXPERIMENTAL PSM CONVERSION OFF",
+                  gekko2_experimental_requested(GEKKO2_EXP_PSM)?"X: EXPERIMENTAL PSM CONVERSION ON":"X: EXPERIMENTAL PSM CONVERSION OFF",
                   227,197,114);
+                char chain_line[100];snprintf(chain_line,sizeof chain_line,
+                  "Y: 128-BIT JIT CHAIN RESIDENCY - EXPERIMENTAL %s",
+                  !(gekko2_experimental_available()&(1u<<GEKKO2_EXP_CHAIN))?"UNAVAILABLE":
+                  gekko2_experimental_requested(GEKKO2_EXP_CHAIN)?"ON":"OFF");
+                ui_text(launcher_rect,36,380,1,chain_line,227,197,114);
                 char ios_line[90];snprintf(ios_line,sizeof ios_line,"Current IOS: %u | %s",wii_arm_ios_active(),wii_arm_ios_message());
                 ui_text(launcher_rect,36,343,1,ios_line,117,186,237);
             }
@@ -1476,8 +1484,14 @@ int main(int argc, char **argv)
             if(page==4){
                 if(down&PAD_BUTTON_B)page=1;
                 else if(down&PAD_BUTTON_X){
-                    g_extended_psm_option=!g_extended_psm_option;
+                    gekko2_experimental_request(GEKKO2_EXP_PSM,!gekko2_experimental_requested(GEKKO2_EXP_PSM));
                     notice=gs_compat_save()==0?"GS option saved. Next cold boot.":"GS option not saved to SD.";
+                }
+                else if(down&PAD_BUTTON_Y){
+                    if(!gekko2_experimental_request(GEKKO2_EXP_CHAIN,!gekko2_experimental_requested(GEKKO2_EXP_CHAIN)))
+                        notice="128-bit chain residency is not compiled into this build.";
+                    else notice=gekko2_experimental_save(GEKKO2_EXP_CHAIN,"sd:/pcsx2/jit-chain.cfg")==0?
+                        "128-bit chain option saved. Next cold boot.":"128-bit chain option not saved to SD.";
                 }
                 else if(down&PAD_BUTTON_UP)opt_selected=(opt_selected+GEKKO2_OPT_COUNT-1)%GEKKO2_OPT_COUNT;
                 else if(down&PAD_BUTTON_DOWN)opt_selected=(opt_selected+1)%GEKKO2_OPT_COUNT;
