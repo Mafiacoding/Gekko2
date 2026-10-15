@@ -1086,6 +1086,8 @@ static void run_real_boot_flow(void)
         vu_jit_reset_for_test();
         ppc_dynarec_reset_translation_stats();
         gekko2_opt_apply();
+        /* Apply staged native-ABI option only after the previous guest was shut down. */
+        gekko2_chain128_apply_cold_boot();
         g_gx_present=g_gx_requested;
         g_boot_started=gettime();g_boot_log_next=0;g_guest_error_reported=0;g_fileio_trace_previous_total=0;
         if(frontend_log_begin(&g_session_log,"sd:/pcsx2/logs",g_boot_disc,g_gx_present)<0)
@@ -1371,6 +1373,30 @@ static int gs_compat_save(void)
     }
     return 0;
 }
+/* Independent option file: optimization.cfg already uses all 32 bits.
+ * The requested setting never modifies a running guest/JIT session. */
+static void chain128_load(void)
+{
+    FILE *f=fopen("sd:/pcsx2/chain128.cfg","r");
+    unsigned v=0;char extra;
+    if(!f)return;
+    if(fscanf(f,"GEKKO2_CHAIN128 %u %c",&v,&extra)==1 && v<=1u)
+        gekko2_chain128_request((int)v);
+    fclose(f);
+}
+static int chain128_save(void)
+{
+    FILE *f=fopen("sd:/pcsx2/chain128.cfg.tmp","w");
+    if(!f)return -1;
+    int ok=fprintf(f,"GEKKO2_CHAIN128 %u\n",(unsigned)gekko2_chain128_requested())>0;
+    if(fclose(f))ok=0;
+    if(!ok){remove("sd:/pcsx2/chain128.cfg.tmp");return -1;}
+    if(rename("sd:/pcsx2/chain128.cfg.tmp","sd:/pcsx2/chain128.cfg")!=0){
+        remove("sd:/pcsx2/chain128.cfg");
+        if(rename("sd:/pcsx2/chain128.cfg.tmp","sd:/pcsx2/chain128.cfg")!=0)return -1;
+    }
+    return 0;
+}
 static int cold_boot_session(int disc)
 {
 #ifdef GEKKO2_ARM_BETA
@@ -1400,7 +1426,7 @@ int main(int argc, char **argv)
     wii_console_setup();
     if (!g_fat_mounted) g_fat_mounted = fatInitDefault() ? 1 : 0;
     int opt_load_status=g_fat_mounted?gekko2_opt_load("sd:/pcsx2/optimization.cfg"):-1;
-    if(g_fat_mounted)gs_compat_load();
+    if(g_fat_mounted){gs_compat_load();chain128_load();}
     gekko2_opt_apply(); /* Startup must use loaded settings before IOS selection. */
 #ifdef GEKKO2_ARM_BETA
     /* Both saved ARM and explicit IOS222 selection are required for reload.
@@ -1421,6 +1447,7 @@ int main(int argc, char **argv)
 #endif
             );
             fprintf(boot,"OPTIONS load_status=%d requested=%08lx active=%08lx ios222=%d\n",opt_load_status,(unsigned long)gekko2_opt_requested(),(unsigned long)gekko2_optimization_mask,gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222));
+            fprintf(boot,"CHAIN128 requested=%u compiled=%u active=%u apply=next_cold_boot\n",(unsigned)gekko2_chain128_requested(),(unsigned)gekko2_chain128_available(),(unsigned)gekko2_chain128_active());
             fprintf(boot,"ARM_IOS status=%d original=%u active=%u\n",wii_arm_ios_status(),wii_arm_ios_original(),wii_arm_ios_active());
             fclose(boot);
         }
@@ -1438,6 +1465,11 @@ int main(int argc, char **argv)
                 ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
                 ui_text(launcher_rect,36,415,1,
                   g_extended_psm_option?"X: EXPERIMENTAL PSM CONVERSION ON":"X: EXPERIMENTAL PSM CONVERSION OFF",
+                  227,197,114);
+                ui_text(launcher_rect,36,433,1,
+                  !gekko2_chain128_available()?"Y: 128-BIT JIT CHAIN UNAVAILABLE":
+                  gekko2_chain128_requested()?"Y: 128-BIT JIT CHAIN ON (EXPERIMENTAL)":
+                                               "Y: 128-BIT JIT CHAIN OFF (SAFE)",
                   227,197,114);
                 char ios_line[90];snprintf(ios_line,sizeof ios_line,"Current IOS: %u | %s",wii_arm_ios_active(),wii_arm_ios_message());
                 ui_text(launcher_rect,36,343,1,ios_line,117,186,237);
@@ -1478,6 +1510,17 @@ int main(int argc, char **argv)
                 else if(down&PAD_BUTTON_X){
                     g_extended_psm_option=!g_extended_psm_option;
                     notice=gs_compat_save()==0?"GS option saved. Next cold boot.":"GS option not saved to SD.";
+                }
+                else if(down&PAD_BUTTON_Y){
+                    if(!gekko2_chain128_available())
+                        notice="128-bit JIT not compiled into this DOL.";
+                    else {
+                        gekko2_chain128_request(!gekko2_chain128_requested());
+                        if(chain128_save()!=0)notice="128-bit option NOT saved. Check SD.";
+                        else notice=gekko2_chain128_requested()?
+                            "128-bit JIT staged ON. Cold boot; EE blocks, links and residency required.":
+                            "128-bit JIT staged OFF. Cold boot to apply.";
+                    }
                 }
                 else if(down&PAD_BUTTON_UP)opt_selected=(opt_selected+GEKKO2_OPT_COUNT-1)%GEKKO2_OPT_COUNT;
                 else if(down&PAD_BUTTON_DOWN)opt_selected=(opt_selected+1)%GEKKO2_OPT_COUNT;
