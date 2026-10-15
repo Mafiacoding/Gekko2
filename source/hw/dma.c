@@ -483,6 +483,8 @@ void dma_channel_kick(int channel)
         /* NORMAL mode: one shot, QWC quadwords straight from MADR. */
         if (!transfer_quadwords(channel, ch->madr, ch->qwc)) {
             ch->last_error = DMA_ERR_OUT_OF_BOUNDS;
+            ch->chcr &= ~0x100u;
+            return; /* A rejected transfer is not a completion IRQ. */
         } else {
             ch->madr += ch->qwc * 16u;
             if(channel==DMA_CHANNEL_FROMSPR && mfifo_valid())ch->madr=mfifo_wrap(ch->madr);
@@ -494,6 +496,28 @@ void dma_channel_kick(int channel)
         int drain=mfifo_channel();
         if(channel==DMA_CHANNEL_FROMSPR && ch->last_error==DMA_ERR_NONE && mfifo_valid() && drain>=0 && (g_dma.chan[drain].chcr&0x100u))dma_channel_kick(drain);
         return;
+    }
+
+    if (mod == 2u && (channel == DMA_CHANNEL_TOSPR || channel == DMA_CHANNEL_FROMSPR)) {
+        /* D_SQWC: transfer TQWC quadwords, skip SQWC in main RAM;
+         * scratchpad advances only over actual data and wraps at 16 KiB.
+         * TQWC=0 means one remaining span. MADR includes the final skip.
+         * Reference behavior: PCSX2 SPR.cpp interleave routines. */
+        if(channel==DMA_CHANNEL_FROMSPR && mfifo_valid()) {
+            ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;return;
+        }
+        uint32_t block=(g_dma.d_sqwc>>16)&255u,skip=g_dma.d_sqwc&255u;
+        if(!block)block=ch->qwc;
+        while(ch->qwc) {
+            uint32_t take=ch->qwc<block?ch->qwc:block;
+            if(!transfer_quadwords(channel,ch->madr,take)) {
+                ch->last_error=DMA_ERR_OUT_OF_BOUNDS;ch->chcr&=~0x100u;return;
+            }
+            ch->madr+=(take+skip)*16u;ch->qwc-=take;
+        }
+        if(channel==DMA_CHANNEL_FROMSPR && ((g_dma.d_ctrl>>4)&3u)==2u)
+            g_dma.d_stadr=ch->madr;
+        ch->chcr&=~0x100u;dma_channel_signal_done(channel);return;
     }
 
     if (mod == 1) {
@@ -641,7 +665,7 @@ void dma_channel_kick(int channel)
         return;
     }
 
-    /* INTERLEAVE mode (SPR only) - not implemented. */
+    /* Interleave on non-SPR channels and reserved mode are unsupported. */
     ch->last_error = DMA_ERR_UNSUPPORTED_TAG;
     ch->chcr &= ~0x100u;
 }
