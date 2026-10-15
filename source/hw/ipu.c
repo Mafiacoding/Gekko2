@@ -78,11 +78,15 @@ static int run(void)
    if(!bits_read(32,0,&v))return progress;
    unsigned n=0,q=0,quant=0;
    if(v&0x80000000u)n=1;
-   else if(v&0x40000000u){n=2;quant=1;q=(v>>(32-n-5))&31;n+=5;}
+   else if(v&0x40000000u){n=2;quant=1;}
    else{s.ctrl|=0x4000u;complete();return 1;}
-   if(quant){static const uint8_t nonlin[32]={0,1,2,3,4,5,6,7,8,10,12,14,16,18,20,22,24,28,32,36,40,44,48,52,56,64,72,80,88,96,104,112};s.mpeg.quant=(s.ctrl&(1u<<22))?nonlin[q]:q*2;}
+   /* MPEG macroblock_modes includes dct_type before the optional
+    * quantizer_scale_code (PCSX2 GetMacroblockModes/mpeg2sliceIDEC).
+    * Peek the whole header before committing any bits, so starvation
+    * cannot apply the quantizer or DCT type twice. */
    s.mpeg.interlaced=0;
    if(s.command&(1u<<24)){s.mpeg.interlaced=(v>>(31-n))&1;n++;}
+   if(quant){static const uint8_t nonlin[32]={0,1,2,3,4,5,6,7,8,10,12,14,16,18,20,22,24,28,32,36,40,44,48,52,56,64,72,80,88,96,104,112};q=(v>>(32-n-5))&31;n+=5;s.mpeg.quant=(s.ctrl&(1u<<22))?nonlin[q]:q*2;}
    advance(n);s.mpeg.phase=s.mpeg.block=s.mpeg.index=0;s.mpeg.cbp=63;
    memset(s.mpeg.coeff,0,sizeof s.mpeg.coeff);memset(s.block,0,384);memset(s.converted,0,768);
    s.pos=0;progress=1;
@@ -207,7 +211,7 @@ static void command(uint32_t value)
  s.command=value;s.ctrl&=~0x0000c000u;s.busy=1;s.pos=s.out_pos=s.out_size=0;s.skip=0;
  if(cmd==0){s.in_head=s.in_count=s.fp=0;s.bp=value&127;complete();}
  else if(cmd==9){s.th0=value&511;s.th1=(value>>16)&511;complete();}
- else if(cmd==1||cmd==2){s.skip=value&63;ipu_mpeg_begin(&s);if(cmd==1)s.pos=5;}
+ else if(cmd==1||cmd==2){s.skip=value&63;if(cmd==1)s.ctrl=(s.ctrl&~(7u<<24))|(1u<<24);ipu_mpeg_begin(&s);if(cmd==1)s.pos=5;}
  else if(cmd==3||cmd==4||cmd==5){s.skip=value&63;}
  else if(cmd==6){}
  else if(cmd==7||cmd==8){s.blocks=value&2047;}
@@ -224,7 +228,7 @@ int ipu_mmio_read32(uint32_t addr,uint32_t *out)
  case 0x10:*out=(s.ctrl&0x07ffffffu)|s.in_count|(s.out_count<<4)|(s.busy?0x80000000u:0);break;
  case 0x20:*out=s.bp|(s.in_count<<8)|(s.fp<<16);break;
  case 0x30:*out=s.top;break;
- case 0x34:*out=(s.busy&&((s.command>>28)==3||(s.command>>28)==4))?0x80000000u:0;break;
+ case 0x34:*out=(s.busy&&(s.command>>28)>=1&&(s.command>>28)<=4)?0x80000000u:0;break;
  default:*out=0;break;
  }
  return 1;

@@ -17,6 +17,12 @@ Detailberichte und Testkommandos: BATCH1-SCANOUT-DIAGNOSTICS.md,
 BATCH2-PERSISTENT-ABI.md, BATCH3-ALPHA-WRITE-MASK.md,
 BATCH4-SIGNAL-BACKPRESSURE.md und BATCH5-SPR-INTERLEAVE.md.
 
+Nachfolgende geprüfte Fortsetzung auf Basis aller fünf Batches:
+[IPU-ACCURACY-CONTINUATION.md](IPU-ACCURACY-CONTINUATION.md) behebt vier
+IPU- und zwei DMA-Stall-Control-Abweichungen gegenüber den gelesenen
+PCSX2-Referenzen. Die dortigen neu ausgeführten Tests und der neue Wii-Build
+sind getrennt von den folgenden ursprünglichen Batch-Nachweisen dokumentiert.
+
 Nachweise: 35 aktuelle Host-Suites PASS; 1.800 neue und 2.400 vorhandene
 emittierte PPC-Oracles; 105 verlinkte Interpreter-/Native-ABI-Vergleiche
 mit 126 wirklich ausgewählten Nachfolgern; 4.096 Alpha-Maskenfälle;
