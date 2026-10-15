@@ -564,20 +564,6 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
             out_b = gs_colclamp_channel(b);
         }
 
-        if (alpha_test_failed && g_gif.afail == GS_AFAIL_RGB_ONLY &&
-            g_gif.frame_psm==TEX_PSM_PSMCT32) {
-            /* Real AFAIL=RGB_ONLY-on-fail: RGB channels still write,
-             * but the alpha channel keeps its OLD framebuffer value
-             * (exact real-hardware behavior for a genuine 32-bit-
-             * alpha target - this project's gs_mem is PSMCT32-only,
-             * so PCSX2's documented "downgrade to FB_ONLY for non-
-             * 32bit formats" special case never applies here). Only
-             * reached when the alpha test actually failed - a passing
-             * fragment always writes its own real alpha normally. */
-            uint32_t existing = gs_mem_read_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);
-            out_a = rgba_channel(existing, 24);
-        }
-
         if (g_gif.dthe) {
             /* Round 102 (143rd finding, task #254): dithering - real
              * GS Users Manual "3.6.1 Dithering" formula, applied as
@@ -595,23 +581,8 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
         }
 
         if (g_gif.fba) {
-            /* Round 103 (144th finding, task #254): FBA_1/FBA_2 -
-             * real GS Users Manual "FBA_1 / FBA_2 : Alpha Correction
-             * Value" formula for RGBA32 (this project's only
-             * supported framebuffer format): A = As | (FBA<<7) - the
-             * OR of the fixed FBA bit (placed at bit 7, the alpha
-             * channel's MSB) and the pixel's own alpha, applied
-             * unconditionally at the actual frame-buffer-write moment
-             * per the manual - i.e. the absolute last transform on
-             * the alpha channel, after alpha blending and after the
-             * AFAIL=RGB_ONLY old-alpha-preservation case above. Does
-             * NOT interact with dithering (R/G/B only) so ordering
-             * relative to that block doesn't matter. Gated by fba
-             * itself (0 = pass-through) rather than fba_configured,
-             * matching the manual's literal "OR with a fixed value"
-             * behavior - FBA=0 is already a correct no-op via the OR
-             * identity, so no separate gate is needed beyond fba's
-             * own default of 0. */
+            /* FBA corrects the source alpha before framebuffer write
+             * masks. AFAIL=RGB_ONLY must still forbid an alpha write. */
             out_a = out_a | 0x80u;
         }
 
@@ -624,6 +595,8 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
          * PSMCT24 additionally preserves the physical alpha byte. */
         uint32_t mask = g_gif.fbmask;
         if (g_gif.frame_psm == TEX_PSM_PSMCT24) mask |= 0xff000000u;
+        if (alpha_test_failed && g_gif.afail == GS_AFAIL_RGB_ONLY &&
+            g_gif.frame_psm == TEX_PSM_PSMCT32) mask |= 0xff000000u;
         uint32_t color = rgba_pack(out_r, out_g, out_b, out_a);
         if (mask) {
             uint32_t old = gs_mem_read_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);

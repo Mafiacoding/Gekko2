@@ -325,10 +325,11 @@ int gs_gx_import_texture(uint8_t *vram,uint32_t size,const void *pixels,uint32_t
         int write_z=pipe->zwrite&&!(alpha_failed&&(afail==0u||afail==1u||afail==3u));
         if(write_color){
             if(!d->hardware_blend)c=blend_rgb(c,dst,pipe,d->coverage.psm);
-            /* RGB_ONLY preserves destination alpha before applying FBA. */
+            /* RGB_ONLY is an alpha write mask, applied after FBA. */
+            uint32_t mask=pipe->fbmask;
             if(alpha_failed&&afail==3u&&d->coverage.psm==0u)
-                c=(c&0x00ffffffu)|(dst&0xff000000u);
-            c=gs_gx_framebuffer_store(c,dst,pipe->fbmask,pipe->fba,d->coverage.psm);
+                mask|=0xff000000u;
+            c=gs_gx_framebuffer_store(c,dst,mask,pipe->fba,d->coverage.psm);
             vram[off]=c;vram[off+1]=c>>8;vram[off+2]=c>>16;
             if(!d->coverage.psm)vram[off+3]=c>>24;
         }
