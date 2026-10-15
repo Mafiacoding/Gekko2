@@ -7259,10 +7259,12 @@ static void ee_block_resolved_memory(ppc_codegen_ctx_t *ctx,uint32_t iw)
 /* Precise native block: every instruction crosses the existing retirement
  * machinery before continuing. Caller guards source/mapping and control flow. */
 static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
- const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared,uint32_t memory_prepare,uint32_t delay_prepare,int use_residency,const uint32_t *boundaries,int bounded)
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared,uint32_t memory_prepare,uint32_t delay_prepare,int use_residency,const uint32_t *boundaries,int bounded,const ppc_ee_chain_map *chain_map)
 {
  if(!ctx||!words||count<2u||count>GEKKO2_EE_MAX_BLOCK_WORDS||!prepare||!commit)return -1;
- ppc_residency resident={0};if(use_residency&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY))residency_plan(&resident,words,count,1,(unsigned)use_residency);
+ ppc_residency resident={0};
+ if(chain_map){if(!residency_chain_plan(&resident,chain_map))return -1;}
+ else if(use_residency&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY))residency_plan(&resident,words,count,1,(unsigned)use_residency);
  if(resident.count)resident_blocks++;
  int frame=resident.count?128:64;
  int seen_store=0;
@@ -7272,7 +7274,7 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
  emit(ctx,enc_addi(1,1,(int16_t)-frame));emit(ctx,enc_stw(14,1,40));
  emit(ctx,enc_mflr(12));emit(ctx,enc_stw(12,1,48));
  if(bounded){emit(ctx,enc_stw(15,1,44));emit(ctx,enc_or(15,6,6));}
- residency_save(ctx,&resident,0);
+ if(!chain_map)residency_save(ctx,&resident,0);
  emit(ctx,enc_or(14,3,3));
  for(unsigned n=0;n<count;n++) {
   if(ee_quiet_batch_stub_addr&&boundaries&&n>0u&&run_end==~0u&&!seen_store&&!ee_jit_block_terminal(words[n-1u])) {
@@ -7435,7 +7437,17 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
  for(unsigned n=0;n<count;n++)ctx->code[returns[n]]=enc_b((int32_t)(done-returns[n])*4);
  if(bounded)for(unsigned n=0;n<count;n++)ctx->code[budget_returns[n]]=enc_b((int32_t)(done-budget_returns[n])*4);
  emit(ctx,enc_lwz(12,1,48));emit(ctx,enc_mtlr(12));
- residency_save(ctx,&resident,1);
+ if(chain_map) {
+  /* Every exit, including a partial preparation/exception exit, publishes
+   * a complete clean native map. Opaque bodies invalidate cached copies;
+   * callback mutations use the existing GPR generation contract. Canonical
+   * storage is write-through, so no dirty state crosses a C boundary. */
+  emit(ctx,enc_or(4,3,3));emit(ctx,enc_or(3,14,14));
+  residency_refresh(ctx,&resident);
+  for(unsigned s=0;s<resident.count;s++)if(!(resident.valid&(1u<<s)))
+   emit(ctx,enc_lwz(18+(int)s,3,(int16_t)resident.offsets[s]));
+  emit(ctx,enc_or(3,4,4));
+ } else residency_save(ctx,&resident,1);
  if(bounded)emit(ctx,enc_lwz(15,1,44));
  emit(ctx,enc_lwz(14,1,40));emit(ctx,enc_addi(1,1,(int16_t)frame));
  return 0;
@@ -7443,34 +7455,97 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
 
 int ppc_dynarec_translate_ee_precise_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,0,0u,0u,0,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,0,0u,0u,0,0u,0,0);}
 int ppc_dynarec_translate_ee_prepared_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,1,0u,0u,0,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,1,0u,0u,0,0u,0,0);}
 
 int ppc_dynarec_translate_ee_prepared_memory_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t prepare,uint32_t memory_prepare,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,0u,0,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,0u,0,0u,0,0);}
 
 int ppc_dynarec_translate_ee_prepared_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t prepare,uint32_t memory_prepare,uint32_t delay_prepare,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,delay_prepare,0,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,delay_prepare,0,0u,0,0);}
 
 int ppc_dynarec_translate_ee_resident_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,const uint32_t *w,unsigned n,uint32_t p,uint32_t m,uint32_t d,uint32_t commit,uint32_t generation_offset)
 {if(!generation_offset||generation_offset>32767u||(generation_offset&3u))return -1;
- return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,0u,0);}
+ return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,0u,0,0);}
 
 int ppc_dynarec_translate_ee_fused_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,const uint32_t *w,unsigned n,uint32_t p,uint32_t m,uint32_t d,uint32_t commit,uint32_t boundary,uint32_t memory_boundary,uint32_t delay_boundary,uint32_t generation_offset)
 {if(!boundary||!memory_boundary||!delay_boundary||!generation_offset||generation_offset>32767u||(generation_offset&3u))return -1;
  uint32_t boundaries[]={boundary,memory_boundary,delay_boundary};
- return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries,0);}
+ return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries,0,0);}
 
 /* Separate lazy prefix entry: ordinary full-block bodies pay no budget tests. */
 int ppc_dynarec_translate_ee_budget_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,const uint32_t *w,unsigned n,uint32_t p,uint32_t m,uint32_t d,uint32_t commit,uint32_t boundary,uint32_t memory_boundary,uint32_t delay_boundary,uint32_t generation_offset)
 {if(!generation_offset||generation_offset>32767u||(generation_offset&3u))return -1;
  uint32_t callbacks[]={boundary,memory_boundary,delay_boundary};
  const uint32_t *boundaries=boundary&&memory_boundary&&delay_boundary?callbacks:0;
- return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries,1);}
+ return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries,1,0);}
+
+int ppc_dynarec_translate_ee_chain_block(ppc_codegen_ctx_t *c,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t memory_prepare,
+ uint32_t delay_prepare,uint32_t commit,const ppc_ee_chain_map *map)
+{
+ ppc_residency check;
+ if(!residency_chain_plan(&check,map))return -1;
+ /* First fast-ABI stage admits only auditable straight-line bodies. An
+  * opaque/helper/branch body can invalidate a subset on an early exit;
+  * those blocks retain the normal ABI until per-exit maps are implemented. */
+ if(!words||count<2u||count>GEKKO2_EE_MAX_BLOCK_WORDS)return -1;
+ ppc_codegen_ctx_t body;
+ if(ppc_dynarec_init(&body,8u))return -1;
+ int safe=1;
+ for(unsigned n=0;n<count&&safe;n++) {
+  body.used_words=0;
+  if(!ee_jit_block_candidate(words[n])||ee_jit_block_memory_width(words[n])||ee_jit_block_terminal(words[n])||
+     ppc_dynarec_translate_one(&body,words[n])){safe=0;break;}
+  for(size_t k=0;k<body.used_words;k++) {
+   uint32_t w=body.code[k];unsigned op=w>>26;int dest=word_alloc_destination(w);
+   if(op==16u||op==18u||op==19u||(dest==-2&&op!=36u)||dest==3||dest>=18){safe=0;break;}
+  }
+ }
+ ppc_dynarec_free(&body);
+ if(!safe)return -1;
+ return ee_precise_block_emit(c,pc,words,count,prepare,commit,1,memory_prepare,delay_prepare,0,0,0,map);
+}
+
+int ppc_dynarec_translate_ee_resident_chain(ppc_codegen_ctx_t *c,uint32_t resolver,
+ const ppc_ee_chain_map *map)
+{
+ ppc_residency check;
+ if(!c||!resolver||!residency_chain_plan(&check,map)||
+    c->used_words+128u>c->capacity_words)return -1;
+ /* Own all nonvolatile registers once. r18..29 are guest lanes, r30 is
+  * their generation, r31 holds expected retirement (normal chain uses r18). */
+ emit(c,enc_addi(1,1,-128));
+ for(int r=14;r<=31;r++)emit(c,enc_stw(r,1,(int16_t)(40+4*(r-14))));
+ emit(c,enc_mflr(12));emit(c,enc_stw(12,1,112));
+ emit(c,enc_or(14,3,3));emit(c,enc_addi(15,0,0));
+ emit(c,enc_or(16,6,6));emit(c,enc_or(17,7,7));emit(c,enc_or(31,8,8));
+ for(unsigned n=0;n<map->count;n++)emit(c,enc_lwz(18+(int)n,3,(int16_t)map->offsets[n]));
+ emit(c,enc_lwz(30,3,(int16_t)map->generation_offset));
+ size_t loop=c->used_words;
+ emit(c,enc_mtctr(17));emit(c,enc_bctrl());emit(c,enc_cmplw(3,31));
+ emit(c,enc_add(15,15,3));emit(c,enc_subf(16,3,16));
+ size_t partial=c->used_words;emit(c,enc_bc(4,2,0));
+ emit(c,(11u<<26)|(16u<<16)|2u);
+ size_t budget=c->used_words;emit(c,enc_bc(12,0,0));
+ emit(c,enc_or(3,14,14));emit(c,enc_or(4,16,16));ee_block_call(c,resolver);
+ emit(c,(11u<<26)|(3u<<16));
+ size_t missing=c->used_words;emit(c,enc_bc(12,2,0));
+ emit(c,enc_or(17,3,3));emit(c,enc_or(31,4,4));
+ emit(c,enc_or(3,14,14));emit(c,enc_addi(4,0,0));emit(c,enc_addi(5,0,0));
+ emit(c,enc_b(((int32_t)loop-(int32_t)c->used_words)*4));
+ size_t done=c->used_words;
+ c->code[partial]=enc_bc(4,2,(int32_t)(done-partial)*4);
+ c->code[budget]=enc_bc(12,0,(int32_t)(done-budget)*4);
+ c->code[missing]=enc_bc(12,2,(int32_t)(done-missing)*4);
+ emit(c,enc_or(3,15,15));emit(c,enc_lwz(12,1,112));emit(c,enc_mtlr(12));
+ for(int r=14;r<=31;r++)emit(c,enc_lwz(r,1,(int16_t)(40+4*(r-14))));
+ emit(c,enc_addi(1,1,128));return 0;
+}
 
 int ppc_dynarec_translate_ee_event_window(ppc_codegen_ctx_t *ctx,uint32_t pc,const uint32_t *words,unsigned count,uint32_t begin,unsigned generation_offset,uint32_t memory_proofs)
 {

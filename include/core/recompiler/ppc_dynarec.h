@@ -1122,6 +1122,21 @@ ppc_block_fn ppc_dynarec_finalize(ppc_codegen_ctx_t *ctx);
  * resolver(st,remaining) returns uint64_t: function pointer high, count low.
  * Resolver must never allocate, free or replace generated code while active. */
 int ppc_dynarec_translate_ee_cached_chain(ppc_codegen_ctx_t *ctx,uint32_t resolver);
+/* Experimental native-only ABI. The map is immutable for the entire chain;
+ * only its wrapper may call these block entries. Canonical state is always
+ * write-through, including at helpers/exits. Resolver must perform the same
+ * source/mapping/serial/budget/IRQ checks as the normal cached resolver and
+ * return ONLY an entry compiled with this exact map. Not a C-callable block.
+ * Offsets address EE GPRs, HI/LO or SA; PC/next_pc and GPR zero are forbidden.
+ * Only audited straight-line bodies are admitted. Runtime selection requires
+ * the explicit GEKKO2_EE_CHAIN_RESIDENCY build flag (default off). */
+typedef struct {
+    uint16_t offsets[12];
+    unsigned count,generation_offset;
+} ppc_ee_chain_map;
+int ppc_dynarec_translate_ee_resident_chain(ppc_codegen_ctx_t *,uint32_t,const ppc_ee_chain_map *);
+int ppc_dynarec_translate_ee_chain_block(ppc_codegen_ctx_t *,uint32_t,const uint32_t *,unsigned,
+    uint32_t,uint32_t,uint32_t,uint32_t,const ppc_ee_chain_map *);
 
 /* Pure ALU state transform only: no CPU/device retirement. Atomic decline,
  * 2..8 instructions, bounded resident GPR words; not enabled in CPU loop. */

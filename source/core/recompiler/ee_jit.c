@@ -681,6 +681,10 @@ typedef struct {
  unsigned (*event_fn)(ee_state_t *,unsigned);
  unsigned event_eligibility; /* 0 untested, 1 decline, length+2 eligible prefix */
  ee_prefix_fn prefix_fn; /* Same validated owner/source; independent bounded body. */
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ ee_precise_fn resident_fn;
+ unsigned resident_tested;
+#endif
 } ee_precise_slot;
 /* Metadata capacity is independent of the 6 MiB executable-code arena.
  * Reuse keeps 16384 owners; Control retains 256 direct-mapped entries. */
@@ -858,6 +862,9 @@ static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
  if(!old)precise_live_owners++;
  ee_prefix_fn old_prefix=slot->prefix_fn;
  void *old_event=(void*)slot->event_fn;
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ void *old_resident=(void*)slot->resident_fn;
+#endif
  int displaced=old&&(slot->pc!=pc||slot->count!=count||
                     memcmp(slot->words,words,count*4u)!=0);
  *slot=next;
@@ -865,6 +872,9 @@ static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
  if(old&&old!=fn){if(displaced)precise_evictions++;ppc_code_cache_release((void*)old);}
  if(old_prefix)ppc_code_cache_release((void*)old_prefix);
  if(old_event)ppc_code_cache_release(old_event);
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(old_resident)ppc_code_cache_release(old_resident);
+#endif
  return 1;
 }
 static void ee_precise_release_slot(ee_precise_slot *slot)
@@ -876,6 +886,9 @@ static void ee_precise_release_slot(ee_precise_slot *slot)
  if(slot->fn){ppc_code_cache_release((void*)slot->fn);precise_live_owners--;}
  if(slot->prefix_fn)ppc_code_cache_release((void*)slot->prefix_fn);
  if(slot->event_fn)ppc_code_cache_release((void*)slot->event_fn);
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(slot->resident_fn)ppc_code_cache_release((void*)slot->resident_fn);
+#endif
  memset(&precise_dispatch[slot-precise_cache],0,sizeof(precise_dispatch[0]));
  memset(slot,0,sizeof(*slot));
 }
@@ -946,6 +959,23 @@ uint64_t ee_jit_get_block_evictions(void){return precise_evictions;}
 uint64_t ee_jit_get_direct_link_hits(void){return precise_direct_link_hits;}
 typedef unsigned (*ee_cached_chain_fn)(ee_state_t *,unsigned,uint32_t,unsigned,ee_precise_fn,unsigned);
 static ee_cached_chain_fn precise_chain_fn;
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+static ee_cached_chain_fn precise_resident_chain_fn;
+/* One immutable map for this experimental build. Three complete 128-bit
+ * argument registers; HI/LO/SA remain canonical unless a future profile
+ * chooses their supported offsets instead. No saved frontend option changes. */
+static const ppc_ee_chain_map precise_resident_map={
+ {64,68,72,76,80,84,88,92,96,100,104,108},12,offsetof(ee_state_t,gpr_generation)};
+static uint64_t precise_resident_runs,precise_resident_retired,precise_resident_selected;
+#endif
+uint64_t ee_jit_get_chain_residency_stat(unsigned n)
+{
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ return n==0?1u:n==1?precise_resident_runs:n==2?precise_resident_retired:n==3?precise_resident_selected:0;
+#else
+ (void)n;return 0;
+#endif
+}
 typedef unsigned (*ee_event_chain_fn)(ee_state_t *,unsigned,void *,unsigned);
 static ee_event_chain_fn precise_event_chain_fn;
 static uint64_t precise_event_chain_runs,precise_event_chain_retired,precise_event_chain_selected;
@@ -1052,6 +1082,29 @@ static uint64_t ee_precise_event_next(ee_state_t *st,unsigned remaining)
  ee_precise_touch(index);precise_event_chain_selected++;
  return ((uint64_t)(uint32_t)(uintptr_t)slot->event_fn<<32)|slot->count;
 }
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+static uint64_t ee_precise_resident_next(ee_state_t *st,unsigned remaining)
+{
+ /* Reuse the authoritative resolver, including interleave accounting,
+  * serial/source/page/mapping/PC/budget/fault checks and active-owner pinning.
+  * It selects a normal identity; only its matching native-only companion
+  * may cross this ABI edge. A missing companion returns to C, never calls
+  * the normal C entry with live guest registers. */
+ uint64_t next=ee_precise_cached_next(st,remaining);
+ if(!next||!precise_chain_source||!precise_chain_source->resident_fn)return 0;
+ precise_resident_selected++;
+ return ((uint64_t)(uint32_t)(uintptr_t)precise_chain_source->resident_fn<<32)|(uint32_t)next;
+}
+static void ee_precise_make_resident_chain(void)
+{
+ if(precise_resident_chain_fn)return;
+ ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,2u))return;
+ if(ppc_dynarec_translate_ee_resident_chain(&c,(uint32_t)(uintptr_t)ee_precise_resident_next,
+                                          &precise_resident_map)){ppc_dynarec_free(&c);return;}
+ precise_resident_chain_fn=(ee_cached_chain_fn)ppc_dynarec_finalize(&c);
+ if(!precise_resident_chain_fn)ppc_dynarec_free(&c);
+}
+#endif
 static void ee_precise_make_event_chain(void)
 {
  if(precise_event_chain_fn)return;
@@ -1149,6 +1202,22 @@ static ee_precise_fn ee_precise_build(uint32_t pc,const uint32_t *words,unsigned
  if(!fn)precise_profile.failures++;else precise_profile.installed++;
  return fn;
 }
+#if defined(GEKKO2_EE_CHAIN_RESIDENCY) && GEKKO2_EE_BLOCKS_ENABLED
+static void ee_precise_make_resident(ee_precise_slot *slot)
+{
+ if(precise_active||slot->resident_tested)return;
+ slot->resident_tested=1;
+ ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,slot->count*2u))return;
+ if(ppc_dynarec_translate_ee_chain_block(&c,slot->pc,slot->words,slot->count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,0,0,
+    (uint32_t)(uintptr_t)ee_core_block_commit,&precise_resident_map)||
+    !ee_precise_make_room((c.used_words+1u)*4u,slot)){
+  ppc_dynarec_free(&c);return;
+ }
+ slot->resident_fn=(ee_precise_fn)ppc_dynarec_finalize(&c);
+ if(!slot->resident_fn)ppc_dynarec_free(&c);
+}
+#endif
 static ee_prefix_fn ee_precise_build_prefix(const ee_precise_slot *slot)
 {
  if(!ee_precise_compile_admitted())return 0;
@@ -1316,7 +1385,14 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   ee_precise_publish_dispatch(slot);
  }
 execute_slot:;
- if(gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)){
+ int resident_chain=0;
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(native_chain&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY)&&slot->count<=quantum_budget&&slot->count+2u<=budget){
+  ee_precise_make_resident(slot);
+  if(slot->resident_fn){ee_precise_make_resident_chain();resident_chain=precise_resident_chain_fn!=0;}
+ }
+#endif
+ if(!resident_chain&&gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)){
   ee_precise_make_event(slot,quantum_budget);
   /* The prepare callback caps retirement at the current event deadline.
    * Execute the safe prefix; leave the following helper/store precise. */
@@ -1354,13 +1430,20 @@ execute_slot:;
   if(!ee_core_block_prepare_fetched(st,pc))return 0;
   fetched=1u; /* Reuse the admitted fetch/address in the native entry. */
  }
- if(!prefix&&native_chain&&slot->count+2u<=budget)ee_precise_make_chain();
- int use_chain=!prefix&&native_chain&&precise_chain_fn&&slot->count+2u<=budget;
+ if(!resident_chain&&!prefix&&native_chain&&slot->count+2u<=budget)ee_precise_make_chain();
+ int use_chain=resident_chain||(!prefix&&native_chain&&precise_chain_fn&&slot->count+2u<=budget);
  precise_chain_source=use_chain?slot:0;
  precise_chain_source_serial=use_chain?slot->serial:0;
  precise_active=1;
  precise_accounted_remaining=budget;
- unsigned n=prefix?slot->prefix_fn(st,fetched,first_physical,quantum_budget):use_chain?
+ unsigned n;
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(resident_chain){
+  n=precise_resident_chain_fn(st,fetched,first_physical,budget,slot->resident_fn,slot->count);
+  precise_resident_runs++;precise_resident_retired+=n;
+ } else
+#endif
+ n=prefix?slot->prefix_fn(st,fetched,first_physical,quantum_budget):use_chain?
   precise_chain_fn(st,fetched,first_physical,budget,slot->fn,slot->count):
   slot->fn(st,fetched,first_physical);
  if(ee_core_interleave_quantum!=UINT32_MAX)ee_core_interleave_account(precise_accounted_remaining-(budget-n));
@@ -1418,6 +1501,11 @@ static void ee_precise_reset_cache(void)
  if(precise_quiet_stub){ppc_dynarec_set_ee_quiet_stub(0,0);ppc_dynarec_set_ee_quiet_mem_stub(0);ppc_dynarec_set_ee_quiet_batch_stub(0);if(precise_quiet_batch_stub){ppc_code_cache_release(precise_quiet_batch_stub);precise_quiet_batch_stub=0;}if(precise_quiet_mem_stub){ppc_code_cache_release(precise_quiet_mem_stub);precise_quiet_mem_stub=0;}ppc_code_cache_release(precise_quiet_stub);precise_quiet_stub=0;}
 #endif
  if(precise_chain_fn)ppc_code_cache_release((void*)precise_chain_fn);
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(precise_resident_chain_fn)ppc_code_cache_release((void*)precise_resident_chain_fn);
+ precise_resident_chain_fn=0;
+ precise_resident_runs=precise_resident_retired=precise_resident_selected=0;
+#endif
  if(precise_event_chain_fn)ppc_code_cache_release((void*)precise_event_chain_fn);
  precise_event_chain_fn=0;precise_event_chain_runs=precise_event_chain_retired=precise_event_chain_selected=0;
  precise_chain_fn=0;precise_native_successors=0;precise_direct_link_hits=0;

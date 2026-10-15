@@ -143,6 +143,8 @@ void     ee_jit_reset_stats_for_test(void); /* test-only: zero counters + cache,
 unsigned ee_jit_try_execute_block(ee_state_t *st,unsigned budget);
 uint64_t ee_jit_get_native_successors(void);
 uint64_t ee_jit_get_event_chain_stat(unsigned);
+/* Experimental shared native ABI: enabled, wrapper runs, retired, successors. */
+uint64_t ee_jit_get_chain_residency_stat(unsigned);
 uint64_t ee_jit_get_block_count(void);
 uint64_t ee_jit_get_block_retired(void);
 /* R1318: number of valid precise blocks displaced by direct-map collisions. */

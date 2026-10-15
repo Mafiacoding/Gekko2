@@ -615,6 +615,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned long long)ee_jit_get_executed_count(),
             (unsigned long long)ee_jit_get_pc_l0_hit_count(),
             (unsigned long long)ee_jit_get_pc_l0_miss_count());
+    fprintf(f,"EE_CHAIN_RESIDENCY enabled=%llu runs=%llu retired=%llu successors=%llu abi=experimental-clean-write-through\n",
+        (unsigned long long)ee_jit_get_chain_residency_stat(0),
+        (unsigned long long)ee_jit_get_chain_residency_stat(1),
+        (unsigned long long)ee_jit_get_chain_residency_stat(2),
+        (unsigned long long)ee_jit_get_chain_residency_stat(3));
     /* R1358: capture the drain/producer pair in the existing log snapshot.
      * No new per-instruction polling or logging. */
     const dma_state_t *d=dma_get_state();

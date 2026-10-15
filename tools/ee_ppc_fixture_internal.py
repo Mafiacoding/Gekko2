@@ -12,16 +12,17 @@ loader=loader.replace('count=10000000','count=(50000000 if name=="system_run_int
 exec(compile(loader,'verify_ppc_gs_memory.py','exec'))
 root=Path(__file__).resolve().parents[1]
 cc=str(Path(a.nm).with_name('powerpc-eabi-gcc'));oc=str(Path(a.nm).with_name('powerpc-eabi-objcopy'))
+layout_flags=['-DGEKKO2_EE_CHAIN_RESIDENCY'] if 'precise_resident_map' in syms else []
 fields=['pc','next_pc','cop0','ram','ram_size','halted','branch_pending','idle','instructions_executed','tlb','fpr','exc_this_pc','vu0_vf','gpr_generation']
 with tempfile.TemporaryDirectory() as d:
  src=Path(d)/'layout.c';obj=Path(d)/'layout.o';raw=Path(d)/'layout.bin'
  src.write_text('#include <stddef.h>\n#include "core/ee/ee_core.h"\nconst unsigned layout[]={sizeof(ee_state_t),'+','.join('offsetof(ee_state_t,'+f+')' for f in fields)+'};\n')
- subprocess.run([cc,'-O2','-G0','-mcpu=750','-I'+str(root/'include'),'-c',str(src),'-o',str(obj)],check=True)
+ subprocess.run([cc,*layout_flags,'-O2','-G0','-mcpu=750','-I'+str(root/'include'),'-c',str(src),'-o',str(obj)],check=True)
  subprocess.run([oc,'-O','binary','-j','.rodata',str(obj),str(raw)],check=True)
  size,*offsets=struct.unpack('>'+str(1+len(fields))+'I',raw.read_bytes());off=dict(zip(fields,offsets))
  # Derive private slot ABI from the actual source, never a historical stride.
  src.write_text('#include <stddef.h>\n#include "core/recompiler/ee_jit.c"\nconst unsigned layout[] __attribute__((section(".test_layout")))={sizeof(ee_precise_slot),offsetof(ee_precise_slot,fn),offsetof(ee_precise_slot,count)};\n')
- subprocess.run([cc,'-O2','-G0','-mcpu=750','-I'+str(root/'include'),'-I'+str(root/'source'),'-c',str(src),'-o',str(obj)],check=True)
+ subprocess.run([cc,*layout_flags,'-O2','-G0','-mcpu=750','-I'+str(root/'include'),'-I'+str(root/'source'),'-c',str(src),'-o',str(obj)],check=True)
  subprocess.run([oc,'-O','binary','-j','.test_layout',str(obj),str(raw)],check=True)
  precise_slot_size,precise_fn_offset,precise_count_offset=struct.unpack('>3I',raw.read_bytes())
 # Read the linked array size rather than assuming a historical cache index.
