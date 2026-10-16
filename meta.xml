@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <app version="1">
-  <name>Gekko2 SPEED BETA12.24 GAME TRACE</name>
+  <name>Gekko2 SPEED BETA12.24a FULLSCREEN TRACE</name>
   <coder>Mafiacoding</coder>
-  <version>BETA12.24 - bounded game transport diagnostics</version>
+  <version>BETA12.24a - full output, bounded game diagnostics</version>
   <release_date>20261016</release_date>
   <short_description>Experimental PlayStation 2 emulator for Wii</short_description>
-  <long_description>Experimental PS2 game diagnostic build. Bounded GIF/XGKICK/SIGNAL, VIF and interrupt history, unknown VU pairs and CPU wait context in numbered SD session logs. Retains BETA12.23 corrections. Both experiments factory OFF; saved settings apply at Cold Boot. No confirmed Crash/Tekken gameplay or SIGNAL stall resolution. Keep BETA12.23 for rollback. Bring your own legal BIOS/disc.</long_description>
+  <long_description>Experimental PS2 game diagnostic build. Bounded GIF/XGKICK/SIGNAL, VIF and interrupt history, unknown VU pairs and CPU wait context in numbered SD session logs. Restores full output size; removes automatic 4:3 pillarboxing. Retains transport/UV diagnostics and corrections. Both experiments factory OFF; saved settings apply at Cold Boot. No confirmed Crash/Tekken gameplay or SIGNAL stall resolution. Keep BETA12.23 for rollback. Bring your own legal BIOS/disc.</long_description>
 </app>

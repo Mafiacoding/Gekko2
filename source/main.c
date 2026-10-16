@@ -526,7 +526,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long long)ee_runtime->instructions_executed,(unsigned)iop_runtime->idle,
         (unsigned)iop_runtime->halted,(unsigned long long)iop_runtime->sched_ticks);
     const gs_state_t *scanout=gs_get_state();const gif_state_t *draw_target=gif_get_state();
-    fprintf(f,"GS_PRESENT_LAYOUT smode1=%llx cmod=%u display1_xy=%u,%u mag1=%u,%u display2_xy=%u,%u mag2=%u,%u host=%ux%u policy=4:3-fit wii_widescreen=%d\n",
+    fprintf(f,"GS_PRESENT_LAYOUT smode1=%llx cmod=%u display1_xy=%u,%u mag1=%u,%u display2_xy=%u,%u mag2=%u,%u host=%ux%u policy=full-output wii_widescreen=%d\n",
         (unsigned long long)scanout->smode1,(unsigned)((scanout->smode1>>13)&3u),
         (unsigned)(scanout->display1&4095u),(unsigned)((scanout->display1>>12)&2047u),
         (unsigned)(((scanout->display1>>23)&15u)+1u),(unsigned)(((scanout->display1>>27)&3u)+1u),
@@ -1360,7 +1360,6 @@ static void run_real_boot_flow(void)
         }
 
         if(gs_gx_faulted()){gekko2_profile_stop();gx_fault_paused=1;break;}
-        if(guest_copied)gs_xfb_fit_4_3(xfb,rmode->fbWidth,rmode->xfbHeight,g_present_widescreen);
         if(present_due){
         if (show_hud || !display_active || !g_first_picture) {
         g_xfb_hud_updates++;
