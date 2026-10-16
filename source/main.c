@@ -743,6 +743,13 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
 #else
     fprintf(f,"GX_EXTENDED_MODE compiled=0 gate=disabled precision=legacy-path\n");
 #endif
+#ifdef GEKKO2_GX_GENERIC_SHADER
+    fprintf(f,"GX_COMMON_SHADER compiled=1 untextured=%llu highlight=%llu fog=%llu varying_vertex_alpha=%llu\n",
+      (unsigned long long)gs_gx_extended_stat(8),(unsigned long long)gs_gx_extended_stat(9),
+      (unsigned long long)gs_gx_extended_stat(10),(unsigned long long)gs_gx_extended_stat(11));
+#else
+    fprintf(f,"GX_COMMON_SHADER compiled=0\n");
+#endif
     fprintf(f,"GX_EXTENDED_TRIANGLES accepted=%llu bbox_pixels=%llu fragment_checks=%llu color_rejected=%llu z_permissions=%llu source_cache_hits=%llu attempts=%llu GPU_vertices=%llu scope=experimental-GX-RGB-CPU-GS-tests\n",
       (unsigned long long)gs_gx_extended_stat(0),(unsigned long long)gs_gx_extended_stat(1),
       (unsigned long long)gs_gx_extended_stat(2),(unsigned long long)gs_gx_extended_stat(3),

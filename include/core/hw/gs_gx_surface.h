@@ -22,5 +22,10 @@ enum { GS_GX_WRITE_COLOR=1,GS_GX_WRITE_ALPHA=2,GS_GX_WRITE_Z=4,GS_GX_DO_BLEND=8 
 /* Pure GS fragment permissions. Incoming Z is raster-clamped, not truncated. */
 uint32_t gs_gx_fragment_actions(const gs_gx_pipeline *p,uint32_t color_psm,
  uint32_t destination_alpha,uint32_t source_alpha,uint32_t z,uint32_t stored_z);
+typedef struct {uint32_t size,max_index,clamp;} gs_gx_axis_plan;
+/* Bounded GS texture atlas: padding, region clamp/repeat, physical read envelope. */
+int gs_gx_plan_axis(uint32_t exponent,uint32_t mode,uint32_t min,uint32_t max,gs_gx_axis_plan *out);
+uint32_t gs_gx_source_alpha(uint32_t texture_alpha,uint32_t vertex_alpha,
+ uint32_t tfx,uint32_t tcc,uint32_t untextured);
 int gs_gx_native_texture_valid(uint32_t width,uint32_t height);
 #endif

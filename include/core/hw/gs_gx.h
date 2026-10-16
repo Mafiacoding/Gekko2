@@ -84,7 +84,11 @@ int gs_gx_draw_native_affine_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
 /* Experimental projective STQ and optional vertex RGB modulation.
  * RGB hardware precision differs from GS; alpha remains uniform.
  * conservative_z requires no Z writes and all lower-bound Z tests to pass. */
-typedef struct { uint32_t rgba,tcc,tfx,target_height; } gs_gx_native_color;
+typedef struct {
+ uint32_t rgba,tcc,tfx,target_height;
+ /* BETA12.26 common shader inputs; zero keeps the BETA12.25 contract. */
+ uint32_t fog_enabled,fog_color,fog[3],untextured;
+} gs_gx_native_color;
 int gs_gx_draw_native_stq_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
  const float *st,const float *q,const uint32_t *rgba,uint32_t tex_w,uint32_t tex_h,

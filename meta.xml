@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <app version="1">
-  <name>Gekko2 SPEED BETA12.25 GX TRIANGLES</name>
+  <name>Gekko2 SPEED BETA12.26 COMMON GX</name>
   <coder>Mafiacoding</coder>
-  <version>BETA12.25 - experimental GX triangles</version>
+  <version>BETA12.26 - common experimental GS shaders</version>
   <release_date>20261016</release_date>
   <short_description>Experimental PlayStation 2 emulator for Wii</short_description>
-  <long_description>Experimental GX source triangles with large textures, variable Z, CPU-side GS alpha/DATE/depth permissions and source cache. Retains full output size and bounded game diagnostics. Complex GS states still use software or hybrid paths. Chain residency and PSM conversion factory OFF; saved settings apply at Cold Boot. No confirmed Tekken gameplay, tile correction or Wii FPS gain. Use the separate control build for comparison. Bring your own legal BIOS/disc.</long_description>
+  <long_description>Common experimental GS-to-GX renderer: four texture functions, fog, untextured triangles, supported varying alpha, all clamp modes and small texture padding. Shared by games based on GS state; no per-title renderer. Unsupported masks, feedback, mipmaps and complex blends retain software/hybrid paths. Full output size. Chain/PSM factory OFF; saved settings unchanged. No hardware-confirmed gameplay, tile correction or FPS gain. Compare with the Beta25Control DOL. Bring your own legal BIOS/disc.</long_description>
 </app>

@@ -1323,17 +1323,13 @@ uint64_t gs_gx_native_affine_stat(unsigned n){return n<11u?native_affine_stats[n
 static uint8_t *native_alpha_texels;
 static uint32_t native_alpha_capacity;
 static uint8_t native_actions[GS_GX_SURFACE_PIXELS];
-static uint64_t native_extended[8];
+static uint64_t native_extended[12];
 static struct {uint32_t lo,hi,tw,th,alpha,min_alpha,max_alpha,varying;uint64_t transform;gs_gx_texel_fn sample;} native_cache;
-uint64_t gs_gx_extended_stat(unsigned n){return n<8u?native_extended[n]:0;}
+uint64_t gs_gx_extended_stat(unsigned n){return n<12u?native_extended[n]:0;}
 static uint32_t native_alpha_function(uint32_t a,const gs_gx_native_color *c)
 {
  if(!c)return a;
- uint32_t va=c->rgba>>24;
- if(!c->tcc)return va;
- if(c->tfx==0u)a=a*va/128u;
- else if(c->tfx==2u)a+=va;
- return a>255u?255u:a;
+ return gs_gx_source_alpha(a,c->rgba>>24,c->tfx,c->tcc,c->untextured);
 }
 static int32_t native_wrap(int32_t n,uint32_t size,uint32_t clamp)
 {return clamp?(n<0?0:(n>=(int32_t)size?(int32_t)size-1:n)):(n&(size-1u));}
@@ -1353,14 +1349,21 @@ static uint32_t native_alpha_at(double u,double v,uint32_t tw,uint32_t th,uint32
 static int32_t native_edge(int32_t ax,int32_t ay,int32_t bx,int32_t by,int32_t x,int32_t y)
 {return (x-ax)*(by-ay)-(y-ay)*(bx-ax);}
 static uint32_t native_fragment_alpha(int32_t x,int32_t y,const int32_t *xy,const float *uv,const float *q,
- uint32_t tw,uint32_t th,uint32_t ws,uint32_t wt,uint32_t linear,const gs_gx_native_color *c,double inv)
+ uint32_t tw,uint32_t th,uint32_t ws,uint32_t wt,uint32_t linear,const gs_gx_native_color *c,const uint32_t *rgba,double inv)
 {
  double b0=(double)native_edge(xy[2],xy[3],xy[4],xy[5],x,y)*inv;
  double b1=(double)native_edge(xy[4],xy[5],xy[0],xy[1],x,y)*inv;
  double b2=(double)native_edge(xy[0],xy[1],xy[2],xy[3],x,y)*inv;
  double s=b0*uv[0]+b1*uv[2]+b2*uv[4],t=b0*uv[1]+b1*uv[3]+b2*uv[5];
  if(q){double qi=b0*q[0]+b1*q[1]+b2*q[2];double iq=qi!=0?1.0/qi:0;s*=iq;t*=iq;}
- return native_alpha_function(native_alpha_at(s*tw,t*th,tw,th,ws,wt,linear),c);
+  uint32_t ta=native_alpha_at(s*tw,t*th,tw,th,ws,wt,linear);
+ if(!rgba)return native_alpha_function(ta,c);
+ uint32_t va=rgba[0]>>24;
+ if(va!=(rgba[1]>>24)||va!=(rgba[2]>>24)){
+  double value=b0*va+b1*(rgba[1]>>24)+b2*(rgba[2]>>24);
+  va=value<=0?0u:value>=255?255u:(uint32_t)(value+0.5);
+ }
+ return c?gs_gx_source_alpha(ta,va,c->tfx,c->tcc,c->untextured):gs_gx_source_alpha(ta,va,0,1,0);
 }
 static uint32_t native_fragment_z(int32_t x,int32_t y,const int32_t *xy,const uint32_t *z,double inv)
 {
@@ -1382,8 +1385,12 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  if(vertex_z)native_extended[6]++;
  uint32_t key_lo=source_key_lo,key_hi=source_key_hi,key_valid=source_key_valid;source_key_valid=0;
  uint32_t constant_colors[3];int vertex_gouraud=rgba!=NULL;
- if(color&&color->tfx>1u)return 0; /* HIGHLIGHT needs another TEV stage. */
- if(color&&color->tfx==0u&&!rgba){
+ int generic=0;
+#ifdef GEKKO2_GX_GENERIC_SHADER
+ generic=vertex_z!=NULL;
+#endif
+ if(color&&(color->tfx>3u||(!generic&&(color->tfx>1u||color->fog_enabled||color->untextured))))return 0;
+ if(color&&(color->untextured||color->tfx!=1u)&&!rgba){
   constant_colors[0]=constant_colors[1]=constant_colors[2]=color->rgba;
   rgba=constant_colors; /* MODULATE runs after filtering in GX, including flat color. */
  }
@@ -1395,7 +1402,9 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
     return 0;
  for(unsigned i=0;i<6;i++)if(!isfinite(uv[i])||fabsf(uv[i])>65536.0f)return 0;
  Mtx tm;int projective=q!=NULL;
- if(rgba&&((rgba[0]>>24)!=(rgba[1]>>24)||(rgba[1]>>24)!=(rgba[2]>>24)))return 0;
+ int varying_vertex_alpha=rgba&&((rgba[0]>>24)!=(rgba[1]>>24)||(rgba[1]>>24)!=(rgba[2]>>24));
+ if(varying_vertex_alpha&&(!generic||!color||
+    (p->blend&&p->c!=2u&&(color->untextured||!color->tcc||color->tfx==0u||color->tfx==2u))))return 0;
  if(projective){
   double dx1=(double)xy[2]-xy[0],dy1=(double)xy[3]-xy[1];
   double dx2=(double)xy[4]-xy[0],dy2=(double)xy[5]-xy[1],det=dx1*dy2-dx2*dy1;
@@ -1414,6 +1423,7 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  int alpha_blend=p->blend&&p->a==0u&&p->b==1u&&p->d==1u&&
                  (p->c==0u||(p->c==2u&&p->fix<=128u));
  if(p->blend&&!additive&&!alpha_blend&&!additive_alpha)return 0;
+ if(additive&&color&&(color->fog_enabled||color->tfx>=2u))return 0;
  if(p->pabe&&p->blend&&!alpha_blend)return 0; /* Other modes transform RGB before the per-pixel blend gate. */
  gs_gx_texture_draw *d=&texture_draw;memset(d,0,sizeof(*d));
  if(!gs_gx_prepare_flat(&d->coverage,3,bp,bw,minx,miny,maxx,maxy,xy,0,scanmsk))return 0;
@@ -1441,7 +1451,7 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  /* Pack raw, constant-color GS texels once, never shaded screen pixels. */
  source_cache.valid=0;
  uint64_t transform=0;
- const uint32_t tx[]={psm,color!=NULL,rgba!=NULL,rgba?rgba[0]>>24:0,p->blend,p->a,p->b,p->c,p->d,p->fix,color?((rgba||color->tfx==1u)?color->rgba&0xff000000u:color->rgba):0,color?color->tfx:0,color?color->tcc:0};
+ const uint32_t tx[]={psm,color!=NULL,rgba!=NULL,rgba?rgba[0]>>24:0,p->blend,p->a,p->b,p->c,p->d,p->fix,color?((rgba||color->tfx==1u)?color->rgba&0xff000000u:color->rgba):0,color?color->tfx:0,color?color->tcc:0,color?color->untextured:0};
  for(unsigned i=0;i<sizeof tx/sizeof *tx;i++)transform=(transform*1099511628211ull)^tx[i];
  int cache_hit=gekko2_opt_enabled(GEKKO2_OPT_GX_SOURCE_CACHE)&&key_valid&&native_cache_valid&&
   native_cache.lo==key_lo&&native_cache.hi==key_hi&&native_cache.tw==tw&&native_cache.th==th&&
@@ -1509,31 +1519,29 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  if(vertex_z){
   /* Preserve the original complete coverage; a byte per covered pixel can
    * represent any number of alpha/depth islands without widening a span. */
+  gs_gx_flat_draw mark=d->coverage;mark.psm=1u;
+  if(!gs_gx_surface_mark(surface,&mark))return 0;
   for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
    uint32_t px=d->coverage.x+x,py=d->coverage.y+y;
    uint32_t za=native_fragment_z(px,py,xy,vertex_z,inv),stored=0;
    if(depth)stored=raw_z(depth,gs_mem_z_offset(p->zbp,bw,px,py,p->zpsm)-zlo,p->zpsm);
-   uint32_t sa=native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,inv);
+   uint32_t sa=native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,rgba,inv);
    uint32_t da=surface->alpha[py*surface->bw+px];
    uint32_t actions=gs_gx_fragment_actions(p,psm,da,sa,za,stored);
    native_actions[y*d->columns+x]=(uint8_t)actions;
    native_extended[2]++;native_extended[3]+=!(actions&GS_GX_WRITE_COLOR);
    if(actions&GS_GX_WRITE_Z)native_extended[4]++;
-  }
-  gs_gx_flat_draw mark=d->coverage;mark.psm=1u;
-  if(!gs_gx_surface_mark(surface,&mark))return 0;
-  if(!psm)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
-   uint32_t actions=native_actions[y*d->columns+x],px=d->coverage.x+x,py=d->coverage.y+y;
-   if(actions&GS_GX_WRITE_ALPHA){
-    uint32_t sa=native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,inv);
-    surface->dirty[py*surface->bw+px]|=2u;surface->alpha[py*surface->bw+px]=(uint8_t)(sa|(p->fba?128u:0u));
+   if(!psm&&(actions&GS_GX_WRITE_ALPHA)){
+    uint32_t index=py*surface->bw+px;
+    surface->dirty[index]|=2u;surface->alpha[index]=(uint8_t)(sa|(p->fba?128u:0u));
    }
   }
+
  }else{
   if(!gs_gx_surface_mark(surface,&d->coverage))return 0;
   if(color&&varying_alpha&&!psm)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
    uint32_t px=d->coverage.x+x,py=d->coverage.y+y;
-   surface->alpha[py*surface->bw+px]=(uint8_t)native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,inv);
+   surface->alpha[py*surface->bw+px]=(uint8_t)native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,rgba,inv);
    native_affine_stats[9]++;
   }
  }
@@ -1547,23 +1555,61 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  if(rgba){
   GX_SetNumChans(1);GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,GX_LIGHTNULL,GX_DF_NONE,GX_AF_NONE);
   GX_SetVtxDesc(GX_VA_CLR0,GX_DIRECT);GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_CLR0,GX_CLR_RGBA,GX_RGBA8,0);
+  if(!color||color->tfx!=1u){
   GX_SetTevOrder(GX_TEVSTAGE0,GX_TEXCOORD0,GX_TEXMAP0,GX_COLOR0A0);
   GX_SetTevColorIn(GX_TEVSTAGE0,GX_CC_ZERO,GX_CC_TEXC,GX_CC_RASC,GX_CC_ZERO);
   GX_SetTevColorOp(GX_TEVSTAGE0,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_2,GX_TRUE,GX_TEVPREV);
+  }
  }
 
+ unsigned stages=1;
+ if(color&&color->untextured){
+  GX_SetTevOrder(0,GX_TEXCOORD0,GX_TEXMAP0,GX_COLOR0A0);
+  GX_SetTevColorIn(0,GX_CC_ZERO,GX_CC_ZERO,GX_CC_ZERO,GX_CC_RASC);
+  GX_SetTevColorOp(0,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
+ }
+ if(color&&color->tfx>=2u&&!color->untextured){
+  /* GS HIGHLIGHT/HIGHLIGHT2 add interpolated vertex alpha after MODULATE.
+   * Clamping the nonnegative product early cannot undo final saturation. */
+  GX_SetTevOrder(stages,GX_TEXCOORDNULL,GX_TEXMAP_NULL,GX_COLOR0A0);
+  GX_SetTevColorIn(stages,GX_CC_RASA,GX_CC_RASA,GX_CC_ZERO,GX_CC_CPREV);
+  GX_SetTevColorOp(stages,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
+  GX_SetTevAlphaIn(stages,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_APREV);
+  GX_SetTevAlphaOp(stages,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);stages++;
+ }
+ if(color&&color->fog_enabled){
+  GX_SetNumChans(2);GX_SetChanCtrl(GX_COLOR1A1,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,GX_LIGHTNULL,GX_DF_NONE,GX_AF_NONE);
+  GX_SetVtxDesc(GX_VA_CLR1,GX_DIRECT);GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_CLR1,GX_CLR_RGBA,GX_RGBA8,0);
+  GXColor fog={color->fog_color&255u,(color->fog_color>>8)&255u,(color->fog_color>>16)&255u,255};
+  GXColor attenuation={254,254,254,254};
+  GX_SetTevKColor(GX_KCOLOR0,fog);GX_SetTevKColor(GX_KCOLOR1,attenuation);
+  GX_SetTevOrder(stages,GX_TEXCOORDNULL,GX_TEXMAP_NULL,GX_COLOR1A1);
+  GX_SetTevKColorSel(stages,GX_TEV_KCSEL_K0);
+  GX_SetTevColorIn(stages,GX_CC_KONST,GX_CC_CPREV,GX_CC_RASA,GX_CC_ZERO);
+  GX_SetTevColorOp(stages,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
+  GX_SetTevAlphaIn(stages,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_APREV);
+  GX_SetTevAlphaOp(stages,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);stages++;
+  /* GS weights sum to 255/256, including both fog endpoints. TEV's
+   * expanded 254 coefficient is 255/256; retain this attenuation instead
+   * of treating F=255 as an unmodified full-intensity color. RGB precision
+   * remains experimental because TEV rounds/interpolates differently. */
+  GX_SetTevOrder(stages,GX_TEXCOORDNULL,GX_TEXMAP_NULL,GX_COLORNULL);
+  GX_SetTevKColorSel(stages,GX_TEV_KCSEL_K1);
+  GX_SetTevColorIn(stages,GX_CC_ZERO,GX_CC_CPREV,GX_CC_KONST,GX_CC_ZERO);
+  GX_SetTevColorOp(stages,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
+  GX_SetTevAlphaIn(stages,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_APREV);
+  GX_SetTevAlphaOp(stages,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);stages++;
+ }
  if(additive_alpha){
-  /* The BIOS fog uses (Cs - 0)*As + Cd. Keep the filtered RGB and
-   * filtered alpha separate until TEV multiplication, then ONE+ONE.
-   * Pre-multiplying source texels would alter bilinear edge colors. */
-  GX_SetNumTevStages(2);
-  GX_SetTevOrder(GX_TEVSTAGE1,GX_TEXCOORD0,GX_TEXMAP0,GX_COLORNULL);
-  GX_SetTevColorIn(GX_TEVSTAGE1,GX_CC_ZERO,GX_CC_CPREV,GX_CC_TEXA,GX_CC_ZERO);
-  GX_SetTevColorOp(GX_TEVSTAGE1,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_2,GX_TRUE,GX_TEVPREV);
-  GX_SetTevAlphaIn(GX_TEVSTAGE1,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_APREV);
-  GX_SetTevAlphaOp(GX_TEVSTAGE1,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
+  /* Fog/TFX precede source-alpha multiplication and ONE+ONE blending. */
+  GX_SetTevOrder(stages,GX_TEXCOORD0,GX_TEXMAP0,GX_COLORNULL);
+  GX_SetTevColorIn(stages,GX_CC_ZERO,GX_CC_CPREV,GX_CC_TEXA,GX_CC_ZERO);
+  GX_SetTevColorOp(stages,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_2,GX_TRUE,GX_TEVPREV);
+  GX_SetTevAlphaIn(stages,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_APREV);
+  GX_SetTevAlphaOp(stages,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);stages++;
   GX_SetBlendMode(GX_BM_BLEND,GX_BL_ONE,GX_BL_ONE,GX_LO_COPY);
  }
+ GX_SetNumTevStages(stages);
  if(additive)GX_SetBlendMode(GX_BM_BLEND,GX_BL_ONE,GX_BL_ONE,GX_LO_COPY);
  if(alpha_blend)GX_SetBlendMode(GX_BM_BLEND,GX_BL_SRCALPHA,GX_BL_INVSRCALPHA,GX_LO_COPY);
  /* Exact CPU coverage/depth mask, but hardware texture sampling and RGB.
@@ -1586,6 +1632,7 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
    for(unsigned v=0;v<3;v++){
     GX_Position3f32((float)xy[v*2]+0.5f,(float)xy[v*2+1]+0.5f,0);
     if(rgba)GX_Color4u8(rgba[v]&255u,(rgba[v]>>8)&255u,(rgba[v]>>16)&255u,rgba[v]>>24);
+    if(color&&color->fog_enabled)GX_Color4u8(0,0,0,color->fog[v]&255u);
     GX_TexCoord2f32(uv[v*2],uv[v*2+1]);
    }
    GX_End();submitted+=3u;first=last;
@@ -1598,6 +1645,12 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
   if(vertex_z&&!(native_actions[y*d->columns+x]&GS_GX_WRITE_Z))continue;
   uint32_t z=vertex_z?native_fragment_z(d->coverage.x+x,d->coverage.y+y,xy,vertex_z,inv):p->z;
   gs_mem_write_z(p->zbp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y,p->zpsm,gs_mem_clamp_raster_z(z,p->zpsm));
+ }
+ if(vertex_z){
+  native_extended[8]+=color&&color->untextured;
+  native_extended[9]+=color&&color->tfx>=2u;
+  native_extended[10]+=color&&color->fog_enabled;
+  native_extended[11]+=varying_vertex_alpha;
  }
  if(vertex_z){native_extended[0]++;native_extended[1]+=(uint64_t)d->columns*d->rows;native_extended[7]+=submitted;}
 

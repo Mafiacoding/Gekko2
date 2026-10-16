@@ -1,5 +1,13 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.26:** [gemeinsamer GS→GX-Ausbau](BETA12.26-COMMON-GX.md):
+Fog, HIGHLIGHT/HIGHLIGHT2, geeignete variable Vertex-Alpha-Kombinationen,
+untexturierte Dreiecke, alle vier Clamp-Modi und gepolsterte kleine Texturen.
+Keine Spielnamen-Auswahl; alle passenden GS-Zustände nutzen denselben Pfad.
+Branch `codex/beta12-26-generic-gx`, Basis `b2c0a20`. Keine bestätigten Wii-FPS,
+Gameplay- oder Kachelkorrekturen. Komplexes Feedback/Mipmaps bleiben offen.
+
+
 **BETA12.25:** experimenteller GX-Dreieckspfad für große Texturen, variable
 Z-Werte und GS-Alpha-/DATE-/AFAIL-Berechtigungen, nativer Texturcache und
 Kontrollbuild. [Implementierung, Tests und offene Grenzen](BETA12.25-GX-TRIANGLES.md).

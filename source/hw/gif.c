@@ -1085,15 +1085,44 @@ static int triangle_assembly_visible(void)
 #endif
 }
 
+#ifdef GEKKO2_GX_GENERIC_SHADER
+static uint32_t gs_gx_white_texel(int32_t x,int32_t y)
+{(void)x;(void)y;return 0x80808080u;}
+static int gs_gx_source_axes(gs_gx_axis_plan *x,gs_gx_axis_plan *y)
+{return g_gif.clamp_configured&&gs_gx_plan_axis(g_gif.tex_tw,g_gif.clamp_wms,g_gif.clamp_minu,g_gif.clamp_maxu,x)&&
+ gs_gx_plan_axis(g_gif.tex_th,g_gif.clamp_wmt,g_gif.clamp_minv,g_gif.clamp_maxv,y)&&gs_gx_native_texture_valid(x->size,y->size);}
+static uint32_t gs_gx_atlas_texel(int32_t x,int32_t y)
+{return gs_sample_texel_uncached(
+ gs_apply_clamp_wrap(x,g_gif.tex_tw,g_gif.clamp_wms,g_gif.clamp_minu,g_gif.clamp_maxu),
+ gs_apply_clamp_wrap(y,g_gif.tex_th,g_gif.clamp_wmt,g_gif.clamp_minv,g_gif.clamp_maxv));}
+static int gs_gx_atlas_disjoint(int32_t sx,int32_t sy,const gs_gx_axis_plan *x,const gs_gx_axis_plan *y)
+{
+ uint64_t base=(uint64_t)g_gif.tex_tbp0*256u;
+ uint64_t end=gs_page_end(base,g_gif.tex_tbw,x->max_index+1u,y->max_index+1u,g_gif.tex_psm);
+ uint64_t frame=(uint64_t)g_gif.fbp*4u,fe=gs_page_end(frame,g_gif.fbw,sx,sy,g_gif.frame_psm);
+ if(end>GS_MEM_SIZE||fe>GS_MEM_SIZE||!(end<=frame||fe<=base))return 0;
+ if(g_gif.zbuf_configured&&(g_gif.zte||!g_gif.zmsk)){
+  uint64_t z=(uint64_t)g_gif.zbp*4u,ze=gs_page_end(z,g_gif.fbw,sx,sy,g_gif.zpsm);
+  if(ze>GS_MEM_SIZE||!(end<=z||ze<=base))return 0;
+ }
+ return 1;
+}
+#endif
 static void gs_gx_native_source_key(void)
 {
  uint64_t hash=0,base=(uint64_t)g_gif.tex_tbp0*256u;
  uint64_t end=gs_page_end(base,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.tex_psm);
+#ifdef GEKKO2_GX_GENERIC_SHADER
+ gs_gx_axis_plan ax,ay;
+ if(gs_gx_source_axes(&ax,&ay))end=gs_page_end(base,g_gif.tex_tbw,ax.max_index+1u,ay.max_index+1u,g_gif.tex_psm);
+ else end=0;
+#endif
  int valid=end<=GS_MEM_SIZE&&end>base&&end-base<=2097152u;
  if(valid)valid=gs_mem_gpu_sync_alias_range((uint32_t)base,(uint32_t)end);
  if(valid)valid=gs_mem_hash_range((uint32_t)base,(uint32_t)(end-base),&hash);
  uint32_t state[]={g_gif.tex_tbp0,g_gif.tex_tbw,g_gif.tex_tw,g_gif.tex_th,g_gif.tex_psm,
-  g_gif.tex_cbp,g_gif.tex_cpsm,g_gif.tex_csa,g_gif.tex_csm,g_gif.texa_ta0,g_gif.texa_ta1,g_gif.texa_aem};
+  g_gif.tex_cbp,g_gif.tex_cpsm,g_gif.tex_csa,g_gif.tex_csm,g_gif.texa_ta0,g_gif.texa_ta1,g_gif.texa_aem,
+  g_gif.clamp_wms,g_gif.clamp_wmt,g_gif.clamp_minu,g_gif.clamp_maxu,g_gif.clamp_minv,g_gif.clamp_maxv};
  uint32_t lo=(uint32_t)hash,hi=(uint32_t)(hash>>32);
  for(unsigned n=0;n<sizeof(state)/sizeof(*state);n++){lo=(lo^state[n])*16777619u;hi=((hi<<5)|(hi>>27))^state[n];}
  if(g_gif.tex_psm==0x13u||g_gif.tex_psm==0x14u||g_gif.tex_psm==0x1bu||g_gif.tex_psm==0x24u||g_gif.tex_psm==0x2cu)
@@ -1239,35 +1268,59 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
 #ifdef GEKKO2_GX_EXTENDED_TRIANGLES
     /* GPU evaluates texture/color interpolation. GS destination permissions,
      * arbitrary alpha/depth islands and full-precision Z remain canonical. */
-    if(textured&&(!interpolate_color||(g_gif.tex_tfx<=1u&&
+    int native_generic=0,native_axis_ok=0;
+    gs_gx_axis_plan ax={0},ay={0};
+#ifdef GEKKO2_GX_GENERIC_SHADER
+    native_generic=1;native_axis_ok=!textured||gs_gx_source_axes(&ax,&ay);
+#endif
+    if((textured||native_generic)&&(native_generic||!interpolate_color||(g_gif.tex_tfx<=1u&&
        (c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&
-       !gs_dither_active()&&!g_gif.fbmask&&!(gs_effective_attr_prim()&PRIM_FGE_MASK)&&
+       !gs_dither_active()&&!g_gif.fbmask&&(native_generic||!(gs_effective_attr_prim()&PRIM_FGE_MASK))&&
+       (!textured||(
        !g_gif.tex1_mxl&&g_gif.tex_tw<=10u&&g_gif.tex_th<=10u&&
-       gs_gx_native_texture_valid(1u<<g_gif.tex_tw,1u<<g_gif.tex_th)&&
-       g_gif.clamp_configured&&g_gif.clamp_wms<=1u&&g_gif.clamp_wmt<=1u&&
-       (gs_effective_attr_prim()&PRIM_FST_MASK||(q0>0&&q1>0&&q2>0&&isfinite(q0)&&isfinite(q1)&&isfinite(q2)))&&
+       (native_generic?native_axis_ok:(gs_gx_native_texture_valid(1u<<g_gif.tex_tw,1u<<g_gif.tex_th)&&
+       g_gif.clamp_configured&&g_gif.clamp_wms<=1u&&g_gif.clamp_wmt<=1u))&&
+       (gs_effective_attr_prim()&PRIM_FST_MASK||(q0>0&&q1>0&&q2>0&&isfinite(q0)&&isfinite(q1)&&isfinite(q2)))))&&
        gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD)&&gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)&&
        gs_gx_render_active()&&maxx>=minx&&maxy>=miny&&
-       (g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&gs_draw_texture_cache_begin_impl(minx,miny,maxx+1,maxy+1,0u)){
+       (g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&(!textured||
+#ifdef GEKKO2_GX_GENERIC_SHADER
+       gs_gx_atlas_disjoint(maxx+1,maxy+1,&ax,&ay)
+#else
+       gs_draw_texture_cache_begin_impl(minx,miny,maxx+1,maxy+1,0u)
+#endif
+       )){
         int32_t xy[6]={x0,y0,x1,y1,x2,y2};float uv[6],qs[3]={q0,q1,q2};
         uint32_t colors[3]={c0,c1,c2},zs[3]={z0,z1,z2};
-        if(gs_effective_attr_prim()&PRIM_FST_MASK){
-            uv[0]=(float)u0/(1u<<g_gif.tex_tw);uv[1]=(float)v0/(1u<<g_gif.tex_th);
-            uv[2]=(float)u1/(1u<<g_gif.tex_tw);uv[3]=(float)v1/(1u<<g_gif.tex_th);
-            uv[4]=(float)u2/(1u<<g_gif.tex_tw);uv[5]=(float)v2/(1u<<g_gif.tex_th);
+        uint32_t tw=textured?(native_generic?ax.size:1u<<g_gif.tex_tw):4u,th=textured?(native_generic?ay.size:1u<<g_gif.tex_th):4u;
+        if(!textured){memset(uv,0,sizeof uv);qs[0]=qs[1]=qs[2]=1;}
+        else if(gs_effective_attr_prim()&PRIM_FST_MASK){
+            uv[0]=(float)u0/tw;uv[1]=(float)v0/th;
+            uv[2]=(float)u1/tw;uv[3]=(float)v1/th;
+            uv[4]=(float)u2/tw;uv[5]=(float)v2/th;
             qs[0]=qs[1]=qs[2]=1;
-        }else{uv[0]=s0;uv[1]=t0;uv[2]=s1;uv[3]=t1;uv[4]=s2;uv[5]=t2;}
-        gs_gx_native_color color={c2,g_gif.tex_tcc,g_gif.tex_tfx,g_gif.scissor_configured?g_gif.scissor_y1+1u:0u};
+        }else{float sx=(float)(1u<<g_gif.tex_tw)/tw,sy=(float)(1u<<g_gif.tex_th)/th;
+            uv[0]=s0*sx;uv[1]=t0*sy;uv[2]=s1*sx;uv[3]=t1*sy;uv[4]=s2*sx;uv[5]=t2*sy;}
+        gs_gx_native_color color={c2,textured?g_gif.tex_tcc:0u,textured?g_gif.tex_tfx:0u,g_gif.scissor_configured?g_gif.scissor_y1+1u:0u};
+#ifdef GEKKO2_GX_GENERIC_SHADER
+        color.fog_enabled=!!(gs_effective_attr_prim()&PRIM_FGE_MASK);color.fog_color=g_gif.fogcol;
+        color.fog[0]=f0;color.fog[1]=f1;color.fog[2]=f2;color.untextured=!textured;
+#endif
         gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
             g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,z2,
             !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
             g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp,g_gif.fbmask,g_gif.fba,
             g_gif.date,g_gif.datm,g_gif.ate,g_gif.atst,g_gif.aref,g_gif.afail};
-        gs_gx_native_source_key();
+        gs_gx_texel_fn sampler=gs_sample_texel_uncached;
+        if(textured)gs_gx_native_source_key();
+#ifdef GEKKO2_GX_GENERIC_SHADER
+        else {gs_gx_source_key(0x554e5445u,0x58545552u,1);sampler=gs_gx_white_texel;}
+        if(textured)sampler=gs_gx_atlas_texel;
+#endif
         int accepted=gs_gx_draw_native_triangle_ex(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,
-            minx,miny,maxx,maxy,xy,uv,qs,interpolate_color&&g_gif.tex_tfx==TEX_TFX_MODULATE?colors:NULL,
-            1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.clamp_wms,g_gif.clamp_wmt,
-            g_gif.tex1_mmag==1u&&g_gif.tex1_mmin==1u,g_gif.scanmsk,gs_sample_texel_uncached,&pipe,zs,&color);
+            minx,miny,maxx,maxy,xy,uv,textured?qs:NULL,interpolate_color&&(native_generic||g_gif.tex_tfx==TEX_TFX_MODULATE)?colors:NULL,
+            tw,th,textured?(native_generic?ax.clamp:g_gif.clamp_wms):1u,textured?(native_generic?ay.clamp:g_gif.clamp_wmt):1u,
+            textured&&g_gif.tex1_mmag==1u&&g_gif.tex1_mmin==1u,g_gif.scanmsk,sampler,&pipe,zs,&color);
         g_texel_cache_enabled=0;
         if(accepted){if(gouraud){g_gst[GIF_GOURAUD_GX]++;g_gst[GIF_GOURAUD_GX_HYBRID]++;}
             g_gif.triangles_drawn++;return;}

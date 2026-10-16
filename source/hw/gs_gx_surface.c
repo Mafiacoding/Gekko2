@@ -135,3 +135,20 @@ uint32_t gs_gx_fragment_actions(const gs_gx_pipeline *p,uint32_t psm,
  if((out&GS_GX_WRITE_COLOR)&&p->blend&&(!p->pabe||(sa&128u)))out|=GS_GX_DO_BLEND;
  return out;
 }
+
+uint32_t gs_gx_source_alpha(uint32_t ta,uint32_t va,uint32_t tfx,uint32_t tcc,uint32_t untextured)
+{
+ if(untextured||!tcc)return va;
+ uint32_t a=tfx==0u?(ta*va)>>7:tfx==2u?ta+va:ta;
+ return a>255u?255u:a;
+}
+
+int gs_gx_plan_axis(uint32_t exponent,uint32_t mode,uint32_t min,uint32_t max,gs_gx_axis_plan *out)
+{
+ if(!out||exponent>10u||mode>3u||min>1023u||max>1023u||(mode==2u&&min>max))return 0;
+ uint32_t bound=mode<2u?(1u<<exponent)-1u:mode==2u?max:min|max;
+ uint32_t extent=mode==3u?min+1u:bound+1u,size=4u;
+ while(size<extent)size<<=1;
+ if(size>1024u)return 0;
+ out->size=size;out->max_index=bound;out->clamp=mode==1u||mode==2u;return 1;
+}

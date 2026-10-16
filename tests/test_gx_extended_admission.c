@@ -4,6 +4,7 @@
 #define GEKKO2_GX_EXTENDED_TRIANGLES 1
 #define gs_gx_draw_native_triangle_ex capture_triangle
 #define gs_gx_render_active capture_active
+#undef GEKKO2_GX_GENERIC_SHADER /* Keep this BETA12.25 control admission contract. */
 #include "hw/gif.c"
 #undef gs_gx_draw_native_triangle_ex
 #undef gs_gx_render_active

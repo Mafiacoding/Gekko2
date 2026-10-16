@@ -1,5 +1,11 @@
 # Gekko2 SPEED BETA12.24a – 16 October 2026
 
+BETA12.26: [gemeinsame GS→GX-Funktionen](docs/BETA12.26-COMMON-GX.md)
+für alle passenden Spiele: Fog, vier TFX-Modi, geeignete variable Vertex-Alpha,
+untexturierte Dreiecke und vier Clamp-Modi einschließlich kleiner Texturen.
+Kein eigener Renderer je Spiel; keine bestätigte Wii-Spielbarkeit oder FPS.
+
+
 BETA12.25: [experimenteller GX-Dreieckspfad](docs/BETA12.25-GX-TRIANGLES.md)
 für große Texturen, variables Z und CPU-seitig geprüfte GS-Fragmentberechtigungen.
 Separater Kontrollbuild; vollständige Tekken-GX-Abdeckung und echte Wii-FPS
