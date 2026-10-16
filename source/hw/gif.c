@@ -9,6 +9,7 @@
 #include "core/hw/gif.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_gx.h"
+#include "core/hw/gs_gx_surface.h"
 #include "core/hw/gs.h"
 #include "core/hw/ee_intc.h"
 #ifdef GEKKO
@@ -850,10 +851,10 @@ static uint64_t gs_page_end(uint64_t base,uint32_t bw,uint32_t width,uint32_t he
     return base+((((uint64_t)(height-1u)/ph)*pages)+
                  ((uint64_t)(width-1u)/pw)+1u)*8192u;
 }
-static int gs_draw_texture_cache_begin(int32_t sx0,int32_t sy0,int32_t sx1,int32_t sy1)
+static int gs_draw_texture_cache_begin_impl(int32_t sx0,int32_t sy0,int32_t sx1,int32_t sy1,uint32_t minimum_pixels)
 {
     if(sx0<0||sy0<0||sx1<=sx0||sy1<=sy0||
-       (uint64_t)(sx1-sx0)*(uint32_t)(sy1-sy0)<512u||
+       (uint64_t)(sx1-sx0)*(uint32_t)(sy1-sy0)<minimum_pixels||
        !g_gif.clamp_configured||g_gif.clamp_wms>1u||g_gif.clamp_wmt>1u||g_gif.tex_tw>10u||g_gif.tex_th>10u)return 0;
     uint64_t source=(uint64_t)g_gif.tex_tbp0*256u;
     uint64_t source_end=gs_page_end(source,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.tex_psm);
@@ -865,6 +866,9 @@ static int gs_draw_texture_cache_begin(int32_t sx0,int32_t sy0,int32_t sx1,int32
     }
     memset(g_texel_tags,0xff,sizeof(g_texel_tags));g_texel_cache_enabled=1;return 1;
 }
+
+static int gs_draw_texture_cache_begin(int32_t x0,int32_t y0,int32_t x1,int32_t y1)
+{return gs_draw_texture_cache_begin_impl(x0,y0,x1,y1,512u);}
 
 /* Round 96: real SCISSOR clipping (GS Users Manual "SCISSOR_1/2:
  * Setting for Scissoring Area") - previously entirely unmodeled (see
@@ -1081,6 +1085,21 @@ static int triangle_assembly_visible(void)
 #endif
 }
 
+static void gs_gx_native_source_key(void)
+{
+ uint64_t hash=0,base=(uint64_t)g_gif.tex_tbp0*256u;
+ uint64_t end=gs_page_end(base,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.tex_psm);
+ int valid=end<=GS_MEM_SIZE&&end>base&&end-base<=2097152u;
+ if(valid)valid=gs_mem_gpu_sync_alias_range((uint32_t)base,(uint32_t)end);
+ if(valid)valid=gs_mem_hash_range((uint32_t)base,(uint32_t)(end-base),&hash);
+ uint32_t state[]={g_gif.tex_tbp0,g_gif.tex_tbw,g_gif.tex_tw,g_gif.tex_th,g_gif.tex_psm,
+  g_gif.tex_cbp,g_gif.tex_cpsm,g_gif.tex_csa,g_gif.tex_csm,g_gif.texa_ta0,g_gif.texa_ta1,g_gif.texa_aem};
+ uint32_t lo=(uint32_t)hash,hi=(uint32_t)(hash>>32);
+ for(unsigned n=0;n<sizeof(state)/sizeof(*state);n++){lo=(lo^state[n])*16777619u;hi=((hi<<5)|(hi>>27))^state[n];}
+ if(g_gif.tex_psm==0x13u||g_gif.tex_psm==0x14u||g_gif.tex_psm==0x1bu||g_gif.tex_psm==0x24u||g_gif.tex_psm==0x2cu)
+  for(unsigned n=0;n<512;n++){lo=(lo^g_gif.clut_cache[n])*16777619u;hi=((hi<<5)|(hi>>27))^g_gif.clut_cache[n];}
+ gs_gx_source_key(lo,hi,valid);
+}
 static struct {int32_t xy[6],maxx,maxy;double uv[6];float stq[9];uint32_t colors[3];double inv;} gx_triangle;
 static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
 {
@@ -1217,6 +1236,43 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
     uint32_t flat_r = rgba_channel(c2, 0), flat_g = rgba_channel(c2, 8);
     uint32_t flat_b = rgba_channel(c2, 16), flat_a = rgba_channel(c2, 24);
 
+#ifdef GEKKO2_GX_EXTENDED_TRIANGLES
+    /* GPU evaluates texture/color interpolation. GS destination permissions,
+     * arbitrary alpha/depth islands and full-precision Z remain canonical. */
+    if(textured&&(!interpolate_color||(g_gif.tex_tfx<=1u&&
+       (c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&
+       !gs_dither_active()&&!g_gif.fbmask&&!(gs_effective_attr_prim()&PRIM_FGE_MASK)&&
+       !g_gif.tex1_mxl&&g_gif.tex_tw<=10u&&g_gif.tex_th<=10u&&
+       gs_gx_native_texture_valid(1u<<g_gif.tex_tw,1u<<g_gif.tex_th)&&
+       g_gif.clamp_configured&&g_gif.clamp_wms<=1u&&g_gif.clamp_wmt<=1u&&
+       (gs_effective_attr_prim()&PRIM_FST_MASK||(q0>0&&q1>0&&q2>0&&isfinite(q0)&&isfinite(q1)&&isfinite(q2)))&&
+       gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD)&&gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)&&
+       gs_gx_render_active()&&maxx>=minx&&maxy>=miny&&
+       (g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&gs_draw_texture_cache_begin_impl(minx,miny,maxx+1,maxy+1,0u)){
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};float uv[6],qs[3]={q0,q1,q2};
+        uint32_t colors[3]={c0,c1,c2},zs[3]={z0,z1,z2};
+        if(gs_effective_attr_prim()&PRIM_FST_MASK){
+            uv[0]=(float)u0/(1u<<g_gif.tex_tw);uv[1]=(float)v0/(1u<<g_gif.tex_th);
+            uv[2]=(float)u1/(1u<<g_gif.tex_tw);uv[3]=(float)v1/(1u<<g_gif.tex_th);
+            uv[4]=(float)u2/(1u<<g_gif.tex_tw);uv[5]=(float)v2/(1u<<g_gif.tex_th);
+            qs[0]=qs[1]=qs[2]=1;
+        }else{uv[0]=s0;uv[1]=t0;uv[2]=s1;uv[3]=t1;uv[4]=s2;uv[5]=t2;}
+        gs_gx_native_color color={c2,g_gif.tex_tcc,g_gif.tex_tfx,g_gif.scissor_configured?g_gif.scissor_y1+1u:0u};
+        gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
+            g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,z2,
+            !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
+            g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp,g_gif.fbmask,g_gif.fba,
+            g_gif.date,g_gif.datm,g_gif.ate,g_gif.atst,g_gif.aref,g_gif.afail};
+        gs_gx_native_source_key();
+        int accepted=gs_gx_draw_native_triangle_ex(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,
+            minx,miny,maxx,maxy,xy,uv,qs,interpolate_color&&g_gif.tex_tfx==TEX_TFX_MODULATE?colors:NULL,
+            1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.clamp_wms,g_gif.clamp_wmt,
+            g_gif.tex1_mmag==1u&&g_gif.tex1_mmin==1u,g_gif.scanmsk,gs_sample_texel_uncached,&pipe,zs,&color);
+        g_texel_cache_enabled=0;
+        if(accepted){if(gouraud){g_gst[GIF_GOURAUD_GX]++;g_gst[GIF_GOURAUD_GX_HYBRID]++;}
+            g_gif.triangles_drawn++;return;}
+    }
+#endif
 #ifdef GEKKO2_GX_NATIVE_BIOS_TRI
     uint32_t native_z_min=z0<z1?z0:z1;if(z2<native_z_min)native_z_min=z2;
     int native_z_var=z0!=z1||z1!=z2;

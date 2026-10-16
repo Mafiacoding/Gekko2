@@ -401,6 +401,13 @@ int gs_gx_draw_native_stq_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  gs_gx_texel_fn sample,const gs_gx_pipeline *p,uint32_t conservative_z,const gs_gx_native_color *color)
 {(void)color;(void)conservative_z;(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;(void)q;(void)rgba;(void)tw;(void)th;(void)ws;(void)wt;(void)linear;(void)scanmsk;(void)sample;(void)p;return 0;}
 
+int gs_gx_draw_native_triangle_ex(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *uv,const float *q,const uint32_t *rgba,uint32_t tw,uint32_t th,
+ uint32_t ws,uint32_t wt,uint32_t linear,uint32_t scanmsk,gs_gx_texel_fn sample,
+ const gs_gx_pipeline *p,const uint32_t z[3],const gs_gx_native_color *color)
+{(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;(void)q;(void)rgba;(void)tw;(void)th;(void)ws;(void)wt;(void)linear;(void)scanmsk;(void)sample;(void)p;(void)z;(void)color;return 0;}
+uint64_t gs_gx_extended_stat(unsigned index){(void)index;return 0;}
 uint64_t gs_gx_native_affine_stat(unsigned n){(void)n;return 0;}
 int gs_gx_draw_shaded_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline)
 {(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)scanmsk;(void)sample;(void)pipeline;return 0;}
@@ -431,6 +438,7 @@ static int initialized;
 /* R1330-I: retain CPU fences only at actual memory ownership transfers.
  * GPU copy -> GPU sample is ordered inside the FIFO with PixModeSync. */
 static int texture_in_flight;
+static int native_cache_valid;
 static uint64_t sync_counts[8];
 uint64_t gs_gx_sync_count(unsigned n){return n<8u?sync_counts[n]:0;}
 /* R1389-WD: GX_DrawDone() sleeps until the PE-finish interrupt wakes it. A lost
@@ -560,6 +568,7 @@ void gs_gx_source_key(uint32_t lo,uint32_t hi,int valid){source_key_lo=lo;source
 uint64_t gs_gx_source_cache_count(unsigned n){return n<5u?source_cache_counts[n]:0;}
 static uint32_t source_pack(gs_gx_texture_draw *d,gs_gx_texel_fn sample)
 {
+ native_cache_valid=0;
  uint32_t lo=source_key_lo,hi=source_key_hi,valid=source_key_valid;source_key_valid=0;
  if(gekko2_opt_enabled(GEKKO2_OPT_GX_SOURCE_CACHE)&&valid&&source_cache.valid&&lo==source_cache.lo&&hi==source_cache.hi&&sample==source_cache.sample&&
     d->origin_x==source_cache.x&&d->origin_y==source_cache.y&&d->tw==source_cache.w&&d->th==source_cache.h) {
@@ -886,7 +895,7 @@ static int surface_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,ui
  surface_state(surface->width,surface->height,1);surface_texture(surface_pixels,surface->width,surface->height,GX_NEAR);
  /* Keep resident RGB unmodified before the GX display-copy conversion. */
  surface_quad(surface->width,surface->height);
- source_cache.valid=0;surface_copy(texture,sx,sy,width,height);
+ source_cache.valid=0;native_cache_valid=0;source_upload_pending=0;surface_copy(texture,sx,sy,width,height);
  surface_state(mode->fbWidth,mode->efbHeight,1);surface_texture(texture,width,height,GX_LINEAR);
  GX_SetDispCopySrc(0,0,mode->fbWidth,mode->efbHeight);GX_SetDispCopyDst(mode->fbWidth,copy_h);
  GX_SetCopyFilter(GX_FALSE,mode->sample_pattern,GX_TRUE,mode->vfilter);
@@ -918,6 +927,7 @@ int gs_gx_present_psm(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
      * completes the EFB->XFB copy before the software FPS overlay writes. */
     if(texture_in_flight&&!gx_cpu_wait(0))return 0;
     source_cache.valid=0;
+    native_cache_valid=0;
     uint32_t bytes=gs_gx_pack_rgba8_psm(texture,GX_PRESENT_TEXTURE,bp,bw,sx,sy,width,height,psm);
     if(!bytes)return 0;
     /* Scanout always repacks this buffer; it is not a source-cache hit. */
@@ -1310,7 +1320,12 @@ static int surface_draw_pipeline(gs_gx_texture_draw *d,gs_gx_texel_fn sample,con
 }
 static uint64_t native_affine_stats[11];
 uint64_t gs_gx_native_affine_stat(unsigned n){return n<11u?native_affine_stats[n]:0;}
-static uint8_t native_alpha_texels[128u*128u];
+static uint8_t *native_alpha_texels;
+static uint32_t native_alpha_capacity;
+static uint8_t native_actions[GS_GX_SURFACE_PIXELS];
+static uint64_t native_extended[8];
+static struct {uint32_t lo,hi,tw,th,alpha,min_alpha,max_alpha,varying;uint64_t transform;gs_gx_texel_fn sample;} native_cache;
+uint64_t gs_gx_extended_stat(unsigned n){return n<8u?native_extended[n]:0;}
 static uint32_t native_alpha_function(uint32_t a,const gs_gx_native_color *c)
 {
  if(!c)return a;
@@ -1347,16 +1362,25 @@ static uint32_t native_fragment_alpha(int32_t x,int32_t y,const int32_t *xy,cons
  if(q){double qi=b0*q[0]+b1*q[1]+b2*q[2];double iq=qi!=0?1.0/qi:0;s*=iq;t*=iq;}
  return native_alpha_function(native_alpha_at(s*tw,t*th,tw,th,ws,wt,linear),c);
 }
+static uint32_t native_fragment_z(int32_t x,int32_t y,const int32_t *xy,const uint32_t *z,double inv)
+{
+ double b0=(double)native_edge(xy[2],xy[3],xy[4],xy[5],x,y)*inv;
+ double b1=(double)native_edge(xy[4],xy[5],xy[0],xy[1],x,y)*inv;
+ double b2=(double)native_edge(xy[0],xy[1],xy[2],xy[3],x,y)*inv;
+ double value=b0*z[0]+b1*z[1]+b2*z[2];return value<0?0u:value>=4294967295.0?0xffffffffu:(uint32_t)(value+0.5);
+}
 static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
  const float *uv,const float *q,const uint32_t *rgba,uint32_t tw,uint32_t th,uint32_t ws,uint32_t wt,
- uint32_t linear,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *p,uint32_t conservative_z,const gs_gx_native_color *color)
+ uint32_t linear,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *p,uint32_t conservative_z,const gs_gx_native_color *color,const uint32_t *vertex_z)
 {
 #if !defined(GEKKO2_GX_NATIVE_BIOS_TRI)
  (void)color;(void)conservative_z;(void)psm;(void)bp;(void)bw;(void)minx;(void)miny;(void)maxx;(void)maxy;(void)xy;(void)uv;
  (void)q;(void)rgba;(void)tw;(void)th;(void)ws;(void)wt;(void)linear;(void)scanmsk;(void)sample;(void)p;return 0;
 #else
  native_affine_stats[0]++;
+ if(vertex_z)native_extended[6]++;
+ uint32_t key_lo=source_key_lo,key_hi=source_key_hi,key_valid=source_key_valid;source_key_valid=0;
  uint32_t constant_colors[3];int vertex_gouraud=rgba!=NULL;
  if(color&&color->tfx>1u)return 0; /* HIGHLIGHT needs another TEV stage. */
  if(color&&color->tfx==0u&&!rgba){
@@ -1365,8 +1389,9 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  }
 
  if(!gs_gx_render_active()||!surface_enabled||!xy||!uv||!sample||!p||psm>1u||
-    tw<4u||th<4u||tw>128u||th>128u||(tw&(tw-1u))||(th&(th-1u))||ws>1u||wt>1u||
-    (conservative_z&&p->zwrite)||p->pabe||p->ztst>3u||!p->colclamp||p->a>2u||p->b>2u||p->c>2u||p->d>2u||p->fix>255u)
+    !gs_gx_native_texture_valid(tw,th)||ws>1u||wt>1u||p->fbmask||
+    (!vertex_z&&(p->ate||p->date||p->fba))||
+    (conservative_z&&p->zwrite)||(!vertex_z&&p->pabe)||p->ztst>3u||!p->colclamp||p->a>2u||p->b>2u||p->c>2u||p->d>2u||p->fix>255u)
     return 0;
  for(unsigned i=0;i<6;i++)if(!isfinite(uv[i])||fabsf(uv[i])>65536.0f)return 0;
  Mtx tm;int projective=q!=NULL;
@@ -1389,10 +1414,11 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  int alpha_blend=p->blend&&p->a==0u&&p->b==1u&&p->d==1u&&
                  (p->c==0u||(p->c==2u&&p->fix<=128u));
  if(p->blend&&!additive&&!alpha_blend&&!additive_alpha)return 0;
+ if(p->pabe&&p->blend&&!alpha_blend)return 0; /* Other modes transform RGB before the per-pixel blend gate. */
  gs_gx_texture_draw *d=&texture_draw;memset(d,0,sizeof(*d));
  if(!gs_gx_prepare_flat(&d->coverage,3,bp,bw,minx,miny,maxx,maxy,xy,0,scanmsk))return 0;
  d->coverage.psm=psm;d->tw=tw;d->th=th;d->columns=d->coverage.width;d->rows=d->coverage.height;
- if(tw*th>d->columns*d->rows*4u)return 0;
+ if(!vertex_z&&tw*th>d->columns*d->rows*4u)return 0;
  uint32_t h=efb_height<512u?efb_height&~3u:512u;
  if(color&&color->target_height){
   uint32_t gh=(color->target_height+3u)&~3u;
@@ -1405,18 +1431,32 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  uint32_t zlo=0,zhi=0;uint64_t tested=0,failed=0;const uint8_t *depth=NULL;
  if((p->ztest||p->zwrite)&&!gs_gx_surface_depth_range(d,p,clo,chi,&zlo,&zhi))return 0;
  if(p->ztest&&p->ztst>=2u&&zhi){depth=gs_mem_read_range(zlo,zhi-zlo);if(!depth)return 0;}
- if(!gs_gx_surface_depth_clip(d,p,depth,zlo,zhi-zlo,&tested,&failed))return 0;
+ if(!vertex_z&&!gs_gx_surface_depth_clip(d,p,depth,zlo,zhi-zlo,&tested,&failed))return 0;
  /* Variable Z: the caller supplies a lower bound. Every covered sample must
   * pass that bound, and Z writes are forbidden; otherwise scalar fallback. */
  if(conservative_z&&failed)return 0;
+ void *alpha_storage=native_alpha_texels;
+ if(!grow_texture(&alpha_storage,&native_alpha_capacity,tw*th))return 0;
+ native_alpha_texels=alpha_storage;
  /* Pack raw, constant-color GS texels once, never shaded screen pixels. */
- source_key_valid=source_cache.valid=0;
- if(texture_in_flight&&!gx_cpu_wait(0))return 0;
+ source_cache.valid=0;
+ uint64_t transform=0;
+ const uint32_t tx[]={psm,color!=NULL,rgba!=NULL,rgba?rgba[0]>>24:0,p->blend,p->a,p->b,p->c,p->d,p->fix,color?((rgba||color->tfx==1u)?color->rgba&0xff000000u:color->rgba):0,color?color->tfx:0,color?color->tcc:0};
+ for(unsigned i=0;i<sizeof tx/sizeof *tx;i++)transform=(transform*1099511628211ull)^tx[i];
+ int cache_hit=gekko2_opt_enabled(GEKKO2_OPT_GX_SOURCE_CACHE)&&key_valid&&native_cache_valid&&
+  native_cache.lo==key_lo&&native_cache.hi==key_hi&&native_cache.tw==tw&&native_cache.th==th&&
+  native_cache.transform==transform&&native_cache.sample==sample;
+ if(!cache_hit&&texture_in_flight&&!gx_cpu_wait(0))return 0;
  uint32_t alpha=0,bytes=tw*th*4u;
  int uniform_required=!color&&(!psm||(alpha_blend&&p->c==0u));
  int varying_alpha=0;uint32_t max_alpha=0,min_alpha=255;
  /* R1389: stop at the first differing alpha; do not decode the rest
   * of a texture that is guaranteed to fall back. No target changes yet. */
+ if(cache_hit){
+  alpha=native_cache.alpha;min_alpha=native_cache.min_alpha;max_alpha=native_cache.max_alpha;varying_alpha=native_cache.varying;
+  native_extended[5]++;
+ }else{
+  native_cache_valid=0;
  for(uint32_t y=0;y<th;y++)for(uint32_t x=0;x<tw;x++){
   uint32_t c=sample((int32_t)x,(int32_t)y),a=c>>24,k=texture_tile(tw,x,y);
   native_affine_stats[3]++;
@@ -1457,12 +1497,41 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
    v[k+32]=((uint32_t)v[k+32]*p->fix)>>7;
    v[k+33]=((uint32_t)v[k+33]*p->fix)>>7;
  }
+
+  native_cache.lo=key_lo;native_cache.hi=key_hi;native_cache.tw=tw;native_cache.th=th;
+  native_cache.transform=transform;native_cache.sample=sample;native_cache.alpha=alpha;
+  native_cache.min_alpha=min_alpha;native_cache.max_alpha=max_alpha;native_cache.varying=varying_alpha;
+  native_cache_valid=key_valid;
+ }
  if(!surface_ensure_height(&d->coverage,h))return 0;
  d->coverage.rgba=alpha<<24;
- if(!gs_gx_surface_mark(surface,&d->coverage))return 0;
- if(color&&varying_alpha&&!psm){
-  double inv=1.0/(double)native_edge(xy[0],xy[1],xy[2],xy[3],xy[4],xy[5]);
+ double inv=1.0/(double)native_edge(xy[0],xy[1],xy[2],xy[3],xy[4],xy[5]);
+ if(vertex_z){
+  /* Preserve the original complete coverage; a byte per covered pixel can
+   * represent any number of alpha/depth islands without widening a span. */
   for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
+   uint32_t px=d->coverage.x+x,py=d->coverage.y+y;
+   uint32_t za=native_fragment_z(px,py,xy,vertex_z,inv),stored=0;
+   if(depth)stored=raw_z(depth,gs_mem_z_offset(p->zbp,bw,px,py,p->zpsm)-zlo,p->zpsm);
+   uint32_t sa=native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,inv);
+   uint32_t da=surface->alpha[py*surface->bw+px];
+   uint32_t actions=gs_gx_fragment_actions(p,psm,da,sa,za,stored);
+   native_actions[y*d->columns+x]=(uint8_t)actions;
+   native_extended[2]++;native_extended[3]+=!(actions&GS_GX_WRITE_COLOR);
+   if(actions&GS_GX_WRITE_Z)native_extended[4]++;
+  }
+  gs_gx_flat_draw mark=d->coverage;mark.psm=1u;
+  if(!gs_gx_surface_mark(surface,&mark))return 0;
+  if(!psm)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
+   uint32_t actions=native_actions[y*d->columns+x],px=d->coverage.x+x,py=d->coverage.y+y;
+   if(actions&GS_GX_WRITE_ALPHA){
+    uint32_t sa=native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,inv);
+    surface->dirty[py*surface->bw+px]|=2u;surface->alpha[py*surface->bw+px]=(uint8_t)(sa|(p->fba?128u:0u));
+   }
+  }
+ }else{
+  if(!gs_gx_surface_mark(surface,&d->coverage))return 0;
+  if(color&&varying_alpha&&!psm)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
    uint32_t px=d->coverage.x+x,py=d->coverage.y+y;
    surface->alpha[py*surface->bw+px]=(uint8_t)native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,inv);
    native_affine_stats[9]++;
@@ -1500,21 +1569,38 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  /* Exact CPU coverage/depth mask, but hardware texture sampling and RGB.
   * Group matching rows; no per-output-pixel texture or color callback. */
  uint32_t submitted=0;
- for(uint32_t y=0;y<d->rows;){uint32_t end=y+1,l=d->coverage.left[y],r=d->coverage.right[y];
-   while(end<d->rows&&d->coverage.left[end]==l&&d->coverage.right[end]==r)end++;
-   if(r>l){GX_SetScissor(d->coverage.x+l,d->coverage.y+y,r-l,end-y);
-    GXB(GX_TRIANGLES,GX_VTXFMT0,3);
-    for(unsigned v=0;v<3;v++){
-     GX_Position3f32((float)xy[v*2]+0.5f,(float)xy[v*2+1]+0.5f,0);
-     if(rgba)GX_Color4u8(rgba[v]&255u,(rgba[v]>>8)&255u,(rgba[v]>>16)&255u,rgba[v]>>24);
-     GX_TexCoord2f32(uv[v*2],uv[v*2+1]);
-    }
-    GX_End();submitted+=3u;}y=end;
+ for(uint32_t y=0;y<d->rows;){
+  uint32_t end=y+1,l=d->coverage.left[y],r=d->coverage.right[y];
+  if(!vertex_z)while(end<d->rows&&d->coverage.left[end]==l&&d->coverage.right[end]==r)end++;
+  for(uint32_t first=l;first<r;){
+   if(vertex_z&&!(native_actions[y*d->columns+first]&GS_GX_WRITE_COLOR)){first++;continue;}
+   uint32_t last=vertex_z?first+1u:r;
+   if(vertex_z)while(last<r&&(native_actions[y*d->columns+last]&GS_GX_WRITE_COLOR)&&
+    (!p->pabe||!((native_actions[y*d->columns+last]^native_actions[y*d->columns+first])&GS_GX_DO_BLEND)))last++;
+   if(vertex_z&&p->pabe&&alpha_blend){
+    int blend=(native_actions[y*d->columns+first]&GS_GX_DO_BLEND)!=0;
+    GX_SetBlendMode(blend?GX_BM_BLEND:GX_BM_NONE,GX_BL_SRCALPHA,GX_BL_INVSRCALPHA,GX_LO_COPY);
+   }
+   GX_SetScissor(d->coverage.x+first,d->coverage.y+y,last-first,end-y);
+   GXB(GX_TRIANGLES,GX_VTXFMT0,3);
+   for(unsigned v=0;v<3;v++){
+    GX_Position3f32((float)xy[v*2]+0.5f,(float)xy[v*2+1]+0.5f,0);
+    if(rgba)GX_Color4u8(rgba[v]&255u,(rgba[v]>>8)&255u,(rgba[v]>>16)&255u,rgba[v]>>24);
+    GX_TexCoord2f32(uv[v*2],uv[v*2+1]);
+   }
+   GX_End();submitted+=3u;first=last;
+  }y=end;
  }
+
  GX_SetScissor(0,0,surface->width,surface->height);texture_in_flight=1;surface_texture_valid=0;
  if(!gs_mem_gpu_mark_pending())return 0;
- if(p->zwrite)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++)
-   gs_mem_write_z(p->zbp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y,p->zpsm,gs_mem_clamp_raster_z(p->z,p->zpsm));
+ if(p->zwrite)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
+  if(vertex_z&&!(native_actions[y*d->columns+x]&GS_GX_WRITE_Z))continue;
+  uint32_t z=vertex_z?native_fragment_z(d->coverage.x+x,d->coverage.y+y,xy,vertex_z,inv):p->z;
+  gs_mem_write_z(p->zbp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y,p->zpsm,gs_mem_clamp_raster_z(z,p->zpsm));
+ }
+ if(vertex_z){native_extended[0]++;native_extended[1]+=(uint64_t)d->columns*d->rows;native_extended[7]+=submitted;}
+
  native_affine_stats[1]++;native_affine_stats[2]+=(uint64_t)d->columns*d->rows;
  native_affine_stats[5]+=submitted;
  native_affine_stats[6]+=projective;native_affine_stats[7]+=vertex_gouraud;native_affine_stats[8]+=color&&varying_alpha;native_affine_stats[10]+=additive_alpha;
@@ -1527,13 +1613,20 @@ int gs_gx_draw_native_affine_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
  const float *uv,uint32_t tw,uint32_t th,uint32_t ws,uint32_t wt,
  uint32_t linear,uint32_t scanmsk,gs_gx_texel_fn sample,const gs_gx_pipeline *p)
-{return native_triangle(psm,bp,bw,minx,miny,maxx,maxy,xy,uv,NULL,NULL,tw,th,ws,wt,linear,scanmsk,sample,p,0,NULL);}
+{return native_triangle(psm,bp,bw,minx,miny,maxx,maxy,xy,uv,NULL,NULL,tw,th,ws,wt,linear,scanmsk,sample,p,0,NULL,NULL);}
 int gs_gx_draw_native_stq_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
  const float *uv,const float *q,const uint32_t *rgba,uint32_t tw,uint32_t th,
  uint32_t ws,uint32_t wt,uint32_t linear,uint32_t scanmsk,
  gs_gx_texel_fn sample,const gs_gx_pipeline *p,uint32_t conservative_z,const gs_gx_native_color *color)
-{return native_triangle(psm,bp,bw,minx,miny,maxx,maxy,xy,uv,q,rgba,tw,th,ws,wt,linear,scanmsk,sample,p,conservative_z,color);}
+{return native_triangle(psm,bp,bw,minx,miny,maxx,maxy,xy,uv,q,rgba,tw,th,ws,wt,linear,scanmsk,sample,p,conservative_z,color,NULL);}
+
+int gs_gx_draw_native_triangle_ex(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *uv,const float *q,const uint32_t *rgba,uint32_t tw,uint32_t th,
+ uint32_t ws,uint32_t wt,uint32_t linear,uint32_t scanmsk,gs_gx_texel_fn sample,
+ const gs_gx_pipeline *p,const uint32_t z[3],const gs_gx_native_color *color)
+{return z?native_triangle(psm,bp,bw,minx,miny,maxx,maxy,xy,uv,q,rgba,tw,th,ws,wt,linear,scanmsk,sample,p,0,color,z):0;}
 
 static void pipeline_vertex(float x,float y,float s,float t,const gs_gx_texture_draw *d)
 {
@@ -1828,6 +1921,7 @@ int gs_gx_reset_boot_state(void)
  if(gx_wait_failed){surface_enabled=requested_residency;return 0;}
  if(!gs_mem_gpu_bind(NULL,NULL))return 0;
  if(surface)surface->active=0;
+ native_cache_valid=0;
  capture_flat=capture_texture=surface_texture_valid=0;
  source_key_valid=source_cache.valid=source_upload_pending=0;geometry_kind=0;render_enabled=0;
  memset(sync_counts,0,sizeof(sync_counts));memset(surface_counts,0,sizeof(surface_counts));
@@ -1837,6 +1931,7 @@ int gs_gx_reset_boot_state(void)
  memset(work_counts,0,sizeof(work_counts));gs_mem_reset_sync_stats();
  memset(additive_counts,0,sizeof(additive_counts));
  memset(native_affine_stats,0,sizeof(native_affine_stats));
+ memset(native_extended,0,sizeof(native_extended));
  surface_enabled=requested_residency;
  return 1;
 }

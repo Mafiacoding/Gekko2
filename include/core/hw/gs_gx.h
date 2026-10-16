@@ -38,7 +38,7 @@ typedef struct {
     uint32_t blend,a,b,c,d,fix,pabe,colclamp;
     uint32_t fbmask,fba; /* GS FRAME.FBMSK and alpha correction; zero is the legacy default */
     /* Exact late pixel tests for CPU-side GX import; all default to disabled.
-     * GPU submission must STILL reject unsupported alpha/DATE state. */
+     * GPU submission must STILL reject any state unsupported by its selected path. */
     uint32_t date,datm,ate,atst,aref,afail;
 } gs_gx_pipeline;
 /* Exact late framebuffer merge for PSMCT32/24: alpha correction precedes FBMSK. */
@@ -90,6 +90,14 @@ int gs_gx_draw_native_stq_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  const float *st,const float *q,const uint32_t *rgba,uint32_t tex_w,uint32_t tex_h,
  uint32_t wrap_s,uint32_t wrap_t,uint32_t linear,uint32_t scanmsk,
  gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline,uint32_t conservative_z,const gs_gx_native_color *color);
+/* Extended experimental GX source rasterization with exact CPU permissions
+ * and arbitrary depth/alpha-test holes. Actual interpolated Z is shadowed. */
+int gs_gx_draw_native_triangle_ex(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *st,const float *q,const uint32_t *rgba,uint32_t tex_w,uint32_t tex_h,
+ uint32_t wrap_s,uint32_t wrap_t,uint32_t linear,uint32_t scanmsk,
+ gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline,const uint32_t z[3],const gs_gx_native_color *color);
+uint64_t gs_gx_extended_stat(unsigned index);
 uint64_t gs_gx_native_affine_stat(unsigned n);
 int gs_gx_draw_shaded_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,

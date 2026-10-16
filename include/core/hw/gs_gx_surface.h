@@ -18,4 +18,9 @@ int gs_gx_surface_depth_range(const gs_gx_texture_draw *d,const gs_gx_pipeline *
  uint32_t color_lo,uint32_t color_hi,uint32_t *lo,uint32_t *hi);
 int gs_gx_surface_depth_clip(gs_gx_texture_draw *d,const gs_gx_pipeline *p,
  const uint8_t *depth,uint32_t lo,uint32_t bytes,uint64_t *tested,uint64_t *failed);
+enum { GS_GX_WRITE_COLOR=1,GS_GX_WRITE_ALPHA=2,GS_GX_WRITE_Z=4,GS_GX_DO_BLEND=8 };
+/* Pure GS fragment permissions. Incoming Z is raster-clamped, not truncated. */
+uint32_t gs_gx_fragment_actions(const gs_gx_pipeline *p,uint32_t color_psm,
+ uint32_t destination_alpha,uint32_t source_alpha,uint32_t z,uint32_t stored_z);
+int gs_gx_native_texture_valid(uint32_t width,uint32_t height);
 #endif

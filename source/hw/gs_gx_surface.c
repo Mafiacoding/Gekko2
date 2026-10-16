@@ -111,3 +111,27 @@ int gs_gx_surface_import(gs_gx_surface *s,uint8_t *vram,uint32_t size,const void
  if(!s)return 0;
  return gs_gx_surface_import_rect(s,vram,size,pixels,capacity,0,0,s->width,s->height);
 }
+
+int gs_gx_native_texture_valid(uint32_t w,uint32_t h)
+{return w>=4u&&h>=4u&&w<=1024u&&h<=1024u&&!(w&(w-1u))&&!(h&(h-1u))&&w*h<=524288u;}
+uint32_t gs_gx_fragment_actions(const gs_gx_pipeline *p,uint32_t psm,
+ uint32_t da,uint32_t sa,uint32_t z,uint32_t stored)
+{
+ if(!p||p->ztst>3u||p->atst>7u||p->afail>3u)return 0;
+ if(p->date&&(psm==1u||((da>>7)&1u)!=(p->datm&1u)))return 0;
+ z=gs_mem_clamp_raster_z(z,p->zpsm);
+ if(p->ztest&&!(p->ztst==1u||(p->ztst==2u&&z>=stored)||(p->ztst==3u&&z>stored)))return 0;
+ uint32_t out=GS_GX_WRITE_COLOR|GS_GX_WRITE_ALPHA|(p->zwrite?GS_GX_WRITE_Z:0u);
+ if(p->ate){
+  int pass=p->atst==1u||(p->atst==2u&&sa<p->aref)||(p->atst==3u&&sa<=p->aref)||
+   (p->atst==4u&&sa==p->aref)||(p->atst==5u&&sa>=p->aref)||
+   (p->atst==6u&&sa>p->aref)||(p->atst==7u&&sa!=p->aref);
+  if(!pass){if(p->afail==0u)return 0;
+   if(p->afail==1u)out&=~GS_GX_WRITE_Z;
+   else if(p->afail==2u)out&=GS_GX_WRITE_Z;
+   else out=GS_GX_WRITE_COLOR;
+  }
+ }
+ if((out&GS_GX_WRITE_COLOR)&&p->blend&&(!p->pabe||(sa&128u)))out|=GS_GX_DO_BLEND;
+ return out;
+}

@@ -738,6 +738,16 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)gs_gx_native_affine_stat(6),(unsigned long long)gs_gx_native_affine_stat(7),
       (unsigned long long)gs_gx_native_affine_stat(8),(unsigned long long)gs_gx_native_affine_stat(9),
       (unsigned long long)gs_gx_native_affine_stat(10));
+#ifdef GEKKO2_GX_EXTENDED_TRIANGLES
+    fprintf(f,"GX_EXTENDED_MODE compiled=1 gate=GX_GOURAUD+GX_RESIDENT precision=experimental-GX\n");
+#else
+    fprintf(f,"GX_EXTENDED_MODE compiled=0 gate=disabled precision=legacy-path\n");
+#endif
+    fprintf(f,"GX_EXTENDED_TRIANGLES accepted=%llu bbox_pixels=%llu fragment_checks=%llu color_rejected=%llu z_permissions=%llu source_cache_hits=%llu attempts=%llu GPU_vertices=%llu scope=experimental-GX-RGB-CPU-GS-tests\n",
+      (unsigned long long)gs_gx_extended_stat(0),(unsigned long long)gs_gx_extended_stat(1),
+      (unsigned long long)gs_gx_extended_stat(2),(unsigned long long)gs_gx_extended_stat(3),
+      (unsigned long long)gs_gx_extended_stat(4),(unsigned long long)gs_gx_extended_stat(5),
+      (unsigned long long)gs_gx_extended_stat(6),(unsigned long long)gs_gx_extended_stat(7));
     fprintf(f,"GS_TRIANGLE_TEXTURE_CACHE draws=%llu scope=disjoint-draw-local\n",(unsigned long long)gif_get_triangle_texture_cache_draws());
     /* R1330-K: Gouraud/triangle accounting.  submitted = degenerate + offscreen + visible;
      * visible = gx + software.  These are NOT the legacy gouraud_tri counter above. */

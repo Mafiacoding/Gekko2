@@ -1,5 +1,11 @@
 # Gekko2 SPEED BETA12.24a – 16 October 2026
 
+BETA12.25: [experimenteller GX-Dreieckspfad](docs/BETA12.25-GX-TRIANGLES.md)
+für große Texturen, variables Z und CPU-seitig geprüfte GS-Fragmentberechtigungen.
+Separater Kontrollbuild; vollständige Tekken-GX-Abdeckung und echte Wii-FPS
+bleiben unbestätigt. Volle Ausgabegröße von BETA12.24a bleibt erhalten.
+
+
 **BETA12.24a:** Automatische 4:3-Verkleinerung zurückgenommen. Die Nutzerkorrektur bezieht sich auf die Fragezeichen-Kacheln in Tekkens Charakterauswahl, nicht auf die gesamte Ausgabe. Wieder volle Ausgabegröße; BETA12.24-Diagnosen bleiben aktiv. Die Kacheln selbst sind noch nicht als korrigiert bestätigt. [Hinweis](docs/BETA12.24a-FULLSCREEN.md).
 
 **BETA12.24 – Spiele-Diagnose:** begrenzte GIF/XGKICK/SIGNAL-/VIF-/Interrupt-Ereignishistorie, getrennte GS-/INTC-Quittierungen, erste unbekannte VU-Paare und EE-Warteschleifen-Kontext. [Anleitung und Testbericht](docs/BETA12.24-GAME-DIAGNOSTICS.md). Keine neue Gameplay- oder Stall-Fixbehauptung; BETA12.23 bleibt Rückfallversion.

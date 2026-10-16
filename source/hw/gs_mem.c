@@ -51,7 +51,10 @@ int gs_mem_sync(void)
     if(g_sync_active)return 0;
     if(!g_gpu_pending)return 1;
     if(!g_gpu_resolver){g_sync_failures++;return 0;}
-    g_hash_owner.valid=0; /* Resolver may write even when it reports failure. */
+    /* A protected resolver promises writes only inside its interval. A
+     * disjoint decoded texture digest survives color/depth ownership work. */
+    if(!g_read_guard)g_hash_owner.valid=0;
+    else hash_invalidate_range(g_protected_lo,g_protected_hi-g_protected_lo);
     g_sync_active=1;
     int ok=g_gpu_resolver(g_gpu_opaque,g_gs_mem,GS_MEM_SIZE);
     g_sync_active=0;
@@ -66,7 +69,9 @@ int gs_mem_gpu_bind(gs_mem_gpu_resolver resolver,void *opaque)
 int gs_mem_gpu_mark_pending(void)
 {
     if(g_sync_active||!g_gpu_resolver)return 0;
-    g_hash_owner.valid=0;g_gpu_pending=1;return 1;
+    if(!g_read_guard)g_hash_owner.valid=0;
+    else hash_invalidate_range(g_protected_lo,g_protected_hi-g_protected_lo);
+    g_gpu_pending=1;return 1;
 }
 uint32_t gs_mem_gpu_pending(void){return g_gpu_pending;}
 uint32_t gs_mem_sync_failures(void){return g_sync_failures;}
