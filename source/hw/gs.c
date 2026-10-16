@@ -1,3 +1,4 @@
+#include "core/hw/game_trace.h"
 /*
  * gs.c - GS privileged register skeleton. See include/core/hw/gs.h
  * for scope notes. Addresses cross-checked against PCSX2's
@@ -74,8 +75,10 @@ int gs_mmio_write64(uint32_t addr, uint64_t val)
     if (reg) {
         if (addr == 0x12001000u) {
             /* GS_CSR write-1-to-clear semantics for interrupt status. */
+            if(val&1u)game_trace_record(GT_CSR_ACK,(uint32_t)g_gs.csr,(uint32_t)val,(uint32_t)g_gs.imr,0);
             g_gs.csr &= ~(val & 0x1full); /* FIELD is read-only. */
         } else {
+            if(addr==0x12001010u&&*reg!=val)game_trace_record(GT_IMR,(uint32_t)*reg,(uint32_t)val,(uint32_t)g_gs.csr,0);
             *reg = val;
         }
     }

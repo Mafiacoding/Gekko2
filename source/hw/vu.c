@@ -1,3 +1,4 @@
+#include "core/hw/game_trace.h"
 /*
  * vu.c - see include/core/hw/vu.h for scope notes and references, and
  * source/hw/vu_opcodes.h for the real VU instruction encoding this
@@ -18,6 +19,10 @@
 #include <math.h>
 
 static vu1_state_t g_vu1;
+#ifdef GEKKO2_GAME_TRACE
+static uint32_t unknown_words[8][2];
+static unsigned unknown_used;
+#endif
 const vu1_state_t * const vu1_scheduler_view = &g_vu1;
 static void vu1_service_xgkick(int flush);
 static void vu1_issue_xgkick(uint32_t addr);
@@ -25,6 +30,9 @@ static void vu1_issue_xgkick(uint32_t addr);
 void vu1_init(void)
 {
     memset(&g_vu1, 0, sizeof(g_vu1));
+#ifdef GEKKO2_GAME_TRACE
+    unknown_used=0;
+#endif
     /* VF00 is hardwired to (0,0,0,1.0f) on real hardware, matching
      * this project's existing VU0 macro-mode convention (ee_core.c's
      * vu0_vf_read_lane) - see docs/STATUS.md's "round 13" section for
@@ -411,8 +419,16 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
         if(timing&&mem_mask==4095u&&(upper&0x20000000u))timing->m_yield=1;
         pipeline->cycle++;
     }
-    if (!upper_ok || !lower_ok)
+    if (!upper_ok || !lower_ok) {
         (*unimplemented_opcodes_seen)++;
+#ifdef GEKKO2_GAME_TRACE
+        if(mem==g_vu1.mem&&unknown_used<8u) {
+            unsigned i=0;while(i<unknown_used&&(unknown_words[i][0]!=upper||unknown_words[i][1]!=lower))i++;
+            if(i==unknown_used){unknown_words[i][0]=upper;unknown_words[i][1]=lower;unknown_used++;
+                game_trace_record(GT_VU_UNKNOWN,this_pc,upper,lower,((unsigned)upper_ok<<1)|(unsigned)lower_ok);}
+        }
+#endif
+    }
     (*instructions_executed)++;
 
     /* Branch delay-slot mechanism (same 1-instruction-delay pattern as
@@ -499,6 +515,7 @@ int vu_micro_step_pipeline(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
  * cap retains the BIOS malformed-packet bound from GSState::Transfer<0>. */
 static void vu1_start_xgkick(uint32_t addr)
 {
+    game_trace_record(GT_KICK,addr,g_vu1.tpc,gif_get_state()->arb_owner,0);
     g_vu1.xgkick_addr=addr&(VU1_MEM_SIZE-16u);
     g_vu1.xgkick_packet_qwords=0;
     g_vu1.xgkick_ring_qwords=VU1_MEM_SIZE/16u;

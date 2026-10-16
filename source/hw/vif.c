@@ -1,3 +1,4 @@
+#include "core/hw/game_trace.h"
 /*
  * vif.c - see include/core/hw/vif.h for scope notes and references.
  */
@@ -78,6 +79,7 @@ static int vif_micro_barrier(vif_state_t *vif,uint32_t code) {
         cmd==VIF_CMD_MSCALF||cmd==VIF_CMD_MSCNT||cmd==VIF_CMD_MPG||
         (vif->is_vif1&&(cmd==VIF_CMD_FLUSH||cmd==VIF_CMD_FLUSHA));
     if(!wait_vu)return 0;
+    unsigned old_wait=vif->stat&12u;
     int vu_busy=vif->is_vif1?vu1_get_state()->running:ee_core_get_state()->vu0_running;
     int gif_busy=0;
     if(vif->is_vif1&&(cmd==VIF_CMD_FLUSH||cmd==VIF_CMD_FLUSHA||cmd==VIF_CMD_MSCALF)) {
@@ -88,6 +90,8 @@ static int vif_micro_barrier(vif_state_t *vif,uint32_t code) {
     }
     if(vu_busy)vif->stat|=1u<<2;else vif->stat&=~(1u<<2);
     if(gif_busy)vif->stat|=1u<<3;else vif->stat&=~(1u<<3);
+    if((vif->stat&12u)!=old_wait)game_trace_record(vu_busy||gif_busy?GT_VIF_WAIT:GT_VIF_RESUME,
+        vif->is_vif1,code,vif->stat,vif->is_vif1?vu1_get_state()->tpc:0);
     return vu_busy||gif_busy;
 }
 static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words);

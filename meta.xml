@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <app version="1">
-  <name>Gekko2 SPEED BETA12.23 VU/VIF/UV</name>
+  <name>Gekko2 SPEED BETA12.24 GAME TRACE</name>
   <coder>Mafiacoding</coder>
-  <version>BETA12.23 - VU masks, VIF interlocks, UV, 4:3</version>
+  <version>BETA12.24 - bounded game transport diagnostics</version>
   <release_date>20261016</release_date>
   <short_description>Experimental PlayStation 2 emulator for Wii</short_description>
-  <long_description>Experimental PS2 emulator for Wii. Corrected VU integer memory lane masks, VIF microprogram interlocks and fractional GS UV coordinates. Standard 4:3 presentation is fitted on widescreen Wii. Chain residency and experimental PSM conversion remain factory OFF and apply at Cold Boot. No confirmed Wii gameplay, Crash stall fix or overall FPS gain. Bring your own legal BIOS and disc.</long_description>
+  <long_description>Experimental PS2 game diagnostic build. Bounded GIF/XGKICK/SIGNAL, VIF and interrupt history, unknown VU pairs and CPU wait context in numbered SD session logs. Retains BETA12.23 corrections. Both experiments factory OFF; saved settings apply at Cold Boot. No confirmed Crash/Tekken gameplay or SIGNAL stall resolution. Keep BETA12.23 for rollback. Bring your own legal BIOS/disc.</long_description>
 </app>

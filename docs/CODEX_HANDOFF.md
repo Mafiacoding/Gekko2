@@ -1,5 +1,9 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.24 – Spiele-Diagnose:** begrenzte GIF/XGKICK/SIGNAL-/VIF-/Interrupt-Ereignishistorie, getrennte GS-/INTC-Quittierungen, erste unbekannte VU-Paare und EE-Warteschleifen-Kontext. [Anleitung und Testbericht](BETA12.24-GAME-DIAGNOSTICS.md). Keine neue Gameplay- oder Stall-Fixbehauptung; BETA12.23 bleibt Rückfallversion.
+
+Branch `codex/beta12-24-game-diagnostics`, Basis `bdd8230`.
+
 **BETA12.23 – Crash/Tekken-Logbatch:** VU-Integer-Lanemasken, VIF-Wartebedingungen und GS-UV-Nachkommabits korrigiert. Standard-4:3-Ausgabe auf einer als 16:9 konfigurierten Wii wird mit Seitenbalken dargestellt. [Analyse, Referenzabgleich und Testbericht](BETA12.23-GAME-LOG-REVIEW.md). Crash zeigt im BETA12.22-Log einen dauerhaften SIGNAL-/XGKICK-Stall; dessen vollständige Ursache und Gameplayfortschritt bleiben auf neuer Wii-Hardwareausführung zu prüfen. Kein belegter Gesamt-FPS-Gewinn.
 
 Branch `codex/beta12-23-game-log-fixes`, Basis `8553e2d`. Nachstehende Checkpoints sind historisch.

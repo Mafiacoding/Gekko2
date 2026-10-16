@@ -1,3 +1,4 @@
+#include "core/hw/game_trace.h"
 #include "core/hw/gs_triangle_coverage.h"
 #include "core/runtime_profile.h"
 #include "core/recompiler/optimization.h"
@@ -20,6 +21,7 @@ static gif_state_t g_gif;
 const gif_state_t * const gif_scheduler_view = &g_gif;
 static uint64_t g_date_stats[2];
 static uint64_t g_signal_stalls;
+static uint8_t signal_wait[3],path_wait[3];
 uint64_t gif_signal_stall_count(void){return g_signal_stalls;}
 uint64_t gif_date_stat(unsigned i){return i<2?g_date_stats[i]:0;}
 static int g_gx_opaque; /* CT24 GPU import preserves destination alpha. */
@@ -120,7 +122,7 @@ void gif_init(void)
     g_sprite_cached_draws=g_sprite_fast_rows=g_triangle_cached_draws=0;
     memset(g_draw_routes,0,sizeof(g_draw_routes));
     memset(g_date_stats,0,sizeof(g_date_stats));
-    g_signal_stalls=0;
+    g_signal_stalls=0;memset(signal_wait,0,sizeof signal_wait);memset(path_wait,0,sizeof path_wait);
     memset(g_gst,0,sizeof(g_gst));memset(g_gfb,0,sizeof(g_gfb));
     memset(g_gstate,0,sizeof(g_gstate));memset(g_gdeg,0,sizeof(g_gdeg));
     g_gstate_used=0;g_gstate_overflow=0;
@@ -2549,6 +2551,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * GS_REG_SIGNAL/FINISH/LABEL comment for the full citation
          * and honest scope (SIGLBLID storage only, no EE/IOP
          * interrupt-controller wiring). */
+        game_trace_record(GT_SIGNAL,s_gif_active_path,data_lo,data_hi,(uint32_t)gs_get_state()->csr);
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_sigid = (g_gif.siglblid_sigid & ~idmsk) | (id & idmsk);
         gs_get_state()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
@@ -2570,6 +2573,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         /* Round 108 (149th finding, task #254 - FINAL): LABEL -
          * identical masked-update formula to SIGNAL, but targets
          * SIGLBLID.LBLID instead of SIGID. */
+        game_trace_record(GT_SIGNAL,s_gif_active_path,data_lo,data_hi,(uint32_t)gs_get_state()->csr);
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_lblid = (g_gif.siglblid_lblid & ~idmsk) | (id & idmsk);
         gs_get_state()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
@@ -3149,6 +3153,7 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
      * within one call here, so there is never a genuine in-flight
      * offset to report - see gif_path1_transfers (Round 577) for the
      * real way to observe PATH1 activity instead. */
+    game_trace_record(GT_TAG_PATH1+s_gif_active_path,tag_w0,tag_w1,tag_w2,tag_w3);
     g_gif.gif_tag0 = tag_w0;
     g_gif.gif_tag1 = tag_w1;
     g_gif.gif_tag2 = tag_w2;
@@ -3302,10 +3307,13 @@ uint32_t gif_try_process_quadwords(int path,const uint8_t *data,uint32_t qwc) {
         unsigned owner=g_gif.arb_owner;
         int slice=owner==3u&&path!=GIF_PATH_3&&(g_gif.gif_mode&4u)&&
                   g_gif.image_carry_path[GIF_PATH_3];
-        if((g_gif.gif_ctrl&8u)||(owner&&owner!=(unsigned)path+1u&&!slice)||
-           (path==GIF_PATH_3&&owner!=3u&&((g_gif.gif_mode&1u)||g_gif.arb_m3p||
-            (g_gif.arb_pending&3u)))||
-           (path==GIF_PATH_2&&owner!=2u&&(g_gif.arb_pending&1u)))break;
+        unsigned wait=(g_gif.gif_ctrl&8u)?1u:
+            (owner&&owner!=(unsigned)path+1u&&!slice)?2u:
+            (path==GIF_PATH_3&&owner!=3u&&((g_gif.gif_mode&1u)||g_gif.arb_m3p))?3u:
+            (path==GIF_PATH_3&&owner!=3u&&(g_gif.arb_pending&3u))?4u:
+            (path==GIF_PATH_2&&owner!=2u&&(g_gif.arb_pending&1u))?5u:0u;
+        if(wait){if(path_wait[path]!=wait){path_wait[path]=(uint8_t)wait;game_trace_record(GT_GIF_WAIT,path,wait,owner,g_gif.arb_pending);}break;}
+        if(path_wait[path]){game_trace_record(GT_GIF_RESUME,path,path_wait[path],owner,g_gif.arb_pending);path_wait[path]=0;}
         /* The synchronous consumer has no hidden borrowed-payload queue.
          * Keep a second SIGNAL at its producer until CSR.SIGNAL is cleared.
          * The entire qword is still unaccepted: DMA/VIF/VU may retry it
@@ -3315,7 +3323,11 @@ uint32_t gif_try_process_quadwords(int path,const uint8_t *data,uint32_t qwc) {
         if(c->remaining&&c->mode==0u&&
            regs_nibble(c->regs_lo,c->regs_hi,c->index)==GIF_REG_AD&&
            (rd_le32(data+done*16u+8u)&255u)==GS_REG_SIGNAL&&
-           (gs_get_state()->csr&1u)) {g_signal_stalls++;break;}
+           (gs_get_state()->csr&1u)) {
+            if(!signal_wait[path]){signal_wait[path]=1;game_trace_record(GT_SIGNAL_WAIT,path,c->remaining,rd_le32(data+done*16u),rd_le32(data+done*16u+4u));}
+            g_signal_stalls++;break;
+        }
+        if(signal_wait[path]){signal_wait[path]=0;game_trace_record(GT_SIGNAL_RESUME,path,c->remaining,(uint32_t)gs_get_state()->csr,0);}
         if(!owner||slice)g_gif.arb_owner=(uint8_t)(path+1);
         int tag=!g_gif.register_carry_path[path].remaining&&!g_gif.image_carry_path[path];
         if(tag)g_gif.arb_eop[path]=!!(data[done*16u+1u]&0x80u);

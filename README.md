@@ -1,4 +1,6 @@
-# Gekko2 — SPEED BETA12.23
+# Gekko2 — SPEED BETA12.24
+
+**BETA12.24 – Spiele-Diagnose:** begrenzte GIF/XGKICK/SIGNAL-/VIF-/Interrupt-Ereignishistorie, getrennte GS-/INTC-Quittierungen, erste unbekannte VU-Paare und EE-Warteschleifen-Kontext. [Anleitung und Testbericht](docs/BETA12.24-GAME-DIAGNOSTICS.md). Keine neue Gameplay- oder Stall-Fixbehauptung; BETA12.23 bleibt Rückfallversion.
 
 **BETA12.23 – Crash/Tekken-Logbatch:** VU-Integer-Lanemasken, VIF-Wartebedingungen und GS-UV-Nachkommabits korrigiert. Standard-4:3-Ausgabe auf einer als 16:9 konfigurierten Wii wird mit Seitenbalken dargestellt. [Analyse, Referenzabgleich und Testbericht](docs/BETA12.23-GAME-LOG-REVIEW.md). Crash zeigt im BETA12.22-Log einen dauerhaften SIGNAL-/XGKICK-Stall; dessen vollständige Ursache und Gameplayfortschritt bleiben auf neuer Wii-Hardwareausführung zu prüfen. Kein belegter Gesamt-FPS-Gewinn.
 
@@ -16,7 +18,7 @@ No physical Wii compatibility/gameplay claim.
 
 # Gekko2 — PS2 emulator for Nintendo Wii
 
-**Current source checkpoint: R1389-SPEED-BETA12.23-VU-VIF-UV (16 October 2026).**
+**Current source checkpoint: R1389-SPEED-BETA12.24-GAME-TRACE (16 October 2026).**
 Experimental Wii development build. No claim of playable game compatibility.
 
 ## BETA12.9 – targeted GS correctness and safe VBlank speed extension

@@ -1,3 +1,4 @@
+#include "core/hw/game_trace.h"
 extern void ee_core_event_notify(void) __attribute__((weak));
 /*
  * ee_intc.c - EE interrupt controller register model. See
@@ -114,6 +115,7 @@ int ee_intc_mmio_write32(uint32_t addr, uint32_t value)
     if((addr==EE_INTC_STAT||addr==EE_INTC_MASK)&&ee_core_event_notify)ee_core_event_notify();
     switch (addr) {
         case EE_INTC_STAT:
+            if(value&1u)game_trace_record(GT_INTC_ACK,g_intc.stat,value,g_intc.mask,0);
             if (value & 4u) g_vblank_poll_trace.vblank_w1c++;
             if (value & (1u << 1)) {
                 g_sbus_ack_count++;
@@ -128,6 +130,7 @@ int ee_intc_mmio_write32(uint32_t addr, uint32_t value)
             /* Real PCSX2 (HwWrite.cpp mcase(INTC_MASK)):
              * psHu32(INTC_MASK) ^= (u16)value - write 1 to a bit to
              * TOGGLE it (not a plain assignment). */
+            if(value&1u)game_trace_record(GT_INTC_MASK,g_intc.mask,value,g_intc.stat,0);
             g_intc.mask ^= (value & 0xFFFFu);
             return 1;
         default:

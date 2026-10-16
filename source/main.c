@@ -1,3 +1,4 @@
+#include "core/hw/game_trace.h"
 #include "core/chd_reader.h"
 #include "build_version.h"
 #include "core/recompiler/experimental_options.h"
@@ -245,6 +246,8 @@ static uint64_t g_image_probe_attempts;
 static uint64_t g_boot_started,g_boot_log_next;
 static frontend_log g_session_log;
 static int g_guest_error_reported;
+static uint64_t g_game_trace_cursor;
+static int g_game_context_reported;
 static uint64_t g_fileio_trace_previous_total;
 
 static const char *boot_log_path(void)
@@ -277,6 +280,7 @@ static void save_boot_progress(const char *event)
         (unsigned long long)g->smode2,(unsigned long long)(circuit==1?g->display1:g->display2));
     fprintf(f,"DSI_PROGRESS build=" GEKKO2_BUILD_NAME " status=%d emitted=%lu faults=%lu patched=%lu block_sites=%lu block_prepares=%lu\n",
       dsi_fastmem_status(),(unsigned long)dsi_fastmem_stat(5),(unsigned long)dsi_fastmem_stat(0),(unsigned long)dsi_fastmem_stat(1),(unsigned long)dsi_fastmem_stat(6),(unsigned long)dsi_fastmem_stat(7));
+    game_trace_dump(f,&g_game_trace_cursor);
     frontend_log_close(&g_session_log,f);g_log_ticks+=gettime()-log_begin;
 }
 
@@ -333,6 +337,24 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         "on"
 #endif
     );
+    if(!g_game_context_reported){
+        const char *base=strrchr(g_disc_path,'/');base=base?base+1:g_disc_path;
+        char label[96];unsigned n=0;while(base[n]&&n+1<sizeof label){unsigned char c=base[n];label[n]=(c>=32u&&c<127u&&c!='"')?(char)c:'?';n++;}label[n]=0;
+        fprintf(f,"GAME_CONTEXT schema=1 image=\"%s\" identity=selected-filename-not-verified-title trace_capacity=64 raw_memory_dump=0\n",label);
+        g_game_context_reported=1;
+    }
+    game_trace_dump(f,&g_game_trace_cursor);
+    fprintf(f,"GAME_WAIT ee_pc=%08lx iop_pc=%08lx vu_pc=%08lx signal_stalls=%llu path=%u vblank_events=%llu draw_qwords=%llu interpretation=not-a-gameplay-detector\n",
+        (unsigned long)ee_core_get_state()->pc,(unsigned long)iop_core_get_state()->pc,
+        (unsigned long)vu1_get_state()->tpc,(unsigned long long)gif_signal_stall_count(),
+        gif_get_state()->arb_owner,(unsigned long long)events,(unsigned long long)gif_get_state()->quadwords_seen);
+    const ee_state_t *probe_cpu=ee_core_get_state();
+    fprintf(f,"GAME_CPU pc=%08lx next=%08lx epc=%08lx status=%08lx cause=%08lx sp=%08lx ra=%08lx v0=%08lx v1=%08lx a0=%08lx a1=%08lx\n",
+        (unsigned long)probe_cpu->pc,(unsigned long)probe_cpu->next_pc,(unsigned long)probe_cpu->cop0[14],
+        (unsigned long)probe_cpu->cop0[12],(unsigned long)probe_cpu->cop0[13],
+        (unsigned long)probe_cpu->gpr[29].ud0,(unsigned long)probe_cpu->gpr[31].ud0,
+        (unsigned long)probe_cpu->gpr[2].ud0,(unsigned long)probe_cpu->gpr[3].ud0,
+        (unsigned long)probe_cpu->gpr[4].ud0,(unsigned long)probe_cpu->gpr[5].ud0);
     /* BETA12.4: single, read-only Crash E3 NuError capture; no guest mutation.
      * The error routine has already formatted both strings on its stack. */
     if (!g_guest_error_reported) {
@@ -1135,6 +1157,7 @@ static void run_real_boot_flow(void)
         gekko2_opt_apply();
         gekko2_experimental_apply_cold_boot();
         g_gx_present=g_gx_requested;
+        game_trace_reset();g_game_trace_cursor=0;g_game_context_reported=0;
         g_boot_started=gettime();g_boot_log_next=0;g_guest_error_reported=0;g_fileio_trace_previous_total=0;
         if(frontend_log_begin(&g_session_log,"sd:/pcsx2/logs",g_boot_disc,g_gx_present)<0)
             printf("Could not create session log (errno=%d).\n",g_session_log.last_error);
