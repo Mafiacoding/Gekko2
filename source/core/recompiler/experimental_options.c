@@ -2,12 +2,15 @@
 #include <stdio.h>
 #include <string.h>
 static unsigned requested,active;
-static const char *keys[GEKKO2_EXP_COUNT]={"GEKKO2_EE_CHAIN_RESIDENCY","GEKKO2_GS_EXTENDED_PSM"};
+static const char *keys[GEKKO2_EXP_COUNT]={"GEKKO2_EE_CHAIN_RESIDENCY","GEKKO2_GS_EXTENDED_PSM","GEKKO2_GX_RISK_MODE"};
 unsigned gekko2_experimental_available(void)
 {
  unsigned mask=1u<<GEKKO2_EXP_PSM;
 #if defined(GEKKO2_EE_CHAIN_RESIDENCY) && !defined(PCSX2WII_JIT_DISABLE)
  mask|=1u<<GEKKO2_EXP_CHAIN;
+#endif
+#if defined(GEKKO2_GX_RISK_MODE) && defined(GEKKO2_GX_GENERIC_SHADER) && defined(GEKKO2_GX_EXTENDED_TRIANGLES) && defined(GEKKO2_GX_NATIVE_BIOS_TRI)
+ mask|=1u<<GEKKO2_EXP_GX_RISK;
 #endif
  return mask;
 }

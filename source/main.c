@@ -743,6 +743,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
 #else
     fprintf(f,"GX_EXTENDED_MODE compiled=0 gate=disabled precision=legacy-path\n");
 #endif
+    fprintf(f,"GX_RISK_MODE available=%u requested=%d enabled=%d candidates=%llu fast_draws=%llu fallback=%llu vertices_saved=%llu apply=cold-boot coverage=experimental-GX-edges\n",
+      (gekko2_experimental_available()>>GEKKO2_EXP_GX_RISK)&1u,
+      gekko2_experimental_requested(GEKKO2_EXP_GX_RISK),gekko2_experimental_enabled(GEKKO2_EXP_GX_RISK),
+      (unsigned long long)gs_gx_extended_stat(12),(unsigned long long)gs_gx_extended_stat(13),
+      (unsigned long long)gs_gx_extended_stat(14),(unsigned long long)gs_gx_extended_stat(15));
 #ifdef GEKKO2_GX_GENERIC_SHADER
     fprintf(f,"GX_COMMON_SHADER compiled=1 untextured=%llu highlight=%llu fog=%llu varying_vertex_alpha=%llu\n",
       (unsigned long long)gs_gx_extended_stat(8),(unsigned long long)gs_gx_extended_stat(9),
@@ -1447,6 +1452,7 @@ static void gs_compat_load(void)
 {
     gekko2_experimental_load(GEKKO2_EXP_PSM,"sd:/pcsx2/gs-compat.cfg");
     gekko2_experimental_load(GEKKO2_EXP_CHAIN,"sd:/pcsx2/jit-chain.cfg");
+    gekko2_experimental_load(GEKKO2_EXP_GX_RISK,"sd:/pcsx2/gx-risk.cfg");
 }
 static int gs_compat_save(void)
 {
@@ -1506,6 +1512,9 @@ int main(int argc, char **argv)
                 (gekko2_experimental_available()>>GEKKO2_EXP_CHAIN)&1u,
                 gekko2_experimental_requested(GEKKO2_EXP_CHAIN),gekko2_experimental_enabled(GEKKO2_EXP_CHAIN),
                 gekko2_experimental_requested(GEKKO2_EXP_PSM),gekko2_experimental_enabled(GEKKO2_EXP_PSM));
+            fprintf(boot,"GX_RISK_MODE available=%u requested=%d enabled=%d apply=next-cold-boot\n",
+                (gekko2_experimental_available()>>GEKKO2_EXP_GX_RISK)&1u,
+                gekko2_experimental_requested(GEKKO2_EXP_GX_RISK),gekko2_experimental_enabled(GEKKO2_EXP_GX_RISK));
             fprintf(boot,"ARM_IOS status=%d original=%u active=%u\n",wii_arm_ios_status(),wii_arm_ios_original(),wii_arm_ios_active());
             fclose(boot);
         }
@@ -1530,7 +1539,16 @@ int main(int argc, char **argv)
                   gekko2_experimental_requested(GEKKO2_EXP_CHAIN)?"ON":"OFF");
                 ui_text(launcher_rect,36,380,1,chain_line,227,197,114);
                 char ios_line[90];snprintf(ios_line,sizeof ios_line,"Current IOS: %u | %s",wii_arm_ios_active(),wii_arm_ios_message());
-                ui_text(launcher_rect,36,343,1,ios_line,117,186,237);
+                ui_text(launcher_rect,36,454,1,ios_line,117,186,237);
+                char risk_line[100];snprintf(risk_line,sizeof risk_line,"%s GX RISK MODE - FAST TRIANGLES %s",
+                  opt_selected==GEKKO2_OPT_COUNT?">":" ",
+                  !(gekko2_experimental_available()&(1u<<GEKKO2_EXP_GX_RISK))?"UNAVAILABLE":
+                  gekko2_experimental_requested(GEKKO2_EXP_GX_RISK)?"ON":"OFF");
+                if(opt_selected==GEKKO2_OPT_COUNT){
+                  launcher_rect(32,339,576,20,76,35,12);
+                  ui_text(launcher_rect,36,365,1,"Possible edge errors. Applies at next cold boot.",227,197,114);
+                }
+                ui_text(launcher_rect,36,343,1,risk_line,227,197,114);
             }
             else if(page==3)ui_browser_draw(launcher_rect,&g_browser,notice);
             else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_requested,engine,notice);
@@ -1575,10 +1593,16 @@ int main(int argc, char **argv)
                     else notice=gekko2_experimental_save(GEKKO2_EXP_CHAIN,"sd:/pcsx2/jit-chain.cfg")==0?
                         "128-bit chain option saved. Next cold boot.":"128-bit chain option not saved to SD.";
                 }
-                else if(down&PAD_BUTTON_UP)opt_selected=(opt_selected+GEKKO2_OPT_COUNT-1)%GEKKO2_OPT_COUNT;
-                else if(down&PAD_BUTTON_DOWN)opt_selected=(opt_selected+1)%GEKKO2_OPT_COUNT;
+                else if(down&PAD_BUTTON_UP)opt_selected=(opt_selected+GEKKO2_OPT_COUNT)%(GEKKO2_OPT_COUNT+1);
+                else if(down&PAD_BUTTON_DOWN)opt_selected=(opt_selected+1)%(GEKKO2_OPT_COUNT+1);
                 else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT)){
-                    if(gekko2_opt_toggle(opt_selected))
+                    if(opt_selected==GEKKO2_OPT_COUNT){
+                        if(!gekko2_experimental_request(GEKKO2_EXP_GX_RISK,!gekko2_experimental_requested(GEKKO2_EXP_GX_RISK)))
+                            notice="GX risk mode is unavailable in this build.";
+                        else notice=gekko2_experimental_save(GEKKO2_EXP_GX_RISK,"sd:/pcsx2/gx-risk.cfg")==0?
+                            "GX risk saved. Next cold boot; possible edge errors.":"GX risk not saved to SD.";
+                    }
+                    else if(gekko2_opt_toggle(opt_selected))
                         notice=gekko2_opt_save("sd:/pcsx2/optimization.cfg")==0?
                             (opt_selected==GEKKO2_OPT_ARM_WORKER||opt_selected==GEKKO2_OPT_ARM_IOS222||opt_selected==GEKKO2_OPT_ARM_CPU_RAM?"Saved. Exit to HBC and restart for ARM / IOS.":"Saved. Applies to the next cold boot."):
                             "Could not save options to SD. Check card / directory.";

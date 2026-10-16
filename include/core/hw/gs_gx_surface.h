@@ -27,5 +27,9 @@ typedef struct {uint32_t size,max_index,clamp;} gs_gx_axis_plan;
 int gs_gx_plan_axis(uint32_t exponent,uint32_t mode,uint32_t min,uint32_t max,gs_gx_axis_plan *out);
 uint32_t gs_gx_source_alpha(uint32_t texture_alpha,uint32_t vertex_alpha,
  uint32_t tfx,uint32_t tcc,uint32_t untextured);
+/* Risk-mode admission: all covered color samples pass with one blend gate.
+ * Does not authorize bypassing a mask, memory bound, fence or unsupported state. */
+int gs_gx_risk_plan(const gs_gx_texture_draw *draw,const uint8_t *actions,
+ uint32_t scanmsk,uint32_t *blend,uint32_t *rows);
 int gs_gx_native_texture_valid(uint32_t width,uint32_t height);
 #endif

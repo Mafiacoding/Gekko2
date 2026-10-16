@@ -1,5 +1,12 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.27:** [gespeicherter GX-Risikomodus](BETA12.27-GX-RISK.md),
+Standard OFF, wirksam erst bei Cold Boot. Geeignete Dreiecke dürfen einmal
+komplett an GX statt in Zeilenabschnitten übergeben werden. Kantenpräzision
+ist experimentell; Alpha-/Z-Logik, Fences und sichere Rückfälle bleiben.
+Branch `codex/beta12-27-gx-risk-mode`, Basis `dea99dd`. Kein Wii-FPS-Beleg.
+
+
 **BETA12.26:** [gemeinsamer GS→GX-Ausbau](BETA12.26-COMMON-GX.md):
 Fog, HIGHLIGHT/HIGHLIGHT2, geeignete variable Vertex-Alpha-Kombinationen,
 untexturierte Dreiecke, alle vier Clamp-Modi und gepolsterte kleine Texturen.

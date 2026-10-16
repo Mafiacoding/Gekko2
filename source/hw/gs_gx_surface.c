@@ -152,3 +152,24 @@ int gs_gx_plan_axis(uint32_t exponent,uint32_t mode,uint32_t min,uint32_t max,gs
  if(size>1024u)return 0;
  out->size=size;out->max_index=bound;out->clamp=mode==1u||mode==2u;return 1;
 }
+
+int gs_gx_risk_plan(const gs_gx_texture_draw *d,const uint8_t *actions,
+ uint32_t scanmsk,uint32_t *blend,uint32_t *rows)
+{
+ if(!d||!actions||!blend||!rows||scanmsk>=2u||!d->columns||d->columns>640u||
+    !d->rows||d->rows>512u||d->columns!=d->coverage.width||d->rows!=d->coverage.height)return 0;
+ uint32_t gate=~0u,count=0;
+ for(uint32_t y=0;y<d->rows;y++){
+  uint32_t l=d->coverage.left[y],r=d->coverage.right[y];
+  if(l>r||r>d->columns)return 0;
+  if(l==r)continue;
+  count++;
+  for(uint32_t x=l;x<r;x++){
+   uint32_t a=actions[y*d->columns+x],b=a&GS_GX_DO_BLEND;
+   if(!(a&GS_GX_WRITE_COLOR)||(gate!=~0u&&gate!=b))return 0;
+   gate=b;
+  }
+ }
+ if(count<2u)return 0;
+ *blend=gate;*rows=count;return 1;
+}

@@ -1,5 +1,6 @@
 #include "core/runtime_profile.h"
 #include "core/recompiler/optimization.h"
+#include "core/recompiler/experimental_options.h"
 /* Experimental GX presentation and gated flat GS triangle/sprite spans. */
 #include "build_version.h"
 #include "core/hw/gs_gx.h"
@@ -1323,9 +1324,9 @@ uint64_t gs_gx_native_affine_stat(unsigned n){return n<11u?native_affine_stats[n
 static uint8_t *native_alpha_texels;
 static uint32_t native_alpha_capacity;
 static uint8_t native_actions[GS_GX_SURFACE_PIXELS];
-static uint64_t native_extended[12];
+static uint64_t native_extended[16];
 static struct {uint32_t lo,hi,tw,th,alpha,min_alpha,max_alpha,varying;uint64_t transform;gs_gx_texel_fn sample;} native_cache;
-uint64_t gs_gx_extended_stat(unsigned n){return n<12u?native_extended[n]:0;}
+uint64_t gs_gx_extended_stat(unsigned n){return n<16u?native_extended[n]:0;}
 static uint32_t native_alpha_function(uint32_t a,const gs_gx_native_color *c)
 {
  if(!c)return a;
@@ -1614,8 +1615,28 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  if(alpha_blend)GX_SetBlendMode(GX_BM_BLEND,GX_BL_SRCALPHA,GX_BL_INVSRCALPHA,GX_LO_COPY);
  /* Exact CPU coverage/depth mask, but hardware texture sampling and RGB.
   * Group matching rows; no per-output-pixel texture or color callback. */
- uint32_t submitted=0;
- for(uint32_t y=0;y<d->rows;){
+ uint32_t submitted=0,fast_blend=0,fast_rows=0;
+ int fast=0;
+ if(vertex_z&&gekko2_experimental_enabled(GEKKO2_EXP_GX_RISK)){
+  native_extended[12]++;
+  fast=gs_gx_risk_plan(d,native_actions,scanmsk,&fast_blend,&fast_rows);
+  if(!fast)native_extended[14]++;
+ }
+ if(fast){
+  /* Explicit opt-in: trust GX triangle edge coverage inside the original
+   * clipped bbox. CPU GS alpha/Z state and all admission/fence checks stay.
+   * Use unpadded bounds; the upload-aligned coverage may extend 1-3 pixels. */
+  if(p->pabe&&alpha_blend)GX_SetBlendMode(fast_blend?GX_BM_BLEND:GX_BM_NONE,GX_BL_SRCALPHA,GX_BL_INVSRCALPHA,GX_LO_COPY);
+  GX_SetScissor(minx,miny,maxx-minx+1,maxy-miny+1);
+  GXB(GX_TRIANGLES,GX_VTXFMT0,3);
+  for(unsigned v=0;v<3;v++){
+   GX_Position3f32((float)xy[v*2]+0.5f,(float)xy[v*2+1]+0.5f,0);
+   if(rgba)GX_Color4u8(rgba[v]&255u,(rgba[v]>>8)&255u,(rgba[v]>>16)&255u,rgba[v]>>24);
+   if(color&&color->fog_enabled)GX_Color4u8(0,0,0,color->fog[v]&255u);
+   GX_TexCoord2f32(uv[v*2],uv[v*2+1]);
+  }
+  GX_End();submitted=3u;native_extended[13]++;native_extended[15]+=(fast_rows-1u)*3u;
+ }else for(uint32_t y=0;y<d->rows;){
   uint32_t end=y+1,l=d->coverage.left[y],r=d->coverage.right[y];
   if(!vertex_z)while(end<d->rows&&d->coverage.left[end]==l&&d->coverage.right[end]==r)end++;
   for(uint32_t first=l;first<r;){

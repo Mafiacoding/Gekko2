@@ -38,9 +38,9 @@ int main(void)
  snprintf(backup,sizeof backup,"%s.bak",psm);assert(!rename(psm,backup));
  assert(!gekko2_experimental_load(1,psm)&&gekko2_experimental_requested(1));
  assert(!gekko2_experimental_save(1,psm)&&access(backup,F_OK));
- assert(!gekko2_experimental_request(2,1));
- assert(gekko2_experimental_load(2,psm)==-1);
- assert(gekko2_experimental_save(2,psm)==-1);
+ assert(!gekko2_experimental_request(GEKKO2_EXP_COUNT,1));
+ assert(gekko2_experimental_load(GEKKO2_EXP_COUNT,psm)==-1);
+ assert(gekko2_experimental_save(GEKKO2_EXP_COUNT,psm)==-1);
  remove(chain);remove(psm);rmdir(dir);
  printf("PASS experimental settings: compiled_chain=%u, four mode combinations, cold-boot isolation, persistence, strict parsing and backup recovery\n",built);
  return 0;

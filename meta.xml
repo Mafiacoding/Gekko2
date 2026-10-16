@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <app version="1">
-  <name>Gekko2 SPEED BETA12.26 COMMON GX</name>
+  <name>Gekko2 SPEED BETA12.27 GX RISK OPTION</name>
   <coder>Mafiacoding</coder>
-  <version>BETA12.26 - common experimental GS shaders</version>
+  <version>BETA12.27 - optional fast triangle coverage</version>
   <release_date>20261016</release_date>
   <short_description>Experimental PlayStation 2 emulator for Wii</short_description>
-  <long_description>Common experimental GS-to-GX renderer: four texture functions, fog, untextured triangles, supported varying alpha, all clamp modes and small texture padding. Shared by games based on GS state; no per-title renderer. Unsupported masks, feedback, mipmaps and complex blends retain software/hybrid paths. Full output size. Chain/PSM factory OFF; saved settings unchanged. No hardware-confirmed gameplay, tile correction or FPS gain. Compare with the Beta25Control DOL. Bring your own legal BIOS/disc.</long_description>
+  <long_description>Common experimental GS-to-GX renderer with an independent GX RISK MODE - FAST TRIANGLES menu option. Factory OFF; saved setting applies at next Cold Boot. ON reduces eligible triangle submissions but may change edge pixels. Pixel permissions, memory/alias checks and GX fences remain. Chain/PSM settings stay independent. No confirmed Wii FPS or gameplay improvement. Bring your own legal BIOS/disc.</long_description>
 </app>

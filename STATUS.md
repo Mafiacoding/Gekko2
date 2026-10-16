@@ -1,4 +1,9 @@
-# Gekko2 SPEED BETA12.24a – 16 October 2026
+# Gekko2 SPEED BETA12.27 – 16 October 2026
+
+BETA12.27: [GX RISK MODE – FAST TRIANGLES](docs/BETA12.27-GX-RISK.md)
+als separat gespeicherter Menüschalter. Standard OFF, Anwendung beim Cold Boot.
+Experimentelle GX-Kantenabdeckung bei geeigneten Dreiecken; keine belegte Wii-FPS.
+
 
 BETA12.26: [gemeinsame GS→GX-Funktionen](docs/BETA12.26-COMMON-GX.md)
 für alle passenden Spiele: Fog, vier TFX-Modi, geeignete variable Vertex-Alpha,
