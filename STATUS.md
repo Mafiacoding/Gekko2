@@ -1,4 +1,6 @@
-# Gekko2 SPEED BETA12.22 – 15 October 2026
+# Gekko2 SPEED BETA12.23 – 16 October 2026
+
+**BETA12.23 – Crash/Tekken-Logbatch:** VU-Integer-Lanemasken, VIF-Wartebedingungen und GS-UV-Nachkommabits korrigiert. Standard-4:3-Ausgabe auf einer als 16:9 konfigurierten Wii wird mit Seitenbalken dargestellt. [Analyse, Referenzabgleich und Testbericht](docs/BETA12.23-GAME-LOG-REVIEW.md). Crash zeigt im BETA12.22-Log einen dauerhaften SIGNAL-/XGKICK-Stall; dessen vollständige Ursache und Gameplayfortschritt bleiben auf neuer Wii-Hardwareausführung zu prüfen. Kein belegter Gesamt-FPS-Gewinn.
 
 **BETA12.22 – GS/GX-Formate und Fehlerbehandlung:** alle 13 gültigen GS-Texturformate werden für GX nach RGBA8 dekodiert. CT32/24/16/16S sind für GX-Scanout verfügbar; CT16/16S verwenden bei geeigneten Zeichenoperationen einen GX-Snapshot mit präzisem GS-Readback. Dazu kommen Korrekturen für CSM2-Paletten, AFAIL-Alpha, XGKICK und IPU sowie eine Pause bei terminalem GX-Fehler. [Build- und Testbericht](docs/BETA12.22-GS-GX-FORMATS.md). Chain-Residenz und experimentelle lokale PSM-Konvertierung bleiben standardmäßig OFF. Crash-Schwarzbild, lila Ausgabe und BIOS-Kacheln sind auf echter Wii weiterhin nicht als behoben bestätigt.
 

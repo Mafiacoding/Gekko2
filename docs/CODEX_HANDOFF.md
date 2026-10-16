@@ -1,5 +1,9 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.23 – Crash/Tekken-Logbatch:** VU-Integer-Lanemasken, VIF-Wartebedingungen und GS-UV-Nachkommabits korrigiert. Standard-4:3-Ausgabe auf einer als 16:9 konfigurierten Wii wird mit Seitenbalken dargestellt. [Analyse, Referenzabgleich und Testbericht](BETA12.23-GAME-LOG-REVIEW.md). Crash zeigt im BETA12.22-Log einen dauerhaften SIGNAL-/XGKICK-Stall; dessen vollständige Ursache und Gameplayfortschritt bleiben auf neuer Wii-Hardwareausführung zu prüfen. Kein belegter Gesamt-FPS-Gewinn.
+
+Branch `codex/beta12-23-game-log-fixes`, Basis `8553e2d`. Nachstehende Checkpoints sind historisch.
+
 **BETA12.22 – GS/GX-Formate und Fehlerbehandlung:** alle 13 gültigen GS-Texturformate werden für GX nach RGBA8 dekodiert. CT32/24/16/16S sind für GX-Scanout verfügbar; CT16/16S verwenden bei geeigneten Zeichenoperationen einen GX-Snapshot mit präzisem GS-Readback. Dazu kommen Korrekturen für CSM2-Paletten, AFAIL-Alpha, XGKICK und IPU sowie eine Pause bei terminalem GX-Fehler. [Build- und Testbericht](BETA12.22-GS-GX-FORMATS.md). Chain-Residenz und experimentelle lokale PSM-Konvertierung bleiben standardmäßig OFF. Crash-Schwarzbild, lila Ausgabe und BIOS-Kacheln sind auf echter Wii weiterhin nicht als behoben bestätigt.
 
 Branch: `codex/gx-xgkick-ipu-recovery`, Basis `c2c5bc471e712e87ca211c532ce8abd445e0240a`. Die bisherigen Abschnitte bleiben als Verlauf erhalten.

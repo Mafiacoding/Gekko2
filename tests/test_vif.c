@@ -585,6 +585,12 @@ int main(void)
         vu1_init();
         uint8_t buf[16];
 
+        /* Each dispatch probe must finish a real E/delay program. An
+         * all-zero VU memory loops forever and legitimately blocks MSCNT. */
+        for(unsigned pc=0x80;pc<0xa0;pc+=8){
+            vu1_micro_write32(pc,0x800003bfu);
+            vu1_micro_write32(pc+4,(pc&8u)?0x2ffu:0x400002ffu);
+        }
         /* Real MSCALF VIFcode: cmd=0x15, imm=0x10 (start byte = 0x80). */
         wle32(buf + 0, enc_vifcode(VIF_CMD_MSCALF, 0, 0x10u));
         for (int i = 1; i < 4; i++) wle32(buf + i * 4, enc_vifcode(VIF_CMD_NOP, 0, 0));
@@ -594,6 +600,8 @@ int main(void)
         CHECK(v1->mscal_last_start_byte == 0x80u, "MSCALF opcode fix: start byte correctly computed as imm*8 (0x10*8=0x80)");
         CHECK(v1->mscnt_calls == 0, "MSCALF opcode fix: real cmd=0x15 must NOT be misrouted into the MSCNT handler");
 
+        CHECK(!vu1_get_state()->running && vu1_get_state()->tpc==0x90u,
+              "MSCALF completes E plus delay before the next micro dispatch");
         /* Real MSCNT VIFcode: cmd=0x17, imm field is reserved/unused. */
         wle32(buf + 0, enc_vifcode(VIF_CMD_MSCNT, 0, 0));
         for (int i = 1; i < 4; i++) wle32(buf + i * 4, enc_vifcode(VIF_CMD_NOP, 0, 0));

@@ -69,6 +69,27 @@ const vif_state_t * const vif1_scheduler_view = &g_vif1;
 #define EE_INTC_IRQ_VIF0 4
 #define EE_INTC_IRQ_VIF1 5
 
+/* VU execution can now yield on GIF backpressure or its execution cap.
+ * Retain interlocked commands until the real producer/consumer finishes;
+ * do not restart a running microprogram or overwrite its MPG instructions. */
+static int vif_micro_barrier(vif_state_t *vif,uint32_t code) {
+    unsigned cmd=(code>>24)&127u;
+    int wait_vu=cmd==VIF_CMD_FLUSHE||cmd==VIF_CMD_MSCAL||
+        cmd==VIF_CMD_MSCALF||cmd==VIF_CMD_MSCNT||cmd==VIF_CMD_MPG||
+        (vif->is_vif1&&(cmd==VIF_CMD_FLUSH||cmd==VIF_CMD_FLUSHA));
+    if(!wait_vu)return 0;
+    int vu_busy=vif->is_vif1?vu1_get_state()->running:ee_core_get_state()->vu0_running;
+    int gif_busy=0;
+    if(vif->is_vif1&&(cmd==VIF_CMD_FLUSH||cmd==VIF_CMD_FLUSHA||cmd==VIF_CMD_MSCALF)) {
+        const gif_state_t *g=gif_get_state();
+        gif_busy=vu1_get_state()->xgkick_pending||g->arb_owner==1u||g->arb_owner==2u||
+            (g->arb_pending&3u);
+        if(cmd==VIF_CMD_FLUSHA)gif_busy|=g->arb_owner||g->arb_pending||g->fifo_count;
+    }
+    if(vu_busy)vif->stat|=1u<<2;else vif->stat&=~(1u<<2);
+    if(gif_busy)vif->stat|=1u<<3;else vif->stat&=~(1u<<3);
+    return vu_busy||gif_busy;
+}
 static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words);
 
 static int vif_complete_code(vif_state_t *vif, uint32_t code)
@@ -533,6 +554,9 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
 
     while (pos < total_words) {
         uint32_t code = vif_rd_le32(data + pos * 4u);
+        if(vif_micro_barrier(vif,code)) {
+            vif_hold_words(vif,data+pos*4u,total_words-pos);return;
+        }
         pos++;
         vif->code = code;
         vif->codes_processed++;
@@ -633,12 +657,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             break;
 
         case VIF_CMD_FLUSHE:
-            /* Real hardware waits for the VU's microprogram to
-             * finish; this project's vu0_exec_micro()/vu1_exec_micro()
-             * already run synchronously to completion (or the safety
-             * cap) inside MSCAL/MSCNT/MSCALF below, so by the time
-             * control reaches a later FLUSHE there is never anything
-             * left to wait for - a correct no-op given that. */
+            /* The predecode barrier has observed VU completion. */
             break;
 
         case VIF_CMD_MSCAL:
@@ -818,6 +837,9 @@ static void vif_service_one(vif_state_t *vif) {
     if(vif->irq_stalled)return;
     if(!vif_direct_drain(vif)||vif->irq_stalled)return;
     if(vif->stall_words) {
+        /* A held barrier is immutable. Avoid copying/reparsing the entire
+         * FIFO on every EE tick while its producer is still busy. */
+        if(vif_micro_barrier(vif,vif_rd_le32(vif->stall_buffer)))return;
         uint8_t replay[sizeof(vif->stall_buffer)];uint32_t words=vif->stall_words;
         memcpy(replay,vif->stall_buffer,words*4u);vif->stall_words=0;
         vif_process(vif,replay,words);

@@ -4,6 +4,7 @@
 
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/gs_mem.h"
+#include <stddef.h>
 
 uint32_t gs_rgb8_pair_to_ycbcr(uint8_t r1, uint8_t g1, uint8_t b1,
                                 uint8_t r2, uint8_t g2, uint8_t b2)
@@ -247,5 +248,22 @@ int gs_scanout_grid_hash(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
         for(unsigned b=0;b<24;b+=8)v=(v^((c>>b)&255u))*16777619u;
     }
     *hash=v;
+    return 1;
+}
+
+/* Presentation only: GS VRAM, DISPLAY and emulated resolution are untouched.
+ * Work in YCbCr pairs to preserve 4:2:2 chroma grouping and row bounds. */
+int gs_xfb_fit_4_3(void *xfb,uint32_t width,uint32_t height,int widescreen)
+{
+    if(!widescreen)return 1;
+    if(!xfb||width<8u||width>1024u||(width&7u)||!height)return 0;
+    uint32_t line[512],pairs=width/2u,active=pairs*3u/4u,left=(pairs-active)/2u;
+    uint32_t *pixels=xfb;
+    for(uint32_t y=0;y<height;y++) {
+        uint32_t *row=pixels+(size_t)y*pairs;
+        for(uint32_t x=0;x<pairs;x++)line[x]=row[x];
+        for(uint32_t x=0;x<pairs;x++)row[x]=0x10801080u;
+        for(uint32_t x=0;x<active;x++)row[left+x]=line[((2u*x+1u)*pairs)/(2u*active)];
+    }
     return 1;
 }

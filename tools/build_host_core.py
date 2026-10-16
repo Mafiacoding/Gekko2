@@ -30,7 +30,10 @@ for name in sys.argv[1:]:
   result=set()
   for inc in re.findall(r'#include\s+"([A-Za-z0-9_./-]+\.c)"',file.read_text()):
    if inc.startswith(('core/','hw/')):result.add(inc)
-   elif (file.parent/inc).is_file():result.update(included_sources(file.parent/inc,seen))
+   elif (file.parent/inc).is_file():
+    target=(file.parent/inc).resolve()
+    if target.is_relative_to(root/'source'):result.add(str(target.relative_to(root/'source')))
+    else:result.update(included_sources(target,seen))
   return result
  included=included_sources(src)
  link_objects=[str(obj) for p,obj in objects.items() if not (p.is_relative_to(root/'source') and str(p.relative_to(root/'source')) in included)]

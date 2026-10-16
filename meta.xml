@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <app version="1">
-  <name>Gekko2 SPEED BETA12.22 GS/GX</name>
+  <name>Gekko2 SPEED BETA12.23 VU/VIF/UV</name>
   <coder>Mafiacoding</coder>
-  <version>BETA12.22 - GS/GX formats, XGKICK, IPU</version>
-  <release_date>20261015</release_date>
+  <version>BETA12.23 - VU masks, VIF interlocks, UV, 4:3</version>
+  <release_date>20261016</release_date>
   <short_description>Experimental PlayStation 2 emulator for Wii</short_description>
-  <long_description>Experimental PS2 emulator for Wii. Separate saved cold-boot switches for native 128-bit JIT chain residency and experimental PSM conversion; both default OFF. Audited ALU/MMI, LQ/SQ, LD/SD and integer-branch native companions. All 13 GS texture inputs decoded to GX RGBA8; four color scanout formats; bounded CT16/16S hybrid rendering. XGKICK live-tag, IPU precision and safe GX fault pause fixes. No confirmed Wii gameplay, speedup, Crash black-screen or BIOS-tile fix. Bring your own legal BIOS and disc image.</long_description>
+  <long_description>Experimental PS2 emulator for Wii. Corrected VU integer memory lane masks, VIF microprogram interlocks and fractional GS UV coordinates. Standard 4:3 presentation is fitted on widescreen Wii. Chain residency and experimental PSM conversion remain factory OFF and apply at Cold Boot. No confirmed Wii gameplay, Crash stall fix or overall FPS gain. Bring your own legal BIOS and disc.</long_description>
 </app>

@@ -79,4 +79,7 @@ void gs_scanout_probe_rgb_psm(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
  * Uses the same grid as the color probe. Never hashes failed reads as black. */
 int gs_scanout_grid_hash(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
                          uint32_t w,uint32_t h,uint32_t psm,uint32_t *hash);
+/* Post-presentation 4:3 fit for a Wii configured to a physical 16:9 TV.
+ * XFB is coherent and writable; zero return leaves unsupported sizes intact. */
+int gs_xfb_fit_4_3(void *xfb,uint32_t width,uint32_t height,int widescreen);
 #endif

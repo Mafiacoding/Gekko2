@@ -6313,15 +6313,17 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx,uint32_t w)
             emit(ctx,enc_addi(10,10,(int16_t)off));
         }
         emit(ctx,enc_rlwinm(10,10,4,0,27));
-        unsigned elem=0;
-        if(!quad)for(unsigned l=0;l<4;l++)if(mask&(8u>>l)){elem=l;break;}
-        for(unsigned l=0;l<(quad?4u:1u);l++) {
-            if(quad && !(mask & (8u >> l)))continue;
-            emit(ctx,enc_addi(11,10,(int16_t)((quad?l:elem)*4u)));
+        /* Local-memory reads have no MMIO side effects: only the last
+         * selected scalar load is observable. Store It is loop-invariant. */
+        unsigned lanes=mask;
+        if(!quad&&!store)lanes=mask&(~mask+1u);
+        if(!quad&&store&&lanes)emit_micro_vi_read(ctx,12,rt);
+        for(unsigned l=0;l<4u;l++) {
+            if(!(lanes & (8u >> l)))continue;
+            emit(ctx,enc_addi(11,10,(int16_t)(l*4u)));
             emit(ctx,enc_and(11,11,6));emit(ctx,enc_add(11,11,5));
             if(store) {
                 if(quad)emit(ctx,enc_lwz(12,3,(int16_t)(vector*16u+l*4u)));
-                else emit_micro_vi_read(ctx,12,rt);
                 emit(ctx,(31u<<26)|(12u<<21)|(11u<<11)|(662u<<1)); /* stwbrx */
             } else {
                 emit(ctx,(31u<<26)|(12u<<21)|(11u<<11)|(534u<<1)); /* lwbrx */

@@ -992,7 +992,7 @@ typedef struct {
      * texel coordinate "FST=1" mode - see gif.h's scope comment),
      * already converted to integer texels exactly like XYZ2's own
      * >>4 conversion. */
-    int32_t cur_u, cur_v;
+    double cur_u, cur_v; /* Exact 10.4 UV decoded to texel units. */
 
     /* Current ST+Q state (real hardware's "FST=0" perspective-correct
      * mode, task #88): S/T are real IEEE-754 floats (normalized
@@ -1033,7 +1033,7 @@ typedef struct {
     /* SPRITE's first-vertex texture coordinates (task #88 - SPRITE
      * texturing), captured alongside v0x/v0y so rasterize_sprite()
      * can interpolate between the two corners. */
-    int32_t v0u, v0v;
+    double v0u, v0v;
     float v0s, v0t, v0q;
     /* SPRITE's first-vertex Z (task #89) - see tri_z's comment
      * below for the same A+D-vs-PACKED scope caveat. */
@@ -1059,7 +1059,7 @@ typedef struct {
     int tri_vseq;
     int32_t tri_x[3], tri_y[3];
     uint32_t tri_rgba[3];
-    int32_t tri_u[3], tri_v[3];
+    double tri_u[3], tri_v[3];
     /* Per-vertex ST+Q (task #88) - captured alongside tri_u/tri_v at
      * every vertex kick regardless of FST (harmless when unused);
      * rasterize_triangle() picks UV (affine) or ST+Q (perspective-

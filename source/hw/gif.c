@@ -1079,10 +1079,10 @@ static int triangle_assembly_visible(void)
 #endif
 }
 
-static struct {int32_t xy[6],uv[6],maxx,maxy;float stq[9];uint32_t colors[3];double inv;} gx_triangle;
+static struct {int32_t xy[6],maxx,maxy;double uv[6];float stq[9];uint32_t colors[3];double inv;} gx_triangle;
 static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
 {
- const int32_t *xy=gx_triangle.xy,*uv=gx_triangle.uv;const float *stq=gx_triangle.stq;
+ const int32_t *xy=gx_triangle.xy;const double *uv=gx_triangle.uv;const float *stq=gx_triangle.stq;
  if(xx>gx_triangle.maxx||yy>gx_triangle.maxy)return 0;
  double b0=(double)edge(xy[2],xy[3],xy[4],xy[5],xx,yy)*gx_triangle.inv;
  double b1=(double)edge(xy[4],xy[5],xy[0],xy[1],xx,yy)*gx_triangle.inv;
@@ -1092,7 +1092,7 @@ static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
     !gs_triangle_edge_inside(edge(xy[4],xy[5],xy[0],xy[1],xx,yy),sign,gs_triangle_edge_inclusive(xy[4],xy[5],xy[0],xy[1],sign))||
     !gs_triangle_edge_inside(edge(xy[0],xy[1],xy[2],xy[3],xx,yy),sign,gs_triangle_edge_inclusive(xy[0],xy[1],xy[2],xy[3],sign)))return 0;
  uint32_t c0=gx_triangle.colors[0],c1=gx_triangle.colors[1],c2=gx_triangle.colors[2];
- int32_t u0=uv[0],v0=uv[1],u1=uv[2],v1=uv[3],u2=uv[4],v2=uv[5];
+ double u0=uv[0],v0=uv[1],u1=uv[2],v1=uv[3],u2=uv[4],v2=uv[5];
  float s0=stq[0],t0=stq[1],q0=stq[2],s1=stq[3],t1=stq[4],q1=stq[5],s2=stq[6],t2=stq[7],q2=stq[8];
  int gouraud=!!(gs_effective_attr_prim()&PRIM_IIP_MASK),textured=1;
  uint32_t flat_r=rgba_channel(c2,0),flat_g=rgba_channel(c2,8),flat_b=rgba_channel(c2,16),flat_a=rgba_channel(c2,24);
@@ -1148,7 +1148,7 @@ static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
 
 static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
-                                int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
+                                double u0, double v0, double u1, double v1, double u2, double v2,
                                 float s0, float t0, float q0, float s1, float t1, float q1, float s2, float t2, float q2,
                                 uint32_t z0, uint32_t z1, uint32_t z2,
                                 uint32_t f0, uint32_t f1, uint32_t f2){
@@ -1260,7 +1260,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
        z0==z1&&z1==z2&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&!g_gif.tex1_mxl&&
        maxx>=minx&&maxy>=miny&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u||g_gif.frame_psm==2u||g_gif.frame_psm==10u)) {
-        int32_t xy[6]={x0,y0,x1,y1,x2,y2},uv[6]={u0,v0,u1,v1,u2,v2};
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};double uv[6]={u0,v0,u1,v1,u2,v2};
         float stq[9]={s0,t0,q0,s1,t1,q1,s2,t2,q2};uint32_t colors[3]={c0,c1,c2};
         memcpy(gx_triangle.xy,xy,sizeof xy);memcpy(gx_triangle.uv,uv,sizeof uv);
         memcpy(gx_triangle.stq,stq,sizeof stq);memcpy(gx_triangle.colors,colors,sizeof colors);
@@ -1512,7 +1512,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
 }
 static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
-                                int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
+                                double u0, double v0, double u1, double v1, double u2, double v2,
                                 float s0, float t0, float q0, float s1, float t1, float q1, float s2, float t2, float q2,
                                 uint32_t z0, uint32_t z1, uint32_t z2,
                                 uint32_t f0, uint32_t f1, uint32_t f2)
@@ -1591,7 +1591,7 @@ static void gs_gx_sprite_key(void)
  gs_gx_source_key(a,b,valid);
 }
 static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
-                              int32_t u0, int32_t v0, int32_t u1, int32_t v1,
+                              double u0, double v0, double u1, double v1,
                               float s0, float t0, float q0, float s1, float t1, float q1,
                               uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1){
     /* GS/reference DrawSprite covers [ceil(min),ceil(max)). Keep the
@@ -1810,7 +1810,7 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     g_gif.tex_tbw = saved_mip_tbw;
 }
 static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
-                              int32_t u0, int32_t v0, int32_t u1, int32_t v1,
+                              double u0, double v0, double u1, double v1,
                               float s0, float t0, float q0, float s1, float t1, float q1,
                               uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1)
 {
@@ -1822,7 +1822,7 @@ static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1
 
 /* Integer-coordinate entry used by native rasterizer tests. */
 static void rasterize_sprite(int32_t x0,int32_t y0,int32_t x1,int32_t y1,
-    int32_t u0,int32_t v0,int32_t u1,int32_t v1,
+    double u0,double v0,double u1,double v1,
     float s0,float t0,float q0,float s1,float t1,float q1,
     uint32_t z0,uint32_t z1,uint32_t f0,uint32_t f1)
 {
@@ -2376,13 +2376,10 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         g_gif.ctx2_xyoffset_y = data_hi & 0xFFFFu;
         break;
     case GS_REG_UV:
-        /* Real hardware: 12.4 fixed-point texel coordinates (this
-         * project's "FST=1" assumption - see gif.h's scope comment) -
-         * same >>4 conversion as XYZ2's screen coordinates, no
-         * XYOFFSET-equivalent subtraction (UV addresses texture
-         * memory directly, not screen space). */
-        g_gif.cur_u = (int32_t)(data_lo & 0xFFFFu) >> 4;
-        g_gif.cur_v = (int32_t)((data_lo >> 16) & 0xFFFFu) >> 4;
+        /* UV has fourteen meaningful bits: 10 integer, 4 fractional.
+         * Keep the phase through vertex assembly and both render paths. */
+        g_gif.cur_u = (double)(data_lo & 0x3fffu) / 16.0;
+        g_gif.cur_v = (double)((data_lo >> 16) & 0x3fffu) / 16.0;
         break;
     case GS_REG_ST:
         /* Real hardware (FST=0 mode, task #88): S/T are real IEEE-754
@@ -3029,8 +3026,8 @@ static void apply_packed_register(uint32_t reg_code, const uint8_t *q)
                 g_gif.gif_q_bits = w2;
                 break;
             case GS_REG_UV:
-                g_gif.cur_u = (w0 & 0x3fffu) >> 4;
-                g_gif.cur_v = (w1 & 0x3fffu) >> 4;
+                g_gif.cur_u = (double)(w0 & 0x3fffu) / 16.0;
+                g_gif.cur_v = (double)(w1 & 0x3fffu) / 16.0;
                 break;
             /* Packed TEX0/CLAMP carry their natural 64-bit register in
              * the low half of the quadword. GSState::ResetHandlers in

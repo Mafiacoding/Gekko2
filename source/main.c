@@ -50,6 +50,7 @@
 #include "core/recompiler/vu_jit.h"
 /* R1308: native Wii launcher followed by real EE/IOP boot. */
 #include <gccore.h>
+#include <ogc/conf.h>
 #include <wiiuse/wpad.h>
 #include "frontend.h"
 #include <fat.h>
@@ -72,6 +73,7 @@
 #include "core/hw/iop_cdvd.h"
 #include "core/hw/iop_cdrom_legacy.h"
 #include "core/hw/gs.h"
+#include "core/hw/vif.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/gs_gx.h"
@@ -88,6 +90,7 @@
 
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
+static int g_present_widescreen;
 
 /* All menu buttons retain libogc PAD bit compatibility. */
 static uint16_t g_input_held,g_input_down;
@@ -109,6 +112,7 @@ static void wii_console_setup(void)
     controller_host_init();
 
     rmode = VIDEO_GetPreferredMode(NULL);
+    g_present_widescreen=CONF_GetAspectRatio()==CONF_ASPECT_16_9;
     xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
 
     CON_Init(xfb, 20, 20, rmode->fbWidth, rmode->xfbHeight,
@@ -500,6 +504,13 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long long)ee_runtime->instructions_executed,(unsigned)iop_runtime->idle,
         (unsigned)iop_runtime->halted,(unsigned long long)iop_runtime->sched_ticks);
     const gs_state_t *scanout=gs_get_state();const gif_state_t *draw_target=gif_get_state();
+    fprintf(f,"GS_PRESENT_LAYOUT smode1=%llx cmod=%u display1_xy=%u,%u mag1=%u,%u display2_xy=%u,%u mag2=%u,%u host=%ux%u policy=4:3-fit wii_widescreen=%d\n",
+        (unsigned long long)scanout->smode1,(unsigned)((scanout->smode1>>13)&3u),
+        (unsigned)(scanout->display1&4095u),(unsigned)((scanout->display1>>12)&2047u),
+        (unsigned)(((scanout->display1>>23)&15u)+1u),(unsigned)(((scanout->display1>>27)&3u)+1u),
+        (unsigned)(scanout->display2&4095u),(unsigned)((scanout->display2>>12)&2047u),
+        (unsigned)(((scanout->display2>>23)&15u)+1u),(unsigned)(((scanout->display2>>27)&3u)+1u),
+        (unsigned)rmode->fbWidth,(unsigned)rmode->xfbHeight,g_present_widescreen);
     fprintf(f,"GS_DISPLAY_REGS schema=1 PMODE=%llx SMODE2=%llx DISPFB1=%llx DISPLAY1=%llx DISPFB2=%llx DISPLAY2=%llx BGCOLOR=%llx\n",
         (unsigned long long)scanout->pmode,(unsigned long long)scanout->smode2,
         (unsigned long long)scanout->dispfb1,(unsigned long long)scanout->display1,
@@ -648,6 +659,16 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
     const vu1_state_t *vu1=vu1_get_state();
     fprintf(f,"GIF_SIGNAL_STALL calls=%llu scope=unaccepted-producer-qword\n",
         (unsigned long long)gif_signal_stall_count());
+    const gif_register_carry_t *blocked=&gif->register_carry_path[GIF_PATH_1];
+    fprintf(f,"GIF_BLOCKED_STATE csr=%08lx imr=%08lx intc_stat=%08lx intc_mask=%08lx tag=%08lx,%08lx,%08lx,%08lx mode=%lu nreg=%lu index=%lu remaining=%lu eop=%lu regs=%08lx,%08lx vif1_stat=%08lx vif1_held_words=%lu uv_fractional=1\n",
+        (unsigned long)gs_get_state()->csr,(unsigned long)gs_get_state()->imr,
+        (unsigned long)ee_intc_get_state()->stat,(unsigned long)ee_intc_get_state()->mask,
+        (unsigned long)gif->gif_tag0,(unsigned long)gif->gif_tag1,
+        (unsigned long)gif->gif_tag2,(unsigned long)gif->gif_tag3,
+        (unsigned long)blocked->mode,(unsigned long)blocked->nreg,
+        (unsigned long)blocked->index,(unsigned long)blocked->remaining,(unsigned long)blocked->eop,
+        (unsigned long)blocked->regs_lo,(unsigned long)blocked->regs_hi,
+        (unsigned long)vif1_get_state()->stat,(unsigned long)vif1_get_state()->stall_words);
     fprintf(f,"GS_TRANSPORT schema=1 qwords=%llu path1_calls=%llu owner=%u pending=%u fifo=%u image_remaining=%lu,%lu,%lu vu1_running=%u vu1_tpc=%08lx vu1_pairs=%llu vu1_unknown=%llu kick_pending=%u kick_addr=%08lx kick_qwords=%lu kick_busy=%llu kick_deferred=%u kick_deferred_stalls=%llu\n",
         (unsigned long long)gif->quadwords_seen,(unsigned long long)gif->gif_path1_transfers,
         (unsigned)gif->arb_owner,(unsigned)gif->arb_pending,(unsigned)gif->fifo_count,
@@ -1316,6 +1337,7 @@ static void run_real_boot_flow(void)
         }
 
         if(gs_gx_faulted()){gekko2_profile_stop();gx_fault_paused=1;break;}
+        if(guest_copied)gs_xfb_fit_4_3(xfb,rmode->fbWidth,rmode->xfbHeight,g_present_widescreen);
         if(present_due){
         if (show_hud || !display_active || !g_first_picture) {
         g_xfb_hud_updates++;
