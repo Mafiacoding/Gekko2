@@ -47,6 +47,7 @@
 #include "core/hw/frontend_logo.h"
 #include "core/hw/frontend_runtime.h"
 #include "core/hw/frontend_settings.h"
+#include "core/hw/ps2_memory_card.h"
 #include "core/hw/frontend_log.h"
 #include "core/recompiler/iop_jit.h"
 #include "core/recompiler/vu_jit.h"
@@ -269,6 +270,7 @@ static void save_boot_progress(const char *event)
     fprintf(f,"EVENT session=%lu kind=%s active_mask=%08lx next_boot_mask=%08lx GX=%d next_GX=%d log_errors=%lu\n",
       (unsigned long)g_session_log.sequence,event,(unsigned long)gekko2_optimization_mask,
       (unsigned long)gekko2_opt_requested(),g_gx_present,g_gx_requested,(unsigned long)g_session_log.errors);
+    fprintf(f,"PS2_CARD present=%d port=0 slot=0 filesystem_hle=partial\n",ps2_mc_present());
     fprintf(f,"%s ms=%llu BIOS=%s ROMVER=%s size=%u disc=%d EE=%llu PC=%08x IOP=%llu PC=%08x halted=%d/%d STATUS=%08x CAUSE=%08x EPC=%08x PMODE=%llx DISPFB1=%llx DISPFB2=%llx FIRST_IMAGE=%d\n",
         event,(unsigned long long)ticks_to_millisecs(gettime()-g_boot_started),g_bios.name,g_bios.version_string,(unsigned)g_bios.size,g_disc_ok,
         (unsigned long long)e->instructions_executed,e->pc,(unsigned long long)i->instructions_executed,i->pc,e->halted,i->halted,e->cop0[12],e->cop0[13],e->cop0[14],
@@ -289,6 +291,10 @@ static void save_boot_progress(const char *event)
  * SYS_RETURNTOMENU would go to the Wii System Menu instead. */
 static void wii_exit_to_loader(void)
 {
+    if(ps2_mc_flush()){
+        printf("Memory card save failed. Check SD before leaving Gekko2.\n");
+        return; /* Keep dirty owners alive for an explicit retry. */
+    }
     if(g_system_started){
         FILE *f=frontend_log_open(&g_session_log);
         if(f){fprintf(f,"CONTROL_ACTION action=exit-loader held=%04x down=%04x home=%u home_down=%u controller=%s slot=%d connected=%u gx_timeouts=%llu\n",
@@ -1190,6 +1196,7 @@ static void run_real_boot_flow(void)
             wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);return;
         }
         if(cdvd_config_bind_file("sd:/pcsx2/bios-config.bin")<0)printf("BIOS configuration file could not be loaded; saving disabled.\n");
+        if(!ps2_mc_present())ps2_mc_mount("sd:/pcsx2/memcards/MemoryCard1.ps2",0);
         g_system_started = 1;
         g_first_picture=0;
         g_image_probe_attempts=0;
@@ -1443,6 +1450,7 @@ static void run_real_boot_flow(void)
       ee->instructions_executed-perf_ee,perf_core,perf_blit);
     audio_output_stop();
     save_boot_progress(gx_fault_paused?"GX_FAULT_PAUSED":exit_requested?"EXIT_REQUEST":stopped_by_user?"PAUSED":"STOPPED");
+    if(ps2_mc_flush())printf("Memory card save failed; dirty data retained. Check SD and retry.\n");
     if(exit_requested)wii_exit_to_loader();
     if (stopped_by_user||gx_fault_paused) return;
     goto_rc(16, 400);
@@ -1484,6 +1492,7 @@ static int frontend_preferences_save(void)
 }
 static int cold_boot_session(int disc)
 {
+ if(ps2_mc_flush())return -1;
 #ifdef GEKKO2_ARM_BETA
  /* Launcher changes precede the first BIOS/disc handles and ARM requests.
   * A paused session requires an app restart; never reload its live IOS. */
@@ -1646,7 +1655,7 @@ int main(int argc, char **argv)
         if(down&(PAD_BUTTON_UP|PAD_BUTTON_LEFT))selected=(selected+UI_MENU_COUNT-1)%UI_MENU_COUNT;
         else if(down&(PAD_BUTTON_DOWN|PAD_BUTTON_RIGHT))selected=(selected+1)%UI_MENU_COUNT;
         else if(down&PAD_BUTTON_A){
-            if(selected==UI_EXIT)wii_exit_to_loader();
+            if(selected==UI_EXIT){wii_exit_to_loader();notice="Memory card save failed; dirty data retained.";continue;}
             if(selected==UI_SETTINGS||selected==UI_ABOUT){page=selected==UI_SETTINGS?1:2;continue;}
             int disc=selected==UI_COLD_BOOT?g_boot_disc:selected==UI_DISC;
             if(selected==UI_SELECT_DISC||(disc&&!g_disc_path[0])) {

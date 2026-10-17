@@ -145,6 +145,7 @@
 #include "core/hw/iop_hle_intr.h" /* Round 347: real registered-handler completion detection */
 #include "core/hw/iop_heap.h" /* Round 401: real SYSMEM free-list heap allocator port - see comment at the SIF_SID_IOPHEAP branch below */
 #include "core/hw/iop_sio2.h" /* Round 663: real low-level pad-connected state for PAD_BIND reply */
+#include "core/hw/ps2_memory_card.h"
 #include "core/recompiler/ee_jit.h"
 #include "core/recompiler/vu_jit.h" /* Round 887 (task #866/#868): first real JIT wiring - see that header's design-rationale comment */
 
@@ -3743,16 +3744,22 @@ static int32_t ee_mcserv_getinfo_no_card(ee_state_t *st,uint32_t payload,uint32_
     uint32_t pp=payload&0x1fffffffu;
     if(!payload || payload_size<32u || pp>EE_RAM_SIZE-32u)return -11;
     uint32_t port=ee_mem_read32(st,payload+4u),slot=ee_mem_read32(st,payload+8u);
-    if(port==0u && slot==0u && iop_sio2_mc_is_inserted())return 0; /* existing inserted-card HLE gap */
+    unsigned formatted=0,free_clusters=0,type=0;
+    int32_t result=-11;
+    if(port==0u && slot==0u && ps2_mc_present()){
+        type=2;result=ps2_mc_get_info(&formatted,&free_clusters);
+    }else if(port==0u && slot==0u && iop_sio2_mc_is_inserted()){
+        type=1;result=-13; /* PS1 filesystem metadata is not implemented here. */
+    }
     uint32_t param=ee_mem_read32(st,payload+28u),p=param&0x1fffffffu;
     uint32_t bytes=modern?192u:64u;
     if(param && p<=EE_RAM_SIZE-bytes){
         uint32_t dma_dest=0xa0000000u|p; /* SIF DMA targets physical RAM, bypassing EE TLB/cache. */
-        if(ee_mem_read32(st,payload+(modern?20u:12u))>0u)ee_mem_write32(st,dma_dest,0u);
-        ee_mem_write32(st,dma_dest+4u,0u);
-        if(modern)ee_mem_write32(st,dma_dest+144u,0u);
+        if(ee_mem_read32(st,payload+(modern?20u:12u))>0u)ee_mem_write32(st,dma_dest,type);
+        ee_mem_write32(st,dma_dest+4u,free_clusters);
+        if(modern)ee_mem_write32(st,dma_dest+144u,formatted);
     }
-    return -11;
+    return result;
 }
 
 /* Round 554 (task #521/#522): real cdrom0:/cdrom1: counterpart to
@@ -8461,7 +8468,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                 /* Supplied OSDSYS libmc uses modern OPEN fno=2 at its
                                  * mcOpen wrapper; older libmc uses 0x71. Neither ABI
                                  * has a file behind a successful descriptor here. */
-                                int32_t mcserv_result = (rpc_number == 2u || rpc_number == 0x71u) ? -4 /* sceMcResNoEntry - see comment */ : 0;
+                                int32_t mcserv_result = (rpc_number==0xfeu||rpc_number==0x70u)?0:
+                                  (rpc_number == 2u || rpc_number == 0x71u) && !ps2_mc_present() ? -4 : -5;
                                 if(rpc_number==1u || rpc_number==0x78u){
                                     uint32_t payload=i?ee_mem_read32(st,dmat_ptr+(i-1u)*16u):0u;
                                     mcserv_result=ee_mcserv_getinfo_no_card(st,payload,ee_mem_read32(st,src+0x24u),rpc_number==1u);
