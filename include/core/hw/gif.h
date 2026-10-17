@@ -1193,6 +1193,11 @@ typedef struct {
     /* GIF temporary Q: low IEEE-754 word, separate from GS RGBAQ.Q.
      * uint64 alignment appends after the complete legacy checkpoint prefix. */
     uint64_t gif_q_bits;
+    /* Shared temporary CLUT halfwords; upper room bounds offset I8 loads.
+     * clut_cache remains the legacy checkpoint/injection view. A real load
+     * makes these words authoritative across CPSM changes without reload. */
+    uint16_t clut_words[1024];
+    uint32_t clut_words_valid,clut_write_csm;
 } gif_state_t;
 
 gif_state_t *gif_get_state(void);
