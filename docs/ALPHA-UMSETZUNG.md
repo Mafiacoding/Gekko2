@@ -35,6 +35,21 @@ Die über die nominellen Bänke hinaus begrenzten Offset-I8-Slots folgen der
 Referenzrepräsentation; kein neuer physischer PS2-Konformitätsnachweis.
 BIOS-/Tekken-Kacheln bleiben ohne identisches fehlerhaftes Draw offen.
 
+## 3. Zweikreis-Scanout
+
+Geplante Ausgabe führt beide aktiven PCRTC-Kreise mit relativen DISPLAY-
+Offsets, Feld-/Framehöhe, PMODE MMOD/AMOD/ALP/SLBG und BGCOLOR zusammen.
+Einzelkreise mit unveränderter RGB-Semantik behalten den bisherigen GX-
+Presentpfad. Die neue Komposition benutzt kohärente GS-VRAM als Software-
+Fallback; GX-Zeichenbefehle bleiben aktiv. Externes Feedback/EXTWRITE und
+vollständiges CRT-/Deinterlace-Timing sind weiterhin offen.
+
+256 konstante ALP-Werte, Source-Alpha, AMOD, Hintergrund, versetzte Kreise,
+Feldhöhe, Display2-Änderungserkennung und unverändertes XFB bei ungültiger
+Quelle/Readbackfehler bestanden. MMOD/Alpha-Normalisierung folgt den gelesenen
+PCSX2-Mergepfaden, mit expliziter Integer-Rundung; keine behauptete physische
+PS2-/Wii-Pixelgleichheit. Einzelkreis-Format-/Skalierungsregressionen bestanden.
+
 ## Weitere Batches
 
 Physische CLUT-Neuinterpretation, Zweikreis-Scanout, native PS2-Karten und

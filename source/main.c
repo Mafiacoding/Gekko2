@@ -1254,7 +1254,7 @@ static void run_real_boot_flow(void)
     uint32_t frame = 0;
     uint64_t last_present_ms=0,last_present_events=ee_core_get_vblank_events();
     uint64_t last_present_quadwords=UINT64_MAX;
-    uint64_t last_dispfb=UINT64_MAX,last_display=UINT64_MAX,last_pmode=UINT64_MAX,last_smode=UINT64_MAX;
+    uint64_t last_dispfb=UINT64_MAX,last_display=UINT64_MAX,last_pmode=UINT64_MAX,last_smode=UINT64_MAX,last_output_key=UINT64_MAX;
     gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
     g_slice_budget=512;g_fps_milli=g_present_milli=0;
     memset(&g_fps_window,0,sizeof(g_fps_window));
@@ -1328,6 +1328,8 @@ static void run_real_boot_flow(void)
         int en1 = (gs->pmode & 0x1u) != 0;
         int en2 = (gs->pmode & 0x2u) != 0;
         int display_active = en1 || en2;
+        int output_merge=gs_output_requires_merge(gs);
+        uint64_t output_key=gs_output_state_key(gs);
         uint64_t current_quadwords=gif_get_state()->quadwords_seen;
         uint64_t current_dispfb=en1?gs->dispfb1:gs->dispfb2;
         uint64_t current_display=en1?gs->display1:gs->display2;
@@ -1336,7 +1338,7 @@ static void run_real_boot_flow(void)
          * changes refresh within 500 ms; real guest VBlank refreshes at once.
          * A five-second fallback covers writes outside normal GIF paths. */
         if(g_first_picture && !show_hud && current_events==last_present_events &&
-           current_quadwords==last_present_quadwords && current_dispfb==last_dispfb &&
+           current_quadwords==last_present_quadwords && output_key==last_output_key && current_dispfb==last_dispfb &&
            current_display==last_display && gs->pmode==last_pmode && gs->smode2==last_smode &&
            now_display_ms>=last_present_ms && now_display_ms-last_present_ms<5000)present_due=0;
         if(frontend_probe_first_image(present_due,display_active,g_first_picture)) {
@@ -1344,8 +1346,8 @@ static void run_real_boot_flow(void)
             decode_dispfb(current_dispfb,&probe_bp,&probe_bw);
             gs_decode_display_region(current_dispfb,current_display,gs->smode2,&sx,&sy,&sw,&sh);
             g_image_probe_attempts++;
-            if(probe_bw && gs_display_has_rgb_psm(probe_bp,probe_bw,sx,sy,sw,sh,
-                         (uint32_t)((current_dispfb>>15)&31u))) {
+            if(output_merge?gs_output_has_rgb(gs):(probe_bw && gs_display_has_rgb_psm(probe_bp,probe_bw,sx,sy,sw,sh,
+                         (uint32_t)((current_dispfb>>15)&31u)))) {
                 g_first_picture=1;save_boot_progress("FIRST_IMAGE");
             }
         }
@@ -1353,6 +1355,13 @@ static void run_real_boot_flow(void)
         if(present_due)VIDEO_WaitVSync();
         int guest_copied=0;
         if (present_due && display_active && !show_hud) {
+            if(output_merge){
+                g_sw_attempts++;
+                int copied=g_first_picture?gs_output_present_checked(gs,xfb,rmode->fbWidth,rmode->xfbHeight):0;
+                if(copied>0){g_sw_copies++;guest_copied=1;}
+                else if(copied<0)g_sw_sync_failures++;
+                else g_sw_invalid++;
+            }else{
             uint64_t active_dispfb = en1 ? gs->dispfb1 : gs->dispfb2;
             uint32_t bp_words, bw_pixels;
             decode_dispfb(active_dispfb, &bp_words, &bw_pixels);
@@ -1380,6 +1389,7 @@ static void run_real_boot_flow(void)
                 }
 
             }
+            }
         }
 
         if(gs_gx_faulted()){gekko2_profile_stop();gx_fault_paused=1;break;}
@@ -1406,7 +1416,7 @@ static void run_real_boot_flow(void)
         if(guest_copied)g_xfb_guest_copies++;
         perf_presents++;last_present_ms=now_display_ms;last_present_events=current_events;
         last_present_quadwords=current_quadwords;last_dispfb=current_dispfb;last_display=current_display;
-        last_pmode=gs->pmode;last_smode=gs->smode2;
+        last_pmode=gs->pmode;last_smode=gs->smode2;last_output_key=output_key;
         }
         gekko2_profile_stop();
         perf_blit+=gettime()-stage_started;
