@@ -1,5 +1,6 @@
 /* Both libmc OPEN ABIs must report a missing file, without overrunning replies. */
 #include <stdio.h>
+#include "core/system.h"
 #include <string.h>
 #include "core/ee/ee_core.c"
 static void call(ee_state_t *s, uint32_t sid, uint32_t fno, uint32_t command, uint32_t recvsize){
@@ -30,6 +31,6 @@ int main(void){
   if(ee_mem_read32(s,0x80006000)!=0xfeedface){puts("FAIL: zero-length OPEN reply written");failures++;}
  }
  call(s,SIF_SID_MCSERV,3,0,4);
- if(ee_mem_read32(s,0x80006000)!=0){puts("FAIL: modern CLOSE mistaken for OPEN");failures++;}
+ if((int32_t)ee_mem_read32(s,0x80006000)!=-5){puts("FAIL: unsupported CLOSE invented success for an unopened descriptor");failures++;}
  printf("MCSERV OPEN dispatch: %u failures across both ABIs and response bounds\n",failures);return failures?1:0;
 }

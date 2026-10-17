@@ -50,6 +50,40 @@ Quelle/Readbackfehler bestanden. MMOD/Alpha-Normalisierung folgt den gelesenen
 PCSX2-Mergepfaden, mit expliziter Integer-Rundung; keine behauptete physische
 PS2-/Wii-Pixelgleichheit. Einzelkreis-Format-/Skalierungsregressionen bestanden.
 
+## 4. Native PS2-Kartenbasis und SIO2-DMA
+
+Neues eigenständiges Kartengerät mit 512+16-Byte-Seiten, 16-Seiten-Erase,
+Probe/GetSpec, Terminator, Sektorwahl, NAND-Read/Write/Erase, öffentlichem
+Reset-Handshake, Daten-XOR und ECC-Parität. Raw-8-MiB und 8,650,752-Byte-
+Images mit Sparebytes werden unterstützt. Kein automatisches Erstellen,
+Formatieren oder Einfügen einer Karte. Vorhandenes
+`sd:/pcsx2/memcards/MemoryCard1.ps2` wird vor Gaststart für Port 0/Slot 0 geladen.
+Die Datei bleibt außerhalb aller öffentlichen Pakete. Änderungen werden bei
+Pause/Cold Boot/HBC über Temp/Backup gesichert; Fehler behalten die dirty Daten.
+Eine eingelegte Karte benötigt zusätzlich rund 8,65 MiB dynamischen Speicher.
+
+SEND3 trennt Kommando-/Antwortlängen und DMA-Blockpadding. IOP-DMA11/12
+überträgt akzeptierte Bytes, hält leere Antworten aus und signalisiert nur
+vollständige Transfers. SIO2 meldet synchron IRQ17; keine exakte Wire-Latenz.
+PS1-Pad/Karte bleiben erhalten. GETINFO liefert echten Typ sowie validierte
+Superblock-/FAT-Format-/Free-Metadaten. Nicht implementierte HLE-Dateioperationen
+geben Fehler statt erfundener erfolgreicher Format-/Save-/Close-Antworten.
+
+Checkpoint P2MC speichert Inhalt, Cursor und Modus und bindet eine vorhandene
+passende Kartenkonfiguration. In-flight SIO2-Kartencheckpoints werden ausdrücklich
+abgewiesen; die vollständige Serialisierung aller FIFO-/DMA-Zwischenzustände
+ist offen. MagicGate F0, Multitap/zweiter Kartenport und vollständige
+MCSERV-Dateisystemoperationen bleiben offen. Daher kein fertiger Spielstand-
+oder GT3-/BIOS-Kartennachweis.
+
+Tests: 1.024 unabhängige Einzelbit-ECC-Proben, Daten-/Erase-/Remount-Persistenz,
+Readonly-/Fehlerfälle, synthetische Superblock-/FAT-Metadaten, zwei echte gepaddete
+SIO2-DMA-Frames und wartende Antwort-DMA. GETINFO-DMA, vollständiger Karten-
+Checkpoint und Ablehnung laufender Serialtransfers bestanden. PS1-/Pad-/alte
+Checkpoint-Regressionen bestanden. Die alte CLOSE-Fixture verlangte Erfolg
+für einen nie geöffneten Descriptor; sie prüft jetzt den expliziten Fehler.
+Zwei alte Whitebox-Fixtures haben ihren fehlenden system.h-Include erhalten.
+
 ## Weitere Batches
 
 Physische CLUT-Neuinterpretation, Zweikreis-Scanout, native PS2-Karten und

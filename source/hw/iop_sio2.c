@@ -4,6 +4,8 @@
  * real memory-card command/response protocol, task #299).
  */
 #include "core/hw/iop_sio2.h"
+#include "core/hw/ps2_memory_card.h"
+#include "core/hw/iop_intc.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -68,12 +70,14 @@ static uint32_t g_pad_command_count = 0; /* Round 510 diagnostic */
 
 /* Command/reply staging buffers for the batched FIFOIN -> CTRL-start
  * -> FIFOOUT model described in the header. */
-#define MC_CMD_MAX 512
+#define MC_CMD_MAX 8192
 static uint8_t g_cmd_buf[MC_CMD_MAX];
 static int g_cmd_len;
 static uint8_t g_reply_buf[MC_CMD_MAX];
 static int g_reply_len;
 static int g_reply_pos;
+static uint32_t g_dma_stride;
+int iop_sio2_transport_pending(void){return g_cmd_len!=0||g_reply_pos<g_reply_len;}
 
 /* Real, cited sub-block offsets (ps2tek SIO2 register table).
  * SEND3 (0x00, size 0x40), SEND1/SEND2 (0x40, size 0x20), and
@@ -104,6 +108,7 @@ void iop_sio2_init(void)
     g_cmd_len = 0;
     g_reply_len = 0;
     g_reply_pos = 0;
+    g_dma_stride=0;ps2_mc_reset_protocol();
 }
 
 void iop_sio2_mc_insert_blank(void)
@@ -135,7 +140,7 @@ void iop_sio2_mc_eject(void)
 
 int iop_sio2_mc_is_inserted(void)
 {
-    return g_mc.inserted;
+    return g_mc.inserted||ps2_mc_present();
 }
 
 void iop_sio2_pad_connect(void)
@@ -300,6 +305,9 @@ static void mc_process_command(void)
         pad_process_command();
         return;
     }
+    if(g_cmd_buf[0]==IOP_MC_ADDR_BYTE&&ps2_mc_present()){
+        ps2_mc_transfer(g_cmd_buf,g_reply_buf,(unsigned)n);g_reply_len=n;return;
+    }
 
     if (g_cmd_buf[0] != IOP_MC_ADDR_BYTE || !g_mc.inserted) {
         /* Either not addressed to the memory card, or no card
@@ -433,6 +441,49 @@ static void mc_process_command(void)
                                                * Receive FLAG" framing */
 }
 
+static uint32_t sio_reg32(unsigned off)
+{return (uint32_t)g_regs[off]|((uint32_t)g_regs[off+1]<<8)|((uint32_t)g_regs[off+2]<<16)|((uint32_t)g_regs[off+3]<<24);}
+static void sio_reg_write32(unsigned off,uint32_t value)
+{for(unsigned n=0;n<4;n++)g_regs[off+n]=(uint8_t)(value>>(8*n));}
+static void sio_process_queue(void)
+{
+ if(!((sio_reg32(0)>>8)&511u)){mc_process_command();return;}
+ static uint8_t input[MC_CMD_MAX],output[MC_CMD_MAX];
+ unsigned available=(unsigned)g_cmd_len,at=0,used=0;memcpy(input,g_cmd_buf,available);
+ int connected=1;
+ for(unsigned n=0;n<16;n++){
+  uint32_t d=sio_reg32(n*4u);unsigned count=(d>>8)&511u,reply=(d>>18)&511u;
+  if(!count)break;
+  unsigned in_stride=g_dma_stride>count?g_dma_stride:count;
+  unsigned out_stride=g_dma_stride>reply?g_dma_stride:reply;
+  if(count>available-at||out_stride>MC_CMD_MAX-used){connected=0;break;}
+  memset(output+used,0,out_stride);
+  if(d&1u){memset(output+used,0xff,reply);connected=0;}
+  else{
+   memcpy(g_cmd_buf,input+at,count);g_cmd_len=(int)count;mc_process_command();
+   unsigned take=(unsigned)g_reply_len<reply?(unsigned)g_reply_len:reply;
+   memcpy(output+used,g_reply_buf,take);if(take<reply)memset(output+used+take,0xff,reply-take);
+   if(take&&output[used]==0xff)connected=0;
+  }
+  used+=out_stride;if(in_stride>available-at)break;at+=in_stride;
+ }
+ memcpy(g_reply_buf,output,used);g_reply_len=(int)used;g_reply_pos=0;
+ sio_reg_write32(0x6c,connected?0x1100u:0x1d100u);
+ iop_intc_raise(17); /* synchronous completion; no claim of wire-cycle timing */
+}
+uint32_t iop_sio2_dma_write(const uint8_t *data,uint32_t bytes,uint32_t stride)
+{
+ if(!data||stride>MC_CMD_MAX)return 0;
+ unsigned room=MC_CMD_MAX-(unsigned)g_cmd_len;if(bytes>room)bytes=room;
+ if(bytes){memcpy(g_cmd_buf+g_cmd_len,data,bytes);g_cmd_len+=(int)bytes;g_dma_stride=stride;}
+ return bytes;
+}
+uint32_t iop_sio2_dma_read(uint8_t *data,uint32_t bytes)
+{
+ if(!data)return 0;unsigned ready=(unsigned)(g_reply_len-g_reply_pos);if(bytes>ready)bytes=ready;
+ if(bytes){memcpy(data,g_reply_buf+g_reply_pos,bytes);g_reply_pos+=(int)bytes;}return bytes;
+}
+extern void iop_dma_sio2_service(void) __attribute__((weak));
 int iop_sio2_mmio_read8(uint32_t addr, uint8_t *out)
 {
     uint32_t phys = addr & 0x1FFFFFFFu;
@@ -470,13 +521,16 @@ int iop_sio2_mmio_write8(uint32_t addr, uint8_t value)
         g_regs[off] = value;
         if (value & 0x01u) { /* real cited "bit 0 starts the command
                                * transfer" */
-            mc_process_command();
+            sio_process_queue();
             g_cmd_len = 0;
+            g_dma_stride=0;
+            if(iop_dma_sio2_service)iop_dma_sio2_service();
         }
         if (value & 0x0Cu) { /* real cited "bits 2 and 3 reset SIO2" */
             g_cmd_len = 0;
             g_reply_len = 0;
             g_reply_pos = 0;
+            g_dma_stride=0;
         }
         return 1;
     }
