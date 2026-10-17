@@ -1,6 +1,8 @@
-# Gekko2 SPEED BETA12.27 – 16 October 2026
+# Gekko2 SPEED BETA12.28 – 17 October 2026
 
-17 October: [Alpha-Arbeitsplan](docs/ALPHA-ARBEITSPLAN.md),
+**BETA12.28 – Alpha-Core-Teststand:** [Menü, CLUT, Zweikreis-Scanout, PS2-Karten/FAT/MCSERV und IPU-Retries](docs/BETA12.28-ALPHA-CORE.md). Keine neue Wii-Spielbarkeits-/FPS-/BIOS-Kachelbestätigung. Ältere Absätze beschreiben historische Versionen.
+
+Historischer Audit vor BETA12.28, 17 October: [Alpha-Arbeitsplan](docs/ALPHA-ARBEITSPLAN.md),
 [Menüentscheidungen für alle 39 Einstellungen](docs/ALPHA-MENUE-AUDIT.md) und
 [PCSX2-/Play!-Befunde](docs/ALPHA-REFERENZABGLEICH.md) auf BETA12.27 erstellt.
 55 Host-Suites, zehn Zusatzprüfungen und vier Options-Metadatenprofile erneut

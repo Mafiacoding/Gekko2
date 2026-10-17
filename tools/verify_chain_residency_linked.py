@@ -15,11 +15,12 @@ def clocks():
  call('ee_timers_init');u.mem_write(syms['g_ee_display_ticks'],struct.pack('>Q',1000))
  word(syms['g_ee_display_phase'],1000);u.mem_write(syms['g_ee_irq'],bytes(8));call('ee_timers_tick')
 
-def run(native,budget,change,irq,registers=(4,5,6),chain_mode=None,psm_mode=0,measure=False,program_words=None):
+def run(native,budget,change,irq,registers=(4,5,6),chain_mode=None,psm_mode=0,measure=False,program_words=None,risk_mode=0):
  extension_setup()
  call('dma_init')
  call('gekko2_experimental_request',0,int(native if chain_mode is None else chain_mode))
- call('gekko2_experimental_request',1,psm_mode);call('gekko2_experimental_apply_cold_boot')
+ call('gekko2_experimental_request',1,psm_mode);call('gekko2_experimental_request',2,risk_mode)
+ call('gekko2_experimental_apply_cold_boot')
  call('gs_mem_set_local_extended_conversion',psm_mode)
  word(mask_address,flags if native else flags&~(1|8))
  clocks()

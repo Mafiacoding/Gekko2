@@ -1,5 +1,14 @@
 # Gekko2: Arbeitsplan bis zur öffentlichen Wii-Alpha
 
+**Umsetzungsstand BETA12.28:** [Batches und Nachweise](ALPHA-UMSETZUNG.md),
+[Build-/Restumfang](BETA12.28-ALPHA-CORE.md). A01-Menü/Dateiverträge,
+A04-CLUT-Neuinterpretation, A05-Zweikreis-Scanout, A12-CPU-FIFO-Retries und
+A14-Karte/Standard-FAT/MCSERV sind umgesetzt; das schließt die übrigen
+Teilziele dieser Pakete und ihre Hardware-Gates nicht automatisch ab.
+A02/A03/A07 benötigen weiterhin den identischen fehlerhaften Spiel-/BIOSzustand;
+A06/A08–A13/A15–A17 enthalten weitere Accuracy-/Performance-/Releasearbeit.
+Die folgende Audit-Basis und ihre geplante Liste bleiben als Verlauf erhalten.
+
 Stand: 17.10.2026. Geprüfte Codebasis: `c51ab567f651195beb0470b11419d8b7eafa4fd8`
 (`R1389-SPEED-BETA12.27-GX-RISK-OPTION`). Arbeitsbranch:
 `codex/alpha-readiness-audit`. GitHub-main wurde erneut als `ca16340e`/

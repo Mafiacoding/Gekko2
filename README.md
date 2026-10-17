@@ -1,10 +1,11 @@
-# Gekko2 — SPEED BETA12.27
+# Gekko2 — SPEED BETA12.28
 
-**Alpha-Vorbereitung (17.10.2026):** [priorisierter Arbeitsplan](docs/ALPHA-ARBEITSPLAN.md),
+**BETA12.28 – Alpha-Core-Teststand:** [Menü, CLUT, Zweikreis-Scanout, PS2-Karten/FAT/MCSERV und IPU-Retries](docs/BETA12.28-ALPHA-CORE.md). Keine neue Wii-Spielbarkeits-/FPS-/BIOS-Kachelbestätigung. Ältere Absätze beschreiben historische Versionen.
+
+**Historischer Audit vor BETA12.28 (17.10.2026):** [priorisierter Arbeitsplan](docs/ALPHA-ARBEITSPLAN.md),
 [Audit aller Menüoptionen](docs/ALPHA-MENUE-AUDIT.md) und
 [PCSX2-/Play!-Abgleich](docs/ALPHA-REFERENZABGLEICH.md).
-Die geplanten Module und Menüänderungen sind noch offen; keine neue Wii-
-Spielbarkeits- oder Geschwindigkeitsbehauptung. Ältere Checkpoints unten sind historisch.
+Der damalige Menü-/Modulbefund wird durch den obigen Umsetzungsbericht fortgeschrieben. Weitere Hardware-/Spielbarkeitsziele bleiben offen. Ältere Checkpoints unten sind historisch.
 
 **BETA12.24a:** Automatische 4:3-Verkleinerung zurückgenommen. Die Nutzerkorrektur bezieht sich auf die Fragezeichen-Kacheln in Tekkens Charakterauswahl, nicht auf die gesamte Ausgabe. Wieder volle Ausgabegröße; BETA12.24-Diagnosen bleiben aktiv. Die Kacheln selbst sind noch nicht als korrigiert bestätigt. [Hinweis](docs/BETA12.24a-FULLSCREEN.md).
 

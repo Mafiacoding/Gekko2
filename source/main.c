@@ -270,7 +270,7 @@ static void save_boot_progress(const char *event)
     fprintf(f,"EVENT session=%lu kind=%s active_mask=%08lx next_boot_mask=%08lx GX=%d next_GX=%d log_errors=%lu\n",
       (unsigned long)g_session_log.sequence,event,(unsigned long)gekko2_optimization_mask,
       (unsigned long)gekko2_opt_requested(),g_gx_present,g_gx_requested,(unsigned long)g_session_log.errors);
-    fprintf(f,"PS2_CARD present=%d port=0 slot=0 filesystem_hle=partial\n",ps2_mc_present());
+    fprintf(f,"PS2_CARD present=%d port=0 slot=0 filesystem_hle=standard8m raw_rpc=0 magicgate=0\n",ps2_mc_present());
     fprintf(f,"%s ms=%llu BIOS=%s ROMVER=%s size=%u disc=%d EE=%llu PC=%08x IOP=%llu PC=%08x halted=%d/%d STATUS=%08x CAUSE=%08x EPC=%08x PMODE=%llx DISPFB1=%llx DISPFB2=%llx FIRST_IMAGE=%d\n",
         event,(unsigned long long)ticks_to_millisecs(gettime()-g_boot_started),g_bios.name,g_bios.version_string,(unsigned)g_bios.size,g_disc_ok,
         (unsigned long long)e->instructions_executed,e->pc,(unsigned long long)i->instructions_executed,i->pc,e->halted,i->halted,e->cop0[12],e->cop0[13],e->cop0[14],

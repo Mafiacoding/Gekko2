@@ -1,5 +1,10 @@
 # Vollständiger Menüaudit für die Wii-Alpha
 
+**Historischer Audit vor der Umsetzung.** Die konkreten Menü-/CLUT-/Scanout-/
+Karten-/IPU-Korrekturen sind in [BETA12.28](BETA12.28-ALPHA-CORE.md) und
+[ALPHA-UMSETZUNG](ALPHA-UMSETZUNG.md) dokumentiert. Die damaligen Messwerte
+beschreiben BETA12.27; der aktuelle Optionsprobe respektiert All-OFF.
+
 17.10.2026, BETA12.27 / `c51ab567`. Dieser Text entscheidet die geplante
 Aufteilung; die Oberfläche selbst wird mit diesem Audit noch nicht umgebaut.
 Umsetzung und Gates: [A01 im Arbeitsplan](ALPHA-ARBEITSPLAN.md#a01--menü-und-konfigurationsvertrag-p0).

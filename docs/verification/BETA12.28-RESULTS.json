@@ -1,0 +1,232 @@
+{
+  "emulator_build_commit": "2e8680b6c37cc02c87e0742f020ba2dee72c833c",
+  "sdk": "devkitpro/devkitppc@sha256:4c919aa26151dd43d88ca28c922d1fe2409579a8ba60ef56517baf1abdfb1a48",
+  "compiler": "devkitPPC r50 / GCC16.1.0 / libogc3.1.0",
+  "host_suite_count": 62,
+  "host_failures": 0,
+  "host_report_in_review_zip": "verification/beta12-28-host.json",
+  "linked_suites": [
+    {
+      "test": "verify_ppc_gs_memory",
+      "exit_code": 0,
+      "output": "PASS 53 actual Wii ELF GS color/depth memory checks on big-endian PPC\n"
+    },
+    {
+      "test": "verify_word_allocator_internal",
+      "exit_code": 0,
+      "output": "WORD_ALLOC_COMPILE_COUNTERS 146 0 292 4\nPASS 97 independent allocated EE integer/alias/upper-lane oracles\n"
+    },
+    {
+      "test": "verify_chain_residency_linked",
+      "exit_code": 0,
+      "output": "PASS 105 linked interpreter/native-residency complete EE/timer/display/IRQ comparisons; selected successors 126\n"
+    },
+    {
+      "test": "verify_chain_alu_linked",
+      "exit_code": 0,
+      "output": "PASS 24 linked native scalar ALU quiet-batch, fused boundaries, scheduler, mapping and real DMA-SMC comparisons; successors 21\n"
+    },
+    {
+      "test": "verify_chain_memory_linked",
+      "exit_code": 0,
+      "output": "PASS 72 linked 128-bit LQ/SQ, LD/SD, HI/LO/SA, RAM, budget, IRQ, mapping, TLB-fault and SMC comparisons; successors 38\n"
+    },
+    {
+      "test": "verify_chain_branch_linked",
+      "exit_code": 0,
+      "output": "PASS branch family 0, cumulative comparisons=28 successors=11\nPASS branch family 1, cumulative comparisons=56 successors=22\nPASS branch family 2, cumulative comparisons=84 successors=33\nPASS branch family 3, cumulative comparisons=112 successors=44\nPASS 112 linked J/JAL/JR/JALR/BEQ/BNE, link alias, 128-bit delay slot, EPC/BD, IRQ and scheduler comparisons; successors 44\n"
+    },
+    {
+      "test": "verify_alpha_modes_linked",
+      "exit_code": 0,
+      "output": "PASS 16 linked PPC comparisons across all 8 chain/PSM/GX-risk modes; cold-boot isolation, fallback and successors 60\n"
+    },
+    {
+      "test": "verify_gx_risk_beta12_27",
+      "exit_code": 0,
+      "output": "PASS linked PPC: fragmented alpha coverage, interpolated Z, alpha shadow, texture reuse/invalidation, 128x1024 admission, FBMASK rejection; 91 interior pixels; GX mocked, RGB and speed unverified\nPASS linked PPC common shader: 728 exact alpha-shadow pixels, four TFX modes, varying alpha, fog TEV order/attenuation, FIFO color attributes, untextured passthrough, safe FIX blend and AS fallback; CPU TEV model max RGB error=2/255; actual GPU RGB/FPS unverified\nPASS linked PPC GX risk: OFF=16 submissions, ON=1 for eligible triangle; cold-boot request isolation, unpadded bbox, exact alpha/Z metadata, PABE/ATE/DATE/Z/SCANMSK fallbacks and unsupported-state gates; actual GPU edge coverage and Wii FPS unverified\n",
+      "environment_retry": "Installed missing libogc headers from the same pinned official SDK; rerun exited 0."
+    },
+    {
+      "test": "verify_beta12_22_linked",
+      "exit_code": 0,
+      "output": "PASS linked PPC XGKICK rejected live tag and physical ring wrap\nPASS linked PPC CSM2 independent CT32/CT16/CT16S palette banks\nPASS 32 linked PPC depth texels: PSMZ32/24/16/16S, TEXA/AEM and VRAM wrap\nPASS linked PPC IPU soft-reset DC precision rule\nPASS linked PPC multi-button pause and explicit HOME+MINUS exit\n"
+    }
+  ],
+  "allocator": "PASS 2400 executed PPC full-128-bit allocation, residency, alias and VF/GPR zero oracles\n",
+  "allocator_without_chain": "WORD_ALLOC_COMPILE_COUNTERS 146 0 292 4\nPASS 97 independent allocated EE integer/alias/upper-lane oracles\n",
+  "native_abi": "PASS 45 native continuation oracle cases, arguments/budgets/partial exits and hostile EABI\n",
+  "cross_block_abi": "PASS 5400 executed PPC cross-block 128-bit/HI/LO/SA, clean helper state, mutation-wrap, partial-exit and EABI cases; 11 decline cases\n",
+  "chain_comparison": {
+    "scope": "synthetic linked PPC; modeled platform; no Wii timing or FPS claim",
+    "results": [
+      {
+        "chain_enabled": 0,
+        "guest_retired": 128,
+        "executed_ppc_instructions": 82467,
+        "native_successors": 0,
+        "psm_enabled": 0
+      },
+      {
+        "chain_enabled": 1,
+        "guest_retired": 128,
+        "executed_ppc_instructions": 84270,
+        "native_successors": 14,
+        "psm_enabled": 0
+      }
+    ]
+  },
+  "wii_hardware_tested": false,
+  "dolphin_tested": false,
+  "gameplay_verified": false,
+  "dynamic_mem2_peak_verified": false,
+  "private_aot_entries": 0,
+  "compile_flags": {
+    "chain": [
+      "-g",
+      "-O1",
+      "-Wall",
+      "-DGEKKO",
+      "-mrvl",
+      "-mcpu=750",
+      "-meabi",
+      "-mhard-float",
+      "-DGEKKO",
+      "-mrvl",
+      "-mcpu=750",
+      "-meabi",
+      "-mhard-float",
+      "-DGEKKO2_GX_RISK_MODE",
+      "-DGEKKO2_GX_GENERIC_SHADER",
+      "-DGEKKO2_GX_EXTENDED_TRIANGLES",
+      "-DGEKKO2_GAME_TRACE",
+      "-DGEKKO2_SPEED_RETIRE",
+      "-DGEKKO2_SPEED_STUB",
+      "-DGEKKO2_GX_NATIVE_BIOS_TRI",
+      "-ffp-contract=off",
+      "-DGEKKO2_EE_AOT",
+      "-DGEKKO2_VU_AOT",
+      "-DGEKKO2_IOP_AOT",
+      "-DGEKKO2_EE_BLOCK_FAST",
+      "-DGEKKO2_GOURAUD_EARLY_DEGENERATE",
+      "-DGEKKO2_ARM_BETA",
+      "-DGEKKO2_DSI_FASTMEM",
+      "-DGEKKO2_GX_NATIVE_ADDITIVE",
+      "-DGEKKO2_GX_RESIDENT_FENCE",
+      "-DGEKKO2_IDLE_SKIP",
+      "-DGEKKO2_EE_CHAIN_RESIDENCY",
+      "-DGEKKO2_IOP_LIGHTREC_PILOT",
+      "-DHAVE_MMAP=0",
+      "-DLOG_LEVEL=0",
+      "-DWANT_RAW_DATA_SECTOR=1",
+      "-DWANT_SUBCODE=1",
+      "-DVERIFY_BLOCK_CRC=1",
+      "-DMINIZ_NO_ARCHIVE_APIS",
+      "-DMINIZ_NO_DEFLATE_APIS",
+      "-DMINIZ_NO_STDIO",
+      "-DMINIZ_NO_TIME",
+      "-D_FILE_OFFSET_BITS=64",
+      "-D_LARGEFILE_SOURCE=1"
+    ],
+    "control": [
+      "-g",
+      "-O1",
+      "-Wall",
+      "-DGEKKO",
+      "-mrvl",
+      "-mcpu=750",
+      "-meabi",
+      "-mhard-float",
+      "-DGEKKO",
+      "-mrvl",
+      "-mcpu=750",
+      "-meabi",
+      "-mhard-float",
+      "-DGEKKO2_GX_RISK_MODE",
+      "-DGEKKO2_GX_GENERIC_SHADER",
+      "-DGEKKO2_GX_EXTENDED_TRIANGLES",
+      "-DGEKKO2_GAME_TRACE",
+      "-DGEKKO2_SPEED_RETIRE",
+      "-DGEKKO2_SPEED_STUB",
+      "-DGEKKO2_GX_NATIVE_BIOS_TRI",
+      "-ffp-contract=off",
+      "-DGEKKO2_EE_AOT",
+      "-DGEKKO2_VU_AOT",
+      "-DGEKKO2_IOP_AOT",
+      "-DGEKKO2_EE_BLOCK_FAST",
+      "-DGEKKO2_GOURAUD_EARLY_DEGENERATE",
+      "-DGEKKO2_ARM_BETA",
+      "-DGEKKO2_DSI_FASTMEM",
+      "-DGEKKO2_GX_NATIVE_ADDITIVE",
+      "-DGEKKO2_GX_RESIDENT_FENCE",
+      "-DGEKKO2_IDLE_SKIP",
+      "-DGEKKO2_IOP_LIGHTREC_PILOT",
+      "-DHAVE_MMAP=0",
+      "-DLOG_LEVEL=0",
+      "-DWANT_RAW_DATA_SECTOR=1",
+      "-DWANT_SUBCODE=1",
+      "-DVERIFY_BLOCK_CRC=1",
+      "-DMINIZ_NO_ARCHIVE_APIS",
+      "-DMINIZ_NO_DEFLATE_APIS",
+      "-DMINIZ_NO_STDIO",
+      "-DMINIZ_NO_TIME",
+      "-D_FILE_OFFSET_BITS=64",
+      "-D_LARGEFILE_SOURCE=1"
+    ],
+    "include_paths": "from pinned SDK and tracked Makefile",
+    "link_libraries": [
+      "fat",
+      "wiiuse",
+      "bte",
+      "ogc",
+      "m"
+    ],
+    "fresh_source_build": true
+  },
+  "binaries": {
+    "chain": {
+      "dol": "Gekko2-BETA12.28-GX-Chain.dol",
+      "sha256": "55f1845c07ce800c8434ba0306dc9080dacfc1e973622412c7226e9a9384b48e",
+      "bytes": 2078104,
+      "entry": "0x80003f00",
+      "sections": 2,
+      "load_end": "0x801ff398",
+      "bss_end": "0x815d8354",
+      "wii_hid4_markers": [
+        "0x80003f20",
+        "0x801329ec"
+      ],
+      "elf_section_bytes_match": true,
+      "runtime_boot_verified": false
+    },
+    "control": {
+      "dol": "Gekko2-BETA12.28-GX.dol",
+      "sha256": "6dc6f8a9f8ceac1fbfd0c4f4b84a0f28c3d9e1f16cd017742d351ca078ad7da2",
+      "bytes": 2072568,
+      "entry": "0x80003f00",
+      "sections": 2,
+      "load_end": "0x801fddd8",
+      "bss_end": "0x815b6d54",
+      "wii_hid4_markers": [
+        "0x80003f20",
+        "0x80131710"
+      ],
+      "elf_section_bytes_match": true,
+      "runtime_boot_verified": false
+    }
+  },
+  "memory": {
+    "chain": {
+      "mem1_static_end": "0x815d8354",
+      "mem1_remaining_bytes": 2260140,
+      "minimum_remaining_bytes": 1048576,
+      "passed": true
+    },
+    "control": {
+      "mem1_static_end": "0x815b6d54",
+      "mem1_remaining_bytes": 2396844,
+      "minimum_remaining_bytes": 1048576,
+      "passed": true
+    }
+  }
+}
