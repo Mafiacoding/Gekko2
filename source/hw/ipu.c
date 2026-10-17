@@ -255,8 +255,10 @@ int ipu_mmio_read64(uint32_t addr,uint64_t *out)
 int ipu_mmio_write64(uint32_t addr,uint64_t value)
 {return ipu_mmio_write32(addr,(uint32_t)value);}
 int ipu_fifo_read128(uint32_t addr,uint8_t out[16])
-{if(addr!=0x10007000u)return 0;ipu_service();if(!ipu_output_read(out,1))memset(out,0,16);ipu_service();return 1;}
+{if(addr!=0x10007000u)return 0;ipu_service();if(!ipu_output_read(out,1))return -1;ipu_service();return 1;}
 int ipu_fifo_write128(uint32_t addr,const uint8_t in[16])
-{if(addr!=0x10007010u)return 0;ipu_service();if(!ipu_input_write(in,1))profile.discarded_qwc++;ipu_service();return 1;}
+{if(addr!=0x10007010u)return 0;ipu_service();if(!ipu_input_write(in,1))return -1;ipu_service();return 1;}
+int ipu_cpu_fifo_ready(int writing)
+{ipu_service();return writing?s.in_count<8u:s.out_count!=0u;}
 void ipu_process_quadwords(int channel,const uint8_t *data,uint32_t qwc)
 {(void)channel;uint32_t n=ipu_input_write(data,qwc);profile.discarded_qwc+=qwc-n;ipu_service();}
