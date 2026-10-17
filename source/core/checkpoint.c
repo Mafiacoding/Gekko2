@@ -8,6 +8,7 @@
 #include "core/checkpoint.h"
 #include "core/hw/iop_sio2.h"
 #include "core/hw/ps2_memory_card.h"
+#include "core/hw/ps2_mc_files.h"
 #include "core/ee/ee_core.h"
 #include "core/recompiler/ee_jit.h" /* R1317 checkpoint source/mapping invalidation */
 #include "core/ee/ee_hle_thread.h"
@@ -243,6 +244,7 @@ int checkpoint_save(const char *path)
     if(ps2_mc_present()){
         uint32_t bytes;const void *data=ps2_mc_snapshot(&bytes);
         if(write_block(f,"P2MC",data,bytes)<0)goto fail;
+        data=ps2_mc_fs_snapshot(&bytes);if(write_block(f,"MCFS",data,bytes)<0)goto fail;
     }
     if (write_block(f, "END0", NULL, 0) < 0) goto fail;
 
@@ -417,10 +419,17 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     iop_cdrom_legacy_checkpoint_t cdrom={0};
     uint8_t protocol[IOP_PAD_PROTOCOL_BYTES]={0};
     unsigned seen = 0;
+    uint8_t fs_scratch[4096] __attribute__((aligned(4)));uint32_t fs_size=0;
     for (;;) {
         static unsigned char extra[sizeof(rspu2_stream_state_t)>sizeof(ipu_state_t)?sizeof(rspu2_stream_state_t):sizeof(ipu_state_t)];
         long sound_pos=ftell(f);char sound_tag[4];
         if(sound_pos<0||fread(sound_tag,1,4,f)!=4||fseek(f,sound_pos,SEEK_SET))goto fail_close;
+        if(!memcmp(sound_tag,"MCFS",4)){
+          if(seen&2048u)goto fail_close;
+          rc=read_block(f,tag,fs_scratch,sizeof fs_scratch,&fs_size);
+          if(rc!=1||!ps2_mc_fs_snapshot_valid(fs_scratch,fs_size))goto fail_close;
+          seen|=2048u;continue;
+        }
         if(!memcmp(sound_tag,"P2MC",4)){
           if(seen&1024u)goto fail_close;
           mc_scratch=malloc(32u+PS2_MC_IMAGE_BYTES);if(!mc_scratch)goto fail_close;
@@ -467,6 +476,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     }
     if (rc != 0 || memcmp(tag, "END0", 4) != 0 || size != 0u) goto fail_close;
 
+    if((seen&2048u)&&!(seen&1024u))goto fail_close;
     if(!!(seen&128u)!=!!(seen&256u))goto fail_close;
     if((seen&64u)&&cdrom.disc_mounted){iso_image_t probe;
         if(!iso_path||iso_open(iso_path,&probe))goto fail_close;iso_close(&probe);}
@@ -481,6 +491,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
      * documented restore-time checklist. */
     if(mc_scratch){if(ps2_mc_snapshot_load(mc_scratch,mc_size))goto fail_alloc;free(mc_scratch);mc_scratch=NULL;}
     else if(ps2_mc_eject())goto fail_alloc;
+    if((seen&2048u)&&ps2_mc_fs_snapshot_load(fs_scratch,fs_size))goto fail_alloc;
     ee_state_t *ee = ee_core_get_state();
     iop_state_t *iop = iop_core_get_state();
     memcpy(ee, ee_scratch, sizeof(*ee));

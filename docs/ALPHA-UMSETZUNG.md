@@ -100,7 +100,42 @@ LQ r0 bestanden. IPU-DMA-Stall, 384 IDEC-/399.764 Feldprüfungen, vorhandene
 GIF/SQ-/FMAC-/DMA-Retries und EE-Exceptions bestanden. Dies ist eine
 unabhängig reproduzierte Datenverlustkorrektur, kein Crash-E3-Fixbeleg.
 
-## Weitere Batches
+## 6. Standard-PS2-FAT und MCSERV-Dateien
 
-Physische CLUT-Neuinterpretation, Zweikreis-Scanout, native PS2-Karten und
-breitere IPU-/JIT-Konformität bleiben bis zu ihrem eigenen Testnachweis offen.
+Die vorherigen nicht implementierten Dateiantworten sind für Standard-8-MiB-
+PS2-Karten durch echte FAT-/Verzeichnisoperationen ersetzt: OPEN, CLOSE, READ,
+WRITE mit libmc-Präfix, SEEK, FLUSH, GETDIR mit Wildcards/Fortsetzung, CHDIR,
+SETINFO einschließlich Umbenennen, DELETE, explizites FORMAT/UNFORMAT. Beide
+RPC-Nummernräume werden getrennt zugeordnet; READ benutzt die jeweiligen
+16-/64-Byte-Anfangs-/Endpuffer und publiziert sie über endParam vor REND.
+DMA-Bereiche werden vor Datei-/Positionsänderung begrenzt, JIT-Codeänderungen
+gemeldet. Standardmäßig wird weiterhin keine Karte erstellt oder formatiert.
+
+Geometrie/IFC/FAT, Schleifen, Dateilängen, Elternzeiger und Cluster-Crosslinks
+werden vor schreibendem Dateizugriff geprüft. Platzmangel verändert eine
+bestehende Datei nicht. Löcher werden genullt; ECC wird für betroffene Seiten
+erneuert. FS-Handles, Position, cwd und Verzeichnisfortsetzung sind im optionalen
+MCFS-Checkpoint enthalten. Kartenwechsel, physischer SIO2-Write und Cold Boot
+verwerfen alte HLE-Handles. Andere Geometrien, Verzeichnis-Dateidescriptoren,
+raw-page-RPCs/GETENTSPACE/Erweiterungen, MagicGate, zweiter Port/Multitap und
+defekte Karten-Reparatur sind ausdrücklich nicht implementiert.
+
+Referenz: PS2SDK `329e2bb43287e16af16c4dde1c614e2662c24468`,
+`mcman/src/main.c`, `ps2mc_fio.c`, `mcman-internal.h`, `mcserv/src/mcserv.c`
+und `libmc-common.h` (AFL-2.0). Unabhängige Implementierung der beschriebenen
+Strukturen/Protokolle; kein importierter Dateisystem-Backend. Wichtig:
+libmc O_CREAT ersetzt vorhandene Dateien; das ist kein POSIX-O_CREAT.
+Nicht-root-Verzeichnisse halten ihre Länge im Eltern-Eintrag.
+
+Tests: 512 READ-ABI/Ausrichtungs/EOF-Fälle, WRITE-Präfix, beide Opcode-Maps,
+benannte RPCs, persistente Dateien, Sparse-Seek, Rename/Enumeration, Schreibschutz,
+unabhängig angelegtes fragmentiertes Kartenlayout, Schleifen/Crosslinks und
+Checkpoint mit offenem Dateihandle bestanden. Der Hersteller-ROM-/Spielbetrieb
+und Austausch mit physischer PS2/Wii sind nicht getestet. Die Admissonsprüfung
+scannt den Verzeichnisbaum; Kosten auf Wii noch nicht gemessen.
+
+## Offene Nachweise
+
+Die konkreten Abgleichkorrekturen 1–6 sind implementiert; vollständige PS2-
+Hardwarekonformität, allgemeines Dirty-JIT-Writeback, GX-Feedback/EXTWRITE und
+hardwarebestätigte Crash-/Tekken-/BIOS-Kachelkorrekturen bleiben offen.

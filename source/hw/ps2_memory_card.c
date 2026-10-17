@@ -3,6 +3,7 @@
  * MCDevInfo/McDataChecksum (public protocol and parity equations).
  * No authentication keys, upstream filesystem or CPU backend copied. */
 #include "core/hw/ps2_memory_card.h"
+#include "core/hw/ps2_mc_files.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -31,6 +32,26 @@ static void page_ecc(unsigned page)
  for(unsigned i=0;i<4;i++)ps2_mc_ecc128(p+i*128u,p+512u+i*3u);
 }
 int ps2_mc_present(void){return state!=NULL;}
+int ps2_mc_writable(void){return state&&!readonly;}
+int ps2_mc_logical_read(uint32_t offset,void *data,uint32_t bytes)
+{
+ if(!state||offset>PS2_MC_PAGES*512u||bytes>PS2_MC_PAGES*512u-offset)return -1;
+ uint8_t *dest=data;
+ while(bytes){unsigned n=512u-offset%512u;if(n>bytes)n=bytes;
+  memcpy(dest,image()+(offset/512u)*528u+offset%512u,n);dest+=n;offset+=n;bytes-=n;}
+ return 0;
+}
+int ps2_mc_logical_write(uint32_t offset,const void *data,uint32_t bytes)
+{
+ if(!ps2_mc_writable()||offset>PS2_MC_PAGES*512u||bytes>PS2_MC_PAGES*512u-offset)return -1;
+ const uint8_t *src=data;
+ while(bytes){unsigned n=512u-offset%512u;if(n>bytes)n=bytes;
+  memcpy(image()+(offset/512u)*528u+offset%512u,src,n);page_ecc(offset/512u);
+  src+=n;offset+=n;bytes-=n;dirty=1;}
+ return 0;
+}
+int ps2_mc_erase_all(void)
+{if(!ps2_mc_writable())return -1;memset(image(),0xff,PS2_MC_IMAGE_BYTES);dirty=1;return 0;}
 void ps2_mc_reset_protocol(void){cursor=sector=mode=0;terminator=0x55;}
 int ps2_mc_flush(void)
 {
@@ -53,7 +74,7 @@ int ps2_mc_flush(void)
 int ps2_mc_eject(void)
 {
  if(ps2_mc_flush())return -1;
- free(state);state=NULL;filename[0]=0;path_hash=dirty=0;ps2_mc_reset_protocol();return 0;
+ free(state);state=NULL;filename[0]=0;path_hash=dirty=0;ps2_mc_reset_protocol();ps2_mc_fs_reset();return 0;
 }
 int ps2_mc_mount(const char *path,int read_only)
 {
@@ -74,7 +95,7 @@ int ps2_mc_mount(const char *path,int read_only)
  memcpy(filename,path,strlen(path)+1);path_hash=2166136261u;
  for(const unsigned char *p=(const unsigned char*)path;*p;p++)path_hash=(path_hash^*p)*16777619u;
  if(raw_format)for(unsigned p=0;p<PS2_MC_PAGES;p++)page_ecc(p);
- ps2_mc_reset_protocol();return 0;
+ ps2_mc_reset_protocol();ps2_mc_fs_reset();return 0;
 }
 static uint32_t logical32(uint32_t address)
 {
@@ -129,12 +150,12 @@ void ps2_mc_transfer(const uint8_t *in,uint8_t *out,unsigned n)
    if(cmd==0x42u)image()[cursor+i]&=in[3u+i];
    else{out[4u+i]=image()[cursor+i];sum^=out[4u+i];}
   }
-  if(cmd==0x42u){dirty=1;if(raw_format){page_ecc(cursor/528u);page_ecc((cursor+bytes-1u)/528u);}}
+  if(cmd==0x42u){dirty=1;ps2_mc_fs_reset();if(raw_format){page_ecc(cursor/528u);page_ecc((cursor+bytes-1u)/528u);}}
   out[4u+bytes]=(uint8_t)sum;out[5u+bytes]=terminator;cursor+=bytes;return;
  }
  if(cmd==0x82u){
   if(readonly||mode!=0x21u)return;
-  memset(image()+(sector&~15u)*528u,0xff,16u*528u);dirty=1;ack(out,4);return;
+  memset(image()+(sector&~15u)*528u,0xff,16u*528u);dirty=1;ps2_mc_fs_reset();ack(out,4);return;
  }
  if(cmd==0xbfu||cmd==0xf3u||cmd==0xf7u){if(n<5u)return;if(cmd==0xf3u)terminator=0x55;ack(out,5);return;}
  /* MagicGate F0/F7 and unknown operations remain explicit unsupported. */
@@ -161,5 +182,5 @@ int ps2_mc_snapshot_load(const void *data,uint32_t bytes)
  cursor=rd(p+8);sector=rd(p+12);mode=rd(p+16)&255u;terminator=(uint8_t)(rd(p+16)>>8);
  raw_format=rd(p+20)&1u;readonly=(rd(p+20)>>1)&1u;dirty=(rd(p+20)>>2)&1u;path_hash=rd(p+24);
  if(next&&!readonly)dirty=1; /* A restored mutable image must also restore persistent contents. */
- free(state);state=next;return 0;
+ free(state);state=next;ps2_mc_fs_reset();return 0;
 }

@@ -9,6 +9,12 @@ int ps2_mc_mount(const char *path,int read_only);
 int ps2_mc_flush(void);
 int ps2_mc_eject(void);
 int ps2_mc_present(void);
+int ps2_mc_writable(void);
+/* Logical HLE access skips spare bytes; writes regenerate touched-page ECC.
+ * Only the explicit FORMAT RPC erases the device. No host path access. */
+int ps2_mc_logical_read(uint32_t offset,void *data,uint32_t bytes);
+int ps2_mc_logical_write(uint32_t offset,const void *data,uint32_t bytes);
+int ps2_mc_erase_all(void);
 void ps2_mc_reset_protocol(void);
 /* Full duplex wire transaction including address byte 81h. Missing cards,
  * unsupported commands and malformed transactions return High-Z (FF). */
