@@ -5,6 +5,7 @@
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/gs_mem.h"
 #include <stddef.h>
+#include <limits.h>
 
 uint32_t gs_rgb8_pair_to_ycbcr(uint8_t r1, uint8_t g1, uint8_t b1,
                                 uint8_t r2, uint8_t g2, uint8_t b2)
@@ -266,4 +267,116 @@ int gs_xfb_fit_4_3(void *xfb,uint32_t width,uint32_t height,int widescreen)
         for(uint32_t x=0;x<active;x++)row[left+x]=line[((2u*x+1u)*pairs)/(2u*active)];
     }
     return 1;
+}
+
+int gs_output_requires_merge(const gs_state_t *g)
+{
+ if(!g)return 0;
+ unsigned enabled=(unsigned)g->pmode&3u;
+ if(enabled==2u)return !!(g->pmode&128u);
+ if(enabled==1u&&(g->pmode&32u)&&((g->pmode>>8)&255u)==255u)return 0;
+ return enabled!=0u;
+}
+uint64_t gs_output_state_key(const gs_state_t *g)
+{
+ const uint64_t values[]={g->pmode,g->smode2,g->dispfb1,g->display1,g->dispfb2,g->display2,g->bgcolor};
+ uint64_t hash=1469598103934665603ull;
+ for(unsigned n=0;n<sizeof values/sizeof *values;n++)for(unsigned b=0;b<64;b+=8)
+  hash=(hash^((values[n]>>b)&255u))*1099511628211ull;
+ return hash;
+}
+int gs_output_make_plan(const gs_state_t *g,gs_output_plan *out)
+{
+ if(!g||!out||!(g->pmode&3u))return 0;
+ gs_output_plan p={0};p.pmode=g->pmode;p.bgcolor=g->bgcolor;
+ uint32_t minx=UINT32_MAX,miny=UINT32_MAX;
+ for(unsigned i=0;i<2;i++){
+  gs_output_circuit *c=&p.circuit[i];c->enabled=(uint32_t)(g->pmode>>i)&1u;
+  if(!c->enabled)continue;
+  uint64_t fb=i?g->dispfb2:g->dispfb1,display=i?g->display2:g->display1;
+  gs_decode_dispfb(fb,&c->bp,&c->bw);c->psm=(uint32_t)(fb>>15)&31u;
+  gs_decode_display_region(fb,display,g->smode2,&c->sx,&c->sy,&c->width,&c->height);
+  if(!c->bw||!c->width||!c->height||c->width>4096u||c->height>2048u||
+     !(c->psm==0u||c->psm==1u||c->psm==2u||c->psm==10u))return 0;
+  c->dx=((uint32_t)display&4095u)/(((uint32_t)(display>>23)&15u)+1u);
+  c->dy=((uint32_t)(display>>12)&2047u)/(((uint32_t)(display>>27)&3u)+1u);
+  if((g->smode2&3u)==3u)c->dy/=2u;
+  if(c->dx<minx)minx=c->dx;if(c->dy<miny)miny=c->dy;
+ }
+ for(unsigned i=0;i<2;i++){
+  gs_output_circuit *c=&p.circuit[i];if(!c->enabled)continue;
+  c->dx-=minx;c->dy-=miny;
+  if(c->dx+c->width>p.width)p.width=c->dx+c->width;
+  if(c->dy+c->height>p.height)p.height=c->dy+c->height;
+ }
+ if(p.width>8192u||p.height>4096u)return 0;
+ *out=p;return 1;
+}
+static uint32_t output_circuit_read(const gs_output_circuit *c,uint32_t x,uint32_t y)
+{
+ x=c->sx+x-c->dx;y=c->sy+y-c->dy;
+ if(c->psm==0u)return gs_mem_read_psmct32(c->bp,c->bw,x,y);
+ if(c->psm==1u)return (gs_mem_read_psmct32(c->bp,c->bw,x,y)&0xffffffu)|0x80000000u;
+ uint32_t v=c->psm==2u?gs_mem_read_psmct16(c->bp,c->bw,x,y):gs_mem_read_psmct16s(c->bp,c->bw,x,y);
+ unsigned r=v&31u,g=(v>>5)&31u,b=(v>>10)&31u;
+ return (r<<3)|(r>>2)|(((g<<3)|(g>>2))<<8)|(((b<<3)|(b>>2))<<16)|((v&32768u)?0x80000000u:0);
+}
+static int circuit_contains(const gs_output_circuit *c,uint32_t x,uint32_t y)
+{return c->enabled&&x>=c->dx&&y>=c->dy&&x-c->dx<c->width&&y-c->dy<c->height;}
+uint32_t gs_output_read_rgba(const gs_output_plan *p,uint32_t x,uint32_t y)
+{
+ if(!p||x>=p->width||y>=p->height)return 0;
+ uint32_t bottom=((uint32_t)p->bgcolor&0xffffffu)|((uint32_t)(p->pmode>>8)&255u)<<24;
+ if(!(p->pmode&128u)&&circuit_contains(&p->circuit[1],x,y))bottom=output_circuit_read(&p->circuit[1],x,y);
+ if(!circuit_contains(&p->circuit[0],x,y))return bottom;
+ uint32_t top=output_circuit_read(&p->circuit[0],x,y);
+ /* PCSX2 merge shader: constant ALP is UNORM8; otherwise twice source
+  * alpha, saturated by the blend unit. GS draw ALPHA uses a different
+  * coefficient convention. RGB integer rounding remains explicit here. */
+ unsigned alpha=(p->pmode&32u)?(unsigned)(p->pmode>>8)&255u:(top>>24)*2u;
+ if(alpha>255u)alpha=255u;
+ uint32_t result=(p->pmode&64u)?bottom&0xff000000u:top&0xff000000u;
+ for(unsigned shift=0;shift<24;shift+=8){
+  unsigned a=(top>>shift)&255u,b=(bottom>>shift)&255u;
+  result|=((a*alpha+b*(255u-alpha)+127u)/255u)<<shift;
+ }
+ return result;
+}
+int gs_output_has_rgb(const gs_state_t *g)
+{
+ gs_output_plan p;if(!gs_output_make_plan(g,&p)||!gs_mem_sync())return 0;
+ for(unsigned y=0;y<16;y++)for(unsigned x=0;x<32;x++)
+  if(gs_output_read_rgba(&p,(uint32_t)((uint64_t)x*p.width/32),(uint32_t)((uint64_t)y*p.height/16))&0xffffffu)return 1;
+ for(uint32_t y=0;y<p.height;y++)for(uint32_t x=0;x<p.width;x++)
+  if(gs_output_read_rgba(&p,x,y)&0xffffffu)return 1;
+ return 0;
+}
+static void output_scaled_line(uint32_t *out,uint32_t width,const gs_output_plan *p,uint32_t y)
+{
+ for(uint32_t x=0;x<width;x+=2){
+  uint32_t a=gs_output_read_rgba(p,(uint32_t)((uint64_t)x*p->width/width),y);
+  uint32_t b=gs_output_read_rgba(p,(uint32_t)((uint64_t)(x+1u)*p->width/width),y);
+  out[x/2]=gs_rgb8_pair_to_ycbcr(a,a>>8,a>>16,b,b>>8,b>>16);
+ }
+}
+int gs_output_present_checked(const gs_state_t *g,void *xfb,uint32_t width,uint32_t height)
+{
+ gs_output_plan p;
+ if(!xfb||!width||width>1024u||(width&1u)||!height||height>2048u||!gs_output_make_plan(g,&p))return 0;
+ if(!gs_mem_sync())return -1; /* Leave the complete old XFB untouched. */
+ uint32_t rows[2][512],*a=rows[0],*b=rows[1],ka=~0u,kb=~0u;
+ uint32_t step=(p.height<<16)/height;int64_t fy=((int64_t)step-65536)/2;
+ for(uint32_t y=0;y<height;y++,fy+=step){
+  uint32_t row=fy<0?0u:(uint32_t)(fy>>16),f=fy<0?0u:(uint32_t)fy&65535u;
+  if(row>=p.height-1u){row=p.height-1u;f=0;}
+  if(kb==row){uint32_t *t=a;a=b;b=t;uint32_t k=ka;ka=kb;kb=k;}
+  if(ka!=row){output_scaled_line(a,width,&p,row);ka=row;}
+  if(f&&kb!=row+1u){output_scaled_line(b,width,&p,row+1u);kb=row+1u;}
+  for(uint32_t x=0;x<width/2u;x++){
+   uint32_t v=a[x];if(f){v=0;for(unsigned s=0;s<32;s+=8)
+    v|=(((((a[x]>>s)&255u)*(65536u-f)+((b[x]>>s)&255u)*f+32768u)>>16)&255u)<<s;}
+   ((uint32_t*)xfb)[(size_t)y*(width/2u)+x]=v;
+  }
+ }
+ return 1;
 }
