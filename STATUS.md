@@ -1,5 +1,11 @@
 # Gekko2 SPEED BETA12.27 – 16 October 2026
 
+17 October: [Alpha-Arbeitsplan](docs/ALPHA-ARBEITSPLAN.md),
+[Menüentscheidungen für alle 39 Einstellungen](docs/ALPHA-MENUE-AUDIT.md) und
+[PCSX2-/Play!-Befunde](docs/ALPHA-REFERENZABGLEICH.md) auf BETA12.27 erstellt.
+55 Host-Suites, zehn Zusatzprüfungen und vier Options-Metadatenprofile erneut
+geprüft. Kein neuer Wii-Build, Gameplaynachweis oder abgeschlossener Menüumbau.
+
 BETA12.27: [GX RISK MODE – FAST TRIANGLES](docs/BETA12.27-GX-RISK.md)
 als separat gespeicherter Menüschalter. Standard OFF, Anwendung beim Cold Boot.
 Experimentelle GX-Kantenabdeckung bei geeigneten Dreiecken; keine belegte Wii-FPS.
