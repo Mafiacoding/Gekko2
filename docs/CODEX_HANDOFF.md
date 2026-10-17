@@ -1,5 +1,12 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**17.10.2026 – Alpha-Vorbereitung:** [Arbeitsplan mit 18 Paketen](ALPHA-ARBEITSPLAN.md),
+[vollständiger Menüaudit](ALPHA-MENUE-AUDIT.md) und
+[gepinntes PCSX2-/Play!-Review](ALPHA-REFERENZABGLEICH.md).
+Basis BETA12.27 / `c51ab567`; Menü-/Modulumsetzung und Wii-Freigabe bleiben offen.
+55 Host-Suites und zehn Zusatzprüfungen erneut bestanden; Optionsprobe zeigt
+erzwungene GX-Testbits trotz All-OFF. Kein neuer Emulatorbuild/-Fix in diesem Audit.
+
 **BETA12.27:** [gespeicherter GX-Risikomodus](BETA12.27-GX-RISK.md),
 Standard OFF, wirksam erst bei Cold Boot. Geeignete Dreiecke dürfen einmal
 komplett an GX statt in Zeilenabschnitten übergeben werden. Kantenpräzision

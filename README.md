@@ -1,4 +1,10 @@
-# Gekko2 — SPEED BETA12.24a
+# Gekko2 — SPEED BETA12.27
+
+**Alpha-Vorbereitung (17.10.2026):** [priorisierter Arbeitsplan](docs/ALPHA-ARBEITSPLAN.md),
+[Audit aller Menüoptionen](docs/ALPHA-MENUE-AUDIT.md) und
+[PCSX2-/Play!-Abgleich](docs/ALPHA-REFERENZABGLEICH.md).
+Die geplanten Module und Menüänderungen sind noch offen; keine neue Wii-
+Spielbarkeits- oder Geschwindigkeitsbehauptung. Ältere Checkpoints unten sind historisch.
 
 **BETA12.24a:** Automatische 4:3-Verkleinerung zurückgenommen. Die Nutzerkorrektur bezieht sich auf die Fragezeichen-Kacheln in Tekkens Charakterauswahl, nicht auf die gesamte Ausgabe. Wieder volle Ausgabegröße; BETA12.24-Diagnosen bleiben aktiv. Die Kacheln selbst sind noch nicht als korrigiert bestätigt. [Hinweis](docs/BETA12.24a-FULLSCREEN.md).
 
@@ -20,7 +26,7 @@ No physical Wii compatibility/gameplay claim.
 
 # Gekko2 — PS2 emulator for Nintendo Wii
 
-**Current source checkpoint: R1389-SPEED-BETA12.24a-GAME-TRACE-FULLSCREEN (16 October 2026).**
+**Current source checkpoint: R1389-SPEED-BETA12.27-GX-RISK-OPTION (16 October 2026).**
 Experimental Wii development build. No claim of playable game compatibility.
 
 ## BETA12.9 – targeted GS correctness and safe VBlank speed extension
