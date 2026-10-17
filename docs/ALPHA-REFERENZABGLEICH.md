@@ -1,5 +1,10 @@
 # PCSX2-/Play!-Abgleich für die Alpha-Planung
 
+**Historischer Audit vor der Umsetzung.** Die konkreten Menü-/CLUT-/Scanout-/
+Karten-/IPU-Korrekturen sind in [BETA12.28](BETA12.28-ALPHA-CORE.md) und
+[ALPHA-UMSETZUNG](ALPHA-UMSETZUNG.md) dokumentiert. Die damaligen Messwerte
+beschreiben BETA12.27; der aktuelle Optionsprobe respektiert All-OFF.
+
 17.10.2026. Gekko2-Codebasis `c51ab567` (BETA12.27). Read-only-Audit,
 keine Übernahme eines fremden CPU-/Renderer-Backends. Upstream ist eine
 Emulatorreferenz, keine automatisch fehlerfreie PS2-Hardware-Spezifikation.

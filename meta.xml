@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <app version="1">
-  <name>Gekko2 SPEED BETA12.27 GX RISK OPTION</name>
+  <name>Gekko2 SPEED BETA12.28 ALPHA CORE</name>
   <coder>Mafiacoding</coder>
-  <version>BETA12.27 - optional fast triangle coverage</version>
-  <release_date>20261016</release_date>
+  <version>BETA12.28 - alpha core test build</version>
+  <release_date>20261017</release_date>
   <short_description>Experimental PlayStation 2 emulator for Wii</short_description>
-  <long_description>Common experimental GS-to-GX renderer with an independent GX RISK MODE - FAST TRIANGLES menu option. Factory OFF; saved setting applies at next Cold Boot. ON reduces eligible triangle submissions but may change edge pixels. Pixel permissions, memory/alias checks and GX fences remain. Chain/PSM settings stay independent. No confirmed Wii FPS or gameplay improvement. Bring your own legal BIOS/disc.</long_description>
+  <long_description>Grouped persistent settings, physical CLUT views, two-circuit GS scanout, native PS2 card and standard FAT/MCSERV, precise IPU CPU FIFO retries. Chain residency, extended PSM conversion and GX risk remain independent and factory OFF; apply at Cold Boot. Bring your own legal BIOS/disc. No confirmed new Wii gameplay, FPS or BIOS tile fix. Existing MemoryCard1.ps2 is optional; never implicitly created or formatted.</long_description>
 </app>
