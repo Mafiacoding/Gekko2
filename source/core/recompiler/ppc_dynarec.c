@@ -5381,7 +5381,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
             emit(ctx, enc_addi(1, 1, 16));
             return 0;
         }
-        return -1; /* other MMI1 sub-opcodes (QFSRV/PADDUW/... etc): not yet JIT-compiled */
+        return -1; /* Unsupported MMI1 cases fall back; earlier common-MMI dispatch handles additional cases. */
     }
 
     if (op == 0x1Cu && funct == 0x09u) {
@@ -5535,7 +5535,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         else if (sa == 0x0Du) helper_addr = ADDR_EE_JIT_PDIVW;
         else if (sa == 0x1Cu) helper_addr = ADDR_EE_JIT_PMULTH;
         else if (sa == 0x1Du) helper_addr = ADDR_EE_JIT_PDIVBW;
-        else return -1; /* other MMI2 sub-opcodes (PMADDW/... etc): not yet JIT-compiled */
+        else return -1; /* Unsupported MMI2 cases fall back after the earlier common-MMI dispatch. */
 
         emit(ctx, enc_addi(1,1,-96));
         emit(ctx, enc_stw(14, 1, 48));

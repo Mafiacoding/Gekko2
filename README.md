@@ -1,5 +1,7 @@
 # Gekko2 — SPEED BETA12.27
 
+**BETA12.28 – Alpha-Core-Teststand:** [Menü, CLUT, Zweikreis-Scanout, PS2-Karten/FAT/MCSERV und IPU-Retries](docs/BETA12.28-ALPHA-CORE.md). Keine neue Wii-Spielbarkeits-/FPS-/BIOS-Kachelbestätigung. Ältere Absätze beschreiben historische Versionen.
+
 **Alpha-Vorbereitung (17.10.2026):** [priorisierter Arbeitsplan](docs/ALPHA-ARBEITSPLAN.md),
 [Audit aller Menüoptionen](docs/ALPHA-MENUE-AUDIT.md) und
 [PCSX2-/Play!-Abgleich](docs/ALPHA-REFERENZABGLEICH.md).

@@ -1,5 +1,7 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.28 – Alpha-Core-Teststand:** [Menü, CLUT, Zweikreis-Scanout, PS2-Karten/FAT/MCSERV und IPU-Retries](BETA12.28-ALPHA-CORE.md). Keine neue Wii-Spielbarkeits-/FPS-/BIOS-Kachelbestätigung. Ältere Absätze beschreiben historische Versionen.
+
 **17.10.2026 – Alpha-Vorbereitung:** [Arbeitsplan mit 18 Paketen](ALPHA-ARBEITSPLAN.md),
 [vollständiger Menüaudit](ALPHA-MENUE-AUDIT.md) und
 [gepinntes PCSX2-/Play!-Review](ALPHA-REFERENZABGLEICH.md).
