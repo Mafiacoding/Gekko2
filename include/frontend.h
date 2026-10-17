@@ -6,8 +6,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "core/hw/frontend_browser.h"
+#include "core/recompiler/experimental_options.h"
 typedef void (*ui_rect_fn)(int,int,int,int,uint8_t,uint8_t,uint8_t);
 enum {UI_BIOS,UI_DISC,UI_COLD_BOOT,UI_SELECT_DISC,UI_SETTINGS,UI_ABOUT,UI_EXIT,UI_MENU_COUNT};
+enum {UI_SET_RENDERER,UI_SET_SOUND,UI_SET_HUD,UI_SET_UPDATE,UI_SET_FPS,
+ UI_SET_PROFILE,UI_SET_EXPERIMENTS,UI_SET_DEVELOPER,UI_SET_DEFAULTS,UI_SET_COUNT};
 static const uint8_t ui_font[95][14]={
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0},
 {0,4,4,4,4,4,4,0,4,4,0,0,0,0},
@@ -155,10 +158,50 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  ui_text(rect,38,397,1,notice?notice:"",117,186,237);
  ui_text(rect,38,437,1,page?"B  BACK":"D-PAD/STICK SELECT  A OPEN  +/START RESUME",209,227,246);
 }
-static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested,uint32_t available,const char *message)
+static void ui_settings_draw(ui_rect_fn rect,int selected,int hud,int throughput,int fps,int gx,const char *message)
 {
  for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
- ui_text(rect,36,28,2,"CPU / GX OPTIMIZATIONS",204,232,255);
+ ui_text(rect,36,28,2,"WII SETTINGS",204,232,255);
+ ui_text(rect,36,65,1,"Saved on SD. CPU / GX changes: next cold boot.",106,171,223);
+ const char *labels[UI_SET_COUNT]={"Renderer","Sound output","HUD","Input update budget","Rate counters","CPU profile","Experiments","Developer switches","Restore defaults"};
+ const char *values[UI_SET_COUNT]={gx?"GX HYBRID":"SOFTWARE REFERENCE",gekko2_opt_requested()&GEKKO2_OPT_BIT(GEKKO2_OPT_SOUND)?"ON":"OFF",
+  hud?"ON":"OFF",throughput?"50 ms (throughput)":"20 ms (responsive)",fps?"ON":"OFF",gekko2_opt_profile_name(),"OPEN","OPEN","APPLY"};
+ for(int n=0;n<UI_SET_COUNT;n++){
+  int y=100+n*27,on=n==selected;char row[100];
+  rect(32,y-2,576,25,on?16:9,on?43:22,on?76:41);
+  snprintf(row,sizeof row,"%s %-23s %s",on?">":" ",labels[n],values[n]);
+  ui_text(rect,40,y,1,row,on?228:148,on?242:176,on?255:207);
+ }
+ ui_text(rect,36,355,1,"Sound OFF mutes output; guest hardware stays active.",117,186,237);
+ ui_text(rect,36,375,1,"Rates: guest VBlanks / output presents, not game FPS.",117,186,237);
+ ui_text(rect,36,403,1,message?message:"",117,186,237);
+ ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT CHANGE   B BACK",209,227,246);
+}
+static void ui_experiments_draw(ui_rect_fn rect,int selected,const char *message)
+{
+ for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
+ ui_text(rect,36,28,2,"EXPERIMENTS - DEFAULT OFF",227,197,114);
+ ui_text(rect,36,65,1,"Independent options. Applied only at cold boot.",106,171,223);
+ const char *names[GEKKO2_EXP_COUNT]={"128-BIT JIT CHAIN RESIDENCY - EXPERIMENTAL","EXPERIMENTAL PSM CONVERSION","GX RISK MODE - FAST TRIANGLES"};
+ const char *desc[GEKKO2_EXP_COUNT]={"Needs EE JIT / blocks / links / GPR residency.","Unverified color-depth transfers; may alter colors.","Direct GX edges can add or lose edge pixels."};
+ for(unsigned n=0;n<GEKKO2_EXP_COUNT;n++){
+  int y=106+(int)n*81,on=(int)n==selected;char state[100];
+  rect(32,y-4,576,72,on?35:9,on?34:22,on?20:41);
+  ui_text(rect,40,y,1,names[n],227,197,114);
+  snprintf(state,sizeof state,"%s SAVED %s   SESSION %s",on?">":" ",
+   !(gekko2_experimental_available()&(1u<<n))?"UNAVAILABLE":gekko2_experimental_requested(n)?"ON":"OFF",
+   gekko2_experimental_enabled(n)?"ON":"OFF");
+  ui_text(rect,40,y+21,1,state,221,237,255);ui_text(rect,40,y+42,1,desc[n],117,186,237);
+ }
+ ui_text(rect,36,381,1,"START resumes with the old session configuration.",117,186,237);
+ ui_text(rect,36,403,1,message?message:"",117,186,237);
+ ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT TOGGLE   B BACK",209,227,246);
+}
+static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested,uint32_t available,const char *message)
+{
+ if(selected<0||selected>=GEKKO2_OPT_COUNT)selected=0;
+ for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
+ ui_text(rect,36,28,2,"DEVELOPER CPU / GX SWITCHES",204,232,255);
  ui_text(rect,36,65,1,"CPU/GX: cold boot. ARM/IOS: exit and restart app.",106,171,223);
  unsigned first=((unsigned)selected/13u)*13u;
  for(unsigned n=first;n<GEKKO2_OPT_COUNT&&n<first+13u;n++){
@@ -168,8 +211,13 @@ static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested
       !(available&GEKKO2_OPT_BIT(n))?"UNAVAILABLE":n==GEKKO2_OPT_ARM_IOS222?(requested&GEKKO2_OPT_BIT(n)?"IOS222":"CURRENT"):(requested&GEKKO2_OPT_BIT(n)?"ON":"OFF"));
   ui_text(rect,40,y,1,row,on?228:148,on?242:176,on?255:207);
  }
- ui_text(rect,36,365,1,gekko2_opt_description((unsigned)selected),117,186,237);
- ui_text(rect,36,397,1,message?message:"",117,186,237);
+ char session[100];snprintf(session,sizeof session,"SAVED %s   SESSION %s   (CPU/GX: cold boot)",
+  requested&GEKKO2_OPT_BIT(selected)?"ON":"OFF",gekko2_opt_enabled((unsigned)selected)?"ON":"OFF");
+ ui_text(rect,36,350,1,session,227,197,114);
+ ui_text(rect,36,370,1,gekko2_opt_dependency((unsigned)selected,gekko2_optimization_mask),227,197,114);
+ char desc[72];snprintf(desc,sizeof desc,"%.70s",gekko2_opt_description((unsigned)selected));
+ ui_text(rect,36,389,1,desc,117,186,237);
+ ui_text(rect,36,413,1,message?message:"",117,186,237);
  ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT TOGGLE   B BACK",209,227,246);
 }
 static void ui_browser_draw(ui_rect_fn rect,const frontend_browser *browser,const char *message)
