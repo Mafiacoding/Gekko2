@@ -20,6 +20,21 @@ Tests: vier kompilierte Optionsprofile jetzt jeweils All-OFF=00000000;
 bestanden. Bestehende 55 Host-Suites bestanden. Wii-Build folgt im integrierten
 Prüfbatch; keine bisher behauptete Menü-Hardwareprüfung oder FPS-Steigerung.
 
+## 2. Physische CLUT-Ansichten
+
+Gemeinsame Halbwörter für CT32/CT16/CT16S, korrekte CSM1-I8-CSA-Ladung und
+geklemmte letzte CT32-I8-Bank statt Ringrotation. CSM1→CSM2-I4-Ansicht und
+CLD=0/6/7 behalten den temporären Speicher. Native Texturschlüssel berücksichtigen
+physische Daten und letzten Lademodus. Fehlgeschlagene GPU-Synchronisierung
+verändert die Palette nicht. Alte Checkpoint-Präfixe bleiben lesbar; deren
+logische Ansicht bleibt bis zur ersten echten Palettenladung erhalten.
+
+Neue 4.096 I8-CSA-Proben, Halbwort-/CPSM-/CSM-Wechsel, vorhandene Paletten-
+und TEXCLUT-Fälle, GIF-Q-Checkpoint und Format-/Atlas-Fälle bestanden.
+Die über die nominellen Bänke hinaus begrenzten Offset-I8-Slots folgen der
+Referenzrepräsentation; kein neuer physischer PS2-Konformitätsnachweis.
+BIOS-/Tekken-Kacheln bleiben ohne identisches fehlerhaftes Draw offen.
+
 ## Weitere Batches
 
 Physische CLUT-Neuinterpretation, Zweikreis-Scanout, native PS2-Karten und

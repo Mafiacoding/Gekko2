@@ -257,15 +257,13 @@ static inline float u32_to_float(uint32_t v)
  * swizzle (its 16-entry palette has no sub-block structure to
  * rearrange).
  *
- * Current logical palette cache supports CPSM CT32, CT16 and CT16S.
- * CSA selects its destination bank in CSM1 and CSM2; TEXCLUT supplies
- * only the CSM2 source coordinates. Cross-format temporary-storage
- * reinterpretations still require a physical CLUT model. */
+ * Temporary CLUT storage is shared by CT32/CT16/CT16S views. CT32 splits
+ * low/high halfwords into separate 256-entry banks. A CPSM change with
+ * CLD=0 reinterprets these words without touching source VRAM. */
 static uint32_t gs_expand_16(uint32_t v);
-/* GS Users Manual 6.0 sections 2.7.3 and 3.4.7: source palette
- * coordinates and destination CSA in the temporary palette are distinct.
- * The logical cache models same-format palette reuse; cross-format aliases
- * of the physical temporary storage are not yet modeled. */
+/* Behavioral references: GS Users Manual 6.0 2.7.3/3.4.7; PCSX2 GSClut
+ * 091ab687 WriteCLUT/ReadCLUT. Independent scalar implementation: no SIMD
+ * or upstream cache implementation transplanted. */
 static void gs_load_clut(uint32_t psm,uint32_t cbp,uint32_t cpsm,uint32_t csm,uint32_t csa,uint32_t cld)
 {
     int is8=psm==0x13u || psm==0x1bu;
@@ -275,26 +273,49 @@ static void gs_load_clut(uint32_t psm,uint32_t cbp,uint32_t cpsm,uint32_t csm,ui
     if(cld==4u)load=g_gif.clut_cbp0!=cbp;
     if(cld==5u)load=g_gif.clut_cbp1!=cbp;
     if(!load)return;
+    if(!gs_mem_sync())return; /* failed readback must not erase a valid CLUT */
     if(cld==2u || cld==4u)g_gif.clut_cbp0=cbp;
     if(cld==3u || cld==5u)g_gif.clut_cbp1=cbp;
     unsigned mask=cpsm==0u?255u:511u;
     unsigned dst=(csa&(cpsm==0u?15u:31u))*16u;
-    for(unsigned i=0;i<(is8?256u:16u);i++){
+    /* CSM1 I8/CT32 loads from the selected source bank to the same bank,
+     * rather than rotating all 256 colors through the CSA offset. */
+    unsigned first=(!csm&&is8&&!cpsm)?dst:0u;
+    for(unsigned i=first;i<(is8?256u:16u);i++){
         unsigned x,y,bw;
         if(csm){x=g_gif.texclut_cou*16u+i;y=g_gif.texclut_cov;bw=g_gif.texclut_cbw*64u;if(!bw)bw=64;}
         else if(is8){x=(i&7u)|((i&16u)>>1);y=((i&8u)>>3)|((i&224u)>>4);bw=64;}
         else{x=i&7u;y=i>>3;bw=64;}
         uint32_t v=cpsm==0u?gs_mem_read_psmct32(cbp*64u,bw,x,y):
             (cpsm==10u?gs_mem_read_psmct16s:gs_mem_read_psmct16)(cbp*64u,bw,x,y);
-        g_gif.clut_cache[(dst+i)&mask]=v;
+        unsigned at=(!csm&&is8&&!cpsm)?i:dst+i;
+        g_gif.clut_cache[at&mask]=v;
+        g_gif.clut_words[at]=(uint16_t)v;
+        if(!cpsm)g_gif.clut_words[at+256u]=(uint16_t)(v>>16);
     }
+    g_gif.clut_write_csm=csm;g_gif.clut_words_valid=1;
 }
 static uint32_t gs_sample_clut(uint32_t index)
 {
     unsigned mask=g_gif.tex_cpsm==0u?255u:511u;
     unsigned start=(g_gif.tex_csa&(g_gif.tex_cpsm==0u?15u:31u))*16u;
+    if(g_gif.clut_words_valid){
+        unsigned at=start+index;
+        if(!g_gif.tex_cpsm){
+            int is8=g_gif.tex_psm==0x13u||g_gif.tex_psm==0x1bu;
+            if(is8){unsigned bank=start+(index&~15u);at=(bank>240u?240u:bank)+(index&15u);}
+            else if(g_gif.tex_csm&&!g_gif.clut_write_csm)at=start+(index&7u)+((index&8u)?16u:0u);
+            return g_gif.clut_words[at]|((uint32_t)g_gif.clut_words[at+256u]<<16);
+        }
+        return gs_expand_16(g_gif.clut_words[at]);
+    }
     uint32_t v=g_gif.clut_cache[(start+index)&mask];
     return g_gif.tex_cpsm==0u?v:gs_expand_16(v);
+}
+static uint32_t gs_clut_hash_word(unsigned index)
+{
+ return g_gif.clut_words_valid?(uint32_t)g_gif.clut_words[index*2u]|
+   ((uint32_t)g_gif.clut_words[index*2u+1u]<<16):g_gif.clut_cache[index];
 }
 
 static uint32_t gs_expand_16(uint32_t v)
@@ -1121,12 +1142,12 @@ static void gs_gx_native_source_key(void)
  if(valid)valid=gs_mem_gpu_sync_alias_range((uint32_t)base,(uint32_t)end);
  if(valid)valid=gs_mem_hash_range((uint32_t)base,(uint32_t)(end-base),&hash);
  uint32_t state[]={g_gif.tex_tbp0,g_gif.tex_tbw,g_gif.tex_tw,g_gif.tex_th,g_gif.tex_psm,
-  g_gif.tex_cbp,g_gif.tex_cpsm,g_gif.tex_csa,g_gif.tex_csm,g_gif.texa_ta0,g_gif.texa_ta1,g_gif.texa_aem,
+  g_gif.tex_cbp,g_gif.tex_cpsm,g_gif.tex_csa,g_gif.tex_csm,g_gif.texa_ta0,g_gif.texa_ta1,g_gif.texa_aem,g_gif.clut_words_valid?g_gif.clut_write_csm:2u,
   g_gif.clamp_wms,g_gif.clamp_wmt,g_gif.clamp_minu,g_gif.clamp_maxu,g_gif.clamp_minv,g_gif.clamp_maxv};
  uint32_t lo=(uint32_t)hash,hi=(uint32_t)(hash>>32);
  for(unsigned n=0;n<sizeof(state)/sizeof(*state);n++){lo=(lo^state[n])*16777619u;hi=((hi<<5)|(hi>>27))^state[n];}
  if(g_gif.tex_psm==0x13u||g_gif.tex_psm==0x14u||g_gif.tex_psm==0x1bu||g_gif.tex_psm==0x24u||g_gif.tex_psm==0x2cu)
-  for(unsigned n=0;n<512;n++){lo=(lo^g_gif.clut_cache[n])*16777619u;hi=((hi<<5)|(hi>>27))^g_gif.clut_cache[n];}
+  for(unsigned n=0;n<512;n++){lo=(lo^gs_clut_hash_word(n))*16777619u;hi=((hi<<5)|(hi>>27))^gs_clut_hash_word(n);}
  gs_gx_source_key(lo,hi,valid);
 }
 static struct {int32_t xy[6],maxx,maxy;double uv[6];float stq[9];uint32_t colors[3];double inv;} gx_triangle;
@@ -1695,10 +1716,10 @@ static void gs_gx_sprite_key(void)
  uint32_t state[]={g_gx_sprite_textured,g_gx_sprite_linear,g_gx_sprite_fx,g_gx_sprite_fy,g_gif.rgba,
   g_gif.tex_tbp0,g_gif.tex_tbw,g_gif.tex_tw,g_gif.tex_th,g_gif.tex_psm,g_gif.tex_cbp,g_gif.tex_cpsm,
   g_gif.tex_csa,g_gif.tex_csm,g_gif.tex_tcc,g_gif.tex_tfx,g_gif.texa_ta0,g_gif.texa_ta1,g_gif.texa_aem,
-  g_gif.clamp_configured,g_gif.clamp_wms,g_gif.clamp_wmt,g_gif.clamp_minu,g_gif.clamp_maxu,g_gif.clamp_minv,g_gif.clamp_maxv};
+  g_gif.clamp_configured,g_gif.clamp_wms,g_gif.clamp_wmt,g_gif.clamp_minu,g_gif.clamp_maxu,g_gif.clamp_minv,g_gif.clamp_maxv,g_gif.clut_words_valid?g_gif.clut_write_csm:2u};
  uint32_t a=(uint32_t)data,b=data>>32;
  for(unsigned k=0;k<sizeof(state)/sizeof(state[0]);k++){a=(a^state[k])*16777619u;b=((b<<5)|(b>>27))^state[k];}
- for(unsigned k=0;k<512;k++){a=(a^g_gif.clut_cache[k])*16777619u;b=((b<<5)|(b>>27))^g_gif.clut_cache[k];}
+ for(unsigned k=0;k<512;k++){a=(a^gs_clut_hash_word(k))*16777619u;b=((b<<5)|(b>>27))^gs_clut_hash_word(k);}
  gs_gx_source_key(a,b,valid);
 }
 static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
