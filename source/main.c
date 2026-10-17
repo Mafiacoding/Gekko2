@@ -46,6 +46,7 @@
 #include "core/hw/frontend_text.h"
 #include "core/hw/frontend_logo.h"
 #include "core/hw/frontend_runtime.h"
+#include "core/hw/frontend_settings.h"
 #include "core/hw/frontend_log.h"
 #include "core/recompiler/iop_jit.h"
 #include "core/recompiler/vu_jit.h"
@@ -1454,9 +1455,22 @@ static void gs_compat_load(void)
     gekko2_experimental_load(GEKKO2_EXP_CHAIN,"sd:/pcsx2/jit-chain.cfg");
     gekko2_experimental_load(GEKKO2_EXP_GX_RISK,"sd:/pcsx2/gx-risk.cfg");
 }
-static int gs_compat_save(void)
+static const char *experiment_toggle_save(unsigned n)
 {
-    return gekko2_experimental_save(GEKKO2_EXP_PSM,"sd:/pcsx2/gs-compat.cfg");
+ static const char *paths[GEKKO2_EXP_COUNT]={"sd:/pcsx2/jit-chain.cfg","sd:/pcsx2/gs-compat.cfg","sd:/pcsx2/gx-risk.cfg"};
+ if(n>=GEKKO2_EXP_COUNT||!gekko2_experimental_request(n,!gekko2_experimental_requested(n)))return "Experiment is not compiled into this build.";
+ return gekko2_experimental_save(n,paths[n])==0?"Saved. Applies at next cold boot.":"Not saved. Check SD space / directory.";
+}
+static void frontend_preferences_load(void)
+{
+ frontend_settings s;frontend_settings_defaults(&s);
+ if(g_fat_mounted)frontend_settings_load(&s,"sd:/pcsx2/frontend.cfg");
+ g_hud_default=s.hud;g_throughput=s.throughput;g_fps_default=s.fps;g_gx_requested=s.gx;
+}
+static int frontend_preferences_save(void)
+{
+ frontend_settings s={(unsigned)g_hud_default,(unsigned)g_throughput,(unsigned)g_fps_default,(unsigned)g_gx_requested};
+ return frontend_settings_save(&s,"sd:/pcsx2/frontend.cfg");
 }
 static int cold_boot_session(int disc)
 {
@@ -1488,6 +1502,7 @@ int main(int argc, char **argv)
     if (!g_fat_mounted) g_fat_mounted = fatInitDefault() ? 1 : 0;
     int opt_load_status=g_fat_mounted?gekko2_opt_load("sd:/pcsx2/optimization.cfg"):-1;
     if(g_fat_mounted)gs_compat_load();
+    frontend_preferences_load();
     gekko2_opt_apply(); /* Startup must use loaded settings before IOS selection. */
 #ifdef GEKKO2_ARM_BETA
     /* Both saved ARM and explicit IOS222 selection are required for reload.
@@ -1507,6 +1522,7 @@ int main(int argc, char **argv)
                 1
 #endif
             );
+            fprintf(boot,"FRONTEND_OPTIONS hud=%d throughput=%d fps=%d gx_requested=%d gx_session=%d\n",g_hud_default,g_throughput,g_fps_default,g_gx_requested,g_gx_present);
             fprintf(boot,"OPTIONS load_status=%d requested=%08lx active=%08lx ios222=%d\n",opt_load_status,(unsigned long)gekko2_opt_requested(),(unsigned long)gekko2_optimization_mask,gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222));
             fprintf(boot,"EXPERIMENTAL_OPTIONS chain_compiled=%u chain_requested=%d chain_active=%d psm_requested=%d psm_active=%d apply=next-cold-boot\n",
                 (gekko2_experimental_available()>>GEKKO2_EXP_CHAIN)&1u,
@@ -1519,7 +1535,7 @@ int main(int argc, char **argv)
             fclose(boot);
         }
     }
-    int selected=0,page=0,redraw=1,opt_selected=0;
+    int selected=0,page=0,redraw=1,opt_selected=0,settings_selected=0,experiment_selected=0;
     const char *notice="SD: pcsx2/bios/ and pcsx2/games/";
 #ifdef PCSX2WII_JIT_DISABLE
     const char *engine="INTERPRETER";
@@ -1530,26 +1546,9 @@ int main(int argc, char **argv)
         if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
             if(page==4){
                 ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
-                ui_text(launcher_rect,36,415,1,
-                  gekko2_experimental_requested(GEKKO2_EXP_PSM)?"X: EXPERIMENTAL PSM CONVERSION ON":"X: EXPERIMENTAL PSM CONVERSION OFF",
-                  227,197,114);
-                char chain_line[100];snprintf(chain_line,sizeof chain_line,
-                  "Y: 128-BIT JIT CHAIN RESIDENCY - EXPERIMENTAL %s",
-                  !(gekko2_experimental_available()&(1u<<GEKKO2_EXP_CHAIN))?"UNAVAILABLE":
-                  gekko2_experimental_requested(GEKKO2_EXP_CHAIN)?"ON":"OFF");
-                ui_text(launcher_rect,36,380,1,chain_line,227,197,114);
-                char ios_line[90];snprintf(ios_line,sizeof ios_line,"Current IOS: %u | %s",wii_arm_ios_active(),wii_arm_ios_message());
-                ui_text(launcher_rect,36,454,1,ios_line,117,186,237);
-                char risk_line[100];snprintf(risk_line,sizeof risk_line,"%s GX RISK MODE - FAST TRIANGLES %s",
-                  opt_selected==GEKKO2_OPT_COUNT?">":" ",
-                  !(gekko2_experimental_available()&(1u<<GEKKO2_EXP_GX_RISK))?"UNAVAILABLE":
-                  gekko2_experimental_requested(GEKKO2_EXP_GX_RISK)?"ON":"OFF");
-                if(opt_selected==GEKKO2_OPT_COUNT){
-                  launcher_rect(32,339,576,20,76,35,12);
-                  ui_text(launcher_rect,36,365,1,"Possible edge errors. Applies at next cold boot.",227,197,114);
-                }
-                ui_text(launcher_rect,36,343,1,risk_line,227,197,114);
             }
+            else if(page==5)ui_experiments_draw(launcher_rect,experiment_selected,notice);
+            else if(page==1)ui_settings_draw(launcher_rect,settings_selected,g_hud_default,g_throughput,g_fps_default,g_gx_requested,notice);
             else if(page==3)ui_browser_draw(launcher_rect,&g_browser,notice);
             else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_requested,engine,notice);
             flush_screen();redraw=0;}
@@ -1583,38 +1582,54 @@ int main(int argc, char **argv)
         if(page){
             if(page==4){
                 if(down&PAD_BUTTON_B)page=1;
-                else if(down&PAD_BUTTON_X){
-                    gekko2_experimental_request(GEKKO2_EXP_PSM,!gekko2_experimental_requested(GEKKO2_EXP_PSM));
-                    notice=gs_compat_save()==0?"GS option saved. Next cold boot.":"GS option not saved to SD.";
-                }
-                else if(down&PAD_BUTTON_Y){
-                    if(!gekko2_experimental_request(GEKKO2_EXP_CHAIN,!gekko2_experimental_requested(GEKKO2_EXP_CHAIN)))
-                        notice="128-bit chain residency is not compiled into this build.";
-                    else notice=gekko2_experimental_save(GEKKO2_EXP_CHAIN,"sd:/pcsx2/jit-chain.cfg")==0?
-                        "128-bit chain option saved. Next cold boot.":"128-bit chain option not saved to SD.";
-                }
-                else if(down&PAD_BUTTON_UP)opt_selected=(opt_selected+GEKKO2_OPT_COUNT)%(GEKKO2_OPT_COUNT+1);
-                else if(down&PAD_BUTTON_DOWN)opt_selected=(opt_selected+1)%(GEKKO2_OPT_COUNT+1);
+                else if(down&PAD_BUTTON_X)notice=experiment_toggle_save(GEKKO2_EXP_PSM);
+                else if(down&PAD_BUTTON_Y)notice=experiment_toggle_save(GEKKO2_EXP_CHAIN);
+                else if(down&PAD_BUTTON_UP)opt_selected=(opt_selected+GEKKO2_OPT_COUNT-1)%GEKKO2_OPT_COUNT;
+                else if(down&PAD_BUTTON_DOWN)opt_selected=(opt_selected+1)%GEKKO2_OPT_COUNT;
                 else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT)){
-                    if(opt_selected==GEKKO2_OPT_COUNT){
-                        if(!gekko2_experimental_request(GEKKO2_EXP_GX_RISK,!gekko2_experimental_requested(GEKKO2_EXP_GX_RISK)))
-                            notice="GX risk mode is unavailable in this build.";
-                        else notice=gekko2_experimental_save(GEKKO2_EXP_GX_RISK,"sd:/pcsx2/gx-risk.cfg")==0?
-                            "GX risk saved. Next cold boot; possible edge errors.":"GX risk not saved to SD.";
-                    }
-                    else if(gekko2_opt_toggle(opt_selected))
+                    if(gekko2_opt_toggle((unsigned)opt_selected))
                         notice=gekko2_opt_save("sd:/pcsx2/optimization.cfg")==0?
-                            (opt_selected==GEKKO2_OPT_ARM_WORKER||opt_selected==GEKKO2_OPT_ARM_IOS222||opt_selected==GEKKO2_OPT_ARM_CPU_RAM?"Saved. Exit to HBC and restart for ARM / IOS.":"Saved. Applies to the next cold boot."):
-                            "Could not save options to SD. Check card / directory.";
-                    else notice="This option is unavailable in this build.";
+                          (opt_selected==GEKKO2_OPT_ARM_WORKER||opt_selected==GEKKO2_OPT_ARM_IOS222||opt_selected==GEKKO2_OPT_ARM_CPU_RAM?"Saved. ARM / IOS needs app restart.":"Saved. Applies at next cold boot."):
+                          "Not saved. Check SD space / directory.";
+                    else notice="Backend is not compiled into this build.";
                 }
-                continue;
-            }
-            if(down&PAD_BUTTON_B)page=0;
-            else if(page==1){if(down&PAD_BUTTON_A)g_hud_default=!g_hud_default;if(down&PAD_BUTTON_X)g_throughput=!g_throughput;if(down&PAD_BUTTON_Y)g_fps_default=!g_fps_default;
-                if(down&PAD_BUTTON_DOWN){page=4;notice="A / LEFT / RIGHT: toggle. Next cold boot.";continue;}
-                if(down&(PAD_BUTTON_RIGHT|PAD_BUTTON_LEFT)){g_gx_requested=!g_gx_requested;
-                    notice=g_gx_requested?"Next cold boot: GX ON.":"Next cold boot: GX OFF.";}}
+            }else if(page==5){
+                if(down&PAD_BUTTON_B)page=1;
+                else if(down&PAD_BUTTON_UP)experiment_selected=(experiment_selected+GEKKO2_EXP_COUNT-1)%GEKKO2_EXP_COUNT;
+                else if(down&PAD_BUTTON_DOWN)experiment_selected=(experiment_selected+1)%GEKKO2_EXP_COUNT;
+                else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT))notice=experiment_toggle_save((unsigned)experiment_selected);
+            }else if(page==1){
+                if(down&PAD_BUTTON_B)page=0;
+                else if(down&PAD_BUTTON_UP)settings_selected=(settings_selected+UI_SET_COUNT-1)%UI_SET_COUNT;
+                else if(down&PAD_BUTTON_DOWN)settings_selected=(settings_selected+1)%UI_SET_COUNT;
+                else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT)){
+                    int rc=0;
+                    switch(settings_selected){
+                    case UI_SET_RENDERER:g_gx_requested=!g_gx_requested;rc=frontend_preferences_save();break;
+                    case UI_SET_HUD:g_hud_default=!g_hud_default;rc=frontend_preferences_save();break;
+                    case UI_SET_UPDATE:g_throughput=!g_throughput;rc=frontend_preferences_save();break;
+                    case UI_SET_FPS:g_fps_default=!g_fps_default;rc=frontend_preferences_save();break;
+                    case UI_SET_SOUND:gekko2_opt_toggle(GEKKO2_OPT_SOUND);rc=gekko2_opt_save("sd:/pcsx2/optimization.cfg");break;
+                    case UI_SET_PROFILE:
+                        gekko2_opt_request_profile(!strcmp(gekko2_opt_profile_name(),"WII BASE")?GEKKO2_PROFILE_INTERPRETER:GEKKO2_PROFILE_BASE);
+                        rc=gekko2_opt_save("sd:/pcsx2/optimization.cfg");break;
+                    case UI_SET_EXPERIMENTS:page=5;break;
+                    case UI_SET_DEVELOPER:page=4;break;
+                    case UI_SET_DEFAULTS:{
+                        frontend_settings defaults;frontend_settings_defaults(&defaults);
+                        g_hud_default=defaults.hud;g_throughput=defaults.throughput;g_fps_default=defaults.fps;g_gx_requested=defaults.gx;
+                        gekko2_opt_reset_requested();rc=frontend_preferences_save();
+                        if(gekko2_opt_save("sd:/pcsx2/optimization.cfg"))rc=-1;
+                        const char *paths[GEKKO2_EXP_COUNT]={"sd:/pcsx2/jit-chain.cfg","sd:/pcsx2/gs-compat.cfg","sd:/pcsx2/gx-risk.cfg"};
+                        for(unsigned n=0;n<GEKKO2_EXP_COUNT;n++){
+                            gekko2_experimental_request(n,0);
+                            if(gekko2_experimental_save(n,paths[n]))rc=-1;
+                        }
+                        break;}
+                    }
+                    notice=rc?"Some settings were not saved. Check SD.":"Saved. CPU / GX: cold boot; ARM / IOS: restart.";
+                }
+            }else if(down&PAD_BUTTON_B)page=0;
 
             continue;
         }
