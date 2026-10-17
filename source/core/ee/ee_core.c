@@ -2661,9 +2661,10 @@ uint64_t ee_mem_read64(ee_state_t *st, uint32_t addr)
 void ee_mem_read128(ee_state_t *st,uint32_t addr,ee_reg128_t *out)
 {
     uint8_t q[16];
-    if(ipu_fifo_read128(ee_hw_mmio_addr(addr),q)) {
+    int result=ipu_fifo_read128(ee_hw_mmio_addr(addr),q);
+    if(result>0) {
         out->ud0=guest_read_le64(q);out->ud1=guest_read_le64(q+8);
-    } else {
+    } else if(!result) {
         /* Read both halves before publishing: LQ may alias its base register. */
         uint64_t lo=ee_mem_read64(st,addr),hi=ee_mem_read64(st,addr+8);
         out->ud0=lo;out->ud1=hi;
@@ -5907,6 +5908,14 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             if(gif_get_state()->fifo_count==16u) {
                 st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
             }
+        }
+    }
+    if((instr>>26)==0x1fu||((instr>>26)==0x1eu&&((instr>>16)&31u))){
+        uint32_t address=(uint32_t)st->gpr[(instr>>21)&31u].ud0+(uint32_t)(int32_t)(int16_t)instr;
+        uint32_t hw=ee_hw_mmio_addr(address)&~15u;
+        int writing=(instr>>26)==0x1fu;
+        if(hw==(writing?0x10007010u:0x10007000u)&&!ipu_cpu_fifo_ready(writing)){
+            st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
         }
     }
     if((instr>>26)==0x12u&&st->vu0_running) {

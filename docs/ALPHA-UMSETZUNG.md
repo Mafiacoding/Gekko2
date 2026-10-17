@@ -84,6 +84,22 @@ Checkpoint-Regressionen bestanden. Die alte CLOSE-Fixture verlangte Erfolg
 für einen nie geöffneten Descriptor; sie prüft jetzt den expliziten Fehler.
 Zwei alte Whitebox-Fixtures haben ihren fehlenden system.h-Include erhalten.
 
+## 5. Präzise EE-IPU-FIFO-Retries
+
+EE-LQ/SQ warteten bisher nicht vor leerem/vollen IPU-FIFO: leere Reads
+publizierten Nullen, volle CPU-Writes wurden verworfen. Der skalare Fetch-
+Frontend prüft jetzt vor Native-/AOT-Zulassung die tatsächlich adressierten,
+auf 16 Byte gerundeten FIFO-Ports. Bei Rückstau bleiben PC/next_pc, Delay-Slot,
+Retirement und 128-Bit-Ziel unverändert; nur reale Park-/Gerätearbeit läuft.
+Nach Freigabe wird genau ein Qword übertragen. LQ r0 behält seinen No-Access-
+Vertrag. Die FIFO-API meldet Stau explizit (-1) und verändert keine Lesepuffer.
+
+200 gerichtete LQ/SQ-Retries mit Kernelalias/unaligniertem EA, Delay Slot,
+Generation des Eingabefreiraums durch FDEC, einmaligem Output-Verbrauch und
+LQ r0 bestanden. IPU-DMA-Stall, 384 IDEC-/399.764 Feldprüfungen, vorhandene
+GIF/SQ-/FMAC-/DMA-Retries und EE-Exceptions bestanden. Dies ist eine
+unabhängig reproduzierte Datenverlustkorrektur, kein Crash-E3-Fixbeleg.
+
 ## Weitere Batches
 
 Physische CLUT-Neuinterpretation, Zweikreis-Scanout, native PS2-Karten und
