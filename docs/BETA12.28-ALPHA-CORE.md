@@ -67,6 +67,7 @@ Ausführungszählungen sind keine Wii-FPS.
   echte gelinkte Wii-Allocator-Versionen: je 97 Proben mit und ohne Chain.
 - Native EABI-Continuation-Oracle: 45 Budget-/Teilende-/Registerfälle bestanden;
   5.400 unabhängige Cross-Block-128-Bit-/HI/LO-/SA-/EABI-Proben, 11 Declinefälle.
+- Gelinkter Interpreter-/Nativevergleich: 105 vollständige EE-/Timer-/Display-/IRQ-Zustände bestanden.
 - Gelinkte PPC-Zusatzprüfungen: 24 ALU-, 72 RAM-/TLB-/SMC- und 112 Sprung-
   /Delay-/IRQ-/Scheduler-Vergleiche. Alle acht Experimentkombinationen in
   16 vollständigen EE-Zustandsvergleichen, inklusive Cold-Boot-Isolation.
