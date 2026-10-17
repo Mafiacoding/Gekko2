@@ -97,8 +97,10 @@ static uint32_t system_iop_read_adapter(void *ctx, uint32_t addr, int width)
 static uint64_t g_event_stats[5];
 static uint64_t g_sync_reasons[19];
 
+#include "core/hw/ps2_mc_files.h"
 int system_init(const bios_image_t *ee_bios, const bios_image_t *iop_bios)
 {
+    ps2_mc_fs_reset();
     for(unsigned i=0;i<5u;i++)g_event_stats[i]=0;
     for(unsigned i=0;i<19u;i++)g_sync_reasons[i]=0;
     arm_worker_begin_session();

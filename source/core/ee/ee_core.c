@@ -146,6 +146,7 @@
 #include "core/hw/iop_heap.h" /* Round 401: real SYSMEM free-list heap allocator port - see comment at the SIF_SID_IOPHEAP branch below */
 #include "core/hw/iop_sio2.h" /* Round 663: real low-level pad-connected state for PAD_BIND reply */
 #include "core/hw/ps2_memory_card.h"
+#include "core/hw/ps2_mc_files.h"
 #include "core/recompiler/ee_jit.h"
 #include "core/recompiler/vu_jit.h" /* Round 887 (task #866/#868): first real JIT wiring - see that header's design-rationale comment */
 
@@ -3761,6 +3762,90 @@ static int32_t ee_mcserv_getinfo_no_card(ee_state_t *st,uint32_t payload,uint32_
         if(modern)ee_mem_write32(st,dma_dest+144u,formatted);
     }
     return result;
+}
+
+static uint32_t ee_mc_load32(const uint8_t *p)
+{return (uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;}
+static void ee_mc_store32(uint8_t *p,uint32_t n)
+{for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(n>>(i*8));}
+/* Physical SIF DMA bounds, before a filesystem handle or file is changed. */
+static uint8_t *ee_mc_ram(ee_state_t *st,uint32_t address,uint32_t bytes)
+{
+ uint32_t p=address&0x1fffffffu;
+ if(!st->ram||p>EE_RAM_SIZE||bytes>EE_RAM_SIZE-p||p>st->ram_size||bytes>st->ram_size-p)return NULL;
+ return st->ram+p;
+}
+static int32_t ee_mcserv_files_rpc(ee_state_t *st,uint32_t fno,uint32_t payload,uint32_t size)
+{
+ /* Map legacy fno without conflating modern SEEK/READ. */
+ static const uint8_t old[]={0xfe,2,3,5,6,4,0x0d,0x10,1,0x0f,0x0a,0x0c,0x0e,0x7d,0x7e,0x7f,0x11};
+ int modern=fno<0x70u||fno>0x80u;
+ if(!modern)fno=old[fno-0x70u];
+ if(fno==0xfeu)return 0;
+ if(fno==1u)return ee_mcserv_getinfo_no_card(st,payload,size,modern);
+ if(fno==2u&&!ps2_mc_present())return -4;
+ uint8_t *arg=payload?ee_mc_ram(st,payload,size):NULL;
+ if(!arg||size<16)return -5;
+ int named=fno==2u||fno==0x0cu||fno==0x0du||fno==0x0eu||fno==0x0fu;
+ if(named){
+  if(size<21u||!memchr(arg+20,0,size-20u<1024u?size-20u:1024u))return -5;
+  if(ee_mc_load32(arg)||ee_mc_load32(arg+4))return -11;
+  const char *name=(const char*)arg+20;unsigned flags=ee_mc_load32(arg+8);
+  if(fno==2u)return ps2_mc_fs_open(name,flags);
+  if(fno==0x0fu)return ps2_mc_fs_delete(name);
+  if(size<20u)return -5;uint32_t dest=ee_mc_load32(arg+16),n=fno==0x0cu?1024u:64u;
+  if(fno==0x0du){unsigned count=ee_mc_load32(arg+12);if(count>EE_RAM_SIZE/64u)return -5;n=count*64u;}
+  uint8_t *out=ee_mc_ram(st,dest,n);if((n&&!dest)||!out)return -5;
+  if(fno==0x0eu){uint8_t table[64];memcpy(table,out,64);return ps2_mc_fs_setinfo(name,flags,table);}
+  /* Name can alias the output table: copy it before DMA publication. */
+  char path[1024];strcpy(path,name);
+  int r=fno==0x0cu?ps2_mc_fs_chdir(path,(char*)out):ps2_mc_fs_getdir(path,flags,n/64u,out);
+  if(r>=0)ee_jit_notify_physical_write(dest&0x1fffffffu,fno==0x0cu?1024u:(unsigned)r*64u);
+  return r;
+ }
+ int fd=(int32_t)ee_mc_load32(arg);
+ if(fno==3u)return ps2_mc_fs_close(fd);
+ if(fno==0x0au)return ps2_mc_fs_flush(fd);
+ if(fno==0x10u||fno==0x11u){
+  if(ee_mc_load32(arg+4)||ee_mc_load32(arg+8))return -11;
+  return ps2_mc_fs_format(fno==0x11u);
+ }
+ if(size<32u)return -5;
+ if(fno==4u)return ps2_mc_fs_seek(fd,(int32_t)ee_mc_load32(arg+16),ee_mc_load32(arg+20));
+ uint32_t bytes=ee_mc_load32(arg+12),buffer=ee_mc_load32(arg+24);
+ if(bytes>INT32_MAX)return -5;
+ if(fno==6u){
+  unsigned prefix=ee_mc_load32(arg+20);if(prefix>16u||size<32u+prefix)return -5;
+  uint8_t *src=ee_mc_ram(st,buffer,bytes);if((bytes&&!buffer)||!src)return -5;
+  uint8_t head[16];memcpy(head,arg+32,prefix);
+  int first=prefix?ps2_mc_fs_write(fd,head,prefix):0;if(first<0||(unsigned)first!=prefix)return first;
+  int rest=ps2_mc_fs_write(fd,src,bytes);return rest<0?rest:rest+first;
+ }
+ if(fno==5u){
+  unsigned alignment=modern?64u:16u,end_size=modern?192u:64u;
+  uint32_t param=ee_mc_load32(arg+28);uint8_t *end=ee_mc_ram(st,param,end_size);
+  int actual=ps2_mc_fs_read_size(fd,bytes);if(actual<0)return actual;
+  if(!param||!end||((unsigned)actual&&!buffer)||!ee_mc_ram(st,buffer,(unsigned)actual))return -5;
+  uint8_t stage[192]={0};
+  /* Match _McRead/_McRead2: even an aligned buffer stages a full first
+   * alignment unit. Split by the request; EOF may shorten any piece. */
+  unsigned requested_head=bytes<=alignment?bytes:alignment-(buffer&(alignment-1u));
+  unsigned requested_tail=(bytes-requested_head)&(alignment-1u);
+  unsigned requested_middle=bytes-requested_head-requested_tail;
+  unsigned head=(unsigned)actual<requested_head?(unsigned)actual:requested_head;
+  unsigned left=(unsigned)actual-head,middle=left<requested_middle?left:requested_middle,tail=left-middle;
+  if(head){if(ps2_mc_fs_read(fd,stage+16,head)!=(int)head)return -13;ee_mc_store32(stage,head);ee_mc_store32(stage+8,buffer);}
+  if(middle){
+   uint8_t *dest=ee_mc_ram(st,buffer+head,middle);
+   if(ps2_mc_fs_read(fd,dest,middle)!=(int)middle)return -13;
+   ee_jit_notify_physical_write((buffer+head)&0x1fffffffu,middle);
+  }
+  if(tail){if(ps2_mc_fs_read(fd,stage+16+alignment,tail)!=(int)tail)return -13;
+   ee_mc_store32(stage+4,tail);ee_mc_store32(stage+12,buffer+head+middle);}
+  memcpy(end,stage,end_size);ee_jit_notify_physical_write(param&0x1fffffffu,end_size);
+  return actual;
+ }
+ return -5; /* Raw page RPCs, auth/priority extensions are not faked. */
 }
 
 /* Round 554 (task #521/#522): real cdrom0:/cdrom1: counterpart to
@@ -8469,20 +8554,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                      * hardware's own behavior for a malformed request. */
                                 }
                             } else if (call_sid == SIF_SID_MCSERV && call_recvbuf != 0u) {
-                                /* INIT returns actual requested module versions. OPEN
-                                 * retains the existing missing-file result. GETINFO
-                                 * uses the real no-card probe result and extra DMA ABI;
-                                 * remaining card commands still use legacy HLE replies. */
                                 uint32_t mcserv_recv_size = ee_mem_read32(st, src + 0x2Cu);
-                                /* Supplied OSDSYS libmc uses modern OPEN fno=2 at its
-                                 * mcOpen wrapper; older libmc uses 0x71. Neither ABI
-                                 * has a file behind a successful descriptor here. */
-                                int32_t mcserv_result = (rpc_number==0xfeu||rpc_number==0x70u)?0:
-                                  (rpc_number == 2u || rpc_number == 0x71u) && !ps2_mc_present() ? -4 : -5;
-                                if(rpc_number==1u || rpc_number==0x78u){
-                                    uint32_t payload=i?ee_mem_read32(st,dmat_ptr+(i-1u)*16u):0u;
-                                    mcserv_result=ee_mcserv_getinfo_no_card(st,payload,ee_mem_read32(st,src+0x24u),rpc_number==1u);
-                                }
+                                uint32_t payload=i?ee_mem_read32(st,dmat_ptr+(i-1u)*16u):0u;
+                                int32_t mcserv_result=ee_mcserv_files_rpc(st,rpc_number,payload,ee_mem_read32(st,src+0x24u));
                                 if (mcserv_recv_size >= 4u)  ee_mem_write32(st, call_recvbuf + 0u, (uint32_t)mcserv_result); /* mcRpcStat_t.result (or plain s32 result for OPEN/CLOSE-shaped 4-byte replies) */
                                 if (mcserv_recv_size >= 8u)  ee_mem_write32(st, call_recvbuf + 4u, (rpc_number==0xfeu||rpc_number==0x70u)?st->mcserv_module_version:0u); /* actual requested module metadata for INIT */
                                 if (mcserv_recv_size >= 12u) ee_mem_write32(st, call_recvbuf + 8u, (rpc_number==0xfeu||rpc_number==0x70u)?st->mcman_module_version:0u); /* actual requested module metadata for INIT */
