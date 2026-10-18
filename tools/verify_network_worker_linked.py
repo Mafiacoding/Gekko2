@@ -58,6 +58,7 @@ def hook(machine,address,size,user):
   ret(machine,-8 if mode=='socket_fail' else fd)
  elif name=='net_sendto':
   last_packet=bytes(machine.mem_read(reg(4),reg(5)));last_peer=bytes(machine.mem_read(reg(7),reg(8)))
+  assert reg(6)==0 and reg(8)==8 and last_peer[:2]==bytes([8,2]),'IOS sendto requires an 8-byte IPv4 address'
   assert len(last_packet)==1016 and last_packet[:4]==b'GK2T'
   ack=b'GK2A'+last_packet[128:144]
   if mode=='stale' and previous is not None:ack=previous
@@ -65,9 +66,13 @@ def hook(machine,address,size,user):
   pending=ack;previous=b'GK2A'+last_packet[128:144]
   ret(machine,-9 if mode=='send_fail' else 1016)
  elif name=='net_recvfrom':
+  assert reg(5)==21 and reg(6)==0 and bytes(machine.mem_read(reg(8),4))==struct.pack('>I',8)
   if pending is None or mode=='no_ack':ret(machine,-11)
   else:
    ack=pending;pending=None;peer=last_peer
+   if mode=='short_peer':peer=bytes([7])+peer[1:7]
+   if mode=='wrong_family':peer=peer[:1]+bytes([10])+peer[2:]
+   if mode=='wrong_port':peer=peer[:3]+bytes([peer[3]^1])+peer[4:]
    if mode=='wrong_peer':peer=peer[:7]+bytes([peer[7]^1])+peer[8:]
    machine.mem_write(reg(4),ack);machine.mem_write(reg(7),peer);machine.mem_write(reg(8),struct.pack('>I',len(peer)));ret(machine,len(ack))
  elif name=='usleep':ret(machine);machine.emu_stop()
@@ -104,7 +109,7 @@ worker();s=status();assert s[0]==3 and s[2]==2 and s[3]==-6
 mode='valid';apply()
 assert call('runtime_telemetry_test')==0;worker();s=status();assert s[0]==2 and s[4]==1 and s[5]==0xc0a80103 and s[6]==1
 # Every new test clears old confirmation. Old sequence, wrong boot or peer cannot confirm it.
-for setting in ('stale','wrong_boot','wrong_peer','no_ack'):
+for setting in ('stale','wrong_boot','wrong_peer','wrong_port','wrong_family','short_peer','no_ack'):
  mode=setting;assert call('runtime_telemetry_test')==0 and status()[4]==0;worker();assert status()[4]==0,setting
 mode='valid';assert call('runtime_telemetry_test')==0;worker();assert status()[4]==1
 # Same persistent worker retries network setup after a new apply generation.
@@ -150,3 +155,68 @@ assert call('net_fcntl',17,4,0x4000)==0 and not sdk_nonblock
 assert call('net_fcntl',17,4,4)==0 and sdk_nonblock
 assert sdk_requests==[(15,(2,2,17)),(15,(2,2,0)),(5,(17,4,0x4000)),(5,(17,4,4))]
 print('PASS 4 linked libogc IOS-boundary checks: protocol 17 -> -123, protocol 0 -> socket, POSIX 0x4000 does not enable IOS nonblock, IOS bit 4 does. IOS modeled, wrapper/error conversion are actual delivered PPC.')
+# Exercise real libogc send/receive, including its real 64 KiB allocator,
+# aligned bounce buffers, parameter packing and error conversion. Only the IOS
+# format IPC boundary is modeled; it is not a physical console/socket test.
+for name in ('net_sendto','net_recvfrom'):hooks.pop(syms[name])
+assert call('__lwp_heap_init',syms['__net_heap'],data+0x10000,65536,32)>0
+sdk_send_count=0;sdk_receive_count=0;boundary_peer=bytes([8,2,0x69,0x0a,192,168,1,2]);boundary_ack=b'GK2A'+bytes(16)
+def vector_hook(machine,address,size,user):
+ global sdk_send_count,sdk_receive_count
+ if address!=syms['IOS_IoctlvFormat']:return
+ reg=lambda n:machine.reg_read(UC_PPC_REG_0+n)
+ cstr=lambda addr:bytes(machine.mem_read(addr,8)).split(b'\0')[0]
+ if reg(5)==13:
+  assert cstr(reg(6))==b'dd:' and reg(8)==1016 and reg(10)==40 and reg(7)%32==0 and reg(9)%32==0
+  payload=bytes(machine.mem_read(reg(7),reg(8)));params=bytes(machine.mem_read(reg(9),40))
+  assert payload[:4]==b'GK2T' and struct.unpack('>3I',params[:12])==(17,0,1)
+  sdk_send_count+=1
+  if params[12]!=8:ret(machine,-28);return # modeled IOS SO_EINVAL; actual libogc maps to -22
+  assert params[12:20]==boundary_peer
+  ret(machine,1016)
+ elif reg(5)==12:
+  assert cstr(reg(6))==b'd:dd' and reg(8)==8 and reg(10)==21
+  assert struct.unpack('>2I',bytes(machine.mem_read(reg(7),8)))==(17,0)
+  sp=machine.reg_read(UC_PPC_REG_1);peer,length=struct.unpack('>2I',bytes(machine.mem_read(sp+8,8)))
+  assert length==8 and reg(9)%32==0
+  sdk_receive_count+=1;machine.mem_write(reg(9),boundary_ack);machine.mem_write(peer,boundary_peer);ret(machine,20)
+ else:raise AssertionError('unexpected network vector command')
+vector_handle=u.hook_add(UC_HOOK_CODE,vector_hook)
+packet=data+0x1000;peer=data+0x1500;length=data+0x1600;receive=data+0x1700
+u.mem_write(packet,b'GK2T'+bytes(1012));u.mem_write(peer,bytes([16])+boundary_peer[1:]+bytes(8))
+assert call('net_sendto',17,packet,1016,0,peer,16)==((-22)&0xffffffff)
+u.mem_write(peer,boundary_peer+bytes(8))
+assert call('net_sendto',17,packet,1016,0,peer,8)==1016
+u.mem_write(peer,bytes(16));u.mem_write(length,struct.pack('>I',8))
+assert call('net_recvfrom',17,receive,21,0,peer,length)==20
+assert bytes(u.mem_read(receive,20))==boundary_ack and bytes(u.mem_read(peer,8))==boundary_peer
+assert bytes(u.mem_read(length,4))==struct.pack('>I',8)
+# Persistent worker now uses these real SDK wrappers for both directions.
+mode='valid';apply();assert call('runtime_telemetry_test')==0
+# Worker context predates real SDK setup; retain its own r13 SDA base.
+base=u.reg_read(UC_PPC_REG_0+13);u.context_restore(worker_context);u.reg_write(UC_PPC_REG_0+13,base);worker_context=u.context_save()
+# Generate matching ACK from the actual outgoing packet at the IOS boundary.
+previous_vector_hook=vector_hook
+# The hook below runs first only for send to capture the current boot/sequence;
+# vector_hook performs the actual parameter checks and modeled IPC return.
+def capture_ack(machine,address,size,user):
+ global boundary_ack
+ if address==syms['IOS_IoctlvFormat'] and machine.reg_read(UC_PPC_REG_0+5)==13:
+  buf=machine.reg_read(UC_PPC_REG_0+7);boundary_ack=b'GK2A'+bytes(machine.mem_read(buf+128,16))
+# Register a replacement to ensure ACK capture precedes the modeled response.
+# Unicorn invokes hooks in registration order, so capture inside a combined hook.
+def combined_vector_hook(machine,address,size,user):
+ capture_ack(machine,address,size,user);previous_vector_hook(machine,address,size,user)
+# Replace the original vector hook before the worker integration case.
+u.hook_del(vector_handle)
+u.hook_add(UC_HOOK_CODE,combined_vector_hook)
+worker();s=status();assert s[0]==2 and s[4]==1 and s[6]>0
+assert sdk_send_count==3 and sdk_receive_count==5
+# Allocation failure is a distinct possible source of the same numeric -22;
+# it must not be mistaken for proven address rejection on physical hardware.
+allocation=call('__lwp_heap_allocate',syms['__net_heap'],65000);assert allocation
+before=sdk_send_count
+assert call('net_sendto',17,packet,1016,0,peer,8)==((-22)&0xffffffff) and sdk_send_count==before
+assert call('__lwp_heap_free',syms['__net_heap'],allocation)==1
+for _ in range(64):assert call('net_sendto',17,packet,1016,0,peer,8)==1016
+print('PASS linked libogc UDP transport: real allocator/bounce buffers, modeled IOS rejects 16-byte address with -22, accepts 8 bytes; real receive returns 8-byte peer and ACK; persistent worker confirms ACK through real wrappers; allocation failure distinguished; 64 repeat sends retain heap. No physical IOS execution.')

@@ -122,6 +122,11 @@ static runtime_telemetry_status status;
 #include <ogc/lwp_watchdog.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stddef.h>
+/* libogc's BSD container includes sin_zero; Wii IOS IPv4 addresses do not.
+ * net_sendto forwards tolen unchanged, unlike net_bind/net_connect. */
+#define RT_IOS_ADDR_BYTES offsetof(struct sockaddr_in,sin_zero)
+_Static_assert(RT_IOS_ADDR_BYTES==8,"Wii IOS IPv4 address ABI");
 static runtime_telemetry_queue queue;
 static unsigned generation;
 static int thread_created;
@@ -163,24 +168,24 @@ static void *sender(void *arg)
     * not newlib O_NONBLOCK (0x4000); retain checked error handling. */
    rc=net_fcntl(fd,F_SETFL,4u);
    if(rc<0){net_close(fd);fd=-1;progress(3,RT_STAGE_NONBLOCK,rc,gen);continue;}
-   addr.sin_family=AF_INET;addr.sin_len=sizeof addr;addr.sin_port=htons(cfg.endpoint.port);addr.sin_addr.s_addr=htonl(cfg.endpoint.ip);
+   addr.sin_family=AF_INET;addr.sin_len=RT_IOS_ADDR_BYTES;addr.sin_port=htons(cfg.endpoint.port);addr.sin_addr.s_addr=htonl(cfg.endpoint.ip);
    progress(2,RT_STAGE_READY,0,gen);
    continue; /* Recheck a changed/disabled target before consuming queued data. */
   }
   if(fd<0){usleep(10000);continue;}
   uint8_t packet[RT_PACKET_BYTES];irq=IRQ_Disable();int have=runtime_telemetry_pop(&queue,packet);IRQ_Restore(irq);
   if(have){
-   int n=net_sendto(fd,packet,sizeof packet,0,(struct sockaddr*)&addr,sizeof addr);
+   int n=net_sendto(fd,packet,sizeof packet,0,(struct sockaddr*)&addr,RT_IOS_ADDR_BYTES);
    irq=IRQ_Disable();
    if(n==(int)sizeof packet){status.sent++;if(generation==gen){last_sent=read64(packet+128+RT_SEQ*8);have_sent=1;}}
    else{status.errors++;if(generation==gen){status.error=n;status.stage=RT_STAGE_SEND;}}
    IRQ_Restore(irq);
   }
   for(unsigned tries=0;tries<4;tries++){
-   uint8_t ack[RT_ACK_BYTES+1];struct sockaddr_in peer;socklen_t length=sizeof peer;
+   uint8_t ack[RT_ACK_BYTES+1];struct sockaddr_in peer;memset(&peer,0,sizeof peer);socklen_t length=RT_IOS_ADDR_BYTES;
    int n=net_recvfrom(fd,ack,sizeof ack,0,(struct sockaddr*)&peer,&length);if(n<0)break;
    irq=IRQ_Disable();
-   if(generation==gen&&have_sent&&length==sizeof peer&&peer.sin_family==AF_INET&&
+   if(generation==gen&&have_sent&&length==RT_IOS_ADDR_BYTES&&peer.sin_len==RT_IOS_ADDR_BYTES&&peer.sin_family==AF_INET&&
       peer.sin_addr.s_addr==addr.sin_addr.s_addr&&peer.sin_port==addr.sin_port&&
       runtime_telemetry_ack_matches(ack,(size_t)n,boot_id,minimum_ack,last_sent))status.acknowledged=1;
    IRQ_Restore(irq);

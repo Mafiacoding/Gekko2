@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <app version="1">
-  <name>Gekko2 SPEED BETA12.31d IOS UDP FIX</name>
+  <name>Gekko2 SPEED BETA12.31e IOS ADDRESS FIX</name>
   <coder>Mafiacoding</coder>
-  <version>BETA12.31d - IOS UDP socket compatibility</version>
+  <version>BETA12.31e - IOS IPv4 address compatibility</version>
   <release_date>20261018</release_date>
   <short_description>Experimental PlayStation 2 emulator for Wii</short_description>
   <long_description>GS byte/half/word acknowledgements and pending IMR interrupts, Q/K/L mipmaps and MTBA, bounded VIF CPU FIFO, writable SPU2 ENVX and precise GX filter fallbacks. Includes previous core changes. Chain, PSM and GX risk remain factory OFF and apply at Cold Boot. No verified Wii gameplay, BIOS-tile fix or FPS gain. Bring your own legal BIOS/disc/card.</long_description>

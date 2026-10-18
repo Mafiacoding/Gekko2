@@ -1,5 +1,10 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.31e IOS address ABI fix:** branch `codex/network-ios-address-fix`;
+[report](BETA12.31e-IOS-ADDRESS-FIX.md). Send/receive the 8-byte IOS IPv4 prefix and accept
+8-byte ACK peers; preserve endpoint/Windows compatibility. Physical receipt
+remains unverified; numeric send -22 alone has multiple possible sources.
+
 **BETA12.31d IOS UDP fix:** branch `codex/network-ios-socket-fix`;
 [report](BETA12.31d-IOS-UDP-FIX.md). Correct protocol 0 and IOS nonblock bit 4.
 Older socket mocks did not validate arguments; new PPC tests cover the actual
