@@ -5,7 +5,7 @@ No BIOS, games, physical Wii execution or timing claim.
 """
 from pathlib import Path
 source=Path(__file__).with_name('ee_ppc_fixture_internal.py').read_text()
-source=source.replace("'gpr_generation']","'gpr_generation','fcr31','cop2_ctrl','exc_raised_this_step']")
+source=source.replace("'fcr31']","'fcr31','cop2_ctrl','exc_raised_this_step']")
 exec(compile(source,'ee_ppc_fixture_internal.py','exec'))
 mask_address=syms['gekko2_optimization_mask']
 original=int.from_bytes(u.mem_read(mask_address,4),'big')

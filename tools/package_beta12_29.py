@@ -24,19 +24,19 @@ for suffix in ('GX-Chain','GX'):
   assert release.encode()+b'\0' in data,name+' has wrong embedded version'
   assert b'R1389-SPEED-BETA12.27' not in data,name+' contains stale version'
   files[name]=data
-records=['release-results.json','beta12-29-host.json','ee-results.json','spu-results.json','mc-results.json',
+records=['options-final.json','release-results.json','beta12-29-host.json','ee-results.json','spu-results.json','mc-results.json',
          'memory-chain.json','memory-control.json','dol-chain.json','dol-control.json',
          'linked-results.json','ee-ppc-release.txt','linked-ee-completion.txt','linked-ee-control.txt',
-         'final-audit.json','final-audit.txt','mmi.txt','vu0-after-control.txt','vu-upper.txt',
+         'legacy-beta12-23-fixture.json','final-audit.json','final-audit.txt','mmi.txt','vu0-after-control.txt','vu-upper.txt',
          'wii-build-chain.txt','wii-build-control.txt','compile-flags.json','pull-requests.json']
 reports={name:(a.reports_dir/name).read_bytes() for name in records}
 host=json.loads(reports['beta12-29-host.json']);assert len(host)==70 and all(x['exit_code']==0 for x in host)
-linked=json.loads(reports['linked-results.json']);assert len(linked)==11 and all(x['exit_code']==0 for x in linked)
+linked=json.loads(reports['linked-results.json']);assert len(linked)==12 and all(x['exit_code']==0 for x in linked)
 assert {x['test'] for x in linked}=={
  'verify_chain_alu_linked','verify_chain_memory_linked','verify_chain_branch_linked',
  'verify_alpha_modes_linked','verify_gx_formats_linked','verify_ppc_gs_memory',
- 'verify_beta12_22_linked','verify_beta12_23_linked','verify_chain_residency_linked',
- 'verify_completion_ee_linked_chain','verify_completion_ee_linked_control'}
+ 'verify_beta12_22_linked','verify_vif_uv_linked','verify_chain_residency_linked',
+ 'verify_completion_ee_linked_chain','verify_completion_ee_linked_control','verify_cf_blocks_linked'}
 for name in ('memory-chain.json','memory-control.json'):assert json.loads(reports[name])['passed']
 for name in ('dol-chain.json','dol-control.json'):assert json.loads(reports[name])['elf_section_bytes_match']
 for name in ('ee-results.json','spu-results.json','mc-results.json'):

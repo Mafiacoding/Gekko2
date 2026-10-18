@@ -26,6 +26,7 @@ python3 tools/test_beta12_29_host.py --output-json /tmp/beta12-29-host.json
 /workspace/.venv-gekko2/bin/python tools/verify_completion_ee_control.py
 bash tools/build_beta12_29_completion.sh
 CHAIN_RESIDENCY=0 bash tools/build_beta12_29_completion.sh
+python3 tools/test_beta12_29_linked.py Gekko2-BETA12.29-GX-Chain.elf --control-elf Gekko2-BETA12.29-GX.elf --nm "$DEVKITPPC/bin/powerpc-eabi-nm" --output-json /tmp/beta12-29-linked.json
 ```
 
 ## Nachgewiesene Ergebnisse
@@ -36,6 +37,9 @@ CHAIN_RESIDENCY=0 bash tools/build_beta12_29_completion.sh
 - 352 unabhängig ausgeführte PPC-C.F.S/BC2-Fälle und 28 Reserved-Declines.
 - In beiden tatsächlichen Wii-ELFs: je 98 komplette EE-Zustandsvergleiche, davon je 30 native
   Single-Fragmente; RI mit beiden Vektoren und Delay-EPC/BD geprüft.
+- Weitere 14 gelinkte C.F.S/MMI-Blockvergleiche mit Chain OFF/ON, ganzen
+  128-Bit-Zuständen, EABI und Budgetgrenzen; 18 native Nachfolger erreicht.
+- Vier Options-Metadatenprofile respektieren weiterhin gespeichertes All-OFF.
 - SPU2: 4.196.428 synthetische Checks; gezielte Audio-/DMA-/Checkpoint-Suites
   und GETENTSPACE-/bisherige FAT-/READ-ABI-Suite erfolgreich.
 - Beide frischen Wii-Builds mit offiziellem devkitPPC r50/GCC16.1.0/libogc3.1.0.
@@ -55,3 +59,13 @@ Die bestehenden Chain-/Speicher-/Sprung-/Modus-/GX-PPC-Gates laufen separat;
 ihre tatsächlichen Resultate werden vor Paketfreigabe ergänzt.
 Keine neuen physischen Wii-/Dolphin-Tests. SCPH-50004-Kacheln, steuerbare
 Crash-/Tekken-Spielbarkeit, dynamischer MEM2-Peak und Wii-Speed bleiben unbelegt.
+
+
+Historische Testabgrenzung: `verify_beta12_23_linked.py` erwartete noch den
+4:3-Nachbearbeitungssymbol `gs_xfb_fit_4_3`. Die automatische Anwendung wurde
+auf Nutzerwunsch in BETA12.24a zurückgenommen; der unbenutzte Helfer ist im
+heutigen ELF nicht verlinkt. Nach 7 erfolgreichen VIF- und 16 UV-Fällen meldete
+dieser historische Test deshalb `KeyError`. Der neue `verify_vif_uv_linked.py`
+prüft dieselben produktiven VIF-/UV-Fälle und das Fehlen des veralteten Helfers.
+Kein Renderer-/Größen-Code wurde für den historischen Test wieder aktiviert.
+Der ursprüngliche Fehlbericht bleibt im Reviewpaket nachvollziehbar.
