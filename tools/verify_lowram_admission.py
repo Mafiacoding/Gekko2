@@ -4,7 +4,7 @@ from pathlib import Path
 exec(compile(Path(__file__).with_name('ee_ppc_fixture_internal.py').read_text(),'fixture','exec'))
 mask_addr=syms['gekko2_optimization_mask'];saved=int.from_bytes(u.mem_read(mask_addr,4),'big')
 rows=[]
-for phys in (0x100000,0x100ffc,0x1fffc0,0x200000,0xffff0):
+for phys in (0x100000,0x100ffc,0x1fffc0,0x200000,0xffff0,0xff000):
  results=[]
  for native in (0,1):
   setup();word(mask_addr,(saved|9)&~(1<<25) if native else saved&~9)
@@ -24,4 +24,4 @@ for phys in (0x100000,0x100ffc,0x1fffc0,0x200000,0xffff0):
  assert results[0][0]==results[1][0],hex(phys)
  rows.append(dict(physical=hex(phys),scalar_PPC_instructions=results[0][1],native_PPC_instructions=results[1][1],block_retired=results[1][2]))
 print(json.dumps(rows,indent=2))
-print('PASS five physical placements: exact scalar/block GPR128, PC/nextPC, COP0 and retirement; page crossing and low-kernel guard retained. PPC counts are simulated instruction counts, not hardware cycles.')
+print('PASS six physical placements: exact scalar/block GPR128, PC/nextPC, COP0 and retirement; page crossing and low-kernel guard retained. PPC counts are simulated instruction counts, not hardware cycles.')

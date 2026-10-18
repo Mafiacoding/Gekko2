@@ -1,7 +1,7 @@
 # BETA12.32 general EE hotpaths and GX investigation
 
 Baseline BETA12.31e / `90ee881`, branch `codex/beta12-32-hotpaths-gx`.
-Two generic CPU changes, no game-ID/BIOS-PC specialization:
+Two generic CPU changes and one GX CPU-overhead reduction, no game-ID/BIOS-PC specialization:
 
 1. Match the frontend's native-code admission floor to the backend's existing
    1 MiB physical RAM policy. Previously 1–2 MiB code repeatedly attempted other
@@ -41,9 +41,21 @@ GX fence failure remains OPEN; no hardware workaround is silently enabled.
 
 ## Verification
 
-The new low-RAM differential uses five physical placements, including 4 KiB
+The new low-RAM differential uses six physical placements, including 4 KiB
 and 2 MiB crossings, a retained low-kernel case, warmed code and scalar oracle.
 Compare GPR128, PC/nextPC, COP0 and exact retirement. Count executed PPC
 instructions independently from wall time: compile costs excluded, no claims
 of Wii cycles/FPS from instruction counts. Existing budget-range mutation and
 chain/memory/IRQ regressions remain required. Final results follow below.
+
+## GX descriptor-copy optimization
+
+The resident textured route copied the entire gs_gx_texture_draw for every
+PABE/ordinary pass just to override hardware_blend. That includes 1,152
+coordinate-map entries and 1,024 span endpoints. Pass the blend selector as
+one argument instead. Keep the original immutable draw descriptor, shader
+program, PABE order, emitted secondary coordinates and ownership fences.
+This removes repeated stack copies; it is not a claimed fix for the observed
+missing PE token. Compare stable GX configuration arguments and all actual PPC
+vertex FIFO bytes against the old ELF, including resident shaded and additive
+routes. No new experimental option/default or arbitrary hardware timeout.

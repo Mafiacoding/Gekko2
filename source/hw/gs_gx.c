@@ -596,7 +596,7 @@ static __attribute__((noinline)) void source_upload(uint32_t bytes)
 uint64_t gs_gx_surface_count(unsigned n){return n<11u?surface_counts[n]:0;}
 static int surface_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t width,uint32_t height);
 static int surface_draw_flat(const gs_gx_flat_draw *draw);
-static void pipeline_shader_target(const gs_gx_texture_draw *d,void *pixels,uint32_t w,uint32_t h);
+static void pipeline_shader_target(const gs_gx_texture_draw *d,void *pixels,uint32_t w,uint32_t h,uint32_t blend);
 static gs_gx_texture_draw texture_draw;
 static uint32_t geometry_kind,geometry_rgba;
 static int32_t geometry_xy[6];
@@ -849,12 +849,14 @@ static int surface_draw_textured(gs_gx_texture_draw *d,uint32_t bytes)
  }
  uint32_t passes=d->hardware_blend==1u&&d->pipeline.pabe?2u:1u;
  for(uint32_t pass=0;pass<passes;pass++) {
-  gs_gx_texture_draw shader=*d;
-  if(passes==2u&&pass==0u)shader.hardware_blend=0;
+  /* Only the blend selector differs between PABE passes. Copying the
+   * complete descriptor also copied 1,152 map entries and 1,024 span
+   * endpoints onto the Broadway stack for every pass. */
+  uint32_t blend=passes==2u&&pass==0u?0u:d->hardware_blend;
   /* Reset the state between complementary PABE passes. */
   surface_state(surface->width,surface->height,1);surface_texture(texture,d->tw,d->th,GX_NEAR);
-  if(shader.hardware_blend==2u)GX_SetBlendMode(GX_BM_BLEND,GX_BL_ONE,GX_BL_ONE,GX_LO_COPY);
-  else pipeline_shader_target(&shader,destination_texture,d->coverage.width,d->coverage.height);
+  if(blend==2u)GX_SetBlendMode(GX_BM_BLEND,GX_BL_ONE,GX_BL_ONE,GX_LO_COPY);
+  else pipeline_shader_target(d,destination_texture,d->coverage.width,d->coverage.height,blend);
   if(passes==2u)GX_SetAlphaCompare(pass?GX_GEQUAL:GX_LESS,128,GX_AOP_AND,GX_ALWAYS,0);
   #ifdef GEKKO2_GX_DUMP
  if(quads){gs_gx_dump_record("DRAW_ENTER",quads*4u,gs_mem_gpu_pending(),0,0);GXD_FLUSH();}
@@ -871,7 +873,7 @@ static int surface_draw_textured(gs_gx_texture_draw *d,uint32_t bytes)
    float ss[4]={s0,s1,s1,s0},tt[4]={t0,t0,t1,t1};
    for(unsigned k=0;k<4;k++) {
     vertex(vx[k],vy[k],ss[k],tt[k]);
-    if(shader.hardware_blend==1u)GX_TexCoord2f32((vx[k]-d->coverage.x)/d->coverage.width,(vy[k]-d->coverage.y)/d->coverage.height);
+    if(blend==1u)GX_TexCoord2f32((vx[k]-d->coverage.x)/d->coverage.width,(vy[k]-d->coverage.y)/d->coverage.height);
    }
   }y=end;
   }
@@ -1155,10 +1157,10 @@ static void tev_copy(u8 stage,u8 map,u8 coord,u8 reg)
     GX_SetTevAlphaIn(stage,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_TEXA);
     GX_SetTevAlphaOp(stage,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_FALSE,reg);
 }
-static void pipeline_shader_target(const gs_gx_texture_draw *d,void *destination,uint32_t destination_w,uint32_t destination_h)
+static void pipeline_shader_target(const gs_gx_texture_draw *d,void *destination,uint32_t destination_w,uint32_t destination_h,uint32_t blend)
 {
     unsigned stages=1;const gs_gx_pipeline *p=&d->pipeline;
-    if(d->hardware_blend) {
+    if(blend) {
         GX_SetNumTexGens(2);GX_SetTexCoordGen(GX_TEXCOORD1,GX_TG_MTX2x4,GX_TG_TEX1,GX_IDENTITY);
         GX_SetVtxDesc(GX_VA_TEX1,GX_DIRECT);GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_TEX1,GX_TEX_ST,GX_F32,0);
         GXTexObj obj;GX_InitTexObj(&obj,destination,destination_w,destination_h,GX_TF_RGBA8,GX_CLAMP,GX_CLAMP,GX_FALSE);
@@ -1238,7 +1240,7 @@ static void pipeline_shader_target(const gs_gx_texture_draw *d,void *destination
     GX_SetNumTevStages(stages);
 }
 static void pipeline_shader(const gs_gx_texture_draw *d)
-{pipeline_shader_target(d,destination_texture,d->coverage.width,d->coverage.height);}
+{pipeline_shader_target(d,destination_texture,d->coverage.width,d->coverage.height,d->hardware_blend);}
 
 /* Keep color on GX, and exact GS Z in a disjoint CPU shadow. Unsupported
  * fragmented masks/alpha coefficients return to the existing compact path. */
