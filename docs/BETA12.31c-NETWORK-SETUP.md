@@ -41,3 +41,20 @@ No claim of an established cause for the owner's failed network attempt. Native
 Windows receipt/SDK DHCP on a real Wii still require the short menu test. No
 BIOS/Crash/Tekken/GX-fence or FPS fix. Owner reports remain private, no logs or
 network addresses are published. The isolated Wii Limits benchmark is unchanged.
+
+## Actual validation record
+
+Build code commit `75cbe6a`, native devkitPPC r50/GCC16.1.0/libogc3.1.0, previous
+SPEED/DSI/AOT/GX/chain flags preserved. `tools/test_beta12_31c_network.py` passed
+four existing CPU/menu/config suites, network C/receiver tests (including real
+host UDP probe/ACK), new menu tests and real EE/VU/GX profile-work regression.
+The delivered ELF passed 33 PPC wire/FIFO/ABI checks plus 49 PPC API/worker/ABI
+checks. For the worker checks, SDK network/thread calls, IRQ/lazy-FPU behavior
+and the timebase are modeled; no OS concurrency, Wii network delivery or timing
+is claimed. Cases include thread/net-init/DHCP/socket/nonblock/send failures,
+persistent-worker retry, wrong-boot/stale/wrong-IP ACK rejection, target changes,
+queue full, OFF and a successful acknowledged probe.
+
+Fresh Wii DOL/ELF section equality and MEM1 gate passed: static end
+`0x815e5754`, 2,205,868 bytes remaining. Native Windows 1.1 and physical Wii
+network receipt remain unverified; use the short menu probe, not a BIOS boot.
