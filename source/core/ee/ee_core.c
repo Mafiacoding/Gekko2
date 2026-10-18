@@ -733,6 +733,11 @@ void ee_core_raise_trap(ee_state_t *st)
     st->exc_raised_this_step=1;
     ee_raise_exception(st,EE_EXC_CODE_TR,st->exc_this_pc,st->exc_in_delay_slot);
 }
+void ee_core_raise_reserved(ee_state_t *st)
+{
+    st->exc_raised_this_step=1;
+    ee_raise_exception(st,10u<<2,st->exc_this_pc,st->exc_in_delay_slot);
+}
 
 void ee_core_raise_overflow(ee_state_t *st)
 {
@@ -10621,8 +10626,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         case 0x3E: /* DSRL32 */ if (rd) GPR(rd) = GPR(rt) >> (sa + 32); break;
         case 0x3F: /* DSRA32 */ if (rd) GPR(rd) = (uint64_t)((int64_t)GPR(rt) >> (sa + 32)); break;
         default:
-            halt("unimplemented SPECIAL funct");
-            return 1;
+            ee_core_raise_reserved(st);
+            break;
         }
         break;
 
@@ -10704,8 +10709,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             st->sa_reg = (uint32_t)(((rs32 & 0x7u) ^ ((uint32_t)imm & 0x7u)) << 1);
             break;
         default:
-            halt("unimplemented REGIMM opcode");
-            return 1;
+            ee_core_raise_reserved(st);
+            break;
         }
         break;
 
@@ -10760,24 +10765,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 #include "ee_mem_switch.inc"
 
     default:
-    {
-        /* NOTE: this halt point can be reached in a way that has
-         * nothing to do with the actual opcode value - see the
-         * real-BIOS-testing note in docs/STATUS.md ("EE program
-         * counter escapes into the hardware register window" /
-         * out-of-range JALR target investigation). If `op` here is
-         * 0 (SPECIAL) with funct also reading as 0, that's the
-         * signature of this exact scenario: PC drifted through a
-         * long stretch of unpopulated ("reads as zero") memory,
-         * decoding every word as a harmless SLL/NOP, until it
-         * happened to reach a live hardware register address whose
-         * CURRENT value decoded as something genuinely invalid. */
-        char buf[96];
-        snprintf(buf, sizeof(buf), "unimplemented primary opcode 0x%02X (pc=0x%08X)",
-                 (unsigned int)op, (unsigned int)this_pc);
-        halt(buf);
-        return 1;
-    }
+        ee_core_raise_reserved(st);
+        break;
     }
 
     if (r1239_hit == 1u && this_pc == 0x0100ecccu) {

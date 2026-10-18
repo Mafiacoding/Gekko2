@@ -166,6 +166,9 @@
                 st->acc = float_to_bits(r);
                 if (!fpu_check_overflow(&st->acc)) fpu_check_underflow(&st->acc);
             } break;
+            case 0x30: /* C.F.S: unconditional false; all other FCR31 bits survive. */
+                st->fcr31 &= ~0x00800000u;
+                break;
             case 0x32: /* C.EQ.S */
                 if (fpu_double(st->fpr[fs]) == fpu_double(st->fpr[ft])) st->fcr31 |= 0x00800000u;
                 else st->fcr31 &= ~0x00800000u;
@@ -179,8 +182,8 @@
                 else st->fcr31 &= ~0x00800000u;
                 break;
             default:
-                halt("unimplemented COP1.S funct (SQRT/RSQRT/MADD/MAX/MIN family not implemented)");
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
         } break;
         case 0x14: /* COP1.W - only CVT.S.W (int32 -> float) */
@@ -188,8 +191,8 @@
                 uint32_t fd = sa, fs = rd;
                 st->fpr[fd] = float_to_bits((float)(int32_t)st->fpr[fs]);
             } else {
-                halt("unimplemented COP1.W funct");
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
             break;
         case 0x08: /* COP1 BC (branch on FP condition flag) - sub-selected
@@ -240,12 +243,12 @@
                 else { st->pc = fallthrough_pc + 4; st->next_pc = fallthrough_pc + 8; }
                 break;
             default:
-                halt("unimplemented COP1 BC variant");
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
             break;
         default:
-            halt("unimplemented COP1 sub-opcode");
-            return 1;
+                ee_core_raise_reserved(st);
+                break;
         }
         break;

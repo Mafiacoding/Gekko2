@@ -222,21 +222,13 @@
                 }
                 default:
                 {
-                    char buf[96];
-                    snprintf(buf, sizeof(buf),
-                             "unimplemented COP0 CO-format funct 0x%02X (pc=0x%08X)",
-                             (unsigned int)co_funct, (unsigned int)this_pc);
-                    halt(buf);
-                    return 1;
+                    ee_core_raise_reserved(st);
+                    break;
                 }
                 }
             } else {
-                char buf[96];
-                snprintf(buf, sizeof(buf),
-                         "unimplemented COP0 sub-opcode (rs=0x%02X, pc=0x%08X)",
-                         (unsigned int)rs, (unsigned int)this_pc);
-                halt(buf);
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
             break;
         }

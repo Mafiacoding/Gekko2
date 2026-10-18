@@ -4,29 +4,41 @@
   "items": [
     {
       "id": "EE-01",
-      "status": "offen",
+      "status": "implementiert_getestet",
       "title": "C.F.S fehlt im Interpreter und Native-Emitter",
       "source": "source/core/ee/ee_core.c",
       "gate": "RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles",
-      "tests": [],
+      "tests": [
+        "test_completion_ee_control",
+        "test_ee_cop2_branch_aot3",
+        "verify_completion_ee_control.py"
+      ],
       "implementation_commit": null
     },
     {
       "id": "EE-02",
-      "status": "skalar",
-      "title": "BC2F/T/FL/TL haben keinen nativen Emitter",
+      "status": "implementiert_getestet",
+      "title": "BC2F/T/FL/TL: native Single-Fragmente, weiter konservative Blockgrenze",
       "source": "source/core/ee/ee_core.c",
       "gate": "RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles",
-      "tests": [],
+      "tests": [
+        "test_completion_ee_control",
+        "test_ee_cop2_branch_aot3",
+        "verify_completion_ee_control.py"
+      ],
       "implementation_commit": null
     },
     {
       "id": "EE-03",
-      "status": "offen",
-      "title": "Reservierte EE-Encodings halten statt RI-Exception",
+      "status": "implementiert_getestet",
+      "title": "Unbekannte EE-Dispatchfälle liefern RI statt Emulator-Halt",
       "source": "source/core/ee/ee_core.c",
       "gate": "RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles",
-      "tests": [],
+      "tests": [
+        "test_completion_ee_control",
+        "test_ee_cop2_branch_aot3",
+        "verify_completion_ee_control.py"
+      ],
       "implementation_commit": null
     },
     {

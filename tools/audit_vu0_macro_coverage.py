@@ -44,7 +44,7 @@ def check(label, iw, expected):
     if got != expected:
         errors.append((label, hex(iw), expected, got))
 
-scalar_legal = {0x00,0x01,0x02,0x04,0x05,0x06}
+scalar_legal = {0x00,0x01,0x02,0x04,0x05,0x06,0x08}
 for rs in range(0x10):
     iw=(0x12<<26)|(rs<<21)|(3<<16)|(4<<11)
     check(f'scalar rs={rs:#04x}', iw, rs in scalar_legal)
