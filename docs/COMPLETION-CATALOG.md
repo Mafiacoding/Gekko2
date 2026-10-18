@@ -14,18 +14,18 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 | Status | Anzahl |
 |---|---:|
 | hardware_nachweis | 10 |
-| offen | 14 |
+| implementiert_getestet | 3 |
+| offen | 12 |
 | optional_abwesend | 3 |
-| skalar | 1 |
 | skalar_absicht | 1 |
 | teilweise | 39 |
 | vorhanden_pruefen | 13 |
 
 | ID | Befund / Aufgabe | Status | Code / Abnahme |
 |---|---|---|---|
-| EE-01 | C.F.S fehlt im Interpreter und Native-Emitter | offen | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
-| EE-02 | BC2F/T/FL/TL haben keinen nativen Emitter | skalar | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
-| EE-03 | Reservierte EE-Encodings halten statt RI-Exception | offen | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
+| EE-01 | C.F.S fehlt im Interpreter und Native-Emitter | implementiert_getestet | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
+| EE-02 | BC2F/T/FL/TL: native Single-Fragmente, weiter konservative Blockgrenze | implementiert_getestet | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
+| EE-03 | Unbekannte EE-Dispatchfälle liefern RI statt Emulator-Halt | implementiert_getestet | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
 | EE-04 | FPU-Flags und PS2-Mantissen-/Denormalmodell | teilweise | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
 | EE-05 | COP0/TLB/ASID/ERET/EI/DI bleiben Systembarrieren | skalar_absicht | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
 | EE-06 | CACHE/SYNC/PREF bilden nur bisherige Baseline-Semantik ab | teilweise | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |

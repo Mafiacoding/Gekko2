@@ -3338,6 +3338,13 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                 emit(ctx, enc_addi(1, 1, 16));
                 return 0;
             }
+            if (funct == 0x30u) { /* C.F.S does not inspect either operand. */
+                emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,FCR31_OFFSET));
+                emit_load_const32(ctx,SCRATCH_B,~0x00800000u);
+                emit(ctx,enc_and(SCRATCH_C,SCRATCH_A,SCRATCH_B));
+                emit(ctx,enc_stw(SCRATCH_C,CTX_REG,FCR31_OFFSET));
+                return 0;
+            }
             if (funct == 0x32 || funct == 0x34 || funct == 0x36) {
                 /* Round 906 (task #890): C.EQ.S/C.LT.S/C.LE.S -
                  * ee_core.c's real bodies (~lines 8110-8121) compare
@@ -3577,6 +3584,16 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * path, same "real, tested, roadmap-directed" scoping this
          * whole JIT arc has followed since Round 887. */
         uint32_t rs = (mips_instr >> 21) & 0x1Fu;
+        if (rs == 8u) { /* BC2F/T/FL/TL; scalar fetch retains VU interlocks. */
+            if(rt>3u)return -1;
+            emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,COP2_CTRL_OFF(29)));
+            emit(ctx,enc_rlwinm(SCRATCH_B,SCRATCH_A,23,0,8));
+            emit(ctx,enc_srawi(SCRATCH_E,SCRATCH_B,31));
+            if(!(rt&1u))emit(ctx,enc_nor(SCRATCH_E,SCRATCH_E,SCRATCH_E));
+            if(rt&2u)emit_branch_blend_likely(ctx,4+imm*4);
+            else emit_branch_blend(ctx,4+imm*4);
+            return 0;
+        }
         if (rs >= 0x10u) {
             uint32_t destmask = rs & 0xFu;
             uint32_t ft = (mips_instr >> 16) & 0x1Fu;

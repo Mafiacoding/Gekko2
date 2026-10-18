@@ -342,7 +342,7 @@ static int ee_jit_opcode_supported(uint32_t instr)
                 return 1; /* MADD.S / MSUB.S (Round 906) */
             if (funct == 0x1Eu || funct == 0x1Fu)
                 return 1; /* MADDA.S / MSUBA.S (Round 906) */
-            if (funct == 0x32u || funct == 0x34u || funct == 0x36u)
+            if (funct == 0x30u || funct == 0x32u || funct == 0x34u || funct == 0x36u)
                 return 1; /* C.EQ.S / C.LT.S / C.LE.S (Round 906) */
             if (funct == 0x24u)
                 return 1; /* CVT.W.S (Round 906b) */
@@ -396,12 +396,11 @@ static int ee_jit_opcode_supported(uint32_t instr)
          * was being compiled correctly by translate_one() but was NEVER
          * actually reached on real GEKKO hardware, unconditionally
          * falling back to the interpreter for every single MMI
-         * instruction a real game/BIOS executes. A handful of rare MMI
-         * opcodes remain genuinely unimplemented by design (MADD/MADDU/
-         * MADD1/MADDU1, MULT1/MULTU1/DIV1/DIVU1, QFSRV) - those
-         * safely fall through translate_one()'s own `return -1` and the
-         * same fallback path as every other not-yet-supported opcode
-         * project-wide, same safety argument as op==0x12 above. */
+         * instruction a real game/BIOS executes. This historical gate
+         * now reaches all 103 audited MMI forms, including the later
+         * MADD, HI1/LO1 and QFSRV implementations. Reserved encodings
+         * still decline in translate_one(); acceptance alone does not
+         * establish architectural or hardware correctness. */
         return 1;
     }
     if (op == 0x00u) {

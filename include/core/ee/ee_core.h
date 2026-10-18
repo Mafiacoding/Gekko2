@@ -537,6 +537,7 @@ uint32_t ee_core_block_memory_boundary(ee_state_t *,uint32_t,uint32_t);
 uint32_t ee_core_block_delay_boundary(ee_state_t *,uint32_t,uint32_t);
 uint64_t ee_core_get_fused_boundaries(void);
 void ee_core_raise_trap(ee_state_t *st);
+void ee_core_raise_reserved(ee_state_t *st);
 void ee_core_raise_overflow(ee_state_t *st);
 
 
