@@ -30,6 +30,9 @@ Build in a fresh directory with devkitPPC r50/GCC 16.1.0/libogc 3.1.0:
 `tools/build_beta12_31a_status.sh`. SPEED, DSI, AOT, GX and chain compile flags
 match BETA12.31; chain/PSM/risk defaults and saved settings are preserved.
 DOL/ELF section equality and the static MEM1 gate are checked by the script.
+Actual result: all four targeted suites passed. The fresh chain-capable Wii
+build passed DOL/ELF equality and MEM1 checks; static end `0x815dae34`,
+2,249,164 bytes remain. No physical Wii/Dolphin run of this patch.
 There are no core/JIT/GX changes in this patch. Previous BETA12.31 full-suite
 results belong to that earlier commit and are not new tests of this patch.
 
