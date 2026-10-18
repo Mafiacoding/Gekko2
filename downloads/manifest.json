@@ -1,0 +1,42 @@
+{
+  "release": "BETA12.31e-IOS-ADDRESS-FIX",
+  "build_commit": "c1a55aabed0307a3ef5ee449e123fdeffd342cd7",
+  "source_commit": "43933574b17d81c9c5d3a8e2b17c2b98bd8a1f64",
+  "receiver_files": {
+    "receiver.py": "b51de225eff19959bcf59ba80ac17c56c6740139603fc216739d2583c83ed412",
+    "SETUP-SD.cmd": "77492a64e5bbcf973e07d799499b255eab83df0934807db1ec7bad7334d4e2fa",
+    "START-LOGGER.cmd": "6eb096a071c2cf0d8a980194b6f38d399d0a9771ab300a1e65d340f1b1c40249",
+    "README-DE.md": "b93cadf2b2618b34db80eb137061cd918fd1cc07b2e562c504981ee95403486e"
+  },
+  "sdk": "devkitPPC r50 GCC16.1.0 / libogc3.1.0",
+  "targeted_menu_config_suites": 4,
+  "linked_ppc_wire_checks": 33,
+  "linked_ppc_worker_api_checks": 58,
+  "linked_libogc_ios_boundary_checks": 4,
+  "linked_libogc_udp_transport_verified": true,
+  "host_network_loopback_verified": true,
+  "real_profile_work_verified": true,
+  "memory": {
+    "mem1_static_end": "0x815e57b4",
+    "mem1_remaining_bytes": 2205772,
+    "minimum_remaining_bytes": 1048576,
+    "passed": true
+  },
+  "physical_wii_network_verified": false,
+  "windows_native_verified": false,
+  "dolphin_verified": false,
+  "gx_fault_fixed": false,
+  "bios_tiles_fixed": false,
+  "fps_gain_verified": false,
+  "telemetry_factory_default": "OFF",
+  "binaries": {
+    "dol": {
+      "bytes": 2110468,
+      "sha256": "f89f13b3bc3170f6c1cf929a4b4df138465811077930c59d36f63d1cf2a762bb"
+    },
+    "elf": {
+      "bytes": 8517024,
+      "sha256": "ea671b2d9732d257fab37ba4dbca666c484cc40bc7f63540e8ef9b555dd1ce4a"
+    }
+  }
+}
