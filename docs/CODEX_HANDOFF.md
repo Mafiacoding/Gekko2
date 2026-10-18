@@ -1,5 +1,12 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.32 general hotpaths:** branch `codex/beta12-32-hotpaths-gx`;
+[report](BETA12.32-HOTPATHS-GX.md). Align frontend RAM code floor to guarded 1 MiB backend,
+one cache-way traversal, remove large GX per-pass descriptor copies,
+and extend submission fences to native/seed/flat paths with 64-begin chunks.
+GX stream equivalence checked; physical missing-PE-token timeout still OPEN.
+Network telemetry worked on owner Wii in BETA12.31e; no new Wii speed claim.
+
 **BETA12.31e IOS address ABI fix:** branch `codex/network-ios-address-fix`;
 [report](BETA12.31e-IOS-ADDRESS-FIX.md). Send/receive the 8-byte IOS IPv4 prefix and accept
 8-byte ACK peers; preserve endpoint/Windows compatibility. Physical receipt

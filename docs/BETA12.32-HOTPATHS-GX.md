@@ -87,3 +87,51 @@ cannot expose stale canonical VRAM. The existing build switch controls this
 coverage; AsyncControl deliberately omits these guards. A tall synthetic
 triangle checks exact shader/payload equivalence, maximum queued begins and
 failure specifically at submission reason 3, with pending ownership retained.
+
+## Final results / delivery
+
+Wii code build: `edf0674`; devkitPPC r50 GCC16.1.0, libogc3.1.0, O1 and prior
+SPEED/DSI/AOT/GX flags. Factory experiment defaults and saved preferences are
+unchanged. Primary SD app contains chain-capable code with the existing runtime
+experiment gate. Review binaries also include the chain-free control and an
+explicit AsyncControl. The latter omits submission guards for comparison;
+ordinary memory-ownership fences remain. It is not the primary SD app.
+
+- 83 host suites PASS. The existing network/config/menu/profile-work regression
+  and linked network worker/IOS-boundary/transport checks PASS.
+- 16 final-ELF PPC suites PASS, with each result recording its actual ELF SHA-256;
+  the release packager rejects mismatched artifacts. These cover GPR128/HI/LO/SA,
+  branches/delay exceptions, mapping/TLB/DMA-SMC, scheduler/IRQ and GS/GIF/VIF/IPU.
+- Six source placements match the scalar GPR128, PC/nextPC, COP0 and retirement
+  oracle, including page crossings, the newly admitted interval and excluded
+  low-kernel text. Warm 64-ADDIU work at physical 1 MiB: **59,029 -> 35,494**
+  executed PPC instructions (~39.9% less). This is a synthetic instruction-count
+  comparison, NOT a Wii FPS or cycle measurement; compilation costs are excluded.
+- Cache budget-range workload: 5,700 calls, **520,192 -> 512,292** PPC instructions
+  (~1.5% less), same owner selection, mutation invalidation and interval hits.
+- Actual resident texture stack frame: **9,192 -> 2,360 bytes**, verified in the
+  delivered PPC disassembly. Avoid the 6,832-byte descriptor copy each pass.
+- All **1,529** synthetic submitted primitives retain identical vertex payload
+  and normalized shader/texture configuration fingerprints in old, guarded and
+  async-control builds. Texture-object stack addresses are normalized; SDK
+  calls, cache/IRQ/lazy-FPU services and IOS/GPU completion are modeled.
+- Submission coverage: 44 accepted native draws get guards, four unsupported
+  cases reject without submission. Tall triangle: **373 -> 64** maximum native
+  begins before a completion fence (AsyncControl: 373). This is a CPU command
+  submission bound, NOT a measured physical GP queue depth.
+- A deliberately stale token in the intermediate 64-begin fence fails at reason
+  3, aborts once, retains pending VRAM and blocks subsequent GPU draws. The separate
+  fence suite also checks lost callback, token wrap and stale idle rejection.
+- Three fresh Wii DOL/ELF section checks and static MEM1 gates PASS. Primary
+  static end `0x815e58f4`, remaining **2,205,452 bytes** (minimum 1 MiB).
+
+The 280-row owner benchmark was used privately; no owner files are packaged.
+The implemented fixes are general code admission, cache traversal, descriptor
+copy elimination and missing/insufficient native submission barriers. They are
+not a completed emulator or a proven BIOS/game graphics correction. **The real
+Wii timeout and net speed effect remain unverified after these changes.**
+Additional fences may reduce CPU/GP overlap; use the explicit control for an
+isolated comparison rather than claiming a measured speed gain. No longer
+watchdog timeout, fake completion, fabricated framebuffer or automatic PSM/risk
+activation was introduced. Existing Windows Logger1.1 and saved IP/port remain
+compatible; the next normal run can use the already-working capture workflow.

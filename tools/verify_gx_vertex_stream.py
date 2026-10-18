@@ -34,7 +34,7 @@ int run(gs_gx_texel_fn s,const int *xy,const gs_gx_pipeline *p,unsigned flags){
  u.mem_write(0x817c0000,raw.read_bytes());syms['test_run']=0x817c0000
 # Direct attributes used by the real rendering paths: POS XYZ F32, CLR RGBA8,
 # TEX ST F32. Keep descriptor state across submissions like the real CP.
-desc={};pending=None;draws=0;written=0;payload=hashlib.sha256();configuration=[];token=0;fail_fence=False;fake_clock=0;aborts=0;peak_begins=0
+desc={};pending=None;draws=0;written=0;payload=hashlib.sha256();configuration=[];token=0;fail_fence=False;fake_clock=0;aborts=0;peak_begins=0;objects={}
 names={v:k for k,v in syms.items() if k.startswith(('GX_','ps_guMtx')) or k in ('guOrtho','gs_gx_dump_flush','gx_wait_timeout_marker')}
 def end():
  global pending,draws
@@ -45,6 +45,12 @@ def end():
 def gpu(uc,address,size,user):
  global pending,written,token,fake_clock,aborts,peak_begins
  instruction=int.from_bytes(uc.mem_read(address,4),'big')
+ # SDK cache/IRQ barriers rely on Wii lazy FPU restoration. Model that
+ # platform service so tall draws are not limited by the loader's 32 retries.
+ if instruction&~(31<<21)==0x7c000124:
+  source=(instruction>>21)&31
+  uc.reg_write(UC_PPC_REG_MSR,uc.reg_read(UC_PPC_REG_0+source)|0x2000)
+  uc.reg_write(UC_PPC_REG_PC,address+4);return
  if fail_fence and instruction&~(31<<21)==0x7c0c42e6:
   fake_clock+=1000000;uc.reg_write(UC_PPC_REG_0+((instruction>>21)&31),fake_clock);uc.reg_write(UC_PPC_REG_PC,address+4);return
  if address==syms['gx_vtx_report']:end();return
@@ -57,6 +63,28 @@ def gpu(uc,address,size,user):
  if name=='GX_AbortFrame':aborts+=1
  if name=='GX_GetGPStatus':
   for r,v in zip(range(3,8),(0,1,1,1,0)):uc.mem_write(reg(r),bytes([v]))
+ # Normalize stack addresses: compare shader/texture inputs, not pointers
+ # to local GX objects that legitimately move after stack-copy removal.
+ arities={'GX_SetTevOrder':4,'GX_SetTevColorOp':6,'GX_SetTevAlphaOp':6,
+          'GX_SetVtxAttrFmt':5,'GX_SetNumChans':1,'GX_SetChanCtrl':7,
+          'GX_SetTevKColorSel':2,'GX_SetTevKAlphaSel':2,'GX_SetZMode':3,
+          'GX_SetZTexture':3,'GX_SetZCompLoc':1,'GX_SetColorUpdate':1,
+          'GX_SetAlphaUpdate':1,'GX_SetScissor':4,'GX_SetTexCoordGen':4}
+ if name in arities:configuration.append((name,*[reg(i) for i in range(3,3+arities[name])]))
+ if name in ('GX_SetTevColor','GX_SetTevKColor','GX_SetTevColorS10'):
+  configuration.append((name,reg(3),bytes(uc.mem_read(reg(4),8 if name.endswith('S10') else 4)).hex()))
+ if name=='GX_InitTexObj':
+  image=hashlib.sha256(bytes(uc.mem_read(reg(4),reg(5)*reg(6)*4))).hexdigest()
+  objects[reg(3)]=(image,*[reg(i) for i in range(5,11)])
+  configuration.append((name,objects[reg(3)]))
+ if name=='GX_InitTexObjLOD':
+  lod=tuple(uc.reg_read(UC_PPC_REG_FPR0+i) for i in range(1,4))
+  objects[reg(3)]=(*objects[reg(3)],'LOD',reg(4),reg(5),lod)
+  configuration.append((name,objects[reg(3)]))
+ if name=='GX_LoadTexObj':configuration.append((name,reg(4),objects[reg(3)]))
+ if name=='GX_LoadTexMtxImm':configuration.append((name,reg(4),reg(5),bytes(uc.mem_read(reg(3),48)).hex()))
+ if name=='guOrtho':configuration.append((name,*[uc.reg_read(UC_PPC_REG_FPR0+i) for i in range(1,7)]))
+ if name in ('GX_LoadPosMtxImm','GX_LoadProjectionMtx'):configuration.append((name,reg(4)))
  if name=='GX_ClearVtxDesc':desc.clear()
  if name=='GX_SetVtxDesc':desc[reg(3)]=reg(4)
  if name in ('GX_SetNumTexGens','GX_SetNumTevStages'):configuration.append((name,reg(3)))
@@ -116,11 +144,10 @@ if guards:
  print('PASS per-call native submission coverage: 44 accepted draws guarded, four rejected draws issue no submission fence')
  # The real resident route must preserve pending ownership on a stale token,
  # even when the modeled CP reports idle. No additional draw may succeed.
- word(syms['efb_height'],64);u.mem_write(xy,struct.pack('>6i',2,3,30,3,2,29))
- assert call('test_run',sample,xy,pipe,0)==1;end()
  fail_fence=True
- assert call('test_run',sample,xy,pipe,0)==0
+ assert call('test_run',sample,xy,pipe,64)==0
+ assert int.from_bytes(u.mem_read(syms['gx_ctx_begins'],4),'big')==64
  call('gs_gx_watchdog_count',1);assert u.reg_read(UC_PPC_REG_4)==3
  assert call('gs_gx_faulted')==1 and call('gs_mem_gpu_pending')==1 and aborts==1
- previous=draws;assert call('test_run',sample,xy,pipe,0)==0 and draws==previous
+ previous=draws;assert call('test_run',sample,xy,pipe,64)==0 and draws==previous
  print('PASS resident submission failure: stale token/idle cannot complete; abort once, pending VRAM retained, further GPU draws blocked')

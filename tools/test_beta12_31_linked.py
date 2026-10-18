@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run independent linked PPC gates concurrently; each process owns its model."""
-import argparse,concurrent.futures,json,subprocess,sys,time
+import argparse,concurrent.futures,hashlib,json,subprocess,sys,time
 from pathlib import Path
 root=Path(__file__).resolve().parents[1];p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('elf',type=Path);p.add_argument('--control-elf',type=Path,required=True);p.add_argument('--nm',required=True);p.add_argument('--jobs',type=int,default=2);p.add_argument('--output-json',type=Path,required=True);a=p.parse_args()
@@ -8,8 +8,9 @@ checks=[(x,x,a.elf) for x in ('verify_chain_residency_linked','verify_chain_alu_
 for label,elf in (('chain',a.elf),('control',a.control_elf)):
  for script in ('verify_completion_ee_linked','verify_gs_vif_accuracy_linked','verify_profile_r1332'):checks.append((script+'_'+label,script,elf))
 def run(item):
- name,script,elf=item;begin=time.monotonic();r=subprocess.run([sys.executable,str(root/'tools'/f'{script}.py'),str(elf.resolve()),'--nm',a.nm],cwd=root,capture_output=True,text=True)
- return dict(test=name,exit_code=r.returncode,seconds=round(time.monotonic()-begin,2),output=r.stdout+r.stderr)
+ name,script,elf=item;digest=hashlib.sha256(elf.read_bytes()).hexdigest();begin=time.monotonic();r=subprocess.run([sys.executable,str(root/'tools'/f'{script}.py'),str(elf.resolve()),'--nm',a.nm],cwd=root,capture_output=True,text=True)
+ unchanged=hashlib.sha256(elf.read_bytes()).hexdigest()==digest
+ return dict(test=name,elf=elf.name,elf_sha256=digest,exit_code=r.returncode if unchanged else 99,seconds=round(time.monotonic()-begin,2),output=r.stdout+r.stderr+('' if unchanged else '\nERROR ELF changed during verification'))
 rows=[];a.output_json.parent.mkdir(parents=True,exist_ok=True)
 with concurrent.futures.ThreadPoolExecutor(max_workers=max(1,min(a.jobs,4))) as pool:
  for f in concurrent.futures.as_completed([pool.submit(run,x) for x in checks]):
