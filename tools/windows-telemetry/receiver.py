@@ -87,7 +87,7 @@ def collect(args):
  try:candidates=socket.gethostbyname_ex(socket.gethostname())[2]
  except OSError:candidates=[]
  print('PC-IPv4 fuer Gekko2-Menue (passenden LAN-Adapter waehlen):',', '.join(candidates) or 'siehe Windows ipconfig',flush=True)
- first=None;waiting=time.monotonic();datagrams=0;filtered=0;ack_sent=0;ack_errors=0;stop_reason='packet_limit'
+ first=None;waiting=time.monotonic();datagrams=0;filtered=0;ack_sent=0;ack_errors=0;receive_errors=0;last_receive_error=0;stop_reason='packet_limit'
  try:
   with rawpath.open('x',encoding='utf-8') as log:
    while len(records)<10000:
@@ -96,6 +96,13 @@ def collect(args):
     if first is None and now-waiting>=args.wait_seconds:stop_reason='no_valid_packets';break
     try:packet,address=sock.recvfrom(WIRE.size+1)
     except socket.timeout:continue
+    except ConnectionResetError as error:
+     # Windows can surface UDP ICMP unreachable after the Wii closes its socket.
+     # Keep the receiver/report alive; this is not a malformed telemetry packet.
+     receive_errors+=1;last_receive_error=getattr(error,'winerror',None) or error.errno or 0;continue
+    except OSError as error:
+     receive_errors+=1;last_receive_error=getattr(error,'winerror',None) or error.errno or 0
+     stop_reason='receive_error';break
     datagrams+=1
     if source and address[0]!=source:filtered+=1;continue
     try:r=decode(packet)
@@ -113,7 +120,7 @@ def collect(args):
  report=summary(records);report['invalid_packets']=invalid
  report['receiver']=dict(version='1.1',listen=args.listen,port=args.port,pc_ipv4_candidates=candidates,
  expected_wii_ip=args.wii_ip,first_sender=source,datagrams=datagrams,filtered_datagrams=filtered,
- acknowledgments_sent=ack_sent,acknowledgment_errors=ack_errors,stop_reason=stop_reason,
+ acknowledgments_sent=ack_sent,acknowledgment_errors=ack_errors,receive_errors=receive_errors,last_receive_error=last_receive_error,stop_reason=stop_reason,
  elapsed_ms=round(1000*(time.monotonic()-waiting)))
  reportpath=directory/f'gekko2-network-{stamp}-summary.json';reportpath.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
  archive=directory/f'gekko2-network-{stamp}.zip'

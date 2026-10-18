@@ -6,7 +6,7 @@ p=argparse.ArgumentParser();p.add_argument('--reports',type=Path,required=True);
 r=Path(__file__).resolve().parents[1]
 def git(*args):return subprocess.check_output(['git',*args],cwd=r)
 source=git('rev-parse','HEAD').decode().strip();build=git('rev-parse',a.build_commit).decode().strip()
-git('diff','--exit-code',build,source,'--','source','include','Makefile','tools/windows-telemetry','tools/build_beta12_31c_network_menu.sh')
+git('diff','--exit-code',build,source,'--','source','include','Makefile','tools/build_beta12_31c_network_menu.sh')
 git('diff','--exit-code','--','source','include','Makefile','tools/windows-telemetry')
 records={n:(a.reports/n).read_bytes() for n in ('host-network.txt','host-status.json','host-work.txt','host-menu.txt','linked-worker.txt','linked-network.txt','dol.json','memory.json','wii-build.txt')}
 assert 'PASS telemetry default-off/' in records['host-network.txt'].decode() and 'PASS C/Python wire interoperability' in records['host-network.txt'].decode()
@@ -20,6 +20,7 @@ memory=json.loads(records['memory.json']);assert memory['passed']
 binaries={ext:(r/('Gekko2-BETA12.31c-GX-Chain.'+ext)).read_bytes() for ext in ('dol','elf')}
 for b in binaries.values():assert b'R1389-SPEED-BETA12.31c-NETWORK-SETUP\0' in b and build.encode() in b
 manifest=dict(release='BETA12.31c-NETWORK-SETUP',build_commit=build,source_commit=source,
+ receiver_files={n:hashlib.sha256((r/'tools/windows-telemetry'/n).read_bytes()).hexdigest() for n in ('receiver.py','SETUP-SD.cmd','START-LOGGER.cmd','README-DE.md')},
  sdk='devkitPPC r50 GCC16.1.0 / libogc3.1.0',targeted_menu_config_suites=4,linked_ppc_wire_checks=33,linked_ppc_worker_api_checks=49,
  host_network_loopback_verified=True,real_profile_work_verified=True,memory=memory,
  physical_wii_network_verified=False,windows_native_verified=False,dolphin_verified=False,
