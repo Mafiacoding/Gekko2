@@ -23,6 +23,8 @@ with tempfile.TemporaryDirectory() as temp:
  g=result['groups'][0];assert g['sequence_gaps']==1 and g['interval_ms']==10000
  assert g['scopes']['cpu']['total_tb']==sum(newer['cpu']['ticks']) # cumulative, no double counting
  assert g['scopes']['present']['total_tb']==sum(newer['present']['ticks'])
+ between=copy.deepcopy(r);between['seq']=1;between['event']=6
+ no_gap=m.summary([r,between,newer]);assert no_gap['test_packets']==1 and no_gap['groups'][0]['sequence_gaps']==0
  different=copy.deepcopy(newer);different['seq']=3;different['active_mask']=0;different['epoch']=2
  assert len(m.summary([r,different])['groups'])==2
  assert any('interpreter' in w for w in m.summary([different])['groups'][0]['warnings'])

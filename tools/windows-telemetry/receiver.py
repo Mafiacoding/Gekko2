@@ -29,8 +29,8 @@ def summary(records):
  for r in records:unique.setdefault((r['sender'],r['boot'],r['seq']),r)
  groups={};streams={};probes=0
  for r in unique.values():
-  if r['event']==6:probes+=1;continue
   stream=(r['sender'],r['boot']);streams.setdefault(stream,[]).append(r['seq'])
+  if r['event']==6:probes+=1;continue
   key=(r['sender'],r['boot'],r['session'],r['epoch'],r['build'],r['commit'],r['active_mask'],r['gx'],r['experiments'])
   g=groups.setdefault(key,dict(latest=r,rows=0,core_tb=0,present_tb=0,log_tb=0,interval_ms=0,ee_retired=0,presents=0,guest_vblanks=0))
   g['rows']+=1
