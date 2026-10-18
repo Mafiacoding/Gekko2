@@ -542,6 +542,17 @@ static int gx_cpu_wait(unsigned reason)
  int result=gx_cpu_wait_profile_impl(reason);
  gp_leave(profile_previous);return result;
 }
+/* Honor the release build's existing guard on every resident submission,
+ * including seed uploads and the later native-triangle path. Completion
+ * does not import guest VRAM; failure must preserve pending ownership. */
+static int gx_resident_submit_done(void)
+{
+#ifdef GEKKO2_GX_RESIDENT_FENCE
+ return gx_cpu_wait(3u);
+#else
+ return 1;
+#endif
+}
 
 int gs_gx_ready(void){return initialized;}
 int gs_gx_render_active(void){return initialized&&render_enabled;}
@@ -787,6 +798,7 @@ static int surface_ensure_height(const gs_gx_flat_draw *draw,uint32_t h)
   for(uint32_t xx=x;xx<end;xx+=4u)surface_seeded[(y/4u)*(draw->bw/4u)+xx/4u]=1;
   texture_in_flight=1;surface_texture_valid=0;
   if(!gs_mem_gpu_mark_pending()){gx_cpu_wait(0);surface->active=0;return 0;}
+  if(!gx_resident_submit_done())return 0;
   uploaded+=bytes;surface_counts[9]++;x=end;
  }
  surface_counts[5]+=uploaded;
@@ -817,6 +829,7 @@ static int surface_draw_flat(const gs_gx_flat_draw *draw)
  }
  if(quads)GX_End();surface_texture_valid=0;
  if(!gs_mem_gpu_mark_pending())return 0;
+ if(!gx_resident_submit_done())return 0;
  surface_counts[1]++;work_counts[0]++;work_counts[1]+=quads;return 1;
 }
 static int surface_draw_textured(gs_gx_texture_draw *d,uint32_t bytes)
@@ -881,11 +894,7 @@ static int surface_draw_textured(gs_gx_texture_draw *d,uint32_t bytes)
  }
  GX_SetAlphaCompare(GX_ALWAYS,0,GX_AOP_AND,GX_ALWAYS,0);
  surface_texture_valid=0;if(!gs_mem_gpu_mark_pending())return 0;
-#ifdef GEKKO2_GX_RESIDENT_FENCE
- /* Diagnostic ownership boundary: finish resident commands before the
-  * caller changes GS state or falls back to CPU work. */
- if(!gx_cpu_wait(0))return 0;
-#endif
+ if(!gx_resident_submit_done())return 0;
  surface_counts[1]++;work_counts[0]++;work_counts[1]+=quads*passes;
  texture_counts[1]++;texture_counts[2]+=bytes;return 1;
 }
@@ -1666,6 +1675,7 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
 
  GX_SetScissor(0,0,surface->width,surface->height);texture_in_flight=1;surface_texture_valid=0;
  if(!gs_mem_gpu_mark_pending())return 0;
+ if(!gx_resident_submit_done())return 0;
  if(p->zwrite)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
   if(vertex_z&&!(native_actions[y*d->columns+x]&GS_GX_WRITE_Z))continue;
   uint32_t z=vertex_z?native_fragment_z(d->coverage.x+x,d->coverage.y+y,xy,vertex_z,inv):p->z;

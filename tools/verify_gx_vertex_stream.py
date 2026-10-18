@@ -7,7 +7,7 @@ exec(compile(Path(__file__).with_name('ee_ppc_fixture_internal.py').read_text(),
 from unicorn import UC_HOOK_MEM_WRITE
 import hashlib
 u.mem_map(0x90000000,16*1024*1024);heap=0x90000000;heap_limit=0x91000000
-u.mem_map(0xcc008000,4096)
+u.mem_map(0xcc008000,4096);u.mem_map(0xcc001000,4096);u.mem_map(0xcc003000,4096)
 xy=0x817a0000;pipe=xy+64;sample=xy+256
 u.mem_write(xy,struct.pack('>6i',2,3,30,3,2,29))
 u.mem_write(pipe,bytes(128));u.mem_write(pipe,struct.pack('>14I',16384,0,0,0,1,128,0,0,1,0,1,128,0,1))
@@ -15,20 +15,27 @@ u.mem_write(sample,struct.pack('>2I',0x3c608011,0x60632233)+struct.pack('>I',0x4
 with tempfile.TemporaryDirectory() as td:
  src=Path(td)/'call.c';exe=Path(td)/'call.elf';raw=Path(td)/'call.bin'
  src.write_text('''#include "core/hw/gs_gx.h"
+extern int surface_draw_textured(gs_gx_texture_draw *,unsigned);
 int run(gs_gx_texel_fn s,const int *xy,const gs_gx_pipeline *p,unsigned flags){
+ if(flags&32){
+  gs_gx_texture_draw d;int axis[4]={0,1,2,3};
+  if(!gs_gx_prepare_texture(&d,0,0,64,2,3,4,4,axis,axis,1,1,0))return 0;
+  d.pipeline=*p;d.pipeline.pabe=1;d.hardware_blend=1;
+  return surface_draw_textured(&d,d.tw*d.th*4);
+ }
  unsigned z[3]={128,128,128};float uv[6]={0,0,1,0,0,1},q[3]={1,1,1};unsigned rgba[3]={0x80404040,0x80408040,0x80804040};
  gs_gx_native_color c={.rgba=0x80404040,.tcc=1,.tfx=(flags>>2)&3,.target_height=64,
  .fog_enabled=(flags>>1)&1,.fog_color=0x123456,.fog={64,128,255}};
  if(flags&16)return gs_gx_draw_shaded_triangle(0,0,64,2,3,30,29,xy,0,s,p);
  return gs_gx_draw_native_triangle_ex(0,0,64,2,3,30,29,xy,uv,q,flags&1?rgba:0,4,4,0,0,0,0,s,p,z,&c);
 }''')
- subprocess.run([cc,'-O2','-mcpu=750','-G0','-ffreestanding','-nostdlib','-I'+str(root/'include'),'-Wl,-Ttext=0x817c0000','-Wl,-e,run','-Wl,--defsym,gs_gx_draw_native_triangle_ex='+hex(syms['gs_gx_draw_native_triangle_ex']),'-Wl,--defsym,gs_gx_draw_shaded_triangle='+hex(syms['gs_gx_draw_shaded_triangle']),str(src),'-o',str(exe)],check=True)
+ subprocess.run([cc,'-O2','-mcpu=750','-G0','-ffreestanding','-nostdlib','-I'+str(root/'include'),'-Wl,-Ttext=0x817c0000','-Wl,-e,run','-Wl,--defsym,gs_gx_draw_native_triangle_ex='+hex(syms['gs_gx_draw_native_triangle_ex']),'-Wl,--defsym,gs_gx_draw_shaded_triangle='+hex(syms['gs_gx_draw_shaded_triangle']),'-Wl,--defsym,gs_gx_prepare_texture='+hex(syms['gs_gx_prepare_texture']),'-Wl,--defsym,surface_draw_textured='+hex(syms['surface_draw_textured']),'-Wl,--defsym,memcpy='+hex(syms['memcpy']),str(src),'-o',str(exe)],check=True)
  subprocess.run([oc,'-O','binary','-j','.text','-j','.rodata',str(exe),str(raw)],check=True)
  u.mem_write(0x817c0000,raw.read_bytes());syms['test_run']=0x817c0000
 # Direct attributes used by the real rendering paths: POS XYZ F32, CLR RGBA8,
 # TEX ST F32. Keep descriptor state across submissions like the real CP.
-desc={};pending=None;draws=0;written=0;payload=hashlib.sha256();configuration=[]
-names={v:k for k,v in syms.items() if k.startswith(('GX_','ps_guMtx')) or k in ('guOrtho','gs_gx_dump_flush')}
+desc={};pending=None;draws=0;written=0;payload=hashlib.sha256();configuration=[];token=0;fail_fence=False;fake_clock=0;aborts=0
+names={v:k for k,v in syms.items() if k.startswith(('GX_','ps_guMtx')) or k in ('guOrtho','gs_gx_dump_flush','gx_wait_timeout_marker')}
 def end():
  global pending,draws
  if pending is None:return
@@ -36,11 +43,19 @@ def end():
  assert written==expected,(count,attributes,expected,written)
  pending=None;draws+=1
 def gpu(uc,address,size,user):
- global pending,written
+ global pending,written,token,fake_clock,aborts
+ instruction=int.from_bytes(uc.mem_read(address,4),'big')
+ if fail_fence and instruction&~(31<<21)==0x7c0c42e6:
+  fake_clock+=1000000;uc.reg_write(UC_PPC_REG_0+((instruction>>21)&31),fake_clock);uc.reg_write(UC_PPC_REG_PC,address+4);return
  if address==syms['gx_vtx_report']:end();return
  name=names.get(address)
  if not name:return
  reg=lambda n:uc.reg_read(UC_PPC_REG_0+n)
+ if name=='GX_GetDrawSync':uc.reg_write(UC_PPC_REG_3,token)
+ if name=='GX_SetDrawSync' and not fail_fence:token=reg(3)&65535
+ if name=='GX_AbortFrame':aborts+=1
+ if name=='GX_GetGPStatus':
+  for r,v in zip(range(3,8),(0,1,1,1,0)):uc.mem_write(reg(r),bytes([v]))
  if name=='GX_ClearVtxDesc':desc.clear()
  if name=='GX_SetVtxDesc':desc[reg(3)]=reg(4)
  if name in ('GX_SetNumTexGens','GX_SetNumTevStages'):configuration.append((name,reg(3)))
@@ -78,4 +93,15 @@ for blend in (0,1):
  word(pipe+6*4,blend);word(pipe+8*4,2 if blend else 1);word(pipe+9*4,2);word(pipe+11*4,20)
  assert call('test_run',sample,xy,pipe,16)==1
  end()
+assert call('test_run',sample,xy,pipe,32)==1;end()
+call('gs_gx_sync_count',3);guards=(u.reg_read(UC_PPC_REG_3)<<32)|u.reg_read(UC_PPC_REG_4)
+print('GX_SUBMISSION_FENCES',guards)
 print('GX_SEMANTICS',json.dumps({'vertex_sha256':payload.hexdigest(),'configuration_sha256':hashlib.sha256(json.dumps(configuration).encode()).hexdigest(),'primitives':draws},sort_keys=True))
+if guards:
+ # The real resident route must preserve pending ownership on a stale token,
+ # even when the modeled CP reports idle. No additional draw may succeed.
+ fail_fence=True
+ assert call('test_run',sample,xy,pipe,0)==0
+ assert call('gs_gx_faulted')==1 and call('gs_mem_gpu_pending')==1 and aborts==1
+ previous=draws;assert call('test_run',sample,xy,pipe,0)==0 and draws==previous
+ print('PASS resident submission failure: stale token/idle cannot complete; abort once, pending VRAM retained, further GPU draws blocked')

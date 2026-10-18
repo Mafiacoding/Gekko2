@@ -965,9 +965,10 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         gekko2_opt_enabled(GEKKO2_OPT_EE_JIT),gekko2_opt_enabled(GEKKO2_OPT_IOP_JIT),gekko2_opt_enabled(GEKKO2_OPT_VU_JIT),
         gekko2_opt_enabled(GEKKO2_OPT_NATIVE_LINKS),gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY),gekko2_opt_enabled(GEKKO2_OPT_WORD_ALLOCATION),
         gekko2_opt_enabled(GEKKO2_OPT_GX_SOURCE_CACHE),gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD),gekko2_opt_enabled(GEKKO2_OPT_GX_DISJOINT_WRITES));
-    fprintf(f,"GX_SYNC reuse=%llu readback=%llu present=%llu reuse_tb=%llu readback_tb=%llu present_tb=%llu\n",
+    fprintf(f,"GX_SYNC reuse=%llu readback=%llu present=%llu reuse_tb=%llu readback_tb=%llu present_tb=%llu submit=%llu submit_tb=%llu\n",
       (unsigned long long)gs_gx_sync_count(0),(unsigned long long)gs_gx_sync_count(1),(unsigned long long)gs_gx_sync_count(2),
-      (unsigned long long)gs_gx_sync_count(4),(unsigned long long)gs_gx_sync_count(5),(unsigned long long)gs_gx_sync_count(6));
+      (unsigned long long)gs_gx_sync_count(4),(unsigned long long)gs_gx_sync_count(5),(unsigned long long)gs_gx_sync_count(6),
+      (unsigned long long)gs_gx_sync_count(3),(unsigned long long)gs_gx_sync_count(7));
     fprintf(f,"EE_BLOCK runs=%llu retired=%llu native_successors=%llu dispatch_hits=%llu\n",(unsigned long long)ee_jit_get_block_count(),(unsigned long long)ee_jit_get_block_retired(),(unsigned long long)ee_jit_get_native_successors(),(unsigned long long)ee_jit_get_dispatch_hits());
 #ifdef GEKKO2_EE_AOT
     fprintf(f,"EE_AOT blocks=%u retired=%llu\n",ee_aot_block_count(),(unsigned long long)ee_aot_retired_count());

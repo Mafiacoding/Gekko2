@@ -59,3 +59,23 @@ This removes repeated stack copies; it is not a claimed fix for the observed
 missing PE token. Compare stable GX configuration arguments and all actual PPC
 vertex FIFO bytes against the old ELF, including resident shaded and additive
 routes. No new experimental option/default or arbitrary hardware timeout.
+
+## Resident submission fence coverage
+
+The existing GEKKO2_GX_RESIDENT_FENCE switch already fenced the older resident
+textured route. It did NOT fence the later native-triangle path, seed uploads
+or resident flat draws. The previous owner timeout accumulated 320 begins
+before its ownership wait; a native source-alpha draw was among recent work.
+That correlation alone does not identify the exclusive hardware cause.
+
+Apply the existing switch consistently to these submission boundaries after
+marking GPU ownership, including all seed chunks. Use the same bounded fresh
+PE-token proof and sticky failure path, not a longer timeout or CP idle as
+success. Preserve unresolved VRAM ownership on failure. GX_SYNC now reports
+submit/submit_tb separately from reuse, readback and presentation waits.
+
+Fresh-frame guards serialize submissions and can reduce CPU/GP overlap; no
+FPS improvement is claimed. Build GX_RESIDENT_FENCE=0 explicitly produces an
+AsyncControl artifact for a controlled comparison without changing runtime
+preferences. This is an implemented guard-coverage correction; whether it
+eliminates the observed real-Wii timeout is still hardware-unverified.
