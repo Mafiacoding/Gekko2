@@ -27,6 +27,8 @@ clean:
 else
 DEPENDS := $(OFILES:.o=.d)
 $(OUTPUT).dol: $(OUTPUT).elf
+	@elf2dol $< $@
 $(OUTPUT).elf: $(OFILES)
+	@$(CC) $(LDFLAGS) $(OFILES) $(LIBPATHS) $(LIBS) -o $@
 -include $(DEPENDS)
 endif
