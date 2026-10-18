@@ -28,6 +28,7 @@ uint8_t *spu2_mixer_get_ram(void);
 void spu2_mixer_on_kon(int core, int is_upper_half, uint16_t bits);
 void spu2_mixer_on_loop_address_write(int core,int voice);
 void spu2_mixer_on_volume_write(uint32_t addr,uint16_t value);
+void spu2_mixer_on_envelope_write(uint32_t addr,uint16_t value);
 void spu2_mixer_on_koff(int core, int is_upper_half, uint16_t bits);
 
 /* Renders n_frames real stereo S16 PCM frames (L,R interleaved) at
