@@ -40,3 +40,15 @@ and chain flags; only the source-commit identity macro is added.
 Actual Wii network delivery, Windows-native launch/firewall behavior and overhead
 remain hardware/platform checks; Linux loopback and cross-compilation do not
 prove them. No BIOS/Crash/Tekken graphical fix or FPS improvement in this batch.
+
+## Actual build/test record
+
+Build code commit `faf8ce0`. Both network host test groups, all four existing
+menu/config/analyzer suites and the real EE/VU/GX profile-work regression passed.
+The delivered ELF's actual PPC encoder and FIFO passed 33 ABI/bounds/wire checks
+under Unicorn (no socket simulation or physical network timing claim).
+Fresh devkitPPC DOL/ELF comparison and static MEM1 checks passed: static end
+`0x815e3404`, 2,214,908 bytes remaining. The build directory includes the commit
+identity to avoid stale object reuse when changing the compiled source identity.
+Packet size 1,016 bytes, four queue slots, a 16 KiB worker stack. Full BETA12.31
+83/16 historical suite results are not presented as reruns of this patch.

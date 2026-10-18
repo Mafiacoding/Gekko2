@@ -1,5 +1,11 @@
 # Gekko2 SPEED BETA12.31 – 18 October 2026
 
+**BETA12.31b optional network telemetry:** [report](docs/BETA12.31b-NETWORK-PROFILE.md),
+[Windows instructions](tools/windows-telemetry/README-DE.md). Default OFF; bounded
+background UDP and one receiver ZIP. Host UDP tests, four menu/config suites,
+real profile-work test, 33 linked PPC checks and fresh Wii DOL/ELF/MEM1 gates pass.
+Physical Wii network and native Windows operation remain unverified. No GX/BIOS/FPS fix.
+
 **BETA12.31 – Laufzeitprofil:** [Bericht](docs/BETA12.31-RUNTIME-PROFILE.md),
 Draft-PR #40. Native EE-/VU-Zeit, Scope-Aufrufe und Arbeitsmengen; eigener
 Auswerter; Wii Limits 1.1 mit bidirektionalen MEM1/MEM2-Kopien und Ausrichtungen.
