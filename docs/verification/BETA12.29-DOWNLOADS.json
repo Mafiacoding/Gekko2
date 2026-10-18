@@ -1,0 +1,23 @@
+{
+  "artifact_commit": "85c1d6141f6d22333b582baba5ffd26d5d88d01e",
+  "source_commit": "df3c9696adb17761e5caa46b1f73babaa134601a",
+  "branch": "codex/beta12-29-downloads",
+  "files": {
+    "Gekko2-BETA12.29-SD.zip": {
+      "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/85c1d6141f6d22333b582baba5ffd26d5d88d01e/downloads/Gekko2-BETA12.29-SD.zip",
+      "bytes": 912539,
+      "sha256": "164f96fa3dc5e11b2f51af4335690b1cbd1b5a1021f79b83b51a8fb0e2c25b43",
+      "http_status": 200,
+      "zip_crc_valid": true,
+      "download_verified": true
+    },
+    "Gekko2-BETA12.29-review.zip": {
+      "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/85c1d6141f6d22333b582baba5ffd26d5d88d01e/downloads/Gekko2-BETA12.29-review.zip",
+      "bytes": 17405600,
+      "sha256": "082f67c0576260c55a8af7b712a52cf36b48ff289b38868fd361b0d8411d3fb6",
+      "http_status": 200,
+      "zip_crc_valid": true,
+      "download_verified": true
+    }
+  }
+}

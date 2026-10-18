@@ -13,7 +13,7 @@ exec(compile(loader,'verify_ppc_gs_memory.py','exec'))
 root=Path(__file__).resolve().parents[1]
 cc=str(Path(a.nm).with_name('powerpc-eabi-gcc'));oc=str(Path(a.nm).with_name('powerpc-eabi-objcopy'))
 layout_flags=['-DGEKKO2_EE_CHAIN_RESIDENCY'] if 'precise_resident_map' in syms else []
-fields=['pc','next_pc','cop0','ram','ram_size','halted','branch_pending','idle','instructions_executed','tlb','fpr','exc_this_pc','vu0_vf','gpr_generation']
+fields=['pc','next_pc','cop0','ram','ram_size','halted','branch_pending','idle','instructions_executed','tlb','fpr','exc_this_pc','vu0_vf','gpr_generation','fcr31']
 with tempfile.TemporaryDirectory() as d:
  src=Path(d)/'layout.c';obj=Path(d)/'layout.o';raw=Path(d)/'layout.bin'
  src.write_text('#include <stddef.h>\n#include "core/ee/ee_core.h"\nconst unsigned layout[]={sizeof(ee_state_t),'+','.join('offsetof(ee_state_t,'+f+')' for f in fields)+'};\n')

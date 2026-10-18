@@ -1,5 +1,27 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Aktuell 18.10.2026: BETA12.29**, Branch
+`codex/beta12-29-completion-integration`, Emulator-Buildcommit `9fe55bf`,
+Draft-PR [#31](https://github.com/Mafiacoding/Gekko2/pull/31).
+[Bericht](BETA12.29-CORE-COMPLETION.md), [Katalog](COMPLETION-CATALOG.md)
+und maschinenlesbare `COMPLETION-CATALOG.json` fortführen.
+Drei Implementierungsbatches: EE-Control (C.F.S, einzelne native BC2, RI),
+SPU2 Noise/PMON/Sweeps und kompatible Checkpoints, GETENTSPACE.
+70 Host-Suites, 352 Emitter-PPC-Fälle und 98 gelinkte EE-Vergleiche bestanden;
+beide devkitPPC-Builds samt DOL-/ELF-/statischem MEM1-Gate bestanden.
+Auch alle 12 gelinkten PPC-Suites bestanden (105 Chain-, 24 ALU-, 72 RAM-/
+TLB-/DMA-SMC-, 112 Sprung-/IRQ-Fälle, 8 Optionskombinationen und GS/GIF/VIF/IPU-
+Gates). Vollständiger Prüfumfang im aktuellen Bericht, ältere Absätze historisch.
+
+Nächste echte Codepunkte: SPU-04/05/06 (Gaussian/Reverb/ENVX und stille
+Stimmen), MC-02/03/04 (CheckBlock/Raw-Page/Directory-Descriptors), JIT-03/04
+(dirty Writeback und breiteres gemeinsames Mapping), GS/GX-Mipmap/Feedback/
+EXTWRITE. Nur mit eigenständigen Oracles und bestehenden Sicherheitsgrenzen
+fortführen. Audit umfasst nun source **und include**, 199 Dateien/274 kanonische
+EE-Formen; Zulassung allein belegt keine komplette Semantik oder VU-Abdeckung.
+Kein neuer Wii-/Dolphin-Lauf, keine neuen Spiel-/BIOS-Kachel-/FPS-Nachweise.
+
+
 **BETA12.28 – Alpha-Core-Teststand:** [Menü, CLUT, Zweikreis-Scanout, PS2-Karten/FAT/MCSERV und IPU-Retries](BETA12.28-ALPHA-CORE.md). Keine neue Wii-Spielbarkeits-/FPS-/BIOS-Kachelbestätigung. Ältere Absätze beschreiben historische Versionen.
 
 **Historischer Audit vor BETA12.28 (17.10.2026):** [Arbeitsplan mit 18 Paketen](ALPHA-ARBEITSPLAN.md),

@@ -733,6 +733,11 @@ void ee_core_raise_trap(ee_state_t *st)
     st->exc_raised_this_step=1;
     ee_raise_exception(st,EE_EXC_CODE_TR,st->exc_this_pc,st->exc_in_delay_slot);
 }
+void ee_core_raise_reserved(ee_state_t *st)
+{
+    st->exc_raised_this_step=1;
+    ee_raise_exception(st,10u<<2,st->exc_this_pc,st->exc_in_delay_slot);
+}
 
 void ee_core_raise_overflow(ee_state_t *st)
 {
@@ -3786,12 +3791,13 @@ static int32_t ee_mcserv_files_rpc(ee_state_t *st,uint32_t fno,uint32_t payload,
  if(fno==2u&&!ps2_mc_present())return -4;
  uint8_t *arg=payload?ee_mc_ram(st,payload,size):NULL;
  if(!arg||size<16)return -5;
- int named=fno==2u||fno==0x0cu||fno==0x0du||fno==0x0eu||fno==0x0fu;
+ int named=fno==0x12u||fno==2u||fno==0x0cu||fno==0x0du||fno==0x0eu||fno==0x0fu;
  if(named){
   if(size<21u||!memchr(arg+20,0,size-20u<1024u?size-20u:1024u))return -5;
   if(ee_mc_load32(arg)||ee_mc_load32(arg+4))return -11;
   const char *name=(const char*)arg+20;unsigned flags=ee_mc_load32(arg+8);
   if(fno==2u)return ps2_mc_fs_open(name,flags);
+  if(fno==0x12u)return ps2_mc_fs_getentspace(name);
   if(fno==0x0fu)return ps2_mc_fs_delete(name);
   if(size<20u)return -5;uint32_t dest=ee_mc_load32(arg+16),n=fno==0x0cu?1024u:64u;
   if(fno==0x0du){unsigned count=ee_mc_load32(arg+12);if(count>EE_RAM_SIZE/64u)return -5;n=count*64u;}
@@ -10621,8 +10627,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         case 0x3E: /* DSRL32 */ if (rd) GPR(rd) = GPR(rt) >> (sa + 32); break;
         case 0x3F: /* DSRA32 */ if (rd) GPR(rd) = (uint64_t)((int64_t)GPR(rt) >> (sa + 32)); break;
         default:
-            halt("unimplemented SPECIAL funct");
-            return 1;
+            ee_core_raise_reserved(st);
+            break;
         }
         break;
 
@@ -10704,8 +10710,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             st->sa_reg = (uint32_t)(((rs32 & 0x7u) ^ ((uint32_t)imm & 0x7u)) << 1);
             break;
         default:
-            halt("unimplemented REGIMM opcode");
-            return 1;
+            ee_core_raise_reserved(st);
+            break;
         }
         break;
 
@@ -10760,24 +10766,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 #include "ee_mem_switch.inc"
 
     default:
-    {
-        /* NOTE: this halt point can be reached in a way that has
-         * nothing to do with the actual opcode value - see the
-         * real-BIOS-testing note in docs/STATUS.md ("EE program
-         * counter escapes into the hardware register window" /
-         * out-of-range JALR target investigation). If `op` here is
-         * 0 (SPECIAL) with funct also reading as 0, that's the
-         * signature of this exact scenario: PC drifted through a
-         * long stretch of unpopulated ("reads as zero") memory,
-         * decoding every word as a harmless SLL/NOP, until it
-         * happened to reach a live hardware register address whose
-         * CURRENT value decoded as something genuinely invalid. */
-        char buf[96];
-        snprintf(buf, sizeof(buf), "unimplemented primary opcode 0x%02X (pc=0x%08X)",
-                 (unsigned int)op, (unsigned int)this_pc);
-        halt(buf);
-        return 1;
-    }
+        ee_core_raise_reserved(st);
+        break;
     }
 
     if (r1239_hit == 1u && this_pc == 0x0100ecccu) {

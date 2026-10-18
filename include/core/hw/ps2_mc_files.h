@@ -16,6 +16,7 @@ int ps2_mc_fs_chdir(const char *name,char out[1024]);
 int ps2_mc_fs_getdir(const char *pattern,unsigned flags,unsigned count,uint8_t *table);
 int ps2_mc_fs_setinfo(const char *name,unsigned flags,const uint8_t table[64]);
 int ps2_mc_fs_flush(int fd);
+int ps2_mc_fs_getentspace(const char *name);
 const void *ps2_mc_fs_snapshot(uint32_t *bytes);
 int ps2_mc_fs_snapshot_valid(const void *data,uint32_t bytes);
 int ps2_mc_fs_snapshot_load(const void *data,uint32_t bytes);
