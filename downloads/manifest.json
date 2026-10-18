@@ -1,0 +1,33 @@
+{
+  "release": "BETA12.31b-NETWORK-PROFILE",
+  "build_commit": "faf8ce09b0414b02cd1a9180ce3bb6e238347462",
+  "source_commit": "40d5c0267e822a0a30ebc37a8aa723307cee9c06",
+  "sdk": "devkitPPC r50 GCC16.1.0 / libogc3.1.0",
+  "targeted_menu_config_suites": 4,
+  "linked_ppc_checks": 33,
+  "host_network_loopback_verified": true,
+  "real_profile_work_verified": true,
+  "memory": {
+    "mem1_static_end": "0x815e3404",
+    "mem1_remaining_bytes": 2214908,
+    "minimum_remaining_bytes": 1048576,
+    "passed": true
+  },
+  "physical_wii_network_verified": false,
+  "windows_native_verified": false,
+  "dolphin_verified": false,
+  "gx_fault_fixed": false,
+  "bios_tiles_fixed": false,
+  "fps_gain_verified": false,
+  "telemetry_factory_default": "OFF",
+  "binaries": {
+    "dol": {
+      "bytes": 2101348,
+      "sha256": "611ff8b2f40c197fa42b4263e4c6617296016e56ea39138773d5fad03c3ed521"
+    },
+    "elf": {
+      "bytes": 8483932,
+      "sha256": "5302873f1936901fee30813753105eb10367496da1782a4a6c8485c22e29b923"
+    }
+  }
+}
