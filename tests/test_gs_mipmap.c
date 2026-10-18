@@ -1,12 +1,5 @@
-/* test_gs_mipmap.c - host-native test for Round 28's mipmap support
- * (TEX1 + MIPTBP1/MIPTBP2 registers, SPRITE-only per-primitive LOD
- * selection). See include/core/hw/gif.h's GS_REG_TEX1_1/MIPTBP1_1/
- * MIPTBP2_1/GS_MMIN_MIPMAP_THRESHOLD comments and
- * source/hw/gif.c's rasterize_sprite() mip-level-selection block for
- * the full scope and this round's citation-honesty note (live
- * source-fetch research hit a session limit again this round, same
- * caveat as Rounds 24-27).
- */
+/* Legacy solid-color mip regressions now use explicit LCM/K for UV draws.
+ * Q-based variable LOD and MTBA have independent coverage in test_gs_lod_mtba.c. */
 #include <stdio.h>
 #include <string.h>
 #include "hw/gs_mem.c"
@@ -121,7 +114,7 @@ int main(void)
         CHECK(st->tex_mip_tbw[5] == tbw6_field * 64u, "MIPTBP2: level 6 TBW decoded correctly");
     }
 
-    { /* Computed LOD (LCM=0): a 64x64 texture drawn into an 8x8
+    { /* Fixed K LOD (LCM=0): a 64x64 texture drawn into an 8x8
        * screen rectangle (ratio=8, log2(8)=3) -> LOD 3 selected. Level
        * 3's mip buffer (tex_mip_tbp[2]) is filled with a distinctive
        * color; level 0's buffer has a DIFFERENT color. The drawn
@@ -154,7 +147,7 @@ int main(void)
         tex0_hi = (TEX_TFX_DECAL << 3) | 1u; /* TH high 2 bits = 1 (word1 bits0-1) */
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
         /* TEX1: LCM=0 (computed), MXL=3, MMIN=2 (mipmap engaged), MTBA=0 */
-        append_ad(buf, &off, (3u << 2) | (2u << 6), 0, GS_REG_TEX1_1);
+        append_ad(buf, &off, 1u | (3u << 2) | (2u << 6), 48, GS_REG_TEX1_1);
         /* MIPTBP1: level3 (3rd slot) = mip3_bp/mip3_bw; levels1/2 unused (0) */
         uint32_t tbw3_field = mip3_bw / 64u;
         append_ad(buf, &off, 0u, ((mip3_bp & 0x3FFFu) << 8) | ((tbw3_field & 0x3Fu) << 22), GS_REG_MIPTBP1_1);
@@ -168,7 +161,7 @@ int main(void)
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 4, 4);
-        CHECK(px == mip3_color, "computed LOD: 64x64 texture into 8x8 screen rect (ratio 8, log2=3) samples mip level 3, not the base level");
+        CHECK(px == mip3_color, "fixed K LOD: 64x64 texture into 8x8 screen rect (K=48/16=3) samples mip level 3, not the base level");
     }
 
     { /* MXL clamp: same 64x64-into-8x8 setup (would compute LOD 3),
@@ -197,7 +190,7 @@ int main(void)
         uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
         /* TEX1: MXL=1 this time (clamp target) */
-        append_ad(buf, &off, (1u << 2) | (2u << 6), 0, GS_REG_TEX1_1);
+        append_ad(buf, &off, 1u | (1u << 2) | (2u << 6), 48, GS_REG_TEX1_1);
         uint32_t tbw1_field = mip1_bw / 64u;
         append_ad(buf, &off, (mip1_bp & 0x3FFFu) | ((tbw1_field & 0x3Fu) << 14), 0, GS_REG_MIPTBP1_1);
 
@@ -210,7 +203,7 @@ int main(void)
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 4, 4);
-        CHECK(px == mip1_color, "MXL clamp: computed LOD 3 clamps down to MXL=1, sampling level 1's buffer");
+        CHECK(px == mip1_color, "MXL clamp: fixed K LOD 3 clamps down to MXL=1, sampling level 1's buffer");
     }
 
     { /* Magnification (texture SMALLER than the screen rect): must
@@ -299,7 +292,7 @@ int main(void)
     { /* Fixed LOD (LCM=1): K=32 (32/16=2.0) selects level 2
        * regardless of actual screen/texture size ratio (drawn at a
        * screen size that would compute a totally different LOD under
-       * LCM=0, proving K genuinely overrides the computed formula). */
+       * LCM=0, proving K genuinely overrides the old bounding-box heuristic). */
         gs_mem_init(); gif_init();
         uint32_t base_bp = 1000, base_bw = 64;
         uint32_t mip2_bp = 4000, mip2_bw = 64;
@@ -331,7 +324,7 @@ int main(void)
 
         /* Drawn at a screen size (32x32) that, under LCM=0, would
          * compute log2(64/32)=1, NOT 2 - proving K=32 (fixed LOD 2)
-         * really did override the computed formula. */
+         * really did override the old bounding-box heuristic. */
         append_ad(buf, &off, (uint32_t)PRIM_TYPE_SPRITE | PRIM_TME_MASK | PRIM_FST_MASK, 0, GS_REG_PRIM);
         append_ad(buf, &off, 0xFFFFFFFFu, 0, GS_REG_RGBAQ);
         append_ad(buf, &off, (2u << 4), (2u << 4), GS_REG_UV);
@@ -341,10 +334,10 @@ int main(void)
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 16, 16);
-        CHECK(px == mip2_color, "fixed LOD (LCM=1, K=32=2.0): samples level 2's buffer, overriding what the computed formula (LCM=0) would have picked");
+        CHECK(px == mip2_color, "fixed LOD (LCM=1, K=32=2.0): samples level 2's buffer, overriding what the old bounding-box heuristic (LCM=0) would have picked");
     }
 
-    { /* MTBA=1 (auto address calculation): documented, unimplemented
+    { /* MTBA=1 after TEX0: no retroactive auto-address trigger
        * gap - must safely fall back to the base level rather than
        * misbehave, even with mipmapping otherwise fully configured. */
         gs_mem_init(); gif_init();
@@ -369,7 +362,7 @@ int main(void)
         uint32_t tex0_lo = (base_bp & 0x3FFFu) | (((base_bw / 64u) & 0x3Fu) << 14) | (6u << 26) | (2u << 30);
         uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
-        /* MXL=3, MMIN=2, MTBA=1 (auto - unimplemented) */
+        /* MXL=3, MMIN=2, MTBA=1; no subsequent TEX0 trigger */
         append_ad(buf, &off, (3u << 2) | (2u << 6) | (1u << 9), 0, GS_REG_TEX1_1);
         uint32_t tbw3_field = mip3_bw / 64u;
         append_ad(buf, &off, 0u, ((mip3_bp & 0x3FFFu) << 8) | ((tbw3_field & 0x3Fu) << 22), GS_REG_MIPTBP1_1);
@@ -383,7 +376,7 @@ int main(void)
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 4, 4);
-        CHECK(px == base_color, "MTBA=1 (unimplemented auto address calc): safely falls back to the base level rather than misbehaving");
+        CHECK(px == base_color, "MTBA enabled after TEX0: K=0 uses base; automatic addresses are not retroactively generated");
     }
 
     { /* Regression: a textured SPRITE with NO TEX1 configuration at

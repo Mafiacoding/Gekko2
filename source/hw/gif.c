@@ -874,6 +874,7 @@ static uint64_t gs_page_end(uint64_t base,uint32_t bw,uint32_t width,uint32_t he
 }
 static int gs_draw_texture_cache_begin_impl(int32_t sx0,int32_t sy0,int32_t sx1,int32_t sy1,uint32_t minimum_pixels)
 {
+    if(g_gif.tex1_mxl&&g_gif.tex1_mmin>=2u&&g_gif.tex1_mmin<=5u)return 0;
     if(sx0<0||sy0<0||sx1<=sx0||sy1<=sy0||
        (uint64_t)(sx1-sx0)*(uint32_t)(sy1-sy0)<minimum_pixels||
        !g_gif.clamp_configured||g_gif.clamp_wms>1u||g_gif.clamp_wmt>1u||g_gif.tex_tw>10u||g_gif.tex_th>10u)return 0;
@@ -1000,15 +1001,13 @@ static int32_t gs_apply_clamp_wrap(int32_t coord, uint32_t size_log2, uint32_t w
     }
 }
 
-/* UV/STQ linear filtering when both magnification and non-mipmapped
- * minification request linear. This selection is independent of LOD.
- * Mixed MMAG/MMIN and mipmapped filtering remain on the existing path.
+/* One-level UV/STQ filtering, selected by the Q/K/L caller.
  * GS texel centers are at n+0.5; the bundled PCSX2 scanline reference
  * subtracts 0x8000 in 16.16 coordinates before its four-tap lookup. */
-static uint32_t gs_sample_texture(double u, double v)
+static uint32_t gs_sample_texture_base(double u, double v,int linear)
 {
     /* TEX1 filtering applies to both UV and STQ coordinates. */
-    if (g_gif.tex1_mmag == 1u && g_gif.tex1_mmin == 1u) {
+    if (linear) {
         u -= 0.5; v -= 0.5;
         if (!(u > -2147483647.0 && u < 2147483646.0 &&
               v > -2147483647.0 && v < 2147483646.0)) return 0u;
@@ -1043,6 +1042,54 @@ static uint32_t gs_sample_texture(double u, double v)
     y=gs_apply_clamp_wrap(y,g_gif.tex_th,g_gif.clamp_wmt,g_gif.clamp_minv,g_gif.clamp_maxv);
     return gs_sample_texel(x,y);
 }
+
+/* Mipmap coordinates and clamp bounds are expressed at the selected level.
+ * Preserve canonical registers; never share a texel cache across levels. */
+static uint32_t gs_sample_level(double u,double v,unsigned level,int linear)
+{
+ if(!level)return gs_sample_texture_base(u,v,linear);
+ uint32_t bp=g_gif.tex_tbp0,bw=g_gif.tex_tbw,tw=g_gif.tex_tw,th=g_gif.tex_th;
+ uint32_t minu=g_gif.clamp_minu,maxu=g_gif.clamp_maxu,minv=g_gif.clamp_minv,maxv=g_gif.clamp_maxv;
+ int cache=g_texel_cache_enabled;g_texel_cache_enabled=0;
+ g_gif.tex_tbp0=g_gif.tex_mip_tbp[level-1];g_gif.tex_tbw=g_gif.tex_mip_tbw[level-1];
+ g_gif.tex_tw=tw>level?tw-level:0;g_gif.tex_th=th>level?th-level:0;
+ g_gif.clamp_minu=minu>>level;g_gif.clamp_maxu=maxu>>level;
+ g_gif.clamp_minv=minv>>level;g_gif.clamp_maxv=maxv>>level;
+ double scale=1.0/(1u<<level);
+ uint32_t color=gs_sample_texture_base(u*scale,v*scale,linear);
+ g_gif.tex_tbp0=bp;g_gif.tex_tbw=bw;g_gif.tex_tw=tw;g_gif.tex_th=th;
+ g_gif.clamp_minu=minu;g_gif.clamp_maxu=maxu;g_gif.clamp_minv=minv;g_gif.clamp_maxv=maxv;
+ g_texel_cache_enabled=cache;return color;
+}
+static uint32_t gs_sample_texture_q(double u,double v,double q)
+{
+ unsigned mode=g_gif.tex1_mmin,mxl=g_gif.tex1_mxl>6u?6u:g_gif.tex1_mxl;
+ /* Preserve the common min==mag fast path: no logarithm for nonmipped draws. */
+ if(mode<=1u&&g_gif.tex1_mmag==(mode==1u))return gs_sample_texture_base(u,v,mode==1u);
+ double lod=(double)g_gif.tex1_k/16.0;
+ if(!g_gif.tex1_lcm&&!(gs_effective_attr_prim()&PRIM_FST_MASK)){
+  double magnitude=fabs(q);
+  if(magnitude>0.0&&isfinite(magnitude))lod-=log2(magnitude)*(1u<<g_gif.tex1_l);
+  else lod=magnitude==0.0?(double)mxl:0.0;
+ }
+ int linear=lod<=0.0?g_gif.tex1_mmag:(mode==1u||mode==4u||mode==5u);
+ if(!mxl||mode<2u||mode>5u||lod<=0.0)return gs_sample_texture_base(u,v,linear);
+ if(lod>mxl)lod=mxl;
+ unsigned level=(unsigned)((mode&1u)?lod:lod+0.5);
+ if(level>mxl)level=mxl;
+ uint32_t first=gs_sample_level(u,v,level,linear);
+ if(!(mode&1u)||level>=mxl)return first;
+ unsigned blend=(unsigned)((lod-level)*32768.0);
+ if(!blend)return first;
+ uint32_t second=gs_sample_level(u,v,level+1u,linear),out=0;
+ for(unsigned shift=0;shift<32;shift+=8){
+  unsigned a=(first>>shift)&255u,b=(second>>shift)&255u;
+  out|=((a*(32768u-blend)+b*blend)>>15)<<shift;
+ }
+ return out;
+}
+static uint32_t gs_sample_texture(double u,double v)
+{return gs_sample_texture_q(u,v,g_gif.cur_q);}
 
 static uint32_t gs_gx_raw_texture_sample(int32_t x,int32_t y);
 
@@ -1407,7 +1454,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
             g_gif.triangles_drawn++;return;
         }
     }
-    if(textured&&(gs_effective_attr_prim()&PRIM_FST_MASK)&&g_gif.tex_tfx==TEX_TFX_DECAL&&
+    if(textured&&!g_gif.tex1_mxl&&(gs_effective_attr_prim()&PRIM_FST_MASK)&&g_gif.tex_tfx==TEX_TFX_DECAL&&
        !g_gif.tex_tcc&&g_gif.tex1_mmag==0u&&g_gif.tex1_mmin==0u&&!gouraud&&
        gs_depth_is_inactive()&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&(PRIM_FGE_MASK|PRIM_ABE_MASK))&&g_gif.frame_psm==0u&&(!g_gif.date && gs_gx_render_active())) {
@@ -1456,46 +1503,8 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
     }
     double inv_area = 1.0 / (double)area;
 
-    /* Round 29 continued (14th change): extends Round 28's mipmap
-     * support (previously SPRITE-only - see rasterize_sprite()'s own
-     * comment for the full scope/citation and the honest limitations
-     * this shares: per-PRIMITIVE not per-pixel LOD selection, no
-     * trilinear blending, only MTBA=0 explicit-MIPTBP lookup) to
-     * TRIANGLE. Uses the triangle's screen-space bounding box
-     * (maxx-minx, maxy-miny) as the "screen size" input to the exact
-     * same ratio-based LOD formula SPRITE already uses - the natural
-     * analog of SPRITE's own (sx1-sx0, sy1-sy0) size, since a
-     * triangle has no single well-defined width/height the way an
-     * axis-aligned SPRITE rectangle does. Like SPRITE, the override
-     * is scoped strictly to this one draw call and restored below. */
-    uint32_t saved_mip_tbp0 = g_gif.tex_tbp0;
-    uint32_t saved_mip_tbw = g_gif.tex_tbw;
-    if (textured && g_gif.tex1_mxl > 0 && g_gif.tex1_mmin >= GS_MMIN_MIPMAP_THRESHOLD && !g_gif.tex1_mtba) {
-        uint32_t lod = 0;
-        if (g_gif.tex1_lcm) {
-            double k = (double)g_gif.tex1_k / 16.0;
-            lod = (k <= 0.0) ? 0u : (uint32_t)(k + 0.5);
-        } else {
-            int32_t screen_w = maxx - minx, screen_h = maxy - miny;
-            double tex_w = (double)(1u << g_gif.tex_tw);
-            double tex_h = (double)(1u << g_gif.tex_th);
-            double ratio_w = (screen_w > 0) ? tex_w / (double)screen_w : 1.0;
-            double ratio_h = (screen_h > 0) ? tex_h / (double)screen_h : 1.0;
-            double ratio = (ratio_w > ratio_h) ? ratio_w : ratio_h;
-            if (ratio > 1.0) {
-                double lod_f = log2(ratio);
-                lod = (lod_f < 0.0) ? 0u : (uint32_t)lod_f;
-            }
-        }
-        if (lod > g_gif.tex1_mxl) lod = g_gif.tex1_mxl;
-        if (lod > 0) {
-            g_gif.tex_tbp0 = g_gif.tex_mip_tbp[lod - 1];
-            g_gif.tex_tbw = g_gif.tex_mip_tbw[lod - 1];
-        }
-    }
-
-    /* Per-draw memoization only when texture and both writable targets are
-     * disjoint. Mip selection is already final; no generation guesses. */
+    /* Memoization requires disjoint base-level source/targets. Mipped draws
+     * are excluded because the envelope does not cover all levels. */
     if(textured && maxx>=minx && maxy>=miny)
         g_triangle_cached_draws+=gs_draw_texture_cache_begin(minx,miny,maxx+1,maxy+1);
     const uint32_t draw_attributes=gs_effective_attr_prim();
@@ -1608,7 +1617,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
                         tu = s_norm * texture_width;
                         tv = t_norm * texture_height;
                     }
-                    uint32_t texel = gs_sample_texture(tu, tv);
+                    uint32_t texel = gs_sample_texture_q(tu,tv,b0*(double)q0+b1*(double)q1+b2*(double)q2);
                     out = gs_texture_function(texel, rgba_pack(shaded_r, shaded_g, shaded_b, shaded_a));
                 }
                 /* Round 97 (138th finding, task #254): Fog effect -
@@ -1635,12 +1644,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
     g_texel_cache_enabled=0;
     g_gif.triangles_drawn++;
 
-    /* Round 29 continued (14th change): restore tex_tbp0/tex_tbw in
-     * case a non-base mip level was temporarily selected above - keeps
-     * the override strictly local to this single draw call, same as
-     * rasterize_sprite()'s own restore. */
-    g_gif.tex_tbp0 = saved_mip_tbp0;
-    g_gif.tex_tbw = saved_mip_tbw;
+
 }
 static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
@@ -1783,54 +1787,6 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     if (sy0 < 0) sy0 = 0;
     clamp_bbox_to_scissor(&sx0, &sx1, &sy0, &sy1, 1); /* sprite: exclusive loop */
 
-    /* Round 28: mipmaps - SPRITE-only, per-PRIMITIVE (not per-pixel)
-     * LOD selection. See gif.h's GS_REG_TEX1_1/MIPTBP1_1/MIPTBP2_1
-     * comment and gif_state_t's tex1_xxx/tex_mip_tbp/tex_mip_tbw
-     * field comments for the full scope: only MTBA=0 (explicit
-     * MIPTBP lookup) is implemented; a single nearest mip level is
-     * selected once for the WHOLE sprite (not varied per-pixel, and
-     * not trilinear-blended between adjacent levels) - a deliberate,
-     * honest simplification consistent with this project's existing
-     * texture sampling for mipmapped modes (trilinear filtering
-     * is not implemented). If a non-zero level is
-     * selected, tex_tbp0/tex_tbw are temporarily overridden for the
-     * duration of this draw and restored before returning - the same
-     * save/override/restore spirit as gs_activate_context(), just
-     * scoped to a single function instead of persisted in gif_state_t. */
-    uint32_t saved_mip_tbp0 = g_gif.tex_tbp0;
-    uint32_t saved_mip_tbw = g_gif.tex_tbw;
-    if (textured && g_gif.tex1_mxl > 0 && g_gif.tex1_mmin >= GS_MMIN_MIPMAP_THRESHOLD && !g_gif.tex1_mtba) {
-        uint32_t lod = 0;
-        if (g_gif.tex1_lcm) {
-            /* Fixed LOD from K (signed, 1/16 units) - L is parsed but
-             * deliberately not applied this round (see tex1_l's field
-             * comment). */
-            double k = (double)g_gif.tex1_k / 16.0;
-            lod = (k <= 0.0) ? 0u : (uint32_t)(k + 0.5);
-        } else {
-            /* Computed from the ratio of texture size to this
-             * sprite's own screen-space size - minification only
-             * (ratio > 1.0); magnification (ratio <= 1.0) always
-             * uses level 0, matching real hardware's own "never
-             * upsample past the base level" behavior. */
-            int32_t screen_w = sx1 - sx0, screen_h = sy1 - sy0;
-            double tex_w = (double)(1u << g_gif.tex_tw);
-            double tex_h = (double)(1u << g_gif.tex_th);
-            double ratio_w = (screen_w > 0) ? tex_w / (double)screen_w : 1.0;
-            double ratio_h = (screen_h > 0) ? tex_h / (double)screen_h : 1.0;
-            double ratio = (ratio_w > ratio_h) ? ratio_w : ratio_h;
-            if (ratio > 1.0) {
-                double lod_f = log2(ratio);
-                lod = (lod_f < 0.0) ? 0u : (uint32_t)lod_f; /* floor, since lod_f >= 0 here */
-            }
-        }
-        if (lod > g_gif.tex1_mxl) lod = g_gif.tex1_mxl;
-        if (lod > 0) {
-            g_gif.tex_tbp0 = g_gif.tex_mip_tbp[lod - 1];
-            g_gif.tex_tbw = g_gif.tex_mip_tbw[lod - 1];
-        }
-    }
-
     /* No texture/mip changes, pixel tests, fog or Z work in this subset.
      * Scissor was already applied; SCANMSK still applies per row. */
     if(g_gx_opaque && !textured && gs_depth_is_inactive() &&
@@ -1861,7 +1817,7 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     g_sprite_cached_draws+=safe_texture;
     /* BETA12.20: Sprite snapshot can evaluate ATE/DATE late in the CPU
      * importer. Resident GX depth/blend paths are independently excluded. */
-    if((!textured||safe_texture)&&!gs_dither_active()&&
+    if((!textured||(safe_texture&&!g_gif.tex1_mxl))&&!gs_dither_active()&&
        ((g_gif.frame_psm==2u||g_gif.frame_psm==10u)||(!g_gif.fba&&!g_gif.fbmask))&&
        (g_gif.frame_psm==0u||g_gif.frame_psm==1u||g_gif.frame_psm==2u||g_gif.frame_psm==10u)&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&gs_gx_render_active()&&
@@ -1886,7 +1842,7 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
            gs_gx_sprite_axis(g_gx_sprite_rows,sy1-sy0,first_v,dv,g_gx_sprite_linear,&g_gx_sprite_fy,textured?g_gx_sprite_v:NULL)&&
            (gs_gx_sprite_key(),gs_gx_draw_texture_sprite(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,sx0,sy0,sx1-sx0,sy1-sy0,
                 g_gx_sprite_columns,g_gx_sprite_rows,du,dv,g_gif.scanmsk,gs_gx_sprite_sample,&pipeline))) {
-            g_texel_cache_enabled=0;g_gif.tex_tbp0=saved_mip_tbp0;g_gif.tex_tbw=saved_mip_tbw;
+            g_texel_cache_enabled=0;
             g_gif.sprites_drawn++;return;
         }
     }
@@ -1925,7 +1881,7 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
                 double frac_x = (x_span != 0.0) ? ((double)xx - pos_x0) / x_span : 0.0;
                 double tu = cached_u?g_sprite_u[xx-sx0]:tex_u0 + frac_x * (tex_u1 - tex_u0);
                 double tv = tex_v0 + frac_y * (tex_v1 - tex_v0);
-                uint32_t texel = gs_sample_texture(tu, tv);
+                uint32_t texel = gs_sample_texture_q(tu,tv,q1);
                 out = gs_texture_function(texel, g_gif.rgba);
             }
             out = apply_fog(out, frag_fog);
@@ -1935,11 +1891,7 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     g_texel_cache_enabled=0;
     g_gif.sprites_drawn++;
 
-    /* Round 28: restore tex_tbp0/tex_tbw in case a mip level other
-     * than the base was temporarily selected above - keeps this
-     * override strictly local to this single draw call. */
-    g_gif.tex_tbp0 = saved_mip_tbp0;
-    g_gif.tex_tbw = saved_mip_tbw;
+
 }
 static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
                               double u0, double v0, double u1, double v1,
@@ -2372,6 +2324,23 @@ static void apply_rgbaq(uint32_t r, uint32_t g, uint32_t b, uint32_t a)
 
 static void image_write_bytes(const uint8_t *q, uint32_t byte_count);
 
+static void gs_mtba(unsigned context,unsigned bp,unsigned tw,unsigned psm)
+{
+ unsigned enabled=context?g_gif.ctx2_tex1_mtba:g_gif.ctx1_tex1_mtba;
+ unsigned bpp=psm==2u||psm==10u?16u:psm==0x13u?8u:psm==0x14u?4u:32u;
+ int color=psm==0u||psm==1u||psm==2u||psm==10u||psm==0x13u||psm==0x14u||psm==0x1bu||psm==0x24u||psm==0x2cu;
+ if(!enabled||!color||tw<5u||tw>(bpp==32u?9u:10u))return;
+ unsigned width=1u<<tw,bw=width>>6;if(!bw)bw=1;
+ unsigned blocks=width*width*bpp/2048u;
+ uint32_t *bases=context?g_gif.ctx2_tex_mip_tbp:g_gif.ctx1_tex_mip_tbp;
+ uint32_t *strides=context?g_gif.ctx2_tex_mip_tbw:g_gif.ctx1_tex_mip_tbw;
+ for(unsigned i=0;i<3;i++){
+  bp=(bp+blocks)&0x3fffu;bw=bw>1u?bw/2u:1u;
+  blocks=blocks>3u?blocks/4u:1u;bases[i]=bp;strides[i]=bw*64u;
+  if(!context){g_gif.tex_mip_tbp[i]=bases[i];g_gif.tex_mip_tbw[i]=strides[i];}
+ }
+}
+
 static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
 {
     vertex_encoding=1;
@@ -2560,6 +2529,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         uint32_t cld = (data_hi >> 29) & 0x7u;
         uint32_t csm = (data_hi >> 23) & 1u;
         gs_load_clut(psm,cbp,cpsm,csm,csa,cld);
+        gs_mtba(addr==GS_REG_TEX0_2,tbp0,tw,psm);
 
         if (addr == GS_REG_TEX0_1) {
             g_gif.tex_tbp0 = tbp0; g_gif.tex_tbw = tbw; g_gif.tex_tfx = tfx;
