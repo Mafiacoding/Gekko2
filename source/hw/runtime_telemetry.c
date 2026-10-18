@@ -155,9 +155,13 @@ static void *sender(void *arg)
    rc=if_config(ip,mask,gateway,true,3);
    if(rc<0){progress(3,RT_STAGE_DHCP,rc,gen);continue;}
    irq=IRQ_Disable();if(generation==gen)status.local_ip=ntohl(inet_addr(ip));IRQ_Restore(irq);
-   progress(1,RT_STAGE_SOCKET,0,gen);fd=net_socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+   /* Wii IOS accepts protocol 0 here; SOCK_DGRAM selects UDP. Passing the
+    * POSIX IPPROTO_UDP value 17 causes EPROTONOSUPPORT (-123 in libogc). */
+   progress(1,RT_STAGE_SOCKET,0,gen);fd=net_socket(AF_INET,SOCK_DGRAM,0);
    if(fd<0){progress(3,RT_STAGE_SOCKET,fd,gen);continue;}
-   rc=net_fcntl(fd,F_SETFL,O_NONBLOCK);
+   /* net_fcntl forwards flags unchanged to IOS. Its nonblock bit is 4,
+    * not newlib O_NONBLOCK (0x4000); retain checked error handling. */
+   rc=net_fcntl(fd,F_SETFL,4u);
    if(rc<0){net_close(fd);fd=-1;progress(3,RT_STAGE_NONBLOCK,rc,gen);continue;}
    addr.sin_family=AF_INET;addr.sin_len=sizeof addr;addr.sin_port=htons(cfg.endpoint.port);addr.sin_addr.s_addr=htonl(cfg.endpoint.ip);
    progress(2,RT_STAGE_READY,0,gen);

@@ -43,7 +43,9 @@ def hook(machine,address,size,user):
  reg=lambda n:machine.reg_read(UC_PPC_REG_0+n)
  if name=='gettime':ret(machine,0x12345678,0x12340000)
  elif name in ('IRQ_Disable','IRQ_Restore','net_close'):ret(machine)
- elif name=='net_fcntl':ret(machine,-10 if mode=='nonblock_fail' else 0)
+ elif name=='net_fcntl':
+  assert (reg(4),reg(5))==(4,4),f'IOS fcntl expects F_SETFL=4 / nonblock=4, got {(reg(4),reg(5))}'
+  ret(machine,-10 if mode=='nonblock_fail' else 0)
  elif name=='LWP_CreateThread':entry=reg(4);thread_calls+=1;ret(machine,-12 if mode=='thread_fail' else 0)
  elif name=='net_init':net_calls+=1;ret(machine,-6 if mode=='net_fail' else 0)
  elif name=='if_config':
@@ -51,7 +53,9 @@ def hook(machine,address,size,user):
   else:
    for n,text in ((3,b'192.168.1.3\0'),(4,b'255.255.255.0\0'),(5,b'192.168.1.1\0')):machine.mem_write(reg(n),text)
    ret(machine)
- elif name=='net_socket':ret(machine,-8 if mode=='socket_fail' else fd)
+ elif name=='net_socket':
+  assert (reg(3),reg(4),reg(5))==(2,2,0),f'IOS UDP socket expects (2,2,0), got {(reg(3),reg(4),reg(5))}'
+  ret(machine,-8 if mode=='socket_fail' else fd)
  elif name=='net_sendto':
   last_packet=bytes(machine.mem_read(reg(4),reg(5)));last_peer=bytes(machine.mem_read(reg(7),reg(8)))
   assert len(last_packet)==1016 and last_packet[:4]==b'GK2T'
@@ -117,3 +121,26 @@ worker();assert status()[4]==1
 apply(enabled=0);before=net_calls;worker();assert status()[0]==0 and call('runtime_telemetry_test')==0xffffffff and net_calls==before
 assert thread_calls==2
 print(f'PASS {checks} actual linked PPC API/ABI checks: default OFF, persistent worker, menu probe/ACK, stale/wrong-boot/peer rejection, thread/net/DHCP/socket/nonblock/send failures, bounded queue, retry/target update and OFF. SDK/IRQ/FPU/timebase modeled; no hardware network evidence.')
+# Exercise the linked libogc net_socket/net_fcntl wrappers themselves, bypassing
+# only IOS IPC. This boundary was missing from the original worker mocks.
+for name in ('net_socket','net_fcntl'):hooks.pop(syms[name])
+u.mem_write(syms['net_ip_top_fd'],struct.pack('>i',17))
+sdk_nonblock=False;sdk_requests=[]
+def ios_hook(machine,address,size,user):
+ global sdk_nonblock
+ if address==syms['net_setsockopt']:ret(machine);return
+ if address!=syms['IOS_Ioctl']:return
+ reg=lambda n:machine.reg_read(UC_PPC_REG_0+n)
+ command=reg(4);args=struct.unpack('>3I',bytes(machine.mem_read(reg(5),12)));sdk_requests.append((command,args))
+ if command==15:
+  assert args[:2]==(2,2);ret(machine,17 if args[2]==0 else -68) # IOS SO_EPROTONOSUPPORT
+ elif command==5:
+  assert args[:2]==(17,4);sdk_nonblock=bool(args[2]&4);ret(machine)
+ else:raise AssertionError('unexpected IOS command '+str(command))
+u.hook_add(UC_HOOK_CODE,ios_hook)
+assert call('net_socket',2,2,17)==((-123)&0xffffffff) # actual libogc error conversion
+assert call('net_socket',2,2,0)==17
+assert call('net_fcntl',17,4,0x4000)==0 and not sdk_nonblock
+assert call('net_fcntl',17,4,4)==0 and sdk_nonblock
+assert sdk_requests==[(15,(2,2,17)),(15,(2,2,0)),(5,(17,4,0x4000)),(5,(17,4,4))]
+print('PASS 4 linked libogc IOS-boundary checks: protocol 17 -> -123, protocol 0 -> socket, POSIX 0x4000 does not enable IOS nonblock, IOS bit 4 does. IOS modeled, wrapper/error conversion are actual delivered PPC.')
