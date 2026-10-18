@@ -14,6 +14,7 @@
 #include "core/hw/guest_error_probe.h"
 #include "core/hw/gs_gx_additive.h"
 #include "core/runtime_profile.h"
+#include "core/hw/runtime_telemetry.h"
 #include "core/recompiler/dynarec_config.h"
 #include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/iop_lightrec.h"
@@ -244,6 +245,7 @@ static int   g_disc_ok = 0;
 static int g_first_picture;
 static uint64_t g_log_ticks,g_log_previous;
 static gekko2_profile g_runtime_previous,g_front_previous;
+static uint64_t g_telemetry_epoch;
 static uint64_t g_image_probe_attempts;
 static uint64_t g_boot_started,g_boot_log_next;
 static frontend_log g_session_log;
@@ -256,8 +258,33 @@ static const char *boot_log_path(void)
 {
     return g_session_log.path;
 }
+/* Independent from SD log success. Only bounded numeric snapshots enter the
+ * queue; socket setup and send run on the lower-priority worker thread. */
+static void send_runtime_snapshot(unsigned event,uint64_t ms,uint64_t presents,
+ uint64_t vblanks,uint64_t ee,uint64_t core,uint64_t present)
+{
+ if(!runtime_telemetry_state())return;
+ static uint64_t previous_epoch,previous_log;
+ if(previous_epoch!=g_telemetry_epoch){previous_epoch=g_telemetry_epoch;previous_log=0;}
+ runtime_telemetry_sample s={0};
+ gekko2_profile_get(&s.cpu);gekko2_profile_get_host(&s.present);
+ s.value[RT_EPOCH]=g_telemetry_epoch;
+ s.value[RT_SESSION]=g_session_log.sequence;s.value[RT_MS]=ticks_to_millisecs(gettime()-g_boot_started);
+ s.value[RT_MASK]=gekko2_optimization_mask;s.value[RT_GX]=g_gx_present;
+ for(unsigned i=0;i<GEKKO2_EXP_COUNT;i++)s.value[RT_EXPERIMENTS]|=(uint64_t)gekko2_experimental_enabled(i)<<i;
+ s.value[RT_INTERVAL]=ms;s.value[RT_PRESENTS]=presents;s.value[RT_VBLANKS]=vblanks;s.value[RT_EE]=ee;
+ s.value[RT_CORE_TB]=core;s.value[RT_PRESENT_TB]=present;
+ s.value[RT_LOG_TB]=g_log_ticks>=previous_log?g_log_ticks-previous_log:0;previous_log=g_log_ticks;
+ s.value[RT_GX_TIMEOUTS]=gs_gx_watchdog_count(0);
+ s.value[RT_BLOCK_RETIRED]=ee_jit_get_block_retired();
+ s.value[RT_BUDGET_MISSES]=ee_jit_get_budget_cache_stat(1);
+ s.value[RT_WAY_SCANS]=ee_jit_get_budget_cache_stat(7);s.value[RT_EVENT]=event;
+ runtime_telemetry_submit(&s);
+}
 static void save_boot_progress(const char *event)
 {
+    if(!strcmp(event,"PAUSED")||!strcmp(event,"EXIT_HBC")||!strcmp(event,"GX_FAULT_PAUSED"))
+        send_runtime_snapshot(!strcmp(event,"PAUSED")?2:!strcmp(event,"EXIT_HBC")?3:4,0,0,0,0,0,0);
     uint64_t log_begin=gettime();
     if(!g_fat_mounted)return;
     ee_state_t *e=ee_core_get_state();iop_state_t *i=iop_core_get_state();gs_state_t *g=gs_get_state();
@@ -329,8 +356,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
                              uint64_t ee_ins, uint64_t core_ticks, uint64_t blit_ticks)
 {
     uint64_t log_begin=gettime();
-    if (!g_fat_mounted || !ms) return;
+    if(!ms)return;
+    send_runtime_snapshot(0,ms,presents,events,ee_ins,core_ticks,blit_ticks);
+    if (!g_fat_mounted) return;
     FILE *f=frontend_log_open(&g_session_log);if(!f)return;
+    fprintf(f,"NETWORK_TELEMETRY state=%d schema=1 packet_bytes=%u transport=UDP-background\n",runtime_telemetry_state(),RT_PACKET_BYTES);
     fprintf(f,"LOG_STATUS session=%lu ms=%llu errors=%lu last_errno=%d path=%s\n",
       (unsigned long)g_session_log.sequence,(unsigned long long)ticks_to_millisecs(gettime()-g_boot_started),
       (unsigned long)g_session_log.errors,g_session_log.last_error,boot_log_path());
@@ -1275,7 +1305,7 @@ static void run_real_boot_flow(void)
     gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
     g_slice_budget=512;g_fps_milli=g_present_milli=0;
     memset(&g_fps_window,0,sizeof(g_fps_window));
-    system_profile_reset();g_profile_previous=(system_profile_t){0};
+    system_profile_reset();g_telemetry_epoch++;g_profile_previous=(system_profile_t){0};
     g_runtime_previous=g_front_previous=(gekko2_profile){0};g_log_ticks=g_log_previous=0;
     uint64_t total_slices = 0;
     int stopped_by_user = 0,exit_requested=0,gx_fault_paused=0;
@@ -1539,6 +1569,7 @@ int main(int argc, char **argv)
     int ios_result=wii_arm_ios_start((gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER)||gekko2_opt_enabled(GEKKO2_OPT_ARM_CPU_RAM))&&gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222)?222:0,&g_fat_mounted);
     if(ios_result==-4){printf("IOS recovery failed. Restart Wii before using Gekko2.\n");return 1;}
 #endif
+    runtime_telemetry_start("sd:/pcsx2/telemetry.cfg");
     /* Persist a fresh identity before the first launcher draw. Previous
      * BIOS logs can survive a failed startup and must not identify this run. */
     {

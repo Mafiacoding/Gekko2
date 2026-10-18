@@ -1,5 +1,11 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.31b optional network telemetry:** branch `codex/network-runtime-telemetry`.
+[Report](BETA12.31b-NETWORK-PROFILE.md), [Windows setup](../tools/windows-telemetry/README-DE.md).
+Default OFF, bounded queue/background UDP, fixed numeric scopes and options,
+receiver bundles one ZIP. No persistent ChatGPT link, raw guest data or remote control.
+No GX/BIOS/FPS fix. See current report for actual validation/platform limits.
+
 **BETA12.31a CPU status correction:** branch `codex/cpu-status-log-review`;
 [report](BETA12.31a-CPU-STATUS.md). Launcher uses active/requested CPU masks;
 profile analyzer warns about interpreter and mixed configurations. No GX/BIOS
