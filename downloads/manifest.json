@@ -1,0 +1,28 @@
+{
+  "release": "BETA12.31a-CPU-STATUS",
+  "build_commit": "5678201",
+  "source_commit": "033f8873f08c89162a934b9d67d9be52135568d4",
+  "targeted_host_suites": 4,
+  "sdk": "devkitPPC r50 GCC16.1.0 / libogc3.1.0",
+  "memory": {
+    "mem1_static_end": "0x815dae34",
+    "mem1_remaining_bytes": 2249164,
+    "minimum_remaining_bytes": 1048576,
+    "passed": true
+  },
+  "physical_wii_verified": false,
+  "dolphin_verified": false,
+  "gx_fault_fixed": false,
+  "bios_tiles_fixed": false,
+  "fps_gain_verified": false,
+  "binaries": {
+    "dol": {
+      "bytes": 2087800,
+      "sha256": "1c3e7da2ce98718f7b5bfb4e9c5855aa6cb0d75ef52907f5ef96c12ade1a1b50"
+    },
+    "elf": {
+      "bytes": 8451312,
+      "sha256": "cb575d0d107139891b85cd75563c2a89227a4e8d5dcfeb3274add41248bdbaa0"
+    }
+  }
+}
