@@ -353,6 +353,18 @@ void spu2_mixer_on_volume_write(uint32_t address,uint16_t value)
     }
 }
 
+/* ENVX is writable without a key-on or resetting the envelope phase/counter.
+ * Value is a full unsigned register; subsequent ADSR steps apply saturation. */
+void spu2_mixer_on_envelope_write(uint32_t address,uint16_t value)
+{
+ for(unsigned core=0;core<2;core++){
+  uint32_t base=IOP_SPU2_BASE+core*0x400u;
+  if(address>=base&&address<base+24u*16u&&((address-base)&15u)==SPU2_V_ENVX){
+   g_voice[core][(address-base)/16u].level=value;return;
+  }
+ }
+}
+
 static int32_t volume_tick(unsigned core,unsigned voice,unsigned side,
                           uint16_t setting,uint32_t current_address)
 {
@@ -400,7 +412,14 @@ static void noise_tick(unsigned core,unsigned clock)
 static unsigned modulated_pitch(uint16_t pitch,int32_t previous,int enabled)
 {
     uint32_t step=pitch;
-    if(enabled)step=(step*(uint32_t)(32768+previous))>>15;
+    if(enabled){
+        int32_t factor=32768+previous;
+        if(factor<=0)return 0;
+        /* A manually written ENVX may make OutX wider than signed16.
+         * Saturate early so every remaining product fits unsigned32. */
+        if(factor>32768&&step>=0x3fffu)return 0x3fffu;
+        step=(step*(uint32_t)factor)>>15;
+    }
     return step>0x3fffu?0x3fffu:step;
 }
 
@@ -571,7 +590,7 @@ int spu2_mixer_snapshot_valid_sized(const void *data,uint32_t bytes)
  const mixer_snapshot *s=data;
  for(int c=0;c<2;c++)for(int i=0;i<24;i++){
   const voice_runtime_t *v=&s->voice[c][i];
-  if(v->active<0||v->active>1||v->phase>ENV_RELEASE||v->phase<ENV_OFF||v->level<0||v->level>32767||
+  if(v->active<0||v->active>1||v->phase>ENV_RELEASE||v->phase<ENV_OFF||v->level<0||v->level>65535||
      v->cur_addr>=SPU2_MIXER_RAM_SIZE||(v->cur_addr&15u)||v->repeat_addr>=SPU2_MIXER_RAM_SIZE||(v->repeat_addr&15u)||
      v->block_pos<0||v->block_pos>28||v->block_valid<0||v->block_valid>1||
      v->manual_loop<0||v->manual_loop>1||v->pending_loop_end<0||v->pending_loop_end>1||v->pending_loop_repeat<0||v->pending_loop_repeat>1||v->pitch_counter>=4096u)return 0;
