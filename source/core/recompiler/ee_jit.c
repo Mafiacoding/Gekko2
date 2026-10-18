@@ -777,7 +777,7 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
   precise_budget_stats[4]++;
   return gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX)&&refusal->owner?&precise_cache[refusal->owner-1u]:NULL;
  }
- ee_precise_slot *best=NULL,*prefix=NULL;unsigned largest=0;
+ ee_precise_slot *best=NULL,*prefix=NULL;unsigned largest=0,upper=UINT32_MAX;
  precise_budget_stats[7]++;
  for(unsigned w=0;w<ways;w++) {
   unsigned index=set+w*stride;
@@ -785,17 +785,17 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
   if(!tag->fn||tag->pc!=pc)continue;
   if(ways==1u)return &precise_cache[index];
   if(tag->count>largest)largest=tag->count;
-  if(tag->count>budget&&(!prefix||tag->count<prefix->count))prefix=&precise_cache[index];
+  if(tag->count>budget){
+   if(tag->count-1u<upper)upper=tag->count-1u;
+   if(!prefix||tag->count<prefix->count)prefix=&precise_cache[index];
+  }
   if(tag->count<=budget&&(!best||tag->count>precise_dispatch[best-precise_cache].count))
    best=&precise_cache[index];
  }
  if(best){
   unsigned fit=best->count<largest;
-  unsigned upper=UINT32_MAX;
-  for(unsigned w=0;w<ways;w++){
-   const ee_precise_dispatch *tag=&precise_dispatch[set+w*stride];
-   if(tag->fn&&tag->pc==pc&&tag->count>best->count&&tag->count-1u<upper)upper=tag->count-1u;
-  }
+  /* best is the largest count <= budget. Every larger owner is therefore
+   * already among the >budget tags seen above; no second four-way pass. */
   *lookup=(ee_precise_lookup){pc,best->count,stride,(unsigned)(best-precise_cache)+1u,fit,upper};
   if(install&&fit)precise_budget_stats[0]++;return best;
  }

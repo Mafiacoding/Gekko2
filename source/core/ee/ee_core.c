@@ -6059,10 +6059,11 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         int candidate=ee_jit_block_candidate(instr)||ee_jit_block_terminal(instr);
         uintptr_t ram_offset=(uintptr_t)code_backing-(uintptr_t)st->ram;
         int backed_candidate=code_backing &&
-            ((ram_offset>=0x200000u&&ram_offset<st->ram_size)||
+            ((ram_offset>=0x100000u&&ram_offset<st->ram_size)||
              (st->bios&&(uintptr_t)code_backing-(uintptr_t)st->bios->data<st->bios->size));
-        /* Backing came from this instruction's real fetch, not a cached
-         * translation. Keep guarded low physical kernel code in C. */
+        /* Match ee_core_block_pointer's 1 MiB admission floor. Backing
+         * came from this instruction's real fetch, not a cached translation.
+         * Keep the low physical kernel region on its guarded scalar path. */
         if(candidate && backed_candidate) {
             unsigned profile=gp_enter(GP_EE_NATIVE);
             unsigned n=ee_jit_try_execute_chain_fetched(st,budget,instr);

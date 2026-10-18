@@ -1,0 +1,49 @@
+# BETA12.32 general EE hotpaths and GX investigation
+
+Baseline BETA12.31e / `90ee881`, branch `codex/beta12-32-hotpaths-gx`.
+Two generic CPU changes, no game-ID/BIOS-PC specialization:
+
+1. Match the frontend's native-code admission floor to the backend's existing
+   1 MiB physical RAM policy. Previously 1–2 MiB code repeatedly attempted other
+   execution routes while the precise block backend remained inaccessible.
+   The low kernel exclusion and real fetch/source, TLB/ASID, DMA/SMC, exception,
+   delay-slot, IRQ, scheduler-budget and PPC ABI protections remain.
+2. Compute the precise-cache best-way budget interval in its first four-way
+   traversal. The largest fitting owner cannot have another fitting larger
+   owner; the interval's next threshold is among the already-seen >budget
+   owners. Remove the redundant second metadata traversal. Cache mutation and
+   invalidation rules are unchanged.
+
+## Existing hardware data used privately
+
+The owner-provided complete Wii Limits 1.1 CSV reports 280 records, no failed
+checks and no GX timeout. It measures isolated kernels, not emulator FPS. In
+particular the simple 256x256 textured batches/fence work, whereas the emulator
+previously failed to observe the next PE token during a native renderer queue.
+Do not label that as a lost interrupt: an idle CP and older callback do not
+prove the requested fence completed. Do not extend timeouts, accept stale
+completion or discard pending VRAM and pretend rendering succeeded.
+
+The BETA12.31e UDP capture has real runtime samples, including dispatch and
+scheduler overhead, but GX was OFF; it cannot validate GPU rendering or its
+speed. Uploaded logs, addresses, BIOS assets and benchmark files remain private.
+
+## GX scope and limits
+
+Add an actual-ELF vertex-stream validator: modeled descriptor setup and actual
+PPC FIFO payload writes must have exactly the advertised attribute bytes for
+all 48 synthetic color/fog/TFX/source-alpha/additive-alpha combinations, including
+four safely rejected HIGHLIGHT/source-alpha cases. Position-only counters did
+not prove this. The 1,152 accepted primitives in the baseline have valid payload
+sizes, so this test does not reproduce or fix the physical GX timeout. SDK
+state calls are modeled and GPU rasterization is not executed. The original
+GX fence failure remains OPEN; no hardware workaround is silently enabled.
+
+## Verification
+
+The new low-RAM differential uses five physical placements, including 4 KiB
+and 2 MiB crossings, a retained low-kernel case, warmed code and scalar oracle.
+Compare GPR128, PC/nextPC, COP0 and exact retirement. Count executed PPC
+instructions independently from wall time: compile costs excluded, no claims
+of Wii cycles/FPS from instruction counts. Existing budget-range mutation and
+chain/memory/IRQ regressions remain required. Final results follow below.
