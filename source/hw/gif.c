@@ -1258,7 +1258,7 @@ static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
                         tu = s_norm * (double)(1u << g_gif.tex_tw);
                         tv = t_norm * (double)(1u << g_gif.tex_th);
                     }
-                    uint32_t texel = gs_sample_texture(tu, tv);
+                    uint32_t texel = gs_sample_texture_q(tu,tv,b0*(double)q0+b1*(double)q1+b2*(double)q2);
                     out = gs_texture_function(texel, rgba_pack(shaded_r, shaded_g, shaded_b, shaded_a));
                 }
  return out;
@@ -1345,7 +1345,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
        (c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&
        !gs_dither_active()&&!g_gif.fbmask&&(native_generic||!(gs_effective_attr_prim()&PRIM_FGE_MASK))&&
        (!textured||(
-       !g_gif.tex1_mxl&&g_gif.tex_tw<=10u&&g_gif.tex_th<=10u&&
+       !g_gif.tex1_mxl&&g_gif.tex1_mmin<=1u&&g_gif.tex1_mmag==g_gif.tex1_mmin&&g_gif.tex_tw<=10u&&g_gif.tex_th<=10u&&
        (native_generic?native_axis_ok:(gs_gx_native_texture_valid(1u<<g_gif.tex_tw,1u<<g_gif.tex_th)&&
        g_gif.clamp_configured&&g_gif.clamp_wms<=1u&&g_gif.clamp_wmt<=1u))&&
        (gs_effective_attr_prim()&PRIM_FST_MASK||(q0>0&&q1>0&&q2>0&&isfinite(q0)&&isfinite(q1)&&isfinite(q2)))))&&
@@ -1404,7 +1404,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
     if(textured&&(!interpolate_color||(g_gif.tex_tfx==TEX_TFX_MODULATE&&g_gif.tex_tcc&&(c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&native_z_bound&&
        !g_gif.ate&&!g_gif.date&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&!g_gif.tex1_mxl&&
-       g_gif.tex_tw>=2u&&g_gif.tex_th>=2u&&g_gif.tex_tw<=7u&&g_gif.tex_th<=7u&&
+       g_gif.tex1_mmin<=1u&&g_gif.tex1_mmag==g_gif.tex1_mmin&&g_gif.tex_tw>=2u&&g_gif.tex_th>=2u&&g_gif.tex_tw<=7u&&g_gif.tex_th<=7u&&
        g_gif.clamp_configured&&g_gif.clamp_wms<=1u&&g_gif.clamp_wmt<=1u&&
        (gs_effective_attr_prim()&PRIM_FST_MASK || (q0>0.0f&&q1>0.0f&&q2>0.0f&&isfinite(q0)&&isfinite(q1)&&isfinite(q2)))&&
        gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD)&&gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)&&gs_gx_render_active()&&
@@ -1817,7 +1817,7 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     g_sprite_cached_draws+=safe_texture;
     /* BETA12.20: Sprite snapshot can evaluate ATE/DATE late in the CPU
      * importer. Resident GX depth/blend paths are independently excluded. */
-    if((!textured||(safe_texture&&!g_gif.tex1_mxl))&&!gs_dither_active()&&
+    if((!textured||(safe_texture&&!g_gif.tex1_mxl&&g_gif.tex1_mmin<=1u&&g_gif.tex1_mmag==g_gif.tex1_mmin))&&!gs_dither_active()&&
        ((g_gif.frame_psm==2u||g_gif.frame_psm==10u)||(!g_gif.fba&&!g_gif.fbmask))&&
        (g_gif.frame_psm==0u||g_gif.frame_psm==1u||g_gif.frame_psm==2u||g_gif.frame_psm==10u)&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&gs_gx_render_active()&&
