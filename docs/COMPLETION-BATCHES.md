@@ -22,5 +22,8 @@ ist kein fertiger Emulator. Hardware-Gates werden nicht durch Hosttests ersetzt.
 | C13 Speicher/Integration | MEM-01/02, PERF-01 | versionierte Checkpoints, Allocationfehler, statische Grenzen und dynamische Wii-Peaks/identische Szenen |
 | C14 Spiele-Abnahme | GAME-01..05, GIF-01, GX-05, JIT-08 | echte Wii: SCPH-50004, Crash E3, Tekken, GT3, KOF; Bild, Eingaben, Fortschritt und Gesamtzeit belegen |
 
-C01 ist derzeit in Umsetzung; weitere Batches werden danach direkt bearbeitet.
+Stand BETA12.30: C01 umgesetzt und gezielt getestet; C02 Q/K/L/Mips/MTBA und
+C02b GX-Filtergates implementiert. C05a CPU-SQ/FIFO/FQC und C09a ENVX umgesetzt.
+Weitere Unterziele dieser Domänen bleiben eigene offene Katalogpunkte.
+Die übrigen Batches sind noch nicht als abgeschlossen markiert.
 Keine private BIOS-/Disc-/Karten-/Logdatei wird als öffentliche Fixture verwendet.

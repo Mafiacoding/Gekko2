@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <app version="1">
-  <name>Gekko2 SPEED BETA12.29 CORE COMPLETION</name>
+  <name>Gekko2 SPEED BETA12.30 GS VIF ACCURACY</name>
   <coder>Mafiacoding</coder>
-  <version>BETA12.29 - core completion test build</version>
+  <version>BETA12.30 - graphics transport test build</version>
   <release_date>20261018</release_date>
   <short_description>Experimental PlayStation 2 emulator for Wii</short_description>
-  <long_description>EE C.F.S, native BC2 fragments, architectural reserved-opcode exceptions; SPU2 noise, pitch modulation and volume sweeps; MCSERV GETENTSPACE. Includes previous alpha-core changes. Chain residency, extended PSM conversion and GX risk remain independent and factory OFF; apply at Cold Boot. Bring your own legal BIOS/disc. No confirmed new Wii gameplay, FPS or BIOS tile fix. Existing MemoryCard1.ps2 is optional; never implicitly created or formatted.</long_description>
+  <long_description>GS byte/half/word acknowledgements and pending IMR interrupts, Q/K/L mipmaps and MTBA, bounded VIF CPU FIFO, writable SPU2 ENVX and precise GX filter fallbacks. Includes previous core changes. Chain, PSM and GX risk remain factory OFF and apply at Cold Boot. No verified Wii gameplay, BIOS-tile fix or FPS gain. Bring your own legal BIOS/disc/card.</long_description>
 </app>

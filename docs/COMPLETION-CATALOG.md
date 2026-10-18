@@ -14,11 +14,11 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 | Status | Anzahl |
 |---|---:|
 | hardware_nachweis | 10 |
-| implementiert_getestet | 6 |
+| implementiert_getestet | 7 |
 | offen | 8 |
 | optional_abwesend | 3 |
 | skalar_absicht | 1 |
-| teilweise | 40 |
+| teilweise | 39 |
 | vorhanden_pruefen | 13 |
 
 | ID | Befund / Aufgabe | Status | Code / Abnahme |
@@ -45,17 +45,17 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 | VU-03 | PS2-Float/ACC-Zwischenwerte und EFU-Präzision | teilweise | [source/hw/vu.c](../source/hw/vu.c); Getaktete Paare, Flags/ACC/VI, Q/P/EFU und unabhängige Float-Oracles |
 | VU-04 | CLIP-Latenz und VI-/Branch-Forwarding | teilweise | [source/hw/vu.c](../source/hw/vu.c); Getaktete Paare, Flags/ACC/VI, Q/P/EFU und unabhängige Float-Oracles |
 | VU-05 | Q/P, FMAC-Queue, M-Yield und Scoreboards vorhanden | vorhanden_pruefen | [source/hw/vu.c](../source/hw/vu.c); Getaktete Paare, Flags/ACC/VI, Q/P/EFU und unabhängige Float-Oracles |
-| GIF-01 | Crash-SIGNAL-/XGKICK-Stau ohne vollständigen Fixbeleg | hardware_nachweis | [source/hw/gif.c](../source/hw/gif.c); Producer/ACK, Pfadbesitz, EOP, Ringwrap und Backpressure ohne Datenverlust |
+| GIF-01 | Schmale GS-ACKs/pending IMR korrigiert; Crash-SIGNAL-/XGKICK-Fixbeleg auf Wii offen | hardware_nachweis | [source/hw/gif.c](../source/hw/gif.c); Producer/ACK, Pfadbesitz, EOP, Ringwrap und Backpressure ohne Datenverlust |
 | GIF-02 | PATH1/2/3, IMT/MSKPATH3/DIRECTHL und FIFO-Gesamtmatrix | teilweise | [source/hw/gif.c](../source/hw/gif.c); Producer/ACK, Pfadbesitz, EOP, Ringwrap und Backpressure ohne Datenverlust |
-| VIF-01 | UNPACK/STCYCL/Masken/TOP/ITOP/MPG-Gesamtmatrix | teilweise | [source/hw/vif.c](../source/hw/vif.c); UNPACK-/STCYCL-/Maskenmatrix und laufende VU/DMA-/IRQ-Unterbrechungen |
+| VIF-01 | CPU-SQ/FIFO/FQC korrigiert; UNPACK/STCYCL/Masken/TOP/ITOP/MPG-Gesamtmatrix offen | teilweise | [source/hw/vif.c](../source/hw/vif.c); UNPACK-/STCYCL-/Maskenmatrix und laufende VU/DMA-/IRQ-Unterbrechungen |
 | VIF-02 | FLUSH/MSCAL/MSCNT bei laufender VU und XGKICK | teilweise | [source/hw/vif.c](../source/hw/vif.c); UNPACK-/STCYCL-/Maskenmatrix und laufende VU/DMA-/IRQ-Unterbrechungen |
 | DMA-01 | Reverse-VIF1/GS-Chain und Richtungs-Sonderfälle | teilweise | [source/hw/dma.c](../source/hw/dma.c); Tagarten, Richtungen, Rest-QWC, FIFO, Fristen und tatsächliche IRQs |
 | DMA-02 | Interleave/MFIFO/REFS und Bus-Timing | teilweise | [source/hw/dma.c](../source/hw/dma.c); Tagarten, Richtungen, Rest-QWC, FIFO, Fristen und tatsächliche IRQs |
 | TIME-01 | EE/IOP-Scheduler basiert weiter auf Instruktionsslots | teilweise | [source/core/system.c](../source/core/system.c); Unveränderte sichtbare Geräteereignisse und belegte Zyklusrelationen |
 | TIME-02 | Physische Bus-/FIFO-/IRQ-Latenzen teilweise synchron | teilweise | [source/core/system.c](../source/core/system.c); Unveränderte sichtbare Geräteereignisse und belegte Zyklusrelationen |
 | GS-01 | 13 PSM-Quellformate und physische CLUT implementiert | vorhanden_pruefen | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
-| GS-02 | Per-Pixel-LOD statt pauschaler Primitive-LOD | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
-| GS-03 | MTBA/MIPTBP, Mipbreiten und trilineare Randfälle | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
+| GS-02 | Q/K/L-LOD pro Dreiecksfragment und Sprite, skalierte Mips und sechs Filter | implementiert_getestet | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
+| GS-03 | MTBA erste drei Ebenen und Trilinear implementiert; TBW0/GS-Bitpräzision offen | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
 | GS-04 | AA1 und exakte Linien-/Dreieckskanten | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
 | GS-05 | COLCLAMP/PABE/ALPHA/FBA/FBMSK-Gesamtmatrix | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
 | GS-06 | Texture-Shuffle/Framebuffer-Feedback | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
@@ -77,7 +77,7 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 | SPU-03 | Voice-/Master-Sweeps, VOLX und abwärtskompatibler Checkpoint | implementiert_getestet | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
 | SPU-04 | Gaussian-Interpolation fehlt | offen | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
 | SPU-05 | Reverb-/Effekt-RAM-Datapath fehlt | offen | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
-| SPU-06 | ADSR/ENVX/Key-On-Timing und IRQ-wirksame stille Stimmen | teilweise | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
+| SPU-06 | Writable ENVX und breite PMON korrigiert; ADSR/Key-On/stille Stimmen zeitlich unvollständig | teilweise | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
 | SPU-07 | SPU2-DMA/AutoDMA/Capture und Ausgabe angebunden | vorhanden_pruefen | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
 | MC-01 | Native PS2-Karte und Standard-FAT-Dateien implementiert | vorhanden_pruefen | [source/hw/ps2_mc_files.c](../source/hw/ps2_mc_files.c); Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption |
 | MC-02 | GETENTSPACE implementiert; destruktives CheckBlock bleibt offen | teilweise | [source/hw/ps2_mc_files.c](../source/hw/ps2_mc_files.c); Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption |
@@ -111,6 +111,7 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 - Ein implementierter Teilpfad schließt die übrigen Teilziele seines Moduls nicht automatisch.
 - Bewährte Interpreter-/Software-GS-Oracles, RAM-/Mapping-/IRQ-/Budget-Gates und EABI erhalten.
 - BETA12.29: EE-Control und SPU2 Noise/PMON/Sweeps abgeschlossen; GETENTSPACE als MC-Teilziel.
-- Als Nächstes: Gaussian/Reverb/ENVX, weitere MCSERV-RPCs und GS/GX-/JIT-Grenzen.
+- BETA12.30: GS-ACK/IMR, Q/K/L/Mips/MTBA, VIF-CPU-FIFO und ENVX implementiert.
+- Fortsetzung und Abnahme: COMPLETION-BATCHES.md; weitere GS/GX-/VU/IPU-/JIT-/Audio-/Kartenpunkte offen.
 - Der unabhängige nächste Hardware-Schritt bleibt BIOS/Crash/Tekken im identischen Gastzustand.
 - Keine Nutzerdaten/BIOS/Discs/Karten/Profile in Tests oder öffentlichen Berichten.
