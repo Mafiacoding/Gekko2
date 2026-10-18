@@ -24,17 +24,17 @@ int run(gs_gx_texel_fn s,const int *xy,const gs_gx_pipeline *p,unsigned flags){
   return surface_draw_textured(&d,d.tw*d.th*4);
  }
  unsigned z[3]={128,128,128};float uv[6]={0,0,1,0,0,1},q[3]={1,1,1};unsigned rgba[3]={0x80404040,0x80408040,0x80804040};
- gs_gx_native_color c={.rgba=0x80404040,.tcc=1,.tfx=(flags>>2)&3,.target_height=64,
+ gs_gx_native_color c={.rgba=0x80404040,.tcc=1,.tfx=(flags>>2)&3,.target_height=flags&64?512:64,
  .fog_enabled=(flags>>1)&1,.fog_color=0x123456,.fog={64,128,255}};
  if(flags&16)return gs_gx_draw_shaded_triangle(0,0,64,2,3,30,29,xy,0,s,p);
- return gs_gx_draw_native_triangle_ex(0,0,64,2,3,30,29,xy,uv,q,flags&1?rgba:0,4,4,0,0,0,0,s,p,z,&c);
+ return gs_gx_draw_native_triangle_ex(0,0,64,2,3,30,flags&64?300:29,xy,uv,q,flags&1?rgba:0,4,4,0,0,0,0,s,p,z,&c);
 }''')
  subprocess.run([cc,'-O2','-mcpu=750','-G0','-ffreestanding','-nostdlib','-I'+str(root/'include'),'-Wl,-Ttext=0x817c0000','-Wl,-e,run','-Wl,--defsym,gs_gx_draw_native_triangle_ex='+hex(syms['gs_gx_draw_native_triangle_ex']),'-Wl,--defsym,gs_gx_draw_shaded_triangle='+hex(syms['gs_gx_draw_shaded_triangle']),'-Wl,--defsym,gs_gx_prepare_texture='+hex(syms['gs_gx_prepare_texture']),'-Wl,--defsym,surface_draw_textured='+hex(syms['surface_draw_textured']),'-Wl,--defsym,memcpy='+hex(syms['memcpy']),str(src),'-o',str(exe)],check=True)
  subprocess.run([oc,'-O','binary','-j','.text','-j','.rodata',str(exe),str(raw)],check=True)
  u.mem_write(0x817c0000,raw.read_bytes());syms['test_run']=0x817c0000
 # Direct attributes used by the real rendering paths: POS XYZ F32, CLR RGBA8,
 # TEX ST F32. Keep descriptor state across submissions like the real CP.
-desc={};pending=None;draws=0;written=0;payload=hashlib.sha256();configuration=[];token=0;fail_fence=False;fake_clock=0;aborts=0
+desc={};pending=None;draws=0;written=0;payload=hashlib.sha256();configuration=[];token=0;fail_fence=False;fake_clock=0;aborts=0;peak_begins=0
 names={v:k for k,v in syms.items() if k.startswith(('GX_','ps_guMtx')) or k in ('guOrtho','gs_gx_dump_flush','gx_wait_timeout_marker')}
 def end():
  global pending,draws
@@ -43,7 +43,7 @@ def end():
  assert written==expected,(count,attributes,expected,written)
  pending=None;draws+=1
 def gpu(uc,address,size,user):
- global pending,written,token,fake_clock,aborts
+ global pending,written,token,fake_clock,aborts,peak_begins
  instruction=int.from_bytes(uc.mem_read(address,4),'big')
  if fail_fence and instruction&~(31<<21)==0x7c0c42e6:
   fake_clock+=1000000;uc.reg_write(UC_PPC_REG_0+((instruction>>21)&31),fake_clock);uc.reg_write(UC_PPC_REG_PC,address+4);return
@@ -51,6 +51,7 @@ def gpu(uc,address,size,user):
  name=names.get(address)
  if not name:return
  reg=lambda n:uc.reg_read(UC_PPC_REG_0+n)
+ if name=='GX_SetDrawDone':peak_begins=max(peak_begins,int.from_bytes(uc.mem_read(syms['gx_ctx_begins'],4),'big'))
  if name=='GX_GetDrawSync':uc.reg_write(UC_PPC_REG_3,token)
  if name=='GX_SetDrawSync' and not fail_fence:token=reg(3)&65535
  if name=='GX_AbortFrame':aborts+=1
@@ -79,12 +80,17 @@ u.hook_add(UC_HOOK_CODE,gpu);u.hook_add(UC_HOOK_MEM_WRITE,fifo,begin=0xcc008000,
 for name,value in [('initialized',1),('render_enabled',1),('surface_enabled',1),('efb_width',640),('efb_height',64),('surface',0),('texture',0x91200000),('texture_in_flight',0)]:word(syms[name],value)
 word(syms['gekko2_optimization_mask'],int.from_bytes(u.mem_read(syms['gekko2_optimization_mask'],4),'big')|(1<<7))
 call('gs_mem_init')
+def guard_count():
+ call('gs_gx_sync_count',3);return (u.reg_read(UC_PPC_REG_3)<<32)|u.reg_read(UC_PPC_REG_4)
+native_guards=[]
 for blend in (0,1,2):
  word(pipe+6*4,bool(blend));word(pipe+8*4,2 if blend==2 else 1);word(pipe+10*4,1)
  for flag in range(16):
   # HIGHLIGHT adds vertex alpha: AS>128 cannot use source-alpha blend.
   expected=not(blend==1 and flag>>2==2)
+  before=guard_count()
   assert call('test_run',sample,xy,pipe,flag)==expected,(blend,flag)
+  native_guards.append((expected,guard_count()-before))
   end()
 print('PASS native GX vertex stream',draws,'primitives: color/fog/TFX and blend/additive-alpha combinations have exact descriptor byte counts; SDK modeled, no GPU pixel claim')
 # Resident pre-shaded route uses the large descriptor; compare all stable
@@ -97,11 +103,24 @@ assert call('test_run',sample,xy,pipe,32)==1;end()
 call('gs_gx_sync_count',3);guards=(u.reg_read(UC_PPC_REG_3)<<32)|u.reg_read(UC_PPC_REG_4)
 print('GX_SUBMISSION_FENCES',guards)
 print('GX_SEMANTICS',json.dumps({'vertex_sha256':payload.hexdigest(),'configuration_sha256':hashlib.sha256(json.dumps(configuration).encode()).hexdigest(),'primitives':draws},sort_keys=True))
+# A narrow tall triangle emits hundreds of scissored primitives. Check
+# actual descriptor/FIFO semantics and the queue cap, not a guessed GPU time.
+word(syms['efb_height'],512);u.mem_write(xy,struct.pack('>6i',2,3,30,3,2,300));peak_begins=0
+assert call('test_run',sample,xy,pipe,64)==1;end()
+peak_begins=max(peak_begins,int.from_bytes(u.mem_read(syms['gx_begins_since_wait'],4),'big'))
+print('GX_STRESS',json.dumps({'vertex_sha256':payload.hexdigest(),'configuration_sha256':hashlib.sha256(json.dumps(configuration).encode()).hexdigest(),'primitives':draws},sort_keys=True))
+print('GX_QUEUE_PEAK',peak_begins)
 if guards:
+ assert peak_begins<=64,peak_begins
+ assert all((delta>0)==bool(expected) for expected,delta in native_guards),native_guards
+ print('PASS per-call native submission coverage: 44 accepted draws guarded, four rejected draws issue no submission fence')
  # The real resident route must preserve pending ownership on a stale token,
  # even when the modeled CP reports idle. No additional draw may succeed.
+ word(syms['efb_height'],64);u.mem_write(xy,struct.pack('>6i',2,3,30,3,2,29))
+ assert call('test_run',sample,xy,pipe,0)==1;end()
  fail_fence=True
  assert call('test_run',sample,xy,pipe,0)==0
+ call('gs_gx_watchdog_count',1);assert u.reg_read(UC_PPC_REG_4)==3
  assert call('gs_gx_faulted')==1 and call('gs_mem_gpu_pending')==1 and aborts==1
  previous=draws;assert call('test_run',sample,xy,pipe,0)==0 and draws==previous
  print('PASS resident submission failure: stale token/idle cannot complete; abort once, pending VRAM retained, further GPU draws blocked')

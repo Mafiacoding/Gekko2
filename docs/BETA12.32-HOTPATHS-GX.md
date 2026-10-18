@@ -79,3 +79,11 @@ FPS improvement is claimed. Build GX_RESIDENT_FENCE=0 explicitly produces an
 AsyncControl artifact for a controlled comparison without changing runtime
 preferences. This is an implemented guard-coverage correction; whether it
 eliminates the observed real-Wii timeout is still hardware-unverified.
+
+Also cap masked native queues at 64 GX primitives between completed guards:
+one guest triangle can expand into hundreds of scissored GX triangles. Mark
+GPU ownership before the first native command so a failed intermediate fence
+cannot expose stale canonical VRAM. The existing build switch controls this
+coverage; AsyncControl deliberately omits these guards. A tall synthetic
+triangle checks exact shader/payload equivalence, maximum queued begins and
+failure specifically at submission reason 3, with pending ownership retained.

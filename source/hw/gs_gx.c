@@ -1629,6 +1629,9 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  /* Exact CPU coverage/depth mask, but hardware texture sampling and RGB.
   * Group matching rows; no per-output-pixel texture or color callback. */
  uint32_t submitted=0,fast_blend=0,fast_rows=0;
+ /* Own the target before the first native command, so a failed chunk
+  * fence cannot expose stale canonical VRAM as a successful fallback. */
+ if(!gs_mem_gpu_mark_pending())return 0;
  int fast=0;
  if(vertex_z&&gekko2_experimental_enabled(GEKKO2_EXP_GX_RISK)){
   native_extended[12]++;
@@ -1669,12 +1672,14 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
     if(color&&color->fog_enabled)GX_Color4u8(0,0,0,color->fog[v]&255u);
     GX_TexCoord2f32(uv[v*2],uv[v*2+1]);
    }
-   GX_End();submitted+=3u;first=last;
+   GX_End();texture_in_flight=1;submitted+=3u;first=last;
+   /* Bound native masked-span queues below the command FIFO capacity.
+    * A single guest triangle can expand to hundreds of GX primitives. */
+   if(gx_begins_since_wait>=64u&&!gx_resident_submit_done())return 0;
   }y=end;
  }
 
  GX_SetScissor(0,0,surface->width,surface->height);texture_in_flight=1;surface_texture_valid=0;
- if(!gs_mem_gpu_mark_pending())return 0;
  if(!gx_resident_submit_done())return 0;
  if(p->zwrite)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
   if(vertex_z&&!(native_actions[y*d->columns+x]&GS_GX_WRITE_Z))continue;
