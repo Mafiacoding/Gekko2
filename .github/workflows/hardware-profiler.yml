@@ -1,0 +1,22 @@
+name: GEKKO2 Hardware Profiler DOL
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/hardware-profiler/**'
+      - '.github/workflows/hardware-profiler.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Wii DOL
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src/tools/hardware-profiler devkitpro/devkitppc:20260503 make
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GEKKO2-Hardware-Profiler-DOL
+          path: |
+            tools/hardware-profiler/gekko2-profiler.dol
+            tools/hardware-profiler/gekko2-profiler.elf
+          if-no-files-found: error
