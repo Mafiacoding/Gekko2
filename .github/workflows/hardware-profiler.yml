@@ -14,6 +14,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/src" -w /src/tools/hardware-profiler devkitpro/devkitppc:20260503 make
       - name: Validate DOL against ELF and Wii memory limits
+        shell: bash
         run: |
           python3 tools/verify_dol_r1352.py tools/hardware-profiler/gekko2-profiler.dol tools/hardware-profiler/gekko2-profiler.elf | tee tools/hardware-profiler/dol-validation.json
           python3 tools/verify_wii_memory.py tools/hardware-profiler/gekko2-profiler.elf | tee tools/hardware-profiler/memory-validation.json
