@@ -8,6 +8,7 @@ Correct a confirmed sender/ACK ABI defect: public libogc sockaddr_in is 16 bytes
 with BSD sin_zero padding, but IOS IPv4 sockaddr is 8 bytes. Unlike bind/connect,
 libogc net_sendto forwards the supplied length unchanged. Send only the 8-byte
 prefix (checked using offsetof), initialize receive storage, supply 8 bytes and
+isolate its directly written peer buffer on a 32-byte cache line and
 validate the returned length, sin_len, family, IP, port, boot and sequence. The
 previous ACK length==16 check would reject normal IOS replies even if sent.
 Keep protocol 0, IOS nonblock bit 4, bounded background queue and default OFF.

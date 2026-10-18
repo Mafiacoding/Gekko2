@@ -182,11 +182,15 @@ static void *sender(void *arg)
    IRQ_Restore(irq);
   }
   for(unsigned tries=0;tries<4;tries++){
-   uint8_t ack[RT_ACK_BYTES+1];struct sockaddr_in peer;memset(&peer,0,sizeof peer);socklen_t length=RT_IOS_ADDR_BYTES;
-   int n=net_recvfrom(fd,ack,sizeof ack,0,(struct sockaddr*)&peer,&length);if(n<0)break;
+   /* IOS writes this buffer directly. Keep its cache line separate from
+    * adjacent stack locals; libogc bounce-copies only the ACK payload. */
+   uint8_t ack[RT_ACK_BYTES+1];
+   union {struct sockaddr_in addr;uint8_t cache_line[32];} peer __attribute__((aligned(32)));
+   memset(&peer,0,sizeof peer);socklen_t length=RT_IOS_ADDR_BYTES;
+   int n=net_recvfrom(fd,ack,sizeof ack,0,(struct sockaddr*)&peer.addr,&length);if(n<0)break;
    irq=IRQ_Disable();
-   if(generation==gen&&have_sent&&length==RT_IOS_ADDR_BYTES&&peer.sin_len==RT_IOS_ADDR_BYTES&&peer.sin_family==AF_INET&&
-      peer.sin_addr.s_addr==addr.sin_addr.s_addr&&peer.sin_port==addr.sin_port&&
+   if(generation==gen&&have_sent&&length==RT_IOS_ADDR_BYTES&&peer.addr.sin_len==RT_IOS_ADDR_BYTES&&peer.addr.sin_family==AF_INET&&
+      peer.addr.sin_addr.s_addr==addr.sin_addr.s_addr&&peer.addr.sin_port==addr.sin_port&&
       runtime_telemetry_ack_matches(ack,(size_t)n,boot_id,minimum_ack,last_sent))status.acknowledged=1;
    IRQ_Restore(irq);
   }

@@ -66,6 +66,7 @@ def hook(machine,address,size,user):
   pending=ack;previous=b'GK2A'+last_packet[128:144]
   ret(machine,-9 if mode=='send_fail' else 1016)
  elif name=='net_recvfrom':
+  assert reg(7)%32==0,'IOS peer output must have its own aligned cache line'
   assert reg(5)==21 and reg(6)==0 and bytes(machine.mem_read(reg(8),4))==struct.pack('>I',8)
   if pending is None or mode=='no_ack':ret(machine,-11)
   else:
@@ -211,7 +212,7 @@ def combined_vector_hook(machine,address,size,user):
 u.hook_del(vector_handle)
 u.hook_add(UC_HOOK_CODE,combined_vector_hook)
 worker();s=status();assert s[0]==2 and s[4]==1 and s[6]>0
-assert sdk_send_count==3 and sdk_receive_count==5
+assert sdk_send_count==3 and sdk_receive_count==9,(sdk_send_count,sdk_receive_count)
 # Allocation failure is a distinct possible source of the same numeric -22;
 # it must not be mistaken for proven address rejection on physical hardware.
 allocation=call('__lwp_heap_allocate',syms['__net_heap'],65000);assert allocation
