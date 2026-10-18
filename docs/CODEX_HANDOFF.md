@@ -5,8 +5,8 @@ Emulator-Buildcommit `640a761`, Integrations-PR #37, getrennte Code-PRs #32–#3
 [Bericht](BETA12.30-GS-VIF-ACCURACY.md), [Batchliste](COMPLETION-BATCHES.md),
 [fortgeschriebener Katalog](COMPLETION-CATALOG.md). GS-CSR/IMR-Narrowzugriffe,
 pending IMR, Q/K/L-LOD/MTBA/Mipfilter, VIF-CPU-Backpressure/FQC und writable ENVX.
-78 Host-Suites, je 40 neue PPC-Accuracy-Fälle und beide Wii-DOL-/ELF-/MEM1-Gates
-bestanden. Vollständige weitere PPC-Ergebnisse stehen nach Abschluss im Bericht.
+78 Host-Suites, alle 14 gelinkten PPC-Prüfgruppen (einschließlich je 40 neuer
+Accuracy-Fälle auf beiden ELFs) und beide Wii-DOL-/ELF-/MEM1-Gates bestanden.
 Keine physischen Wii-/Dolphin- oder neuen Spiel-/BIOS-Kachel-/FPS-Nachweise.
 Folgende BETA12.29-Absätze sind historisch; deren offene Ziele im Katalog fortführen.
 

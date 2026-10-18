@@ -15,7 +15,7 @@ def sha(b):return hashlib.sha256(b).hexdigest()
 def git(*args):return subprocess.check_output(['git',*args],cwd=root)
 source_commit=git('rev-parse','HEAD').decode().strip()
 subprocess.run(['git','diff','--exit-code',a.build_commit,source_commit,'--',
-                'source','include','Makefile','tools/build_beta12_28_alpha.sh'],cwd=root,check=True)
+                'source','include','Makefile','tools/build_beta12_30_accuracy.sh'],cwd=root,check=True)
 subprocess.run(['git','diff','--exit-code','--','source','include','Makefile'],cwd=root,check=True)
 files={}
 for suffix in ('GX-Chain','GX'):

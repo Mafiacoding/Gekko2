@@ -24,8 +24,12 @@ Gezielte Nachweise: 32768 IMR-Masken-/Ereigniskombinationen, 11701 Mip-/MTBA-
 Fälle, 200 VIF-SQ-Retries, 8230 ENVX-/PMON-Fälle und bisherige Soundprüfungen.
 Die vorhandene 70-Suite-Baseline bestand nach C01/C02. Die vollständige neue
 **78-Suite-Regression besteht**. Neue PPC-Fixtures prüfen auf beiden tatsächlichen
-Wii-ELFs je 40 GS-/VIF-/ENVX-Zugriffe und Rasterfälle. Die bisherigen längeren
-JIT-/Scheduler-Gates laufen separat und werden nach Abschluss protokolliert.
+Wii-ELFs je 40 GS-/VIF-/ENVX-Zugriffe und Rasterfälle. Alle **14 gelinkten
+PPC-Prüfgruppen bestehen**: darunter 105 Chain-, 24 ALU-, 72 RAM-/TLB-/DMA-SMC-,
+112 Sprung-/IRQ-, 14 C.F.S/MMI- und je 98 EE-Control-Vergleiche auf beiden
+ELFs sowie 16 Vergleiche über alle acht Optionskombinationen. GS-Formate,
+Big-Endian-Speicher, XGKICK, IPU, VIF und UV sind eingeschlossen.
+[Maschinenlesbare Ergebnisse](verification/BETA12.30-RESULTS.json).
 
 Reproduktion in frischen Quellen:
 ```

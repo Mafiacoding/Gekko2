@@ -3,7 +3,7 @@
 **BETA12.30 – GS/VIF-Accuracy:** [Bericht](docs/BETA12.30-GS-VIF-ACCURACY.md),
 [Gesamtbatchliste](docs/COMPLETION-BATCHES.md). Schmale GS-ACKs/pending IMR,
 Q/K/L-LOD/Mips/MTBA, sichere GX-Filtergates, VIF-SQ/FIFO/FQC und ENVX umgesetzt.
-78 Host-Suites und je 40 neue gelinkte PPC-Fälle auf beiden Wii-ELFs bestanden;
+78 Host-Suites und alle 14 gelinkten PPC-Prüfgruppen bestanden;
 beide DOL-/ELF-/statischen MEM1-Gates grün. Kein vollständiger Emulator oder
 belegter Crash-/Tekken-/BIOS-Kachel-/FPS-Fix. Draft-PR #37.
 
