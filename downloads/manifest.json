@@ -1,9 +1,9 @@
 {
   "release": "BETA12.31c-NETWORK-SETUP",
   "build_commit": "75cbe6a1fa85577f47ed10125e1a9e21de1ddd0e",
-  "source_commit": "4f20ab4ed284602cb683c31a83a25f4b8cb2c1f5",
+  "source_commit": "c18ef1ac0242fd3ccff0b421016092b2a3a13e6d",
   "receiver_files": {
-    "receiver.py": "76219d1284da41ac4e6478f7c4c1746e130482ba98f32ad47e6e2200d7e1cacf",
+    "receiver.py": "b51de225eff19959bcf59ba80ac17c56c6740139603fc216739d2583c83ed412",
     "SETUP-SD.cmd": "77492a64e5bbcf973e07d799499b255eab83df0934807db1ec7bad7334d4e2fa",
     "START-LOGGER.cmd": "6eb096a071c2cf0d8a980194b6f38d399d0a9771ab300a1e65d340f1b1c40249",
     "README-DE.md": "b93cadf2b2618b34db80eb137061cd918fd1cc07b2e562c504981ee95403486e"
