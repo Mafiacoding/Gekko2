@@ -82,3 +82,34 @@ Emulator-Hotspots bleiben mit `runtime_profile` und denselben Szenen zu prüfen.
 Die bestehende hochgeladene Legacy-CSV wird privat ausgewertet. Ihr Schema
 enthält keine Herkunft/Schrittweite/GP-Arbeitsmenge; daraus werden keine
 Peakwerte, Starlet-Fehler oder sichere GX-Optimierungen abgeleitet.
+
+## Geprüfte Downloads
+
+- [Gekko2-Wii-Limits-1.0-SD.zip](https://raw.githubusercontent.com/Mafiacoding/Gekko2/4a21ece4f4904ccb87af259500a41fb28e00f689/downloads/Gekko2-Wii-Limits-1.0-SD.zip) – 244912 Bytes,
+  SHA-256 `215ed0ed448ceb9924973c0dddc0a1ce00730cc8b6a2c77b8519ccaa33f4d60c`.
+- [Gekko2-Wii-Limits-1.0-review.zip](https://raw.githubusercontent.com/Mafiacoding/Gekko2/4a21ece4f4904ccb87af259500a41fb28e00f689/downloads/Gekko2-Wii-Limits-1.0-review.zip) – 1244877 Bytes,
+  SHA-256 `41642a361a447ea0e0cd7728ad64be652bf6f09c964252efe707839dd7809048`.
+
+Artefaktcommit `4a21ece4f4904ccb87af259500a41fb28e00f689`, Build-/Quellcommit
+`da75aa56024081a95a7fcb4a458bd90254afde24`. Beide öffentlichen unveränderlichen URLs erneut
+heruntergeladen: HTTP 200, lokal bytegleich, SHA-256 und ZIP-CRC bestanden.
+[Buildnachweis](verification/WII-LIMITS-1.0.json),
+[Downloadnachweis](verification/WII-LIMITS-1.0-DOWNLOADS.json),
+[Draft-PR #39](https://github.com/Mafiacoding/Gekko2/pull/39).
+
+## Abgrenzung zum separaten Profiler-PR #38
+
+Der zusätzlich vorhandene Branch `feature/hardware-profiler-ios222` wurde nur
+gelesen und bleibt unverändert. Der ältere Quellstand
+[`3e8501ff`](https://github.com/Mafiacoding/Gekko2/blob/3e8501ff368026fc3cbc54987339e4f7eba61a62/tools/hardware-profiler/source/main.c)
+verwendet vier Legacy-CSV-Spalten. Er zählt bei Stride-Schleifen den nominellen
+Adressbereich (ein Byte je 64 Bytes), bei GX hingegen Vertices. GX- und
+Stride-`verified` waren dort konstante Aufrufargumente ohne Ergebnisprüfung;
+nur der Kopiertest vergleicht Daten. `/dev/gekko2` ist ein optionales
+Custom-Gerät, kein allgemeiner Starlet-Funktionstest. Zwei `memalign`-Aufrufe
+sind kein Nachweis verschiedener MEM1-/MEM2-Pools. Der spätere PR-Stand
+`23b21e18` erweitert Metadaten und unterscheidet solche ungeprüften Messungen;
+er ist nicht durch eine Datei im älteren Schema als ausgeführt bestätigt.
+Die hochgeladene Datei allein bindet keine bestimmte DOL oder Hardware.
+Unsere Auswertung bleibt bei Legacy-Schema ausdrücklich bedingt und privat;
+keine Nutzerdaten sind in Source, PR oder Paketen enthalten.

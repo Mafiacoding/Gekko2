@@ -1,5 +1,12 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Zusätzlich: Wii Limits 1.0**, eigener Branch `codex/wii-limits-benchmark`,
+Buildcommit `da75aa5`, Draft-PR #39. [Standalone-Benchmark und geprüfte Downloads](WII-LIMITS-BENCHMARK.md).
+87 Host- und 75 tatsächliche ELF-PPC-Prüfungen sowie DOL-/ELF-/MEM1-Prüfung
+bestanden; Plattformdienste/GX-Fence für PPC-Prüfung simuliert. Keine neue
+Wii-/Dolphin-Messung oder Emulatoränderung. CSVs unter `sd:/gekko2-bench/`.
+Der separate Profiler-PR #38 wurde nur gelesen und nicht geändert.
+
 **Aktuell 18.10.2026: BETA12.30**, `codex/beta12-30-graphics-transport-integration`,
 Emulator-Buildcommit `640a761`, Integrations-PR #37, getrennte Code-PRs #32–#36.
 [Bericht](BETA12.30-GS-VIF-ACCURACY.md), [Batchliste](COMPLETION-BATCHES.md),
