@@ -13,10 +13,15 @@ jobs:
       - name: Build Wii DOL
         run: |
           docker run --rm -v "$PWD:/src" -w /src/tools/hardware-profiler devkitpro/devkitppc:20260503 make
+      - name: Validate DOL against ELF and Wii memory limits
+        run: |
+          python3 tools/verify_dol_r1352.py tools/hardware-profiler/gekko2-profiler.dol tools/hardware-profiler/gekko2-profiler.elf | tee tools/hardware-profiler/dol-validation.json
+          python3 tools/verify_wii_memory.py tools/hardware-profiler/gekko2-profiler.elf | tee tools/hardware-profiler/memory-validation.json
       - uses: actions/upload-artifact@v4
         with:
           name: GEKKO2-Hardware-Profiler-DOL
           path: |
             tools/hardware-profiler/gekko2-profiler.dol
             tools/hardware-profiler/gekko2-profiler.elf
+            tools/hardware-profiler/*-validation.json
           if-no-files-found: error
