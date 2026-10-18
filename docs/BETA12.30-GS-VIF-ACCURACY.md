@@ -59,3 +59,5 @@ allgemeines JIT-Dirty-Writeback, Gaussian/Reverb/Silent-Voice-Timing,
 weitere Karten-RPCs und Geräte. Echte Wii-Szenen für BIOS-Kacheln, Crash E3,
 Tekken/GT3/KOF, Laufzeitstabilität, MEM2-Peaks und Geschwindigkeit bleiben unbelegt.
 Ein behobener synthetischer SIGNAL-ACK-Fehler ist kein abgeschlossener Crash-Fix.
+
+[Geprüfte SD-/Review-Downloads](BETA12.30-DOWNLOADS.md).
