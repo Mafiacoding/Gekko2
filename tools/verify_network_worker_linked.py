@@ -124,6 +124,12 @@ print(f'PASS {checks} actual linked PPC API/ABI checks: default OFF, persistent 
 # Exercise the linked libogc net_socket/net_fcntl wrappers themselves, bypassing
 # only IOS IPC. This boundary was missing from the original worker mocks.
 for name in ('net_socket','net_fcntl'):hooks.pop(syms[name])
+# The stripped linker symbol table omits _SDA_BASE_. Recover r13 from the
+# delivered wrapper's lwz net_ip_top_fd@sda21(r13), checking its instruction.
+load=struct.unpack('>I',bytes(u.mem_read(syms['net_socket'],4)))[0]
+assert load>>26==32 and (load>>16)&31==13
+displacement=struct.unpack('>h',struct.pack('>H',load&0xffff))[0]
+u.reg_write(UC_PPC_REG_0+13,syms['net_ip_top_fd']-displacement)
 u.mem_write(syms['net_ip_top_fd'],struct.pack('>i',17))
 sdk_nonblock=False;sdk_requests=[]
 def ios_hook(machine,address,size,user):

@@ -31,3 +31,20 @@ and bit 4 enables nonblocking. SDK-boundary behavior is now explicitly covered.
 Re-run host collector/menu/config/profile-work tests, linked PPC wire/FIFO/ABI,
 worker and IOS-boundary tests and fresh devkitPPC DOL/ELF/MEM1 gates. Physical
 Wii receipt of an ACK still needs the short menu test. No BIOS/game/GX/FPS fix.
+
+Reference behavior checked at Dolphin commit `41460454e9600f909950fddf0abd13a138430162`: [NewSocket/FCntl](https://github.com/dolphin-emu/dolphin/blob/41460454e9600f909950fddf0abd13a138430162/Source/Core/Core/IOS/Network/Socket.cpp). SDK wrapper/header evidence comes from the actual linked devkitPPC r50/libogc 3.1.0 build.
+
+## Delivered build
+
+Wii code built from `4523361` using devkitPPC r50 / libogc 3.1.0.
+Host menu/config/status/profile instrumentation and UDP collector regressions pass.
+Delivered ELF checks pass: 33 wire/FIFO/ABI, 49 worker/API/ABI and 4 linked
+libogc IOS-boundary cases (86 total). The previous ELF fails the strengthened
+socket argument assertion; the corrected ELF passes. IOS IPC is modeled in the
+four boundary cases, so these checks do not establish physical network receipt.
+DOL sections match the ELF. MEM1 static end is `0x815e5734`, leaving 2,205,900
+bytes, above the 1 MiB gate. No emulation core or rendering changes in this fix.
+
+Update only the Wii app and restart it from HBC; existing telemetry.cfg and
+Windows Logger 1.1 remain usable. Start the PC listener, open Network logger,
+SAVE/APPLY and SEND TEST PACKET. An ACK confirms receipt; no BIOS boot needed.
