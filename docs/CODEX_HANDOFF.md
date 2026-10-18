@@ -1,5 +1,16 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Aktuell: BETA12.31 Runtime Profile / Wii Limits 1.1**, Branch
+`codex/runtime-profile-bios-investigation`, Buildcommit `ee6306d`, Draft-PR #40.
+[Bericht](BETA12.31-RUNTIME-PROFILE.md): native EE-/VU-Kategorien, Scope-Aufrufe,
+Arbeitsmengen, getrennter CPU-/Present-Auswerter und MEM1↔MEM2-Ausrichtungsfälle.
+83 Host-Suites, alle 16 gelinkten PPC-Prüfgruppen und beide
+Wii-DOL-/ELF-/MEM1-Gates bestanden. Keine neue physische Wii-/Dolphin-Ausführung,
+kein FPS- oder BIOS-Kachel-Fix. Besitzer-BIOS lokal inventarisiert, partiell
+disassembliert und bis regulärer Sprachauswahl ausgeführt; alle abgeleiteten
+Daten strikt außerhalb von Git/Paketen. BIOS-Hardwaremodell nicht allein aus
+ROMVER behaupten. Historische Absätze bleiben als Verlauf erhalten.
+
 **Zusätzlich: Wii Limits 1.0**, eigener Branch `codex/wii-limits-benchmark`,
 Buildcommit `da75aa5`, Draft-PR #39. [Standalone-Benchmark und geprüfte Downloads](WII-LIMITS-BENCHMARK.md).
 87 Host- und 75 tatsächliche ELF-PPC-Prüfungen sowie DOL-/ELF-/MEM1-Prüfung

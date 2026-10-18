@@ -1,4 +1,11 @@
-# Gekko2 SPEED BETA12.30 – 18 October 2026
+# Gekko2 SPEED BETA12.31 – 18 October 2026
+
+**BETA12.31 – Laufzeitprofil:** [Bericht](docs/BETA12.31-RUNTIME-PROFILE.md),
+Draft-PR #40. Native EE-/VU-Zeit, Scope-Aufrufe und Arbeitsmengen; eigener
+Auswerter; Wii Limits 1.1 mit bidirektionalen MEM1/MEM2-Kopien und Ausrichtungen.
+83 Host-Suites, alle 16 gelinkten PPC-Gruppen und beide Wii-DOL-/ELF-/MEM1-Gates
+bestanden. Private BIOS-Analyse
+bis Sprachauswahl; kein bestätigter Kachel-Fix oder neuer FPS-/Wii-/Dolphin-Nachweis.
 
 **BETA12.30 – GS/VIF-Accuracy:** [Bericht](docs/BETA12.30-GS-VIF-ACCURACY.md),
 [Gesamtbatchliste](docs/COMPLETION-BATCHES.md). Schmale GS-ACKs/pending IMR,

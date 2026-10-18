@@ -10,8 +10,8 @@ Invalidierungen und experimentelle Standardwerte bleiben erhalten.
 `PROFILE_COST schema=1` im normalen Wii-Sitzungslog enthält exklusive Ticks,
 Scope-Eintritte und Arbeitsmengen je Kategorie. Neue Kategorien für native
 EE-Versuche und VU0/VU1; übriges EE bleibt Dispatch/Scalar/Services und ist
-kein reiner Interpreterzähler. Native Versuche schließen abgelehnte Versuche
-mit null Retirement sowie separat erfasste Compile-Zeit ein. Zusätzliche
+kein reiner Interpreterzähler. Abgelehnte native Versuche mit null Retirement zählen ebenfalls als Eintritte;
+Compilezeit bleibt ein eigener exklusiver Bereich. Zusätzliche
 Arbeitsmengen: EE-Step-Retirements, native Guest-Retirements, VU-Paare,
 gepackte GX-Bytes und erfolgreich importierte Readback-Pufferbytes.
 Keine pro-Instruktion-SD-Ausgabe; Daten außerhalb der Messintervalle im
@@ -52,9 +52,12 @@ als neue 1.1-Messung oder Emulator-FPS veröffentlicht.
 
 Besitzer-BIOS nur außerhalb des Checkouts: ROMDIR-/ROMVER-Inventar, OSDSYS-ELF,
 partielle generische MIPS-Disassemblierung und unveränderter Host-Kaltstart.
-Nach 240 Millionen IOP-Slots 45 echte Display-Aufnahmen, EE-/IOP-Halt nicht
-beobachtet. Das umfasst Startanimation/Logo/Überblendungen; ein konkreter
-Kacheldefekt wurde dadurch noch nicht unabhängig isoliert. Keine Gastcode-,
+Nach 420 Millionen IOP-Slots 81 echte Display-Aufnahmen, EE-/IOP-Halt nicht
+beobachtet. Der unveränderte Kaltstart erreicht die reguläre Sprachauswahl
+mit lesbaren Schrifttexturen. Ein konkreter Kacheldefekt wurde dadurch noch
+nicht unabhängig isoliert. Ein regulär fortgesetzter Checkpoint mit normalen
+Controllerereignissen erreicht auch die Spracheinstellung in User Preferences
+mit lesbaren Texten. Keine Gastcode-,
 PC-, RAM- oder künstliche Bildreparatur. Vorhandene Legacy-Injektionen bleiben aus.
 
 ```
@@ -83,11 +86,21 @@ Zähler, echte EE/VU/GX-Aufrufe, unabhängige Analyse-Nenner und synthetische
 ROMDIR-Grenzen. Wii Limits 1.1 besteht 87 Host-Kernel/Parser-Prüfungen und 135
 Aufrufe des tatsächlichen ELF-PPC-Codes inklusive libc-Kopien über beide
 modellierten Speicherbereiche, Guards, Ausrichtungen, EABI und Fence-Timeout.
-Diese PPC-Modelle sind kein physischer Wii-Lauf. Weitere Build-/PPC-Ergebnisse
-werden nach Durchführung ergänzt.
+Diese PPC-Modelle sind kein physischer Wii-Lauf. Alle 83 Host-Suites einschließlich der neuen Prüfungen bestehen. Beide frischen
+Wii-Builds bestehen DOL-/ELF- und statisches MEM1-Gate: Chain `0x815dad34`
+mit 2249420 freien statischen Bytes; Kontrolle `0x815b9734` mit 2386124.
+SDK devkitPPC r50/GCC16.1.0/libogc3.1.0, unveränderte SPEED-/DSI-/AOT-/GX-/
+Idle-/Lightrec-Flags und Makefile (O1). Vorhandener SDK lokal verwendet,
+kein neuer Dockerlauf. Buildcommit `ee6306d`. Zusätzliche Tools/Berichte
+ändern die gelieferten Emulator-/Benchmark-Quellen nicht. Alle **16 gelinkten PPC-Prüfgruppen bestehen**: darunter 105 Chain-, 24 ALU-,
+72 RAM/TLB/DMA-SMC-, 112 Branch/IRQ-, 14 C.F.S/MMI-, je 98 EE-Control- und
+je 40 GS/VIF/ENVX-Vergleiche auf beiden Varianten, alle acht Optionskombinationen
+sowie die erweiterten Profiler-Timing-/Zähler-/Work-Prüfungen auf beiden ELFs.
+[Maschinenlesbare Ergebnisse](verification/BETA12.31-RESULTS.json).
 
 Offen: genauer JIT-Instruktionsmix/Codecache-/Callbenchmark, GX-Batch- und
 Texturwechselmatrix, vollständige Readbackkosten inklusive CPU-Konvertierung,
-Wii-Laufzeitprofil derselben Szene und unabhängige Referenzbilder/-GS-Traces
+feinere SPU2-/DMA-/VIF-Aufschlüsselung, Wii-Laufzeitprofil derselben Szene und
+unabhängige Referenzbilder/-GS-Traces
 für die BIOS-Kacheln. Keine voreilige Speicherverlagerung oder Entfernung von
 Fences allein auf Basis eines Mikrobenchmarks.
