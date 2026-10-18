@@ -29,7 +29,8 @@ lines+=['','## Arbeitsregeln','',
  '- Bei jedem Batch IDs, Codeänderung, tatsächlich ausgeführte Tests und Restgrenzen fortschreiben.',
  '- Ein implementierter Teilpfad schließt die übrigen Teilziele seines Moduls nicht automatisch.',
  '- Bewährte Interpreter-/Software-GS-Oracles, RAM-/Mapping-/IRQ-/Budget-Gates und EABI erhalten.',
- '- Als Nächstes: konkrete legale EE-Lücken, Audio-Datapaths und MCSERV-Erweiterungen.',
+ '- BETA12.29: EE-Control und SPU2 Noise/PMON/Sweeps abgeschlossen; GETENTSPACE als MC-Teilziel.',
+ '- Als Nächstes: Gaussian/Reverb/ENVX, weitere MCSERV-RPCs und GS/GX-/JIT-Grenzen.',
  '- Der unabhängige nächste Hardware-Schritt bleibt BIOS/Crash/Tekken im identischen Gastzustand.',
  '- Keine Nutzerdaten/BIOS/Discs/Karten/Profile in Tests oder öffentlichen Berichten.','']
 text='\n'.join(lines);dest=root/'docs/COMPLETION-CATALOG.md'

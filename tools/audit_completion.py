@@ -85,7 +85,7 @@ unsigned probe(uint32_t word,unsigned *words,unsigned *calls){
   for row in rows:
    n=C.c_uint();calls=C.c_uint();bits=backend.probe(row['word'],C.byref(n),C.byref(calls));assert not(bits&128)
    row.update(word=f'{row["word"]:08x}',single_front=bool(bits&1),emitter=bool(bits&2),block_policy=bool(bits&4),terminal=bool(bits&8),chain_policy=bool(bits&16),block_emitter=bool(bits&32),emitted_words=n.value,opaque_call_sites=calls.value)
- files=subprocess.check_output(['git','ls-files','source'],cwd=ROOT,text=True).splitlines();modules=[];markers=[]
+ files=subprocess.check_output(['git','ls-files','source','include'],cwd=ROOT,text=True).splitlines();modules=[];markers=[]
  marker=re.compile(r'\b(TODO|FIXME|stub|placeholder|unimplemented|unsupported|simplif\w*|approxim\w*)\b|not (?:yet )?implemented',re.I)
  for name in files:
   path=ROOT/name
@@ -94,7 +94,7 @@ unsigned probe(uint32_t word,unsigned *words,unsigned *calls){
   for n,line in enumerate(data.decode(errors='replace').splitlines(),1):
    if marker.search(line):markers.append({'path':name,'line':n,'text':line.strip()[:200],'classification':'review_candidate_not_a_confirmed_bug'})
  result={'schema':1,'commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
-  'scope':'All tracked runtime source files; scalar EE canonical representatives plus COP2 transfers/branches. VU micro and COP2 macro completeness need their separate audits.',
+  'scope':'All tracked runtime source and include files; scalar EE canonical representatives plus COP2 transfers/branches. VU micro and COP2 macro completeness need their separate audits.',
   'limitations':['Compiler acceptance is not executed PPC correctness.','Memory admission needs live translation/alias guards.','Opaque-call count does not classify call semantics.','Canonical representatives do not exhaust operand aliases or reserved-bit variants.','Comment markers may describe historical fixes, legitimate fallbacks or unsupported reserved encodings.'],
   'runtime_sources':modules,'ee_forms':rows,'review_markers':markers}
  a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(result,indent=2)+'\n')

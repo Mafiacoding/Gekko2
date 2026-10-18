@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "hw/spu2_mixer.c"
+#include "hw/iop_spu2.c"
 static unsigned checks,failures;
 #define CHECK(x) do {checks++;if(!(x)){if(failures<10)printf("FAIL line %d: %s\n",__LINE__,#x);failures++;}}while(0)
 static uint16_t readreg(uint32_t a){uint16_t v=0xbeef;CHECK(iop_spu2_mmio_read16(a,&v));return v;}
@@ -137,8 +138,32 @@ static void snapshots(void)
  CHECK(!g_noise[0].lfsr&&!g_noise[0].counter&&!g_volume_counter[1][23][1]);
  spu2_mixer_snapshot_save(&b);CHECK(!memcmp(&old,&b,sizeof old));
 }
+static void outer_snapshots(void)
+{
+ iop_spu2_init();
+ g_noise[1]=(noise_state){12345,23456,0};g_volume_counter[1][23][1]=6789;
+ iop_spu2_mmio_write16(IOP_SPU2_BASE+0x400,0x1234);
+ spu_snapshot *saved=malloc(sizeof *saved),*old=malloc(sizeof *old);
+ CHECK(saved&&old);if(!saved||!old)exit(1);
+ iop_spu2_snapshot_save(saved);
+ CHECK(iop_spu2_snapshot_valid(saved,UINT64_MAX,2u*1024u*1024u));
+ iop_spu2_init();iop_spu2_snapshot_load(saved);
+ CHECK(g_noise[1].counter==12345&&g_noise[1].lfsr==23456);
+ CHECK(g_volume_counter[1][23][1]==6789);
+ CHECK(readreg(IOP_SPU2_BASE+0x400+12)==0x2468);
+ memcpy(old,saved,sizeof *old);old->mixer_size=sizeof(mixer_snapshot_legacy);
+ CHECK(iop_spu2_snapshot_valid(old,UINT64_MAX,2u*1024u*1024u));
+ iop_spu2_snapshot_load(old);
+ CHECK(!g_noise[1].counter&&!g_noise[1].lfsr&&!g_volume_counter[1][23][1]);
+ CHECK(readreg(IOP_SPU2_BASE+0x400+12)==0x2468);
+ old->mixer_size--;CHECK(!iop_spu2_snapshot_valid(old,UINT64_MAX,2u*1024u*1024u));
+ memcpy(old,saved,sizeof *old);
+ ((mixer_snapshot *)old->mixer)->volume_counter[0][0][0]=0x8000;
+ CHECK(!iop_spu2_snapshot_valid(old,UINT64_MAX,2u*1024u*1024u));
+ free(saved);free(old);
+}
 int main(void)
 {
- iop_spu2_init();controls();noise();pitch();sweeps();render_controls();snapshots();
+ iop_spu2_init();controls();noise();pitch();sweeps();render_controls();snapshots();outer_snapshots();
  printf("SPU2 datapath checks=%u failures=%u\n",checks,failures);return failures!=0;
 }

@@ -1,4 +1,12 @@
-# Gekko2 SPEED BETA12.28 – 17 October 2026
+# Gekko2 SPEED BETA12.29 – 18 October 2026
+
+**BETA12.29 – erste Completion-Batches:** [Bericht](docs/BETA12.29-CORE-COMPLETION.md),
+[81-Punkte-Inventar](docs/COMPLETION-CATALOG.md). C.F.S/native BC2/RI,
+SPU2 Noise/PMON/Sweeps und GETENTSPACE implementiert. 70 Host-Suites grün,
+beide Wii-DOL-/ELF-/statischen MEM1-Gates grün. Kein vollständiger Emulator,
+keine bestätigten neuen Wii-FPS, BIOS-Kacheln oder Crash-/Tekken-Spielbarkeit.
+Branch `codex/beta12-29-completion-integration`, Draft-PR #31.
+
 
 **BETA12.28 – Alpha-Core-Teststand:** [Menü, CLUT, Zweikreis-Scanout, PS2-Karten/FAT/MCSERV und IPU-Retries](docs/BETA12.28-ALPHA-CORE.md). Keine neue Wii-Spielbarkeits-/FPS-/BIOS-Kachelbestätigung. Ältere Absätze beschreiben historische Versionen.
 

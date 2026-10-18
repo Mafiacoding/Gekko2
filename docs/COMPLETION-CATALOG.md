@@ -23,7 +23,7 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 
 | ID | Befund / Aufgabe | Status | Code / Abnahme |
 |---|---|---|---|
-| EE-01 | C.F.S fehlt im Interpreter und Native-Emitter | implementiert_getestet | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
+| EE-01 | C.F.S im Interpreter, Single-/Block-Emitter und AOT-Klassifizierer | implementiert_getestet | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
 | EE-02 | BC2F/T/FL/TL: native Single-Fragmente, weiter konservative Blockgrenze | implementiert_getestet | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
 | EE-03 | Unbekannte EE-Dispatchfälle liefern RI statt Emulator-Halt | implementiert_getestet | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
 | EE-04 | FPU-Flags und PS2-Mantissen-/Denormalmodell | teilweise | [source/core/ee/ee_core.c](../source/core/ee/ee_core.c); RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles |
@@ -110,6 +110,7 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 - Bei jedem Batch IDs, Codeänderung, tatsächlich ausgeführte Tests und Restgrenzen fortschreiben.
 - Ein implementierter Teilpfad schließt die übrigen Teilziele seines Moduls nicht automatisch.
 - Bewährte Interpreter-/Software-GS-Oracles, RAM-/Mapping-/IRQ-/Budget-Gates und EABI erhalten.
-- Als Nächstes: konkrete legale EE-Lücken, Audio-Datapaths und MCSERV-Erweiterungen.
+- BETA12.29: EE-Control und SPU2 Noise/PMON/Sweeps abgeschlossen; GETENTSPACE als MC-Teilziel.
+- Als Nächstes: Gaussian/Reverb/ENVX, weitere MCSERV-RPCs und GS/GX-/JIT-Grenzen.
 - Der unabhängige nächste Hardware-Schritt bleibt BIOS/Crash/Tekken im identischen Gastzustand.
 - Keine Nutzerdaten/BIOS/Discs/Karten/Profile in Tests oder öffentlichen Berichten.
