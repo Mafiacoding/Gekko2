@@ -55,8 +55,20 @@ python3 tools/test_beta12_29_linked.py Gekko2-BETA12.29-GX-Chain.elf --control-e
 
 Emulator-Buildcommit: `9fe55bf`. Nachfolgende Berichts-/Paketänderungen ändern
 keine Emulatorsemantik. Exakte DOL-/ELF-Hashes stehen im JSON/Manifest.
-Die bestehenden Chain-/Speicher-/Sprung-/Modus-/GX-PPC-Gates laufen separat;
-ihre tatsächlichen Resultate werden vor Paketfreigabe ergänzt.
+Insgesamt **12 gelinkte PPC-Suites bestanden**: 105 komplette Interpreter-/Chain-
+Zustandsvergleiche, 24 ALU-, 72 Speicher-/TLB-/DMA-SMC-, 112 Sprung-/IRQ-/
+Scheduler-Vergleiche, 16 Zustände für alle acht Experimentkombinationen,
+208 GX-Format-Texel, 53 Big-Endian-GS-Speicherprüfungen sowie XGKICK-Reject/
+Ringwrap, CSM2, 32 Tiefentexel, IPU-Reset, Eingabe, sieben VIF-Barrieren und
+16 fraktionale UV-/Dreieckfälle. Hinzu kommen die oben genannten neuen
+EE-Single- und C.F.S-Blockprüfungen. GX-/Plattformdienste sind in diesen
+Unicorn-Fixtures simuliert, keine reale Wii-GPU-Ausführung.
+
+DOL SHA256 Chain: `f189f58b0a435f6e5df4b9437bfaaee8e6246527e4ae42bb651d57cd4bc8a58c`.
+DOL SHA256 Kontrolle: `1f3f9c7d6bb819ee14769287ba26bc94d95d5de290f28ec5fd1f1bb590b8f330`.
+Maschinenlesbare Zusammenfassung: [BETA12.29-RESULTS.json](verification/BETA12.29-RESULTS.json).
+Compile-Warnungen bestehen weiterhin, insbesondere ältere Lightrec/Lightning-
+und libogc-Toolchain-Warnungen; kein warnungsfreier Build behauptet.
 Keine neuen physischen Wii-/Dolphin-Tests. SCPH-50004-Kacheln, steuerbare
 Crash-/Tekken-Spielbarkeit, dynamischer MEM2-Peak und Wii-Speed bleiben unbelegt.
 

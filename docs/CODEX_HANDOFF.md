@@ -9,7 +9,9 @@ Drei Implementierungsbatches: EE-Control (C.F.S, einzelne native BC2, RI),
 SPU2 Noise/PMON/Sweeps und kompatible Checkpoints, GETENTSPACE.
 70 Host-Suites, 352 Emitter-PPC-Fälle und 98 gelinkte EE-Vergleiche bestanden;
 beide devkitPPC-Builds samt DOL-/ELF-/statischem MEM1-Gate bestanden.
-Vollständiger Prüfumfang im aktuellen Bericht, ältere Absätze historisch.
+Auch alle 12 gelinkten PPC-Suites bestanden (105 Chain-, 24 ALU-, 72 RAM-/
+TLB-/DMA-SMC-, 112 Sprung-/IRQ-Fälle, 8 Optionskombinationen und GS/GIF/VIF/IPU-
+Gates). Vollständiger Prüfumfang im aktuellen Bericht, ältere Absätze historisch.
 
 Nächste echte Codepunkte: SPU-04/05/06 (Gaussian/Reverb/ENVX und stille
 Stimmen), MC-02/03/04 (CheckBlock/Raw-Page/Directory-Descriptors), JIT-03/04
