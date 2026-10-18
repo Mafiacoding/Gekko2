@@ -1,0 +1,55 @@
+{
+  "release": "R1389-SPEED-BETA12.31-RUNTIME-PROFILE",
+  "benchmark": "GEKKO2-WII-LIMITS-1.1",
+  "source_commit": "101c245f975beb4300e1a9c06ab38143bad055a4",
+  "build_commit": "ee6306d",
+  "sdk": "devkitPPC r50/GCC16.1.0/libogc3.1.0",
+  "host_suites": 83,
+  "linked_ppc_suites": 16,
+  "benchmark_host_checks": 87,
+  "benchmark_linked_checks": 135,
+  "physical_wii_verified": false,
+  "dolphin_verified": false,
+  "fps_gain_verified": false,
+  "bios_tile_fix_verified": false,
+  "binaries": {
+    "Gekko2-BETA12.31-GX-Chain.dol": {
+      "bytes": 2087512,
+      "sha256": "fe970ee6962cab1da62603dc3344beaf49d26ba748a43991fa20415dcc24697d"
+    },
+    "Gekko2-BETA12.31-GX-Chain.elf": {
+      "bytes": 8458008,
+      "sha256": "bf88cf39bc5c826a1f0c71ebc2e80fd29a25f0389883199a45cc603d60fcb9e8"
+    },
+    "Gekko2-BETA12.31-GX.dol": {
+      "bytes": 2081912,
+      "sha256": "2a641272f8b1a5ba58ca25484058043fc781496032ab2ba1e685f16e54da7d17"
+    },
+    "Gekko2-BETA12.31-GX.elf": {
+      "bytes": 8448948,
+      "sha256": "3471d81b2353954ac930ea9624cb5a2e1f4adeffe22c5dde07dc2be7baa717c1"
+    },
+    "Wii-Limits.dol": {
+      "bytes": 481432,
+      "sha256": "13f95b55e49b301afb8216cfbb8a7ce55a4a6a46f50bc4a4016168adc48a211a"
+    },
+    "Wii-Limits.elf": {
+      "bytes": 2357220,
+      "sha256": "d4cbd9234a13fe2f67c4035904ac900401cc3d80255fb6d458edfecfc5af8c2d"
+    }
+  },
+  "memory": {
+    "chain": {
+      "mem1_static_end": "0x815dad34",
+      "mem1_remaining_bytes": 2249420,
+      "minimum_remaining_bytes": 1048576,
+      "passed": true
+    },
+    "control": {
+      "mem1_static_end": "0x815b9734",
+      "mem1_remaining_bytes": 2386124,
+      "minimum_remaining_bytes": 1048576,
+      "passed": true
+    }
+  }
+}
