@@ -457,29 +457,44 @@
     },
     {
       "id": "SPU-01",
-      "status": "offen",
-      "title": "Noise-Generator und NON-Auswahl ignoriert",
+      "status": "implementiert_getestet",
+      "title": "Noise-Generator, alle 64 Clockwerte und NON im Mixer angebunden",
       "source": "source/hw/spu2_mixer.c",
       "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
-      "tests": [],
+      "tests": [
+        "tests/test_completion_spu2.c",
+        "tests/test_spu2_mixer.c",
+        "tests/test_iop_dma_spu2.c",
+        "tests/test_checkpoint_rspu2_r1340.c"
+      ],
       "implementation_commit": null
     },
     {
       "id": "SPU-02",
-      "status": "offen",
-      "title": "Pitch-Modulation FMOD/PMON ignoriert",
+      "status": "implementiert_getestet",
+      "title": "Pitch-Modulation aus voriger Post-ADSR-Stimme; Stimme 0 ausgenommen",
       "source": "source/hw/spu2_mixer.c",
       "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
-      "tests": [],
+      "tests": [
+        "tests/test_completion_spu2.c",
+        "tests/test_spu2_mixer.c",
+        "tests/test_iop_dma_spu2.c",
+        "tests/test_checkpoint_rspu2_r1340.c"
+      ],
       "implementation_commit": null
     },
     {
       "id": "SPU-03",
-      "status": "offen",
-      "title": "Voice-/Master-Lautstärke-Sweeps fehlen",
+      "status": "implementiert_getestet",
+      "title": "Voice-/Master-Sweeps, VOLX und abwärtskompatibler Checkpoint",
       "source": "source/hw/spu2_mixer.c",
       "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
-      "tests": [],
+      "tests": [
+        "tests/test_completion_spu2.c",
+        "tests/test_spu2_mixer.c",
+        "tests/test_iop_dma_spu2.c",
+        "tests/test_checkpoint_rspu2_r1340.c"
+      ],
       "implementation_commit": null
     },
     {

@@ -5,7 +5,8 @@
 
 /* SPU2-native beta: 16-bit-word addresses, 48 kHz. PCM generation,
  * guest-clock scheduling, DMA delivery and optional Wii output are wired.
- * No reverb/noise/PMON/sweep/Gaussian interpolation yet.
+ * Noise, pitch modulation and voice/master volume sweeps are modeled.
+ * Reverb/Gaussian interpolation and full silent-voice timing remain open.
  * Sources: PCSX2 pcsx2/SPU2/{Mixer,Dma,RegTable,spu2sys}.cpp and
  * ps2sdk common/include/libsd-common.h. */
 #define SPU2_MIXER_RAM_SIZE (2u * 1024u * 1024u)
@@ -26,6 +27,7 @@ uint8_t *spu2_mixer_get_ram(void);
  * N+16). core is 0 or 1. */
 void spu2_mixer_on_kon(int core, int is_upper_half, uint16_t bits);
 void spu2_mixer_on_loop_address_write(int core,int voice);
+void spu2_mixer_on_volume_write(uint32_t addr,uint16_t value);
 void spu2_mixer_on_koff(int core, int is_upper_half, uint16_t bits);
 
 /* Renders n_frames real stereo S16 PCM frames (L,R interleaved) at
@@ -49,4 +51,6 @@ uint32_t spu2_mixer_snapshot_size(void);
 void spu2_mixer_snapshot_save(void *out);
 int spu2_mixer_snapshot_valid(const void *data);
 void spu2_mixer_snapshot_load(const void *data);
+int spu2_mixer_snapshot_valid_sized(const void *data,uint32_t bytes);
+void spu2_mixer_snapshot_load_sized(const void *data,uint32_t bytes);
 #endif

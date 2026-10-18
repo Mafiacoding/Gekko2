@@ -14,8 +14,8 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 | Status | Anzahl |
 |---|---:|
 | hardware_nachweis | 10 |
-| implementiert_getestet | 3 |
-| offen | 12 |
+| implementiert_getestet | 6 |
+| offen | 9 |
 | optional_abwesend | 3 |
 | skalar_absicht | 1 |
 | teilweise | 39 |
@@ -72,9 +72,9 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 | IPU-03 | IDCT-/CSC-/PACK-Grenzen und Rundung | teilweise | [source/hw/ipu.c](../source/hw/ipu.c); Legale unabhängige Bitstreams, Rundung, Retry, Reset und Gerätefristen |
 | IPU-04 | CPU-/DMA-FIFO-Retries implementiert | vorhanden_pruefen | [source/hw/ipu.c](../source/hw/ipu.c); Legale unabhängige Bitstreams, Rundung, Retry, Reset und Gerätefristen |
 | IPU-05 | Physische IPU-/DMA-/BUSY-Latenzen | teilweise | [source/hw/ipu.c](../source/hw/ipu.c); Legale unabhängige Bitstreams, Rundung, Retry, Reset und Gerätefristen |
-| SPU-01 | Noise-Generator und NON-Auswahl ignoriert | offen | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
-| SPU-02 | Pitch-Modulation FMOD/PMON ignoriert | offen | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
-| SPU-03 | Voice-/Master-Lautstärke-Sweeps fehlen | offen | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
+| SPU-01 | Noise-Generator, alle 64 Clockwerte und NON im Mixer angebunden | implementiert_getestet | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
+| SPU-02 | Pitch-Modulation aus voriger Post-ADSR-Stimme; Stimme 0 ausgenommen | implementiert_getestet | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
+| SPU-03 | Voice-/Master-Sweeps, VOLX und abwärtskompatibler Checkpoint | implementiert_getestet | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
 | SPU-04 | Gaussian-Interpolation fehlt | offen | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
 | SPU-05 | Reverb-/Effekt-RAM-Datapath fehlt | offen | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
 | SPU-06 | ADSR/ENVX/Key-On-Timing und IRQ-wirksame stille Stimmen | teilweise | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
