@@ -115,7 +115,12 @@ static void ui_text(ui_rect_fn rect,int x,int y,int scale,const char *s,int r,in
  if(ui_text_renderer){ui_text_renderer(x,y,scale,s,r,g,b);return;}
  for(;*s;s++,x+=8*scale){unsigned c=(unsigned char)*s;if(c<32||c>126)continue;
  for(int row=0;row<14;row++)for(int col=0;col<8;col++)if(ui_font[c-32][row]&(1<<col))rect(x+col*scale,y+row*scale,scale,scale,r,g,b);}}
-static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,int fast,int fps,int gx,const char *engine,const char *notice){
+/* The active mask stays frozen until cold boot; requested settings may differ. */
+static const char *ui_cpu_engine(uint32_t mask){
+ const uint32_t jit=GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
+ return !(mask&jit)?"INTERPRETER":(mask&jit)==jit?"JIT ENABLED":"MIXED CPU";
+}
+static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,int fast,int fps,int gx,uint32_t cpu_mask,const char *notice){
  for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
  /* Architectural light pillars; an original angular wordmark. */
  for(int i=0;i<7;i++){int x=408+i*28;rect(x,76+i*11,2,240-i*17,12,35+i*5,66+i*9);}
@@ -136,7 +141,7 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  rect(36,y,370,31,on?16:9,on?43:22,on?76:41);rect(36,y,3,31,on?65:20,on?183:49,on?255:76);
  ui_text(rect,51,y+3,1,labels[i],on?228:148,on?242:176,on?255:207);
  ui_text(rect,51,y+17,1,desc[i],on?115:75,on?188:116,on?235:157);}
- ui_text(rect,433,173,1,"ENGINE",91,144,188);ui_text(rect,433,194,1,engine,185,221,250);
+ ui_text(rect,433,173,1,running?"CPU ACTIVE":"CPU NEXT BOOT",91,144,188);ui_text(rect,433,194,1,ui_cpu_engine(cpu_mask),185,221,250);
  ui_text(rect,433,240,1,"SESSION",91,144,188);ui_text(rect,433,261,1,running?"PAUSED":"READY",185,221,250);
  }else if(page==1){
  ui_text(rect,48,171,1,hud?"> HUD: ON":"> HUD: OFF",221,237,255);
@@ -172,7 +177,10 @@ static void ui_settings_draw(ui_rect_fn rect,int selected,int hud,int throughput
   snprintf(row,sizeof row,"%s %-23s %s",on?">":" ",labels[n],values[n]);
   ui_text(rect,40,y,1,row,on?228:148,on?242:176,on?255:207);
  }
- ui_text(rect,36,355,1,"Sound OFF mutes output; guest hardware stays active.",117,186,237);
+ ui_text(rect,36,355,1,selected==UI_SET_PROFILE?
+  "INTERPRETER REFERENCE disables EE / IOP / VU JIT.":selected==UI_SET_RENDERER?
+  "Renderer choice does not change CPU profile.":
+  "Sound OFF mutes output; guest hardware stays active.",117,186,237);
  ui_text(rect,36,375,1,"Rates: guest VBlanks / output presents, not game FPS.",117,186,237);
  ui_text(rect,36,403,1,message?message:"",117,186,237);
  ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT CHANGE   B BACK",209,227,246);

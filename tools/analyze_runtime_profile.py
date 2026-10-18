@@ -7,8 +7,12 @@ import argparse,json,re
 from pathlib import Path
 FIELDS={'schema','scope','category','ticks','entries','work','unit','tb_hz'}
 def analyze(text):
-    groups={};rows=0;frequencies=set()
+    groups={};rows=0;frequencies=set();configurations=set()
     for line in text.splitlines():
+        # Whitelist numeric configuration fields only; never copy guest records.
+        if line.startswith('EVENT '):
+            masks=re.findall(r'(?:^| )active_mask=([0-9a-fA-F]{8})(?= |$)',line)
+            if len(masks)==1:configurations.add(int(masks[0],16))
         if not line.startswith('PROFILE_COST '):continue
         parts=line.split()[1:]
         if any('=' not in x for x in parts):raise ValueError('malformed PROFILE_COST')
@@ -32,6 +36,16 @@ def analyze(text):
                'EE native time includes declined attempts; entries are scope entries, not instruction counts.',
                'EE_step_retirements includes native work; work counters are not additive.',
                'Profiler overhead is included in instrumented timing; no FPS gain is inferred.']}
+    out['cpu_configurations']=[dict(active_mask=f'{mask:08x}',
+        ee_jit=bool(mask&1),iop_jit=bool(mask&2),vu_jit=bool(mask&4))
+        for mask in sorted(configurations)]
+    warnings=[]
+    if not configurations:warnings.append('No active CPU mask found; native execution cannot be inferred from attempt entries.')
+    if any(not (mask&7) for mask in configurations):
+        warnings.append('EE, IOP and VU JIT are all disabled in at least one active configuration; this is an interpreter run.')
+    if len(configurations)>1:
+        warnings.append('Multiple active CPU masks: timing totals combine configurations and are not a controlled comparison.')
+    out['warnings']=warnings
     for scope in ('sampled_cpu','exact_present'):
         selected=[(c,g) for (s,c),g in groups.items() if s==scope]
         if not selected:continue

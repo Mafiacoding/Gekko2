@@ -1,5 +1,10 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.31a CPU status correction:** branch `codex/cpu-status-log-review`;
+[report](BETA12.31a-CPU-STATUS.md). Launcher uses active/requested CPU masks;
+profile analyzer warns about interpreter and mixed configurations. No GX/BIOS
+visual or FPS fix. Owner assets remain private.
+
 **Aktuell: BETA12.31 Runtime Profile / Wii Limits 1.1**, Branch
 `codex/runtime-profile-bios-investigation`, Buildcommit `ee6306d`, Draft-PR #40.
 [Bericht](BETA12.31-RUNTIME-PROFILE.md): native EE-/VU-Kategorien, Scope-Aufrufe,

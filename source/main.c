@@ -1566,11 +1566,6 @@ int main(int argc, char **argv)
     }
     int selected=0,page=0,redraw=1,opt_selected=0,settings_selected=0,experiment_selected=0;
     const char *notice="SD: pcsx2/bios/ and pcsx2/games/";
-#ifdef PCSX2WII_JIT_DISABLE
-    const char *engine="INTERPRETER";
-#else
-    const char *engine="PPC JIT";
-#endif
     for (;;) {
         if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
             if(page==4){
@@ -1579,7 +1574,7 @@ int main(int argc, char **argv)
             else if(page==5)ui_experiments_draw(launcher_rect,experiment_selected,notice);
             else if(page==1)ui_settings_draw(launcher_rect,settings_selected,g_hud_default,g_throughput,g_fps_default,g_gx_requested,notice);
             else if(page==3)ui_browser_draw(launcher_rect,&g_browser,notice);
-            else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_requested,engine,notice);
+            else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_requested,g_system_started?gekko2_optimization_mask:gekko2_opt_requested(),notice);
             flush_screen();redraw=0;}
         VIDEO_WaitVSync();wii_input_scan();uint16_t down=g_input_down;
         if(g_input_exit || (g_input_home && page==0))wii_exit_to_loader();

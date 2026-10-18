@@ -15,3 +15,16 @@ for bad in ('',row('sampled_cpu','EE',1).replace('ticks=1','ticks=-1'),row('samp
  except ValueError:checks+=1
  else:raise AssertionError('bad input accepted')
 print(f'PASS {checks} runtime profile aggregation, separate denominators, private-data exclusion and malformed-record checks')
+
+base=row('sampled_cpu','EE_native_attempt',1,entries=999,work=0)
+a=m.analyze('EVENT session=1 active_mask=007075c0 path=PRIVATE_PATH\n'+base)
+assert a['cpu_configurations']==[dict(active_mask='007075c0',ee_jit=False,iop_jit=False,vu_jit=False)]
+assert any('interpreter run' in w for w in a['warnings']) and 'PRIVATE_PATH' not in str(a)
+b=m.analyze('EVENT active_mask=00787dff\n'+base)
+assert all(b['cpu_configurations'][0][k] for k in ('ee_jit','iop_jit','vu_jit')) and not b['warnings']
+assert m.analyze(base)['warnings']  # zero retired work alone does not prove JIT disabled
+mixed=m.analyze('EVENT active_mask=007075c0\nEVENT active_mask=00787dff\n'+base)
+assert any('Multiple active' in w for w in mixed['warnings'])
+assert not m.analyze('EVENT active_mask=00787dffjunk\n'+base)['cpu_configurations']
+assert not m.analyze('EVENT active_mask=00787dff active_mask=007075c0\n'+base)['cpu_configurations']
+print('PASS active CPU masks, interpreter warning, mixed-run warning, attempt semantics and configuration privacy')
