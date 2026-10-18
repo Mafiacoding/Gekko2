@@ -58,6 +58,7 @@
 #include <wiiuse/wpad.h>
 #include "frontend.h"
 #include <fat.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include "core/hw/iop_hle_thread.h"
 #include <stdlib.h>
@@ -1595,12 +1596,19 @@ int main(int argc, char **argv)
             fclose(boot);
         }
     }
-    int selected=0,page=0,redraw=1,opt_selected=0,settings_selected=0,experiment_selected=0;
+    int selected=0,page=0,redraw=1,opt_selected=0,settings_selected=0,experiment_selected=0,network_selected=0;
+    runtime_telemetry_settings network_edit;runtime_telemetry_get_settings(&network_edit);
+    uint64_t network_refresh=0,network_repeat=0;
     const char *notice="SD: pcsx2/bios/ and pcsx2/games/";
     for (;;) {
+        if(page==6&&gettime()>=network_refresh){redraw=1;network_refresh=gettime()+millisecs_to_ticks(250);}
         if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
             if(page==4){
                 ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
+            }
+            else if(page==6){runtime_telemetry_status status;runtime_telemetry_settings active;
+                runtime_telemetry_get_status(&status);runtime_telemetry_get_settings(&active);
+                ui_network_draw(launcher_rect,network_selected,&network_edit,&active,&status,notice);
             }
             else if(page==5)ui_experiments_draw(launcher_rect,experiment_selected,notice);
             else if(page==1)ui_settings_draw(launcher_rect,settings_selected,g_hud_default,g_throughput,g_fps_default,g_gx_requested,notice);
@@ -1608,6 +1616,12 @@ int main(int argc, char **argv)
             else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_requested,g_system_started?gekko2_optimization_mask:gekko2_opt_requested(),notice);
             flush_screen();redraw=0;}
         VIDEO_WaitVSync();wii_input_scan();uint16_t down=g_input_down;
+        if(page==6&&network_selected>=RT_EDIT_IP1&&network_selected<=RT_EDIT_PORT){
+            uint16_t held=g_input_held&(PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT);
+            if(down&(PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT))network_repeat=gettime()+millisecs_to_ticks(350);
+            else if(held&&gettime()>=network_repeat){down|=held;network_repeat=gettime()+millisecs_to_ticks(80);}
+            if(!held)network_repeat=0;
+        }
         if(g_input_exit || (g_input_home && page==0))wii_exit_to_loader();
         if(g_input_home){page=0;redraw=1;continue;}
         if(!down)continue;
@@ -1635,7 +1649,27 @@ int main(int argc, char **argv)
             continue;
         }
         if(page){
-            if(page==4){
+            if(page==6){
+                if(down&PAD_BUTTON_B){page=1;notice="Network edits apply only with SAVE / APPLY.";}
+                else if(down&PAD_BUTTON_UP)network_selected=(network_selected+RT_EDIT_COUNT-1)%RT_EDIT_COUNT;
+                else if(down&PAD_BUTTON_DOWN)network_selected=(network_selected+1)%RT_EDIT_COUNT;
+                else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT|PAD_BUTTON_X|PAD_BUTTON_Y)){
+                    if(network_selected==RT_EDIT_SAVE&&(down&PAD_BUTTON_A)){
+                        if(!g_fat_mounted)g_fat_mounted=fatInitDefault()?1:0;
+                        if(g_fat_mounted)mkdir("sd:/pcsx2",0777);
+                        if(runtime_telemetry_save("sd:/pcsx2/telemetry.cfg",&network_edit))notice="Not saved. Check PC IPv4, port and SD.";
+                        else if(runtime_telemetry_apply(&network_edit))notice="Saved; network start failed. See status/error.";
+                        else{notice=network_edit.enabled?"Saved. Start PC logger, then SEND TEST PACKET.":"Saved. Network logger OFF.";}
+                    }else if(network_selected==RT_EDIT_TEST&&(down&PAD_BUTTON_A)){
+                        int rc=runtime_telemetry_test();notice=rc==-2?"Network queue full. Wait and retry test.":rc?"Enable and SAVE first. Retry SAVE after failure.":"Test queued. Wait for PC RECEIPT CONFIRMED.";
+                    }
+                    else{
+                        int delta=down&PAD_BUTTON_LEFT?-1:down&PAD_BUTTON_X?-10:down&PAD_BUTTON_Y?10:1;
+                        if(network_selected==RT_EDIT_PORT&&(down&(PAD_BUTTON_X|PAD_BUTTON_Y)))delta*=100;
+                        if(runtime_telemetry_adjust(&network_edit,(unsigned)network_selected,delta))notice="Editing only. Choose SAVE / APPLY when ready.";
+                    }
+                }
+            }else if(page==4){
                 if(down&PAD_BUTTON_B)page=1;
                 else if(down&PAD_BUTTON_X)notice=experiment_toggle_save(GEKKO2_EXP_PSM);
                 else if(down&PAD_BUTTON_Y)notice=experiment_toggle_save(GEKKO2_EXP_CHAIN);
@@ -1670,6 +1704,8 @@ int main(int argc, char **argv)
                         rc=gekko2_opt_save("sd:/pcsx2/optimization.cfg");break;
                     case UI_SET_EXPERIMENTS:page=5;break;
                     case UI_SET_DEVELOPER:page=4;break;
+                    case UI_SET_NETWORK:runtime_telemetry_get_settings(&network_edit);
+                        page=6;network_selected=0;network_refresh=0;break;
                     case UI_SET_DEFAULTS:{
                         frontend_settings defaults;frontend_settings_defaults(&defaults);
                         g_hud_default=defaults.hud;g_throughput=defaults.throughput;g_fps_default=defaults.fps;g_gx_requested=defaults.gx;
@@ -1680,9 +1716,13 @@ int main(int argc, char **argv)
                             gekko2_experimental_request(n,0);
                             if(gekko2_experimental_save(n,paths[n]))rc=-1;
                         }
+                        runtime_telemetry_settings network_default;runtime_telemetry_get_settings(&network_default);
+                        network_default.enabled=0;
+                        if(runtime_telemetry_save("sd:/pcsx2/telemetry.cfg",&network_default))rc=-1;
+                        else if(runtime_telemetry_apply(&network_default))rc=-1;
                         break;}
                     }
-                    notice=rc?"Some settings were not saved. Check SD.":"Saved. CPU / GX: cold boot; ARM / IOS: restart.";
+                    notice=page==6?"Enter PC IPv4 from Windows logger. Save, then test.":rc?"Some settings were not saved. Check SD.":"Saved. CPU / GX: cold boot; ARM / IOS: restart.";
                 }
             }else if(down&PAD_BUTTON_B)page=0;
 

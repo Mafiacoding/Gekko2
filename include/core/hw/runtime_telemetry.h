@@ -19,7 +19,29 @@ size_t runtime_telemetry_encode(uint8_t *,size_t,const runtime_telemetry_sample 
 typedef struct { uint8_t data[RT_QUEUE][RT_PACKET_BYTES];unsigned head,count; } runtime_telemetry_queue;
 int runtime_telemetry_push(runtime_telemetry_queue *,const uint8_t *);
 int runtime_telemetry_pop(runtime_telemetry_queue *,uint8_t *);
+enum {RT_EDIT_ENABLE,RT_EDIT_IP1,RT_EDIT_IP2,RT_EDIT_IP3,RT_EDIT_IP4,
+ RT_EDIT_PORT,RT_EDIT_SAVE,RT_EDIT_TEST,RT_EDIT_COUNT};
+enum {RT_CONFIG_MISSING,RT_CONFIG_INVALID,RT_CONFIG_OFF,RT_CONFIG_ON};
+enum {RT_STAGE_CONFIG,RT_STAGE_THREAD,RT_STAGE_NET,RT_STAGE_DHCP,
+ RT_STAGE_SOCKET,RT_STAGE_NONBLOCK,RT_STAGE_READY,RT_STAGE_SEND};
+typedef struct { runtime_telemetry_config endpoint;int enabled; } runtime_telemetry_settings;
+typedef struct {
+ int state,config_reason,stage,error,acknowledged;
+ uint32_t local_ip;
+ uint64_t sent,dropped,errors;
+} runtime_telemetry_status;
+int runtime_telemetry_load(const char *,runtime_telemetry_settings *);
+int runtime_telemetry_save(const char *,const runtime_telemetry_settings *);
+int runtime_telemetry_adjust(runtime_telemetry_settings *,unsigned,int);
+void runtime_telemetry_get_settings(runtime_telemetry_settings *);
+void runtime_telemetry_get_status(runtime_telemetry_status *);
+const char *runtime_telemetry_status_text(const runtime_telemetry_status *);
+const char *runtime_telemetry_stage_text(int);
+int runtime_telemetry_apply(const runtime_telemetry_settings *);
+int runtime_telemetry_test(void);
+#define RT_ACK_BYTES 20u
+int runtime_telemetry_ack_matches(const uint8_t *,size_t,uint64_t,uint64_t,uint64_t);
 void runtime_telemetry_start(const char *path);
-int runtime_telemetry_state(void); /* 0 OFF, 1 starting, 2 ready, 3 failed */
+int runtime_telemetry_state(void); /* 0 OFF, 1 starting, 2 socket ready, 3 failed */
 void runtime_telemetry_submit(runtime_telemetry_sample *);
 #endif

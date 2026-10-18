@@ -29,15 +29,30 @@ with tempfile.TemporaryDirectory() as temp:
  proc=subprocess.Popen([sys.executable,str(root/'tools/windows-telemetry/receiver.py'),'--listen','127.0.0.1','--port',str(port),'--seconds','0.3','--wait-seconds','2','--output',str(temp/'output')],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
  assert 'Warte auf Wii' in proc.stdout.readline()
  with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sender:
+  sender.settimeout(2)
   sender.sendto(b'bad',('127.0.0.1',port));sender.sendto(wire,('127.0.0.1',port));sender.sendto(wire,('127.0.0.1',port))
+  expected=b'GK2A'+m.struct.pack('>QQ',r['boot'],r['seq'])
+  assert sender.recvfrom(64)[0]==expected and sender.recvfrom(64)[0]==expected
+  probe=bytearray(wire);m.struct.pack_into('>Q',probe,128+8*m.FIELDS.index('event'),6)
+  m.struct.pack_into('>Q',probe,128+8*m.FIELDS.index('seq'),1)
+  sender.sendto(probe,('127.0.0.1',port));assert sender.recvfrom(64)[0]==b'GK2A'+m.struct.pack('>QQ',r['boot'],1)
  stdout,stderr=proc.communicate(timeout=8);assert proc.returncode==0,(stdout,stderr)
  archives=list((temp/'output').glob('*.zip'));assert len(archives)==1
  with zipfile.ZipFile(archives[0]) as z:
   assert z.testzip() is None
-  report=json.loads(z.read('summary.json'));assert report['packets']==1 and report['duplicates']==1 and report['invalid_packets']==1
+  report=json.loads(z.read('summary.json'));assert report['packets']==2 and report['duplicates']==1 and report['invalid_packets']==1
+  assert report['test_packets']==1 and len(report['groups'])==1
+  assert report['receiver']['datagrams']==4 and report['receiver']['acknowledgments_sent']==3
  # Setup changes only telemetry.cfg; no CPU/renderer preferences.
  sd=temp/'SD';sd.mkdir();(sd/'pcsx2').mkdir();keep=sd/'pcsx2/optimization.cfg';keep.write_text('unchanged')
  setup=subprocess.run([sys.executable,str(root/'tools/windows-telemetry/receiver.py'),'--setup'],input=f'192.168.1.2\n{sd}\n',text=True,capture_output=True)
  assert setup.returncode==0,setup.stderr
  assert (sd/'pcsx2/telemetry.cfg').read_text()=='GEKKO2_TELEMETRY 1 192.168.1.2 26890\n' and keep.read_text()=='unchanged'
+ # Empty capture now includes exact receiver diagnostics instead of just zero groups.
+ empty=temp/'empty'
+ run=subprocess.run([sys.executable,str(root/'tools/windows-telemetry/receiver.py'),'--listen','127.0.0.1','--port',str(port),'--seconds','0.1','--wait-seconds','0.1','--output',str(empty)],capture_output=True,text=True,timeout=5)
+ assert run.returncode==2
+ no_data=json.loads(next(empty.glob('*-summary.json')).read_text())
+ assert no_data['receiver']['port']==port and no_data['receiver']['datagrams']==0 and no_data['receiver']['stop_reason']=='no_valid_packets'
+ print('PASS menu test probe/ACK, no fake CPU scope, empty-receiver diagnostics and received/ack counters')
  print('PASS C/Python wire interoperability, malformed packets, duplicate/reordered/lost packets, epoch/mask grouping, cumulative scope totals, UDP receive/report ZIP and SD-only configuration')

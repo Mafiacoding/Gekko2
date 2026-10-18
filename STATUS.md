@@ -1,5 +1,10 @@
 # Gekko2 SPEED BETA12.31 – 18 October 2026
 
+**BETA12.31c network setup:** branch `codex/network-logger-menu`;
+[report](docs/BETA12.31c-NETWORK-SETUP.md). Wii IP/port settings, saved OFF-by-default,
+live SDK status and explicit acknowledged test without BIOS. Receiver 1.1 adds
+empty-capture diagnostics. No established network-failure cause or GX/BIOS/FPS fix.
+
 **BETA12.31b optional network telemetry:** [report](docs/BETA12.31b-NETWORK-PROFILE.md),
 [Windows instructions](tools/windows-telemetry/README-DE.md). Default OFF; bounded
 background UDP and one receiver ZIP. Host UDP tests, four menu/config suites,

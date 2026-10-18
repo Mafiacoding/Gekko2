@@ -1,62 +1,71 @@
-# Gekko2 Netzwerk-Leistungslogger (Windows)
+# Gekko2 Netzwerklogger 1.1 fuer Windows / BETA12.31c
 
-Einmal einrichten, dann pro Test nur eine ZIP-Datei. Keine direkte Verbindung
-mit einer Chat-Sitzung, kein Fernzugriff auf die Wii und keine automatischen
-Codeaenderungen. Es werden feste Leistungszaehler uebertragen, keine BIOS-,
-Spiel-, Karten-, Register-, Pfad- oder Speicherinhalte. UDP ist unverschluesselt
-und fuer das eigene lokale Netzwerk gedacht; keine Router-Portfreigabe noetig.
+PC-IP, Port und ON/OFF lassen sich jetzt direkt im Wii-Menue speichern.
+Ein Testpaket funktioniert ohne BIOS oder Spiel und wird vom PC bestaetigt.
+Python 3.9+ wird auf Windows benoetigt, keine Zusatzpakete und keine direkte
+Verbindung zu einer Chat-Sitzung. Daten bleiben lokal bis du den Bericht teilst.
 
-## Einmalige Einrichtung
+## Einrichtung und Verbindungstest
 
-1. Python 3.9 oder neuer fuer Windows installieren, falls noch nicht vorhanden.
-   Die CMD-Dateien verwenden `py -3`, alternativ `python`. Keine Zusatzpakete.
-2. Diesen Ordner auf den Windows-Rechner entpacken; die Wii-SD einstecken.
-3. `SETUP-SD.cmd` doppelklicken. Die LAN-IPv4 des Windows-Rechners und den
-   SD-Pfad, z.B. `E:\`, angeben. Moegliche Rechner-Adressen werden angezeigt.
-   Bei mehreren Adaptern die mit der Wii gemeinsam genutzte LAN-Adresse nehmen.
-4. Das Programm schreibt ausschliesslich `pcsx2/telemetry.cfg` auf die SD:
-   `GEKKO2_TELEMETRY 1 192.168.1.20 26890` (Adresse ist nur ein Beispiel).
-   CPU-, Renderer- und Experiment-Einstellungen bleiben erhalten.
-5. Die neue BETA12.31b-App auf die SD kopieren, SD zurueck in die Wii.
+1. `apps/Gekko2` aus der SD-ZIP auf die SD kopieren; den Ordner `Windows-Logger`
+   auf dem Windows-Rechner behalten. Gekko2 aus HBC neu starten.
+2. Auf Windows `START-LOGGER.cmd` doppelklicken. Das Fenster nennt den gebundenen
+   UDP-Port (Standard 26890) und moegliche PC-IPv4-Adressen. Die LAN-Adresse des
+   mit der Wii gemeinsam genutzten Netzes waehlen, nicht VPN/VirtualBox/Loopback.
+3. Auf der Wii: `SETTINGS > Network logger`. `Enable logger = ON` setzen;
+   die vier IPv4-Oktette der **PC-Adresse** und den gleichen UDP-Port einstellen.
+   UP/DOWN waehlt die Zeile, LEFT/RIGHT +/-1 (Halten wiederholt), Wiimote 1/2
+   bzw. GC X/Y +/-10; bei Port +/-1000. Standardmaessig bleibt alles OFF.
+4. `SAVE / APPLY` mit A waehlen. Das speichert auf SD und startet/aktualisiert
+   den Sender ohne App-Neustart. `SEND TEST PACKET` mit A waehlen.
+5. Erfolg: Windows meldet `TESTPAKET empfangen`; Wii zeigt
+   `PC RECEIPT CONFIRMED`. Diese Anzeige belegt eine bestaetigte Zustellung,
+   keine dauerhaft bestehende Verbindung. Jeder neue Test loescht die alte
+   Bestaetigung. Bei jeder Zielaenderung wird ebenfalls neu geprueft.
+6. Erst danach BIOS/Spiel starten. Nach zehn Minuten ab dem ersten Paket oder
+   Strg+C erzeugt Windows **eine ZIP** in `reports`. Nur diese Datei teilen.
+   Ein erfolgreicher Menue-Test allein ist noch keine CPU-Leistungsmessung.
 
-## Ein Test
+## Wenn kein Paket ankommt
 
-1. `START-LOGGER.cmd` auf dem Rechner doppelklicken. Falls Windows nachfragt,
-   Python nur im privaten Netzwerk zulassen (UDP-Port 26890).
-2. Gekko2 vollstaendig aus dem Homebrew Channel neu starten und die gewuenschte
-   Emulation starten. Rechner und Wii muessen einander im Netzwerk erreichen.
-3. Auf dem Rechner erscheinen Pakete/Optionen/Timeouts. Der Empfang endet
-   automatisch zehn Minuten nach dem ersten gueltigen Paket. `Strg+C` endet
-   frueher und erstellt ebenfalls den Bericht. Ohne Daten nach zwei Minuten
-   wird ein leerer Bericht mit Hinweis erzeugt.
-4. Nur `reports/gekko2-network-....zip` zur Auswertung bereitstellen. Die ZIP
-   enthaelt normalisierte Messpakete und die automatische Zusammenfassung.
-   Die Daten werden nicht selbst ins Internet oder an Dritte hochgeladen.
+Nicht weitere beliebige Ports oeffnen. Fuer diesen Logger ist nur der angezeigte
+UDP-Port im privaten Windows-Netzwerk erforderlich; keine Router-Portfreigabe.
 
-Fehlende Pakete werden gezaehlt; UDP garantiert keine Zustellung. Der Sender
-wartet nicht auf einen Empfaenger, und die volle Vier-Paket-Warteschlange
-verwirft neue Pakete. `NETWORK_TELEMETRY state=2` im SD-Log bedeutet nur, dass
-der Socket bereit ist; erst der Empfang am Rechner bestaetigt den Datenweg.
-`state=3` meldet fehlgeschlagene Netzwerkinitialisierung. Die SD-Logs bleiben
-unveraendert als Rueckfall; bei einem harten Absturz kann der letzte Ausschnitt
-fehlen. Detaillierte GX-Befehlsdiagnosen stehen weiterhin nur im SD-Fehlerlog.
+Die Wii zeigt getrennt:
+- `NO CONFIG - OFF` / `INVALID CONFIG - OFF`: konfigurieren und SAVE waehlen.
+- `NETWORK STARTING`: DHCP/Netzwerkaufbau laeuft im Hintergrund.
+- `NETWORK FAILED`: Phase (`net_init`, DHCP, Socket, nonblock, thread) und
+  SDK-Fehlercode werden direkt darunter angezeigt. SAVE wiederholt den Versuch.
+- `SOCKET READY - NO PC ACK`: Socket vorhanden, aber kein bestaetigter Empfang.
+  Ziel-PC-IP, Port, gestarteten Logger, Windows-Netzprofil und WLAN-Isolation
+  pruefen. Der Wii-IP-Eintrag muss nach DHCP eine gueltige Adresse anzeigen.
+- `Sent`, `dropped`, `errors`: SDK-Sendeergebnisse, Queue-Verluste und Sendefehler.
+  Ein erfolgreicher UDP-Sendeaufruf allein beweist keinen Empfang am PC.
 
-Deaktivieren: `pcsx2/telemetry.cfg` loeschen oder Inhalt
-`GEKKO2_TELEMETRY 0` setzen und Gekko2 aus HBC neu starten. Fehlt die Datei,
-wird kein Netzwerkthread gestartet. Bei geaenderter Rechner-IP SETUP wiederholen.
+Windows wartet bis zu zehn Minuten auf das erste gueltige Paket. Auch ein leerer
+Bericht nennt jetzt Listener/Port, PC-IP-Kandidaten, empfangene/ungueltige/
+gefilterte Datagramme und den Abbruchgrund. Alte BETA12.31b-Berichte mit nur
+`packets=0` koennen die Fehlerstelle nicht bestimmen. Alte Logger 1.0 koennen
+keine neuen Testpakete bestaetigen; bitte den mitgelieferten 1.1 benutzen.
 
-## Automatische Auswertung und Grenzen
+## Betrieb und Grenzen
 
-Die Zusammenfassung trennt Build, Boot, Sitzung, Profil-Epoche, aktive CPU-Maske,
-Renderer und Experimente. CPU-Stichproben und exakt gemessene Praesentation
-haben getrennte Prozentgrundlagen. Kumulative Profilwerte verhindern doppeltes
-Addieren und ueberbruecken Zwischenverluste; fehlende letzte Pakete bleiben eine
-Luecke. Intervalldaten sind bei Paketverlust unvollstaendig. Interpreter-Konfig,
-GX-Timeouts und Uebertragungsverluste erzeugen Hinweise. Native Versuchszahlen
-beweisen keine nativen Retirements; Zaehler mit verschiedenen Einheiten nicht
-addieren. Unterschiedliche Spielszenen sind kein gueltiger Geschwindigkeits-
-vergleich. Maximal 10.000 Pakete pro Empfang, keine Endlosaufzeichnung.
+Die Wii sendet feste numerische Leistungs-/Fehlerzaehler, keine BIOS-/Spiel-/
+Karten-/Register-/Speicherinhalte oder Dateinamen. Vier feste Queue-Plaetze;
+bei Ueberlauf werden Pakete verworfen und gezaehlt. Netzwerk-IO laeuft im
+Hintergrund. Die Wii akzeptiert ausschliesslich fixe ACKs von der konfigurierten
+IP und dem Port mit passender Boot-/Sequenznummer; keine Fernsteuerbefehle.
+UDP ist unverschluesselt und fuer das eigene lokale Netzwerk vorgesehen.
 
-Dies ist kein neuer JIT-/GX-Fix, kein Test aller Spiele und kein Beleg hoeherer
-Wii-FPS. Netzwerk-CPU-Kosten sind nicht null. Der isolierte Wii-Limits-Benchmark
-bleibt erhalten; der Logger ergaenzt ihn um Messwerte aus dem echten Emulator.
+PC-Berichte trennen Build, Sitzung, Profil-Epoche, CPU-Maske, Renderer und
+Experimente. CPU-Stichproben und exakte Praesentation haben eigene Nenner.
+Kumulative Profilwerte verhindern doppeltes Addieren; verlorene letzte Pakete
+bleiben eine Luecke. Kein automatischer FPS-Vergleich verschiedener Spielszenen.
+Maximal 10.000 Pakete pro Empfang. SD-Logs und detaillierte GX-Fault-Traces
+bleiben als Rueckfall erhalten. Netzwerk hat CPU-Kosten; kein Null-Overhead-
+oder Wii-FPS-/Grafik-Fix behauptet.
+
+OFF und SAVE deaktiviert den Sender; `Restore defaults` deaktiviert ihn ebenfalls.
+Die Ziel-IP bleibt fuer spaetere Nutzung gespeichert. Geaenderte Menuewerte sind
+bis SAVE nur Entwuerfe. Fehlgeschlagene Saves aendern den aktiven Sender nicht.
+`SETUP-SD.cmd` bleibt als alternative einmalige Konfiguration kompatibel.

@@ -24,6 +24,29 @@ int main(int argc,char **argv)
   for(unsigned j=0;j<RT_QUEUE;j++){assert(runtime_telemetry_pop(&q,copy)&&copy[7]==j);}
   assert(!runtime_telemetry_pop(&q,copy));
  }
+ uint8_t ack[RT_ACK_BYTES]={0};memcpy(ack,"GK2A",4);
+ memcpy(ack+4,packet+128,8);ack[19]=7;
+ assert(runtime_telemetry_ack_matches(ack,sizeof ack,s.value[RT_BOOT],7,9));
+ assert(!runtime_telemetry_ack_matches(ack,sizeof ack-1,s.value[RT_BOOT],7,9));
+ assert(!runtime_telemetry_ack_matches(ack,sizeof ack,s.value[RT_BOOT]+1,7,9));
+ assert(!runtime_telemetry_ack_matches(ack,sizeof ack,s.value[RT_BOOT],8,9));
+ assert(!runtime_telemetry_ack_matches(ack,sizeof ack,s.value[RT_BOOT],0,6));
+ ack[0]='X';assert(!runtime_telemetry_ack_matches(ack,sizeof ack,s.value[RT_BOOT],0,9));
+ runtime_telemetry_settings settings={{0xc0a80102,26890},1},loaded;
+ assert(runtime_telemetry_adjust(&settings,RT_EDIT_IP4,-1000)&&settings.endpoint.ip==0xc0a80100);
+ assert(runtime_telemetry_adjust(&settings,RT_EDIT_IP4,1000)&&settings.endpoint.ip==0xc0a801ff);
+ assert(runtime_telemetry_adjust(&settings,RT_EDIT_PORT,-100000)&&settings.endpoint.port==1);
+ assert(runtime_telemetry_adjust(&settings,RT_EDIT_PORT,100000)&&settings.endpoint.port==65535);
+ assert(!runtime_telemetry_adjust(&settings,RT_EDIT_SAVE,1));
+ assert(runtime_telemetry_adjust(&settings,RT_EDIT_ENABLE,1)&&!settings.enabled);
+ char path[128];snprintf(path,sizeof path,"/tmp/gekko2-net-settings-%lu.cfg",(unsigned long)s.value[RT_BOOT]);
+ assert(!runtime_telemetry_save(path,&settings));assert(runtime_telemetry_load(path,&loaded)==0);
+ assert(!loaded.enabled&&loaded.endpoint.ip==settings.endpoint.ip&&loaded.endpoint.port==65535);
+ settings.enabled=1;assert(!runtime_telemetry_save(path,&settings));assert(runtime_telemetry_load(path,&loaded)==1&&loaded.enabled);
+ assert(!runtime_telemetry_apply(&settings));runtime_telemetry_get_settings(&loaded);assert(loaded.endpoint.ip==settings.endpoint.ip);
+ settings.endpoint.ip=0x08080808;assert(runtime_telemetry_save(path,&settings)==-1);
+ assert(runtime_telemetry_load(path,&loaded)==1&&loaded.endpoint.ip==0xc0a801ff);remove(path);
+ assert(runtime_telemetry_load(path,&loaded)==-2&&!loaded.enabled);
  if(argc==2){packet[7]=0;FILE *f=fopen(argv[1],"wb");assert(f);assert(fwrite(packet,1,RT_PACKET_BYTES,f)==RT_PACKET_BYTES);assert(!fclose(f));}
- puts("PASS telemetry default-off/strict LAN config, uint64 endian encoding, packet bounds, bounded FIFO full/wrap/empty");
+ puts("PASS telemetry default-off/strict LAN config, uint64 endian encoding, packet bounds, bounded FIFO full/wrap/empty; ACK boot/sequence rejection and IP/port editor/save validation");
 }

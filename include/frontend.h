@@ -6,11 +6,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "core/hw/frontend_browser.h"
+#include "core/hw/runtime_telemetry.h"
 #include "core/recompiler/experimental_options.h"
 typedef void (*ui_rect_fn)(int,int,int,int,uint8_t,uint8_t,uint8_t);
 enum {UI_BIOS,UI_DISC,UI_COLD_BOOT,UI_SELECT_DISC,UI_SETTINGS,UI_ABOUT,UI_EXIT,UI_MENU_COUNT};
 enum {UI_SET_RENDERER,UI_SET_SOUND,UI_SET_HUD,UI_SET_UPDATE,UI_SET_FPS,
- UI_SET_PROFILE,UI_SET_EXPERIMENTS,UI_SET_DEVELOPER,UI_SET_DEFAULTS,UI_SET_COUNT};
+ UI_SET_PROFILE,UI_SET_EXPERIMENTS,UI_SET_DEVELOPER,UI_SET_NETWORK,UI_SET_DEFAULTS,UI_SET_COUNT};
 static const uint8_t ui_font[95][14]={
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0},
 {0,4,4,4,4,4,4,0,4,4,0,0,0,0},
@@ -168,12 +169,12 @@ static void ui_settings_draw(ui_rect_fn rect,int selected,int hud,int throughput
  for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
  ui_text(rect,36,28,2,"WII SETTINGS",204,232,255);
  ui_text(rect,36,65,1,"Saved on SD. CPU / GX changes: next cold boot.",106,171,223);
- const char *labels[UI_SET_COUNT]={"Renderer","Sound output","HUD","Input update budget","Rate counters","CPU profile","Experiments","Developer switches","Restore defaults"};
+ const char *labels[UI_SET_COUNT]={"Renderer","Sound output","HUD","Input update budget","Rate counters","CPU profile","Experiments","Developer switches","Network logger","Restore defaults"};
  const char *values[UI_SET_COUNT]={gx?"GX HYBRID":"SOFTWARE REFERENCE",gekko2_opt_requested()&GEKKO2_OPT_BIT(GEKKO2_OPT_SOUND)?"ON":"OFF",
-  hud?"ON":"OFF",throughput?"50 ms (throughput)":"20 ms (responsive)",fps?"ON":"OFF",gekko2_opt_profile_name(),"OPEN","OPEN","APPLY"};
+  hud?"ON":"OFF",throughput?"50 ms (throughput)":"20 ms (responsive)",fps?"ON":"OFF",gekko2_opt_profile_name(),"OPEN","OPEN","OPEN","APPLY"};
  for(int n=0;n<UI_SET_COUNT;n++){
-  int y=100+n*27,on=n==selected;char row[100];
-  rect(32,y-2,576,25,on?16:9,on?43:22,on?76:41);
+  int y=96+n*24,on=n==selected;char row[100];
+  rect(32,y-2,576,23,on?16:9,on?43:22,on?76:41);
   snprintf(row,sizeof row,"%s %-23s %s",on?">":" ",labels[n],values[n]);
   ui_text(rect,40,y,1,row,on?228:148,on?242:176,on?255:207);
  }
@@ -184,6 +185,37 @@ static void ui_settings_draw(ui_rect_fn rect,int selected,int hud,int throughput
  ui_text(rect,36,375,1,"Rates: guest VBlanks / output presents, not game FPS.",117,186,237);
  ui_text(rect,36,403,1,message?message:"",117,186,237);
  ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT CHANGE   B BACK",209,227,246);
+}
+static void ui_network_draw(ui_rect_fn rect,int selected,const runtime_telemetry_settings *settings,
+ const runtime_telemetry_settings *active,const runtime_telemetry_status *status,const char *message)
+{
+ for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
+ ui_text(rect,32,20,2,"NETWORK LOGGER",204,232,255);
+ char row[120];uint32_t ip=settings->endpoint.ip;
+ snprintf(row,sizeof row,"PC target: %u.%u.%u.%u : %u (editing)",(unsigned)(ip>>24),(unsigned)((ip>>16)&255),(unsigned)((ip>>8)&255),(unsigned)(ip&255),(unsigned)settings->endpoint.port);
+ ui_text(rect,32,58,1,row,117,186,237);
+ const char *names[]={"Enable logger","PC IPv4 octet 1","PC IPv4 octet 2","PC IPv4 octet 3","PC IPv4 octet 4","UDP port","SAVE / APPLY","SEND TEST PACKET"};
+ for(unsigned n=0;n<RT_EDIT_COUNT;n++){
+  int y=85+(int)n*26,on=(int)n==selected;char value[24];
+  if(n==RT_EDIT_ENABLE)snprintf(value,sizeof value,"%s",settings->enabled?"ON":"OFF");
+  else if(n<=RT_EDIT_IP4)snprintf(value,sizeof value,"%u",(unsigned)((ip>>((RT_EDIT_IP4-n)*8))&255));
+  else if(n==RT_EDIT_PORT)snprintf(value,sizeof value,"%u",(unsigned)settings->endpoint.port);
+  else snprintf(value,sizeof value,"A");
+  rect(28,y-2,580,24,on?16:9,on?43:22,on?76:41);
+  snprintf(row,sizeof row,"%s %-25s %s",on?">":" ",names[n],value);ui_text(rect,36,y,1,row,221,237,255);
+ }
+ ip=status->local_ip;
+ snprintf(row,sizeof row,"Wii IP: %u.%u.%u.%u | %s",(unsigned)(ip>>24),(unsigned)((ip>>16)&255),(unsigned)((ip>>8)&255),(unsigned)(ip&255),runtime_telemetry_status_text(status));
+ ui_text(rect,32,301,1,row,117,186,237);
+ ip=active->endpoint.ip;
+ snprintf(row,sizeof row,"Active PC: %u.%u.%u.%u:%u | %s error=%d",(unsigned)(ip>>24),(unsigned)((ip>>16)&255),(unsigned)((ip>>8)&255),(unsigned)(ip&255),(unsigned)active->endpoint.port,runtime_telemetry_stage_text(status->stage),status->error);
+ ui_text(rect,32,323,1,row,117,186,237);
+ snprintf(row,sizeof row,"Sent=%llu dropped=%llu errors=%llu",(unsigned long long)status->sent,(unsigned long long)status->dropped,(unsigned long long)status->errors);
+ ui_text(rect,32,345,1,row,117,186,237);
+ ui_text(rect,32,369,1,"UP/DOWN row  LEFT/RIGHT +/-1  1/2 or X/Y +/-10",117,186,237);
+ ui_text(rect,32,391,1,"SAVE applies now. Test needs Windows logger 1.1.",117,186,237);
+ ui_text(rect,32,413,1,message?message:"",221,237,255);
+ ui_text(rect,32,447,1,"Hold LEFT/RIGHT to repeat. B BACK",209,227,246);
 }
 static void ui_experiments_draw(ui_rect_fn rect,int selected,const char *message)
 {

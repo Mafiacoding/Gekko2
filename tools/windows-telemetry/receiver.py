@@ -16,7 +16,7 @@ def decode(packet):
  commit=raw[5].rstrip(b'\0').decode('ascii')
  if not re.fullmatch(r'[A-Za-z0-9_.-]{1,79}',build) or not re.fullmatch(r'[0-9a-f]{40}|unknown',commit):raise ValueError('build')
  r=dict(zip(FIELDS,raw[6:6+len(FIELDS)]));r.update(build=build,commit=commit)
- if r['gx']>1 or r['active_mask']>0xffffffff or r['experiments']>7 or r['event'] not in (0,2,3,4):raise ValueError('options/event')
+ if r['gx']>1 or r['active_mask']>0xffffffff or r['experiments']>7 or r['event'] not in (0,2,3,4,6):raise ValueError('options/event')
  offset=6+len(FIELDS)
  for scope in ('cpu','present'):
   values=raw[offset:offset+44];offset+=44
@@ -27,8 +27,9 @@ def summary(records):
  # Deduplicate by sender/boot/sequence; late packets never replace newer totals.
  unique={}
  for r in records:unique.setdefault((r['sender'],r['boot'],r['seq']),r)
- groups={};streams={}
+ groups={};streams={};probes=0
  for r in unique.values():
+  if r['event']==6:probes+=1;continue
   stream=(r['sender'],r['boot']);streams.setdefault(stream,[]).append(r['seq'])
   key=(r['sender'],r['boot'],r['session'],r['epoch'],r['build'],r['commit'],r['active_mask'],r['gx'],r['experiments'])
   g=groups.setdefault(key,dict(latest=r,rows=0,core_tb=0,present_tb=0,log_tb=0,interval_ms=0,ee_retired=0,presents=0,guest_vblanks=0))
@@ -50,7 +51,7 @@ def summary(records):
    data=last[scope];total=sum(data['ticks'])
    g['scopes'][scope]=dict(total_tb=total,ms=1000*total/TB_HZ,samples=data['samples'],overflows=data['overflows'],categories=[dict(category=c,ticks=t,entries=e,work=w,share_percent=100*t/total if total else 0) for c,t,e,w in zip(CATEGORIES,data['ticks'],data['entries'],data['work'])])
   g['warnings']=warnings;output.append(g)
- return dict(schema=1,packets=len(unique),duplicates=len(records)-len(unique),groups=output,
+ return dict(schema=1,packets=len(unique),test_packets=probes,duplicates=len(records)-len(unique),groups=output,
  notes=['CPU sampling and exact presentation have separate denominators.',
  'Scope counters are cumulative within each epoch; missing UDP packets may hide the final tail.',
  'Native attempt entries do not prove native retirement; work units differ by category.',
@@ -83,25 +84,37 @@ def collect(args):
  sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
  sock.bind((args.listen,args.port));sock.settimeout(0.5)
  print(f'Warte auf Wii UDP {args.port}; nach dem ersten Paket {args.seconds:g} Sekunden. Strg+C beendet frueher.',flush=True)
- first=None;waiting=time.monotonic()
+ try:candidates=socket.gethostbyname_ex(socket.gethostname())[2]
+ except OSError:candidates=[]
+ print('PC-IPv4 fuer Gekko2-Menue (passenden LAN-Adapter waehlen):',', '.join(candidates) or 'siehe Windows ipconfig',flush=True)
+ first=None;waiting=time.monotonic();datagrams=0;filtered=0;ack_sent=0;ack_errors=0;stop_reason='packet_limit'
  try:
   with rawpath.open('x',encoding='utf-8') as log:
    while len(records)<10000:
     now=time.monotonic()
-    if first is not None and now-first>=args.seconds:break
-    if first is None and now-waiting>=args.wait_seconds:break
+    if first is not None and now-first>=args.seconds:stop_reason='capture_complete';break
+    if first is None and now-waiting>=args.wait_seconds:stop_reason='no_valid_packets';break
     try:packet,address=sock.recvfrom(WIRE.size+1)
     except socket.timeout:continue
-    if source and address[0]!=source:continue
+    datagrams+=1
+    if source and address[0]!=source:filtered+=1;continue
     try:r=decode(packet)
     except (ValueError,UnicodeError,struct.error):invalid+=1;continue
+    try:
+     sock.sendto(b'GK2A'+struct.pack('>QQ',r['boot'],r['seq']),address);ack_sent+=1
+    except OSError:ack_errors+=1
     if source is None:source=address[0];print('Wii erkannt:',source,flush=True)
+    if r['event']==6:print('TESTPAKET empfangen; Empfangsbestaetigung an Wii gesendet.',flush=True)
     if first is None:first=time.monotonic()
     r['sender']=source;records.append(r);log.write(json.dumps(r,separators=(',',':'))+'\n');log.flush()
     print(f"Session {r['session']}  Paket {r['seq']}  CPU={r['active_mask']:08x} GX={r['gx']}  GX-Timeouts={r['gx_timeouts']}",flush=True)
- except KeyboardInterrupt:pass
+ except KeyboardInterrupt:stop_reason='user_stopped'
  finally:sock.close()
  report=summary(records);report['invalid_packets']=invalid
+ report['receiver']=dict(version='1.1',listen=args.listen,port=args.port,pc_ipv4_candidates=candidates,
+ expected_wii_ip=args.wii_ip,first_sender=source,datagrams=datagrams,filtered_datagrams=filtered,
+ acknowledgments_sent=ack_sent,acknowledgment_errors=ack_errors,stop_reason=stop_reason,
+ elapsed_ms=round(1000*(time.monotonic()-waiting)))
  reportpath=directory/f'gekko2-network-{stamp}-summary.json';reportpath.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
  archive=directory/f'gekko2-network-{stamp}.zip'
  with zipfile.ZipFile(archive,'x',zipfile.ZIP_DEFLATED) as z:
@@ -115,11 +128,12 @@ def collect(args):
    lines.extend('WARNING: '+warning for warning in group['warnings'])
   lines.extend(report['notes']);z.writestr('READ-REPORT.txt','\n'.join(lines)+'\n')
  print('Fertig. Nur diese Datei bereitstellen:',archive,flush=True)
- if not records:print('Keine Daten empfangen: Sender-IP, Firewall/privates Netzwerk, SD-Konfiguration und Neustart aus HBC pruefen.')
+ if not records:print('Keine gueltigen Daten empfangen. Gekko2: Settings > Network logger > PC-IP > SAVE / APPLY > SEND TEST PACKET. Wii-Status und diesen Diagnosebericht pruefen.')
+ elif not report['groups']:print('Verbindungstest empfangen. Noch keine Emulator-Leistungsdaten: Emulation erst nach bestaetigtem Test starten.')
  return 0 if records else 2
 
 def main():
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('--setup',action='store_true');p.add_argument('--listen',default='0.0.0.0');p.add_argument('--port',type=int,default=26890);p.add_argument('--wii-ip');p.add_argument('--seconds',type=float,default=600);p.add_argument('--wait-seconds',type=float,default=120);p.add_argument('--output',type=Path,default=Path('reports'));a=p.parse_args()
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--setup',action='store_true');p.add_argument('--listen',default='0.0.0.0');p.add_argument('--port',type=int,default=26890);p.add_argument('--wii-ip');p.add_argument('--seconds',type=float,default=600);p.add_argument('--wait-seconds',type=float,default=600);p.add_argument('--output',type=Path,default=Path('reports'));a=p.parse_args()
  if not 1<=a.port<=65535 or not 0<a.seconds<=86400 or not 0<a.wait_seconds<=86400:p.error('Invalid port or duration')
  try:
   if a.setup:setup();return 0

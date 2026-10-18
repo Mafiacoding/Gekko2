@@ -1,5 +1,10 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.31c network setup:** branch `codex/network-logger-menu`;
+[report](BETA12.31c-NETWORK-SETUP.md). Wii IP/port settings, saved OFF-by-default,
+live SDK status and explicit acknowledged test without BIOS. Receiver 1.1 adds
+empty-capture diagnostics. No established network-failure cause or GX/BIOS/FPS fix.
+
 **BETA12.31b optional network telemetry:** branch `codex/network-runtime-telemetry`.
 [Report](BETA12.31b-NETWORK-PROFILE.md), [Windows setup](../tools/windows-telemetry/README-DE.md).
 Default OFF, bounded queue/background UDP, fixed numeric scopes and options,
