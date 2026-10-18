@@ -10,6 +10,7 @@
 #include <malloc.h>
 #include <unistd.h>
 #include <ogc/system.h>
+#include <ogc/ios.h>
 
 static u32 caps[8] __attribute__((aligned(32)));
 static u8 header[32] __attribute__((aligned(32)));
@@ -28,9 +29,9 @@ static void cpu_test(FILE *f,u8 *p,unsigned n){
  a=ticks();for(unsigned k=0;k<32;k++)for(unsigned i=0;i<n;i+=64)sink+=p[i];
  b=ticks();row(f,"broadway_stride_read",n*32,ms(a,b),1);
 }
-static void gx_test(FILE *f,u8 *p,unsigned n){
+static void gx_test(FILE *f,u8 *fifo,unsigned n,u8 *cpu){
  GXColor clear={0,0,0,255};
- GX_Init(p,n);
+ GX_Init(fifo,n);
  GX_SetCopyClear(clear,0x00ffffff);
  GX_SetViewport(0,0,320,240,0,1);
  GX_SetScissor(0,0,320,240);
@@ -67,10 +68,32 @@ static void gx_test(FILE *f,u8 *p,unsigned n){
   GX_Position3f32(280,20,-1);GX_Color4u8(0,255,0,255);
   GX_Position3f32(160,200,-1);GX_Color4u8(0,0,255,255);
   GX_End();
-  for(unsigned i=0;i<32768;i+=64)sink+=p[i];
+  for(unsigned i=0;i<32768;i+=64)sink+=cpu[i];
  }
  GX_DrawDone();b=ticks();
  row(f,"gx_cpu_contention",128*3,ms(a,b),1);
+ GX_SetBlendMode(GX_BM_BLEND,GX_BL_SRCALPHA,GX_BL_INVSRCALPHA,GX_LO_CLEAR);
+ a=ticks();
+ for(unsigned k=0;k<256;k++){
+  GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
+  GX_Position3f32(20,20,-1);GX_Color4u8(255,0,0,128);
+  GX_Position3f32(280,20,-1);GX_Color4u8(0,255,0,128);
+  GX_Position3f32(160,200,-1);GX_Color4u8(0,0,255,128);
+  GX_End();
+ }
+ GX_DrawDone();b=ticks();row(f,"gx_alpha_blend",256*3,ms(a,b),1);
+ GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_CLEAR);
+ a=ticks();
+ GX_SetAlphaCompare(GX_GREATER,127,GX_AOP_AND,GX_ALWAYS,0);
+ for(unsigned k=0;k<256;k++){
+  GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
+  GX_Position3f32(20,20,-1);GX_Color4u8(255,0,0,128);
+  GX_Position3f32(280,20,-1);GX_Color4u8(0,255,0,128);
+  GX_Position3f32(160,200,-1);GX_Color4u8(0,0,255,128);
+  GX_End();
+ }
+ GX_DrawDone();b=ticks();row(f,"gx_alpha_compare",256*3,ms(a,b),1);
+ GX_SetAlphaCompare(GX_ALWAYS,0,GX_AOP_AND,GX_ALWAYS,0);
 }
 static void arm_test(FILE *f,u8 *p,unsigned n){
  int fd=IOS_Open("/dev/gekko2",0);
@@ -96,6 +119,12 @@ int main(void){
  console_init(fb,20,20,mode->fbWidth,mode->xfbHeight,mode->fbWidth*VI_DISPLAY_PIX_SZ);
  VIDEO_Configure(mode);VIDEO_SetNextFramebuffer(fb);VIDEO_SetBlack(FALSE);VIDEO_Flush();VIDEO_WaitVSync();
  printf("GEKKO2 hardware profiler / IOS222 GKA1\n");
+ /* Reload before mounting FAT; preserve HBC compatibility by reporting failures. */
+ if(IOS_GetVersion()!=222){
+  printf("Attempting IOS222 reload...\\n");
+  int rr=IOS_ReloadIOS(222);
+  printf("IOS reload result=%d, active=%u\\n",rr,(unsigned)IOS_GetVersion());
+ }
  int mounted=fatInitDefault();FILE *f=NULL;
  if(mounted){f=fopen("sd:/gekko2-profiler.csv","w");if(!f)f=fopen("usb:/gekko2-profiler.csv","w");}
  if(f)fprintf(f,"test,bytes,ms,verified\n");
@@ -103,7 +132,7 @@ int main(void){
  u8 *gx_fifo=memalign(32,256*1024);
  if(mem1){memset(mem1,0,1024*1024);cpu_test(f,mem1,1024*1024);arm_test(f,mem1,1024*1024);}
  if(mem2){memset(mem2,0,1024*1024);cpu_test(f,mem2,1024*1024);}
- if(gx_fifo&&mem1)gx_test(f,gx_fifo,256*1024);
+ if(gx_fifo&&mem1)gx_test(f,gx_fifo,256*1024,mem1);
  if(mem1&&mem2){
  u64 a=ticks();for(unsigned i=0;i<64;i++)memcpy(mem2,mem1,1024*1024);
  u64 b=ticks();row(f,"memory_copy",64*1024*1024,ms(a,b),memcmp(mem1,mem2,1024*1024)==0);
