@@ -189,9 +189,10 @@ int runtime_telemetry_apply(const runtime_telemetry_settings *s)
 {
  char text[128];if(settings_text(text,sizeof text,s))return -1;
  uint32_t irq=IRQ_Disable();requested=*s;generation++;
- memset(&queue,0,sizeof queue);status.acknowledged=0;status.error=0;have_sent=0;minimum_ack=sequence;
+ status.dropped+=queue.count;memset(&queue,0,sizeof queue);status.acknowledged=0;status.error=0;have_sent=0;minimum_ack=sequence;
  status.config_reason=s->enabled?RT_CONFIG_ON:RT_CONFIG_OFF;status.stage=RT_STAGE_CONFIG;status.state=s->enabled?1:0;
- if(!boot_id)boot_id=gettime();int create=s->enabled&&!thread_created;
+ if(!boot_id)boot_id=gettime();
+ int create=s->enabled&&!thread_created;
  if(create)thread_created=1;
  IRQ_Restore(irq);
  if(create){int rc=LWP_CreateThread(&thread,sender,NULL,stack,sizeof stack,10);
