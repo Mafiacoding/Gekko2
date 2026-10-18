@@ -6,6 +6,7 @@
  */
 
 #include "core/hw/gs.h"
+#include "core/hw/ee_intc.h"
 #include <string.h>
 #include <stddef.h>
 
@@ -77,10 +78,41 @@ int gs_mmio_write64(uint32_t addr, uint64_t val)
             /* GS_CSR write-1-to-clear semantics for interrupt status. */
             if(val&1u)game_trace_record(GT_CSR_ACK,(uint32_t)g_gs.csr,(uint32_t)val,(uint32_t)g_gs.imr,0);
             g_gs.csr &= ~(val & 0x1full); /* FIELD is read-only. */
+        } else if(addr==0x12001010u) {
+            /* A masked event stays in CSR. Only a 1->0 mask transition
+             * delivers its pending interrupt; repeated writes do not. */
+            uint64_t unmasked=(*reg & ~val & 0x1f00u)>>8;
+            if(unmasked & g_gs.csr)ee_intc_raise(0);
+            uint64_t next=(val&0x1f00u)|0x6000u;
+            if(*reg!=next)game_trace_record(GT_IMR,(uint32_t)*reg,(uint32_t)next,(uint32_t)g_gs.csr,0);
+            *reg=next;
         } else {
-            if(addr==0x12001010u&&*reg!=val)game_trace_record(GT_IMR,(uint32_t)*reg,(uint32_t)val,(uint32_t)g_gs.csr,0);
             *reg = val;
         }
     }
     return 1;
+}
+
+/* Lane-aware narrow accesses. CSR writes are actions: never read/merge
+ * unwritten CSR bits, which would incorrectly acknowledge other events. */
+int gs_mmio_read(uint32_t addr,unsigned bytes,uint64_t *value)
+{
+ if(!value||!(bytes==1u||bytes==2u||bytes==4u||bytes==8u)||
+    (addr&(bytes-1u))||addr<0x12000000u||addr>0x12001fffu)return 0;
+ unsigned lane=addr&15u;uint64_t raw=0;
+ gs_mmio_read64(addr&~15u,&raw);
+ *value=lane>=8u?0u:raw>>(lane*8u);
+ if(bytes<8u)*value&=(UINT64_C(1)<<(bytes*8u))-1u;
+ return 1;
+}
+int gs_mmio_write(uint32_t addr,unsigned bytes,uint64_t value)
+{
+ if(!(bytes==1u||bytes==2u||bytes==4u||bytes==8u)||
+    (addr&(bytes-1u))||addr<0x12000000u||addr>0x12001fffu)return 0;
+ unsigned lane=addr&15u;if(lane>=8u)return 1;
+ uint32_t base=addr&~15u;uint64_t mask=bytes==8u?UINT64_MAX:((UINT64_C(1)<<(bytes*8u))-1u);
+ value=(value&mask)<<(lane*8u);mask<<=lane*8u;
+ if(base==0x12001000u)return gs_mmio_write64(base,value);
+ uint64_t before=0;gs_mmio_read64(base,&before);
+ return gs_mmio_write64(base,(before&~mask)|value);
 }

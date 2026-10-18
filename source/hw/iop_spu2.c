@@ -270,6 +270,7 @@ int iop_spu2_mmio_write16(uint32_t addr, uint16_t value)
     }
     apply_write_side_effects(addr, value);
     spu2_mixer_on_volume_write(addr,value);
+    spu2_mixer_on_envelope_write(addr,value);
     return 1;
 }
 

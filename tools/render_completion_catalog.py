@@ -30,7 +30,8 @@ lines+=['','## Arbeitsregeln','',
  '- Ein implementierter Teilpfad schließt die übrigen Teilziele seines Moduls nicht automatisch.',
  '- Bewährte Interpreter-/Software-GS-Oracles, RAM-/Mapping-/IRQ-/Budget-Gates und EABI erhalten.',
  '- BETA12.29: EE-Control und SPU2 Noise/PMON/Sweeps abgeschlossen; GETENTSPACE als MC-Teilziel.',
- '- Als Nächstes: Gaussian/Reverb/ENVX, weitere MCSERV-RPCs und GS/GX-/JIT-Grenzen.',
+ '- BETA12.30: GS-ACK/IMR, Q/K/L/Mips/MTBA, VIF-CPU-FIFO und ENVX implementiert.',
+ '- Fortsetzung und Abnahme: COMPLETION-BATCHES.md; weitere GS/GX-/VU/IPU-/JIT-/Audio-/Kartenpunkte offen.',
  '- Der unabhängige nächste Hardware-Schritt bleibt BIOS/Crash/Tekken im identischen Gastzustand.',
  '- Keine Nutzerdaten/BIOS/Discs/Karten/Profile in Tests oder öffentlichen Berichten.','']
 text='\n'.join(lines);dest=root/'docs/COMPLETION-CATALOG.md'

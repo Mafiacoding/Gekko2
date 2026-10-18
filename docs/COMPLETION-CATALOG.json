@@ -215,11 +215,14 @@
     {
       "id": "GIF-01",
       "status": "hardware_nachweis",
-      "title": "Crash-SIGNAL-/XGKICK-Stau ohne vollständigen Fixbeleg",
+      "title": "Schmale GS-ACKs/pending IMR korrigiert; Crash-SIGNAL-/XGKICK-Fixbeleg auf Wii offen",
       "source": "source/hw/gif.c",
       "gate": "Producer/ACK, Pfadbesitz, EOP, Ringwrap und Backpressure ohne Datenverlust",
-      "tests": [],
-      "implementation_commit": null
+      "tests": [
+        "tests/test_gs_irq_access.c",
+        "tests/test_gif_signal_backpressure.c"
+      ],
+      "implementation_commit": "7791683"
     },
     {
       "id": "GIF-02",
@@ -233,11 +236,14 @@
     {
       "id": "VIF-01",
       "status": "teilweise",
-      "title": "UNPACK/STCYCL/Masken/TOP/ITOP/MPG-Gesamtmatrix",
+      "title": "CPU-SQ/FIFO/FQC korrigiert; UNPACK/STCYCL/Masken/TOP/ITOP/MPG-Gesamtmatrix offen",
       "source": "source/hw/vif.c",
       "gate": "UNPACK-/STCYCL-/Maskenmatrix und laufende VU/DMA-/IRQ-Unterbrechungen",
-      "tests": [],
-      "implementation_commit": null
+      "tests": [
+        "tests/test_vif_cpu_fifo.c",
+        "tests/test_vif_micro_barriers.c"
+      ],
+      "implementation_commit": "c6a1a04"
     },
     {
       "id": "VIF-02",
@@ -295,26 +301,32 @@
     },
     {
       "id": "GS-02",
-      "status": "teilweise",
-      "title": "Per-Pixel-LOD statt pauschaler Primitive-LOD",
+      "status": "implementiert_getestet",
+      "title": "Q/K/L-LOD pro Dreiecksfragment und Sprite, skalierte Mips und sechs Filter",
       "source": "source/hw/gif.c",
       "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
-      "tests": [],
-      "implementation_commit": null
+      "tests": [
+        "tests/test_gs_lod_mtba.c",
+        "tests/test_gs_mipmap.c",
+        "tests/test_gs_mipmap_triangle.c"
+      ],
+      "implementation_commit": "e1fe59a"
     },
     {
       "id": "GS-03",
       "status": "teilweise",
-      "title": "MTBA/MIPTBP, Mipbreiten und trilineare Randfälle",
+      "title": "MTBA erste drei Ebenen und Trilinear implementiert; TBW0/GS-Bitpräzision offen",
       "source": "source/hw/gif.c",
       "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
-      "tests": [],
-      "implementation_commit": null
+      "tests": [
+        "tests/test_gs_lod_mtba.c"
+      ],
+      "implementation_commit": "e1fe59a"
     },
     {
       "id": "GS-04",
       "status": "teilweise",
-      "title": "AA1 und exakte Linien-/Dreieckskanten",
+      "title": "AA1/Kanten und Texturierung von Punkten/Linien unvollständig",
       "source": "source/hw/gif.c",
       "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
       "tests": [],
@@ -371,8 +383,11 @@
       "title": "Komplexe GS-Zustände fallen auf Software zurück",
       "source": "source/hw/gs_gx.c",
       "gate": "Softwarevergleich, Ownership/Fences und tatsächliches GPU-Readback",
-      "tests": [],
-      "implementation_commit": null
+      "tests": [
+        "tests/test_gx_generic_admission.c",
+        "tests/test_gx_shaded_triangle_r1370.c"
+      ],
+      "implementation_commit": "96cebd8"
     },
     {
       "id": "GX-02",
@@ -518,11 +533,13 @@
     {
       "id": "SPU-06",
       "status": "teilweise",
-      "title": "ADSR/ENVX/Key-On-Timing und IRQ-wirksame stille Stimmen",
+      "title": "Writable ENVX und breite PMON korrigiert; ADSR/Key-On/stille Stimmen zeitlich unvollständig",
       "source": "source/hw/spu2_mixer.c",
       "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
-      "tests": [],
-      "implementation_commit": null
+      "tests": [
+        "tests/test_spu2_envx.c"
+      ],
+      "implementation_commit": "d59ef23"
     },
     {
       "id": "SPU-07",

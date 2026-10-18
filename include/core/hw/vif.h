@@ -261,6 +261,7 @@ int vif_mmio_read32(uint32_t addr, uint32_t *out);
 int vif_mmio_write32(uint32_t addr, uint32_t value);
 
 uint32_t vif_accept_quadwords(int channel,const uint8_t *data,uint32_t qwc);
+int vif_cpu_fifo_ready(unsigned channel);
 void vif_service(void);
 
 /* Stable read-only scheduler views. Point at the same state as getters;
