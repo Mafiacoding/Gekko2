@@ -45,6 +45,13 @@ int main(void){gif_init();gs_mem_init();
  scenario=2;apply_ad_write(GS_REG_PRIM,3|PRIM_IIP_MASK|PRIM_TME_MASK|PRIM_FST_MASK|PRIM_FGE_MASK,0);
  apply_ad_write(GS_REG_CLAMP_1,0,0);apply_ad_write(GS_REG_TEX0_1,128u|(4u<<14),4u);
  gs_mem_write_psmct32(128*64,256,0,0,0x87654321);draw();assert(captured==3);
- gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_GX_RESIDENT);draw();assert(captured==3);
+ /* Current native texture backend has one filter bit, so mixed min/mag
+  * and mip modes must use the precise software/source-shaded fallback. */
+ for(unsigned mag=0;mag<2;mag++)for(unsigned min=0;min<6;min++){
+  unsigned before=captured;apply_ad_write(GS_REG_TEX1_1,(mag<<5)|(min<<6),0);draw();
+  assert(captured==before+(min<=1&&mag==min));
+ }
+ unsigned before=captured;apply_ad_write(GS_REG_TEX1_1,0,0);
+ gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_GX_RESIDENT);draw();assert(captured==before);
  puts("PASS common GIF admission: HIGHLIGHT, fog/color/vertices, varying alpha, region atlas coordinates/source, tiny textures, untextured Z and runtime gate");
 }
