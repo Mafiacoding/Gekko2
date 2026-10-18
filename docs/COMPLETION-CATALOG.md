@@ -15,10 +15,10 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 |---|---:|
 | hardware_nachweis | 10 |
 | implementiert_getestet | 6 |
-| offen | 9 |
+| offen | 8 |
 | optional_abwesend | 3 |
 | skalar_absicht | 1 |
-| teilweise | 39 |
+| teilweise | 40 |
 | vorhanden_pruefen | 13 |
 
 | ID | Befund / Aufgabe | Status | Code / Abnahme |
@@ -80,7 +80,7 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 | SPU-06 | ADSR/ENVX/Key-On-Timing und IRQ-wirksame stille Stimmen | teilweise | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
 | SPU-07 | SPU2-DMA/AutoDMA/Capture und Ausgabe angebunden | vorhanden_pruefen | [source/hw/spu2_mixer.c](../source/hw/spu2_mixer.c); Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint |
 | MC-01 | Native PS2-Karte und Standard-FAT-Dateien implementiert | vorhanden_pruefen | [source/hw/ps2_mc_files.c](../source/hw/ps2_mc_files.c); Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption |
-| MC-02 | GETENTSPACE und CheckBlock-RPC fehlen | offen | [source/hw/ps2_mc_files.c](../source/hw/ps2_mc_files.c); Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption |
+| MC-02 | GETENTSPACE implementiert; destruktives CheckBlock bleibt offen | teilweise | [source/hw/ps2_mc_files.c](../source/hw/ps2_mc_files.c); Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption |
 | MC-03 | Raw-Page/Erase-RPCs fehlen | offen | [source/hw/ps2_mc_files.c](../source/hw/ps2_mc_files.c); Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption |
 | MC-04 | Directory-Open/Read-Descriptors fehlen | offen | [source/hw/ps2_mc_files.c](../source/hw/ps2_mc_files.c); Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption |
 | MC-05 | Zweiter Kartenport/Slot/Multitap fehlt | offen | [source/hw/ps2_mc_files.c](../source/hw/ps2_mc_files.c); Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption |

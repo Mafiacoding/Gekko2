@@ -3791,12 +3791,13 @@ static int32_t ee_mcserv_files_rpc(ee_state_t *st,uint32_t fno,uint32_t payload,
  if(fno==2u&&!ps2_mc_present())return -4;
  uint8_t *arg=payload?ee_mc_ram(st,payload,size):NULL;
  if(!arg||size<16)return -5;
- int named=fno==2u||fno==0x0cu||fno==0x0du||fno==0x0eu||fno==0x0fu;
+ int named=fno==0x12u||fno==2u||fno==0x0cu||fno==0x0du||fno==0x0eu||fno==0x0fu;
  if(named){
   if(size<21u||!memchr(arg+20,0,size-20u<1024u?size-20u:1024u))return -5;
   if(ee_mc_load32(arg)||ee_mc_load32(arg+4))return -11;
   const char *name=(const char*)arg+20;unsigned flags=ee_mc_load32(arg+8);
   if(fno==2u)return ps2_mc_fs_open(name,flags);
+  if(fno==0x12u)return ps2_mc_fs_getentspace(name);
   if(fno==0x0fu)return ps2_mc_fs_delete(name);
   if(size<20u)return -5;uint32_t dest=ee_mc_load32(arg+16),n=fno==0x0cu?1024u:64u;
   if(fno==0x0du){unsigned count=ee_mc_load32(arg+12);if(count>EE_RAM_SIZE/64u)return -5;n=count*64u;}

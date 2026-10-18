@@ -23,7 +23,7 @@ die bisherige Größe und setzt dann Noise-/Sweep-Phasen auf Kaltstartwerte;
 neue Snapshots behalten diese Phasen, validieren Erweiterungskennung und
 Zähler und passen weiterhin in dasselbe äußere SPUS-Format.
 
-Gezielte Host-Regressionen: 10 Tests erfolgreich, davon neuer Kontrolltest mit
+Gezielte Host-Regressionen: 9 Tests erfolgreich, davon neuer Kontrolltest mit
 **4.196.416 Checks**, 64 Noise-Takten über jeweils 65536 Schritte, Pitchgrenzen,
 linearen/exponentiellen Sweeps, aktiven NON/PMON-Capturepfaden, Stimme-0-Schutz,
 inaktiven Sweeps und Legacy-/neuen Mixer-Snapshots. Weiterhin erfolgreich:
