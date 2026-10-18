@@ -1,0 +1,146 @@
+{
+  "release": "BETA12.32-HOTPATHS-GX",
+  "build_commit": "edf067455061a983d4257f95141caaf941f08954",
+  "source_commit": "a5fb44c1e76bc08dd5c9a45b14b6f21197ece72a",
+  "toolchain": "devkitPPC r50 GCC16.1.0 / libogc3.1.0, O1, existing SPEED/DSI/AOT/GX flags",
+  "host_suites": 83,
+  "linked_ppc_suites": 16,
+  "synthetic_before": [
+    {
+      "physical": "0x100000",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 59029,
+      "block_retired": 0
+    },
+    {
+      "physical": "0x100ffc",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 59029,
+      "block_retired": 0
+    },
+    {
+      "physical": "0x1fffc0",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 41579,
+      "block_retired": 48
+    },
+    {
+      "physical": "0x200000",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 35527,
+      "block_retired": 64
+    },
+    {
+      "physical": "0xffff0",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 59061,
+      "block_retired": 0
+    },
+    {
+      "physical": "0xff000",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 59029,
+      "block_retired": 0
+    }
+  ],
+  "synthetic_after": [
+    {
+      "physical": "0x100000",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 35494,
+      "block_retired": 64
+    },
+    {
+      "physical": "0x100ffc",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 36478,
+      "block_retired": 63
+    },
+    {
+      "physical": "0x1fffc0",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 35494,
+      "block_retired": 64
+    },
+    {
+      "physical": "0x200000",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 35494,
+      "block_retired": 64
+    },
+    {
+      "physical": "0xffff0",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 37250,
+      "block_retired": 60
+    },
+    {
+      "physical": "0xff000",
+      "scalar_PPC_instructions": 52097,
+      "native_PPC_instructions": 59029,
+      "block_retired": 0
+    }
+  ],
+  "cache_before": {
+    "calls": 5700,
+    "PPC_instructions": 520192,
+    "interval_hits": 5500,
+    "way_scans": 200
+  },
+  "cache_after": {
+    "calls": 5700,
+    "PPC_instructions": 512292,
+    "interval_hits": 5500,
+    "way_scans": 200
+  },
+  "gx_semantics": {
+    "configuration_sha256": "e260b9e2bd8534feb65386251f638a151e7382cf3a27ebff5d6a81d2f1955118",
+    "primitives": 1156,
+    "vertex_sha256": "a7077cf0a2fe931ea95576b4c741610c5388fb8cf479921ff14786626286b3f9"
+  },
+  "gx_stack_frames": {
+    "before": {
+      "elf": "Gekko2-BETA12.31e-GX-Chain.elf",
+      "elf_sha256": "ea671b2d9732d257fab37ba4dbca666c484cc40bc7f63540e8ef9b555dd1ce4a",
+      "frame_bytes": 9192
+    },
+    "after": {
+      "elf": "Gekko2-BETA12.32-GX-Chain.elf",
+      "elf_sha256": "1131217ef6ac6943afa767c0f5d94d8edb757da08dc7658c90a71a3bcc14fe88",
+      "frame_bytes": 2360
+    }
+  },
+  "physical_wii_tested": false,
+  "wii_fps_gain_verified": false,
+  "gx_timeout_fixed": false,
+  "gx_submission_guard_coverage_fixed": true,
+  "native_begins_before_fence_before": 373,
+  "native_begins_before_fence_after": 64,
+  "experimental_defaults_unchanged": true,
+  "binaries": {
+    "Gekko2-BETA12.32-GX-Chain.dol": {
+      "bytes": 2110788,
+      "sha256": "9a5d1361a7b9079a81cf65d626686c1baa13d65bd13164f7307f66dab43f5f6f"
+    },
+    "Gekko2-BETA12.32-GX-Chain.elf": {
+      "bytes": 8518024,
+      "sha256": "1131217ef6ac6943afa767c0f5d94d8edb757da08dc7658c90a71a3bcc14fe88"
+    },
+    "Gekko2-BETA12.32-GX.dol": {
+      "bytes": 2105188,
+      "sha256": "514fbf174752c296442bc28f36502cce865375d0fc9310c4e0e306938c939406"
+    },
+    "Gekko2-BETA12.32-GX.elf": {
+      "bytes": 8508964,
+      "sha256": "03993db0dcfd977d12b0bc9c07368f3fe95187fdc5562b1f448101211d051dca"
+    },
+    "Gekko2-BETA12.32-GX-Chain-AsyncControl.dol": {
+      "bytes": 2110180,
+      "sha256": "237147013707cd0b92a035a84dbddadadc9cf8726909ae165889519d4f8977ad"
+    },
+    "Gekko2-BETA12.32-GX-Chain-AsyncControl.elf": {
+      "bytes": 8516820,
+      "sha256": "f180e2d8d16f58dee3170598bf7aec0ef2675ffabf177b60117074611e692830"
+    }
+  }
+}
