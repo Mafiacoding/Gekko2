@@ -125,7 +125,11 @@ int vif_mmio_read32(uint32_t addr, uint32_t *out)
     } else return 0;
     if (!out || (offset & 15u)) return 0;
     switch (offset) {
-    case 0x00: *out = vif->stat | (vif->is_vif1 && vif->dbf ? (1u << 7) : 0); break;
+    case 0x00: {
+        unsigned queued=(vif->stall_words+3u)/4u,capacity=vif->is_vif1?16u:8u;
+        if(queued>capacity)queued=capacity;
+        *out=(vif->stat&~(31u<<24))|(queued<<24)|(vif->is_vif1&&vif->dbf?(1u<<7):0u);
+    } break;
     case 0x30: *out = vif->mark; break;
     case 0x40: *out = vif->cycle_cl | ((uint32_t)vif->cycle_wl << 8); break;
     case 0x50: *out = vif->mode; break;
@@ -850,15 +854,29 @@ static void vif_service_one(vif_state_t *vif) {
     }
 }
 void vif_service(void){vif_service_one(&g_vif0);vif_service_one(&g_vif1);}
+/* A guest SQ must have room for an entire qword before retirement.
+ * Use the same bounded producer contract as DMA, including I-bit stalls. */
+int vif_cpu_fifo_ready(unsigned channel)
+{
+ if(channel>1u)return 0;
+ vif_state_t *vif=channel?&g_vif1:&g_vif0;
+ vif_service_one(vif);
+ if(vif->irq_stalled||vif->stall_words||
+    (vif->direct_needed_words&&vif->direct_have_words==vif->direct_needed_words))
+  return vif->stall_words<=(channel?60u:28u);
+ return 1;
+}
 uint32_t vif_accept_quadwords(int channel,const uint8_t *data,uint32_t qwc) {
     vif_state_t *vif=channel==1?&g_vif1:&g_vif0;
     vif_service_one(vif);
     if(vif->irq_stalled||vif->stall_words||
        (vif->direct_needed_words&&vif->direct_have_words==vif->direct_needed_words)) {
-        uint32_t room=vif->stall_words<64u?(64u-vif->stall_words)/4u:0;
+        uint32_t capacity=channel==1?64u:32u;
+        uint32_t room=vif->stall_words<capacity?(capacity-vif->stall_words)/4u:0;
         uint32_t take=qwc<room?qwc:room;vif_hold_words(vif,data,take*4u);return take;
     }
-    uint32_t take=qwc<16u?qwc:16u;
+    uint32_t capacity=channel==1?16u:8u;
+    uint32_t take=qwc<capacity?qwc:capacity;
     vif_process(vif,data,take*4u);return take;
 }
 

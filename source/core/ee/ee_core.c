@@ -2689,8 +2689,8 @@ void ee_mem_write128(ee_state_t *st,uint32_t addr,const ee_reg128_t *value)
     if(page==0x10004000u||page==0x10005000u||page==0x10006000u||hw==0x10007010u) {
         uint8_t q[16];
         for(unsigned n=0;n<8;n++){q[n]=(uint8_t)(lo>>(n*8));q[n+8]=(uint8_t)(hi>>(n*8));}
-        if(page==0x10004000u){cpu_fifo_writes[0]++;vif0_process_quadwords(0,q,1);}
-        else if(page==0x10005000u){cpu_fifo_writes[1]++;vif1_process_quadwords(0,q,1);}
+        if(page==0x10004000u){if(vif_accept_quadwords(0,q,1))cpu_fifo_writes[0]++;}
+        else if(page==0x10005000u){if(vif_accept_quadwords(1,q,1))cpu_fifo_writes[1]++;}
         else if(page==0x10006000u){cpu_fifo_writes[2]++;gif_fifo_write(q);}
         else ipu_fifo_write128(0x10007010u,q);
     } else {ee_mem_write64(st,addr,lo);ee_mem_write64(st,addr+8,hi);}
@@ -6003,6 +6003,10 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
      * destination is changed. Native/AOT memory proofs reject this MMIO. */
     if((instr>>26)==0x1fu) {
         uint32_t address=(uint32_t)st->gpr[(instr>>21)&31u].ud0+(uint32_t)(int32_t)(int16_t)instr;
+        uint32_t page=address&0x1ffff000u;
+        if((page==0x10004000u||page==0x10005000u)&&!vif_cpu_fifo_ready(page==0x10005000u)){
+            st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
+        }
         if((address&0x1ffff000u)==0x10006000u&&gif_get_state()->fifo_count==16u) {
             gif_fifo_service();
             if(gif_get_state()->fifo_count==16u) {
