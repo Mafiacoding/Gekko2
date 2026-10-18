@@ -104,3 +104,5 @@ feinere SPU2-/DMA-/VIF-Aufschlüsselung, Wii-Laufzeitprofil derselben Szene und
 unabhängige Referenzbilder/-GS-Traces
 für die BIOS-Kacheln. Keine voreilige Speicherverlagerung oder Entfernung von
 Fences allein auf Basis eines Mikrobenchmarks.
+
+[Geprüfte Downloads: Emulator und Benchmark](BETA12.31-DOWNLOADS.md).
