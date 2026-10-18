@@ -11,7 +11,8 @@ int runtime_telemetry_parse(const char *text,runtime_telemetry_config *out)
  unsigned a,b,c,d,port;int used=0;
  if(!text||!out)return -1;
  memset(out,0,sizeof *out);
- if(!strcmp(text,"GEKKO2_TELEMETRY 0")||!strcmp(text,"GEKKO2_TELEMETRY 0\n"))return 0;
+ int off=0;sscanf(text,"GEKKO2_TELEMETRY 0 %n",&off);
+ if(off&&!text[off])return 0;
  if(sscanf(text,"GEKKO2_TELEMETRY 1 %3u.%3u.%3u.%3u %5u %n",&a,&b,&c,&d,&port,&used)!=5||!used||text[used])return -1;
  if(a>255||b>255||c>255||d>255||!port||port>65535)return -1;
  /* Explicit RFC1918 unicast destination, never a public service or discovery. */

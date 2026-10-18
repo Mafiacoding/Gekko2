@@ -6,6 +6,7 @@ int main(int argc,char **argv)
 {
  runtime_telemetry_config c;
  assert(runtime_telemetry_parse("GEKKO2_TELEMETRY 0\n",&c)==0&&!c.ip&&!c.port);
+ assert(runtime_telemetry_parse("GEKKO2_TELEMETRY 0\r\n",&c)==0);
  const char *bad[]={"","GEKKO2_TELEMETRY 1 8.8.8.8 26890","GEKKO2_TELEMETRY 1 127.0.0.1 26890","GEKKO2_TELEMETRY 1 192.168.1.2 65536","GEKKO2_TELEMETRY 1 192.168.1.2 0","GEKKO2_TELEMETRY 1 192.168.1.999 26890","GEKKO2_TELEMETRY 1 192.168.1.2 26890 extra","GEKKO2_TELEMETRY 1 192.168.1.2 4294994186"};
  for(unsigned i=0;i<sizeof bad/sizeof *bad;i++)assert(runtime_telemetry_parse(bad[i],&c)==-1&&!c.ip&&!c.port);
  assert(runtime_telemetry_parse("GEKKO2_TELEMETRY 1 192.168.1.2 26890\n",&c)==1&&c.ip==0xc0a80102&&c.port==26890);

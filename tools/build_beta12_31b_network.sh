@@ -32,6 +32,7 @@ if [[ "$generic" == 1 && "$extended" == 0 ]]; then
  exit 2
 fi
 commit=$(git rev-parse HEAD)
+build="$build-${commit:0:12}" # New commit identity must never reuse stale objects.
 make -j4 BUILD="$build" TARGET="$target" LIGHTREC_PILOT=1 \
  EXTRA_CFLAGS="-DGEKKO2_TELEMETRY_COMMIT=\\\"$commit\\\" -DGEKKO2_GX_RISK_MODE $generic_flag $gx_flag -DGEKKO2_GAME_TRACE -DGEKKO2_SPEED_RETIRE -DGEKKO2_SPEED_STUB -DGEKKO2_GX_NATIVE_BIOS_TRI -ffp-contract=off -DGEKKO2_EE_AOT -DGEKKO2_VU_AOT -DGEKKO2_IOP_AOT -DGEKKO2_EE_BLOCK_FAST -DGEKKO2_GOURAUD_EARLY_DEGENERATE -DGEKKO2_ARM_BETA -DGEKKO2_DSI_FASTMEM -DGEKKO2_GX_NATIVE_ADDITIVE -DGEKKO2_GX_RESIDENT_FENCE -DGEKKO2_IDLE_SKIP $chain_flag"
 python3 tools/verify_dol_r1352.py "$target.dol" "$target.elf"

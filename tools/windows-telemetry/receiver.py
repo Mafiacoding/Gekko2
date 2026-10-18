@@ -43,8 +43,9 @@ def summary(records):
   if last['gx_timeouts']:warnings.append('GX timeout observed; SD fault log still needed for command-level diagnosis')
   if last['tx_dropped'] or last['tx_errors']:warnings.append('Sender reported dropped packets or send errors')
   seqs=streams[(last['sender'],last['boot'])];missing=max(seqs)-min(seqs)+1-len(set(seqs))
-  g.update(sequence_gaps=missing,tx_dropped=last['tx_dropped'],tx_errors=last['tx_errors'],gx_timeouts=last['gx_timeouts'],ee_block_retired=last['ee_block_retired'],ee_budget_misses=last['ee_budget_misses'])
+  g.update(boot=f"{last['boot']:016x}",sequence_start=min(seqs),sequence_gaps=missing,tx_dropped=last['tx_dropped'],tx_errors=last['tx_errors'],gx_timeouts=last['gx_timeouts'],ee_block_retired=last['ee_block_retired'],ee_budget_misses=last['ee_budget_misses'])
   if missing:warnings.append('Packet gaps: interval wall-time totals are incomplete')
+  if min(seqs)>0:warnings.append('Receiver joined after packet zero; earlier interval wall-time windows are missing')
   for scope in ('cpu','present'):
    data=last[scope];total=sum(data['ticks'])
    g['scopes'][scope]=dict(total_tb=total,ms=1000*total/TB_HZ,samples=data['samples'],overflows=data['overflows'],categories=[dict(category=c,ticks=t,entries=e,work=w,share_percent=100*t/total if total else 0) for c,t,e,w in zip(CATEGORIES,data['ticks'],data['entries'],data['work'])])
@@ -66,7 +67,9 @@ def setup():
  try:print('Moegliche Rechner-Adressen:',', '.join(socket.gethostbyname_ex(socket.gethostname())[2]))
  except OSError:pass
  ip=private_ip(input('LAN-IPv4 dieses Windows-Rechners: ').strip())
- root=Path(input('SD-Laufwerk/Pfad (z.B. E:\\): ').strip().strip('"'))
+ drive=input('SD-Laufwerk/Pfad (z.B. E:\\): ').strip().strip('"')
+ if os.name=='nt' and re.fullmatch(r'[A-Za-z]:',drive):drive+='\\'
+ root=Path(drive)
  if not root.is_dir():raise ValueError('SD-Pfad existiert nicht')
  directory=root/'pcsx2';directory.mkdir(exist_ok=True)
  target=directory/'telemetry.cfg';temp=directory/'telemetry.cfg.tmp'
@@ -103,6 +106,14 @@ def collect(args):
  archive=directory/f'gekko2-network-{stamp}.zip'
  with zipfile.ZipFile(archive,'x',zipfile.ZIP_DEFLATED) as z:
   z.write(rawpath,'telemetry.jsonl');z.write(reportpath,'summary.json')
+  lines=['Gekko2 network performance report',f"Packets: {report['packets']}; duplicates: {report['duplicates']}; invalid: {invalid}"]
+  for group in report['groups']:
+   lines.append(f"Build {group['build']} / session {group['session']} / epoch {group['epoch']} / CPU {group['active_mask']} / GX {group['gx']}")
+   for scope,data in group['scopes'].items():
+    top=sorted(data['categories'],key=lambda row:row['ticks'],reverse=True)[:4]
+    lines.append(scope+': '+', '.join(f"{row['category']} {row['share_percent']:.1f}%" for row in top))
+   lines.extend('WARNING: '+warning for warning in group['warnings'])
+  lines.extend(report['notes']);z.writestr('READ-REPORT.txt','\n'.join(lines)+'\n')
  print('Fertig. Nur diese Datei bereitstellen:',archive,flush=True)
  if not records:print('Keine Daten empfangen: Sender-IP, Firewall/privates Netzwerk, SD-Konfiguration und Neustart aus HBC pruefen.')
  return 0 if records else 2

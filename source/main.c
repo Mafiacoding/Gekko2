@@ -263,7 +263,7 @@ static const char *boot_log_path(void)
 static void send_runtime_snapshot(unsigned event,uint64_t ms,uint64_t presents,
  uint64_t vblanks,uint64_t ee,uint64_t core,uint64_t present)
 {
- if(!runtime_telemetry_state())return;
+ int state=runtime_telemetry_state();if(state!=1&&state!=2)return;
  static uint64_t previous_epoch,previous_log;
  if(previous_epoch!=g_telemetry_epoch){previous_epoch=g_telemetry_epoch;previous_log=0;}
  runtime_telemetry_sample s={0};
