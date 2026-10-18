@@ -1,6 +1,8 @@
 # BETA12.29 – Core completion, erster Umsetzungsstand
 
 Basis BETA12.28 `7681af2`; Hauptbranch weiterhin BETA12.20 `ca16340`.
+[Geprüfte Downloads](BETA12.29-DOWNLOADS.md).
+
 Der Wunsch nach vollständiger Umsetzung wird als fortlaufendes Inventar mit
 prüfbaren Einzelbatches geführt. Die Version macht den Emulator nicht vollständig.
 
