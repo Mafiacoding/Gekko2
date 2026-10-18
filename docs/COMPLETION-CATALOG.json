@@ -544,11 +544,14 @@
     },
     {
       "id": "MC-02",
-      "status": "offen",
-      "title": "GETENTSPACE und CheckBlock-RPC fehlen",
+      "status": "teilweise",
+      "title": "GETENTSPACE implementiert; destruktives CheckBlock bleibt offen",
       "source": "source/hw/ps2_mc_files.c",
       "gate": "Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption",
-      "tests": [],
+      "tests": [
+        "tests/test_mc_ent_space.c",
+        "tests/test_ps2_mc_files.c"
+      ],
       "implementation_commit": null
     },
     {

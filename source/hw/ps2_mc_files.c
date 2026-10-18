@@ -176,6 +176,24 @@ static int parent(const char *path,unsigned *dir,char leaf[33])
 }
 static int resolve(const char *name,unsigned *at,uint8_t e[512],unsigned *dir,char leaf[33])
 {char path[1024];int r=normalize(name,path);if(r)return r;r=parent(path,dir,leaf);return r?r:find(*dir,leaf,at,e);}
+/* PS2SDK McGetEntSpace: count reusable directory entries plus the spare
+ * half-cluster when length is odd. This is not free-card cluster count. */
+int ps2_mc_fs_getentspace(const char *name)
+{
+ int r=geometry();if(r)return r;
+ unsigned at=0,parent_dir=0;uint8_t entry[512];char leaf[33];
+ r=resolve(name,&at,entry,&parent_dir,leaf);if(r)return r;
+ if(!(r16(entry)&DIR))return -5;
+ unsigned dir=r32(entry+16),slots=0;
+ r=dir_slots(dir,&slots);if(r)return r;
+ unsigned available=slots&1u;
+ for(unsigned i=0;i<slots;i++){
+  r=slot_at(dir,i,&at);if(r)return r;
+  if(ps2_mc_logical_read(at,entry,sizeof entry))return -13;
+  if(!(r16(entry)&EXISTS))available++;
+ }
+ return (int)available;
+}
 static void stamp(uint8_t date[8])
 {
  uint8_t clock[8]={0};memset(date,0,8);if(!iop_cdvd_read_clock(clock))return;
