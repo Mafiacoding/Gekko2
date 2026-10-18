@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import contextlib,io,types
+from unittest.mock import patch
 import copy,importlib.util,json,os,socket,subprocess,sys,tempfile,time,zipfile
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
@@ -54,5 +56,23 @@ with tempfile.TemporaryDirectory() as temp:
  assert run.returncode==2
  no_data=json.loads(next(empty.glob('*-summary.json')).read_text())
  assert no_data['receiver']['port']==port and no_data['receiver']['datagrams']==0 and no_data['receiver']['stop_reason']=='no_valid_packets'
+ # Windows UDP can report ICMP reset when a Wii socket closes. Preserve report.
+ class ResetSocket:
+  def __init__(self):self.calls=0
+  def bind(self,address):pass
+  def settimeout(self,value):pass
+  def close(self):pass
+  def recvfrom(self,size):
+   self.calls+=1
+   if self.calls==1:raise ConnectionResetError(10054,'synthetic Windows UDP reset')
+   raise socket.timeout()
+ reset_output=temp/'reset'
+ with patch.object(m.socket,'socket',return_value=ResetSocket()),contextlib.redirect_stdout(io.StringIO()):
+  rc=m.collect(types.SimpleNamespace(output=reset_output,wii_ip=None,listen='127.0.0.1',port=26890,seconds=0.01,wait_seconds=0.01))
+ assert rc==2
+ reset_report=json.loads(next(reset_output.glob('*-summary.json')).read_text())
+ assert reset_report['receiver']['receive_errors']==1 and reset_report['receiver']['last_receive_error']==10054
+ assert len(list(reset_output.glob('*.zip')))==1
+ print('PASS Windows-style UDP reset preserves capture/report')
  print('PASS menu test probe/ACK, no fake CPU scope, empty-receiver diagnostics and received/ack counters')
  print('PASS C/Python wire interoperability, malformed packets, duplicate/reordered/lost packets, epoch/mask grouping, cumulative scope totals, UDP receive/report ZIP and SD-only configuration')

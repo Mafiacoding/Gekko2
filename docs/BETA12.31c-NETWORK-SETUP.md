@@ -58,3 +58,9 @@ queue full, OFF and a successful acknowledged probe.
 Fresh Wii DOL/ELF section equality and MEM1 gate passed: static end
 `0x815e5754`, 2,205,868 bytes remaining. Native Windows 1.1 and physical Wii
 network receipt remain unverified; use the short menu probe, not a BIOS boot.
+
+Windows-style UDP ICMP reset errors (e.g. 10054 after Wii socket closure) are
+also regression-tested: the receiver continues and preserves the report instead
+of exiting before ZIP creation. Other receive errors finalize a diagnostic ZIP.
+Receiver scripts are host tools, independently tested after the Wii build; the
+manifest records their hashes alongside separate source/build commits.
