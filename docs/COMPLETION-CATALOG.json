@@ -326,7 +326,7 @@
     {
       "id": "GS-04",
       "status": "teilweise",
-      "title": "AA1 und exakte Linien-/Dreieckskanten",
+      "title": "AA1/Kanten und Texturierung von Punkten/Linien unvollständig",
       "source": "source/hw/gif.c",
       "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
       "tests": [],

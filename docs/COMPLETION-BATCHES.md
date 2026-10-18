@@ -8,8 +8,8 @@ ist kein fertiger Emulator. Hardware-Gates werden nicht durch Hosttests ersetzt.
 | Batch | IDs | Konkrete Arbeit / Abnahme |
 |---|---|---|
 | C01 GS-Interruptzugriff | GIF-01/02, TIME-02 | EE-Zugriffsbreiten für CSR/IMR, reale W1C-Quittierung, pending-event unmask, alle Producer-Retries |
-| C02 Textursampling | GS-02/03, GX-01/04 | Q-basierter LOD pro Fragment, K/L, MTBA-Layout, Mipmapkoordinaten/Filter, Mip-Cache-/GX-Sicherheitsgrenzen |
-| C03 Pixelpipeline | GS-04/05/06, GX-02/03/05 | unabhängige ALPHA/ATE/DATE/Masken/Z-/AA-/Feedback-Oracles und belegte GX-Zulassung |
+| C02 Textursampling | GS-01/02/03, GX-01/04 | Q-basierter LOD pro Fragment, K/L, MTBA-Layout, Mipmapkoordinaten/Filter, Mip-Cache-/GX-Sicherheitsgrenzen |
+| C03 Pixelpipeline | GS-04/05/06, GX-02/03/05 | texturierte Punkte/Linien, unabhängige ALPHA/ATE/DATE/Masken/Z-/AA-/Feedback-Oracles und belegte GX-Zulassung |
 | C04 PCRTC | GS-07/08/09 | EXTDATA/EXTBUF/EXTWRITE, Interlace/Field und Readback/VRAM-Ownership |
 | C05 VU/VIF/GIF | VU-01..05, GIF-02, VIF-01/02 | getaktete Flags/VI/Q/P, Pending-XGKICK, FIFO/UNPACK/MPG-/Pfadmatrix |
 | C06 DMA/Scheduler | DMA-01/02, TIME-01/02 | Reverse Chain, MFIFO/Interleave/REFS, echte Fristen und keine verlorenen IRQs |

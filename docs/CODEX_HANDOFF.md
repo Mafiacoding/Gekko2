@@ -1,5 +1,16 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Aktuell 18.10.2026: BETA12.30**, `codex/beta12-30-graphics-transport-integration`,
+Emulator-Buildcommit `640a761`, Integrations-PR #37, getrennte Code-PRs #32–#36.
+[Bericht](BETA12.30-GS-VIF-ACCURACY.md), [Batchliste](COMPLETION-BATCHES.md),
+[fortgeschriebener Katalog](COMPLETION-CATALOG.md). GS-CSR/IMR-Narrowzugriffe,
+pending IMR, Q/K/L-LOD/MTBA/Mipfilter, VIF-CPU-Backpressure/FQC und writable ENVX.
+78 Host-Suites, je 40 neue PPC-Accuracy-Fälle und beide Wii-DOL-/ELF-/MEM1-Gates
+bestanden. Vollständige weitere PPC-Ergebnisse stehen nach Abschluss im Bericht.
+Keine physischen Wii-/Dolphin- oder neuen Spiel-/BIOS-Kachel-/FPS-Nachweise.
+Folgende BETA12.29-Absätze sind historisch; deren offene Ziele im Katalog fortführen.
+
+
 **Aktuell 18.10.2026: BETA12.29**, Branch
 `codex/beta12-29-completion-integration`, Emulator-Buildcommit `9fe55bf`,
 Draft-PR [#31](https://github.com/Mafiacoding/Gekko2/pull/31).

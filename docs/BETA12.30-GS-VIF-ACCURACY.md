@@ -22,8 +22,10 @@ unabhängig und ab Werk OFF. Keine Rückkehr der automatischen 4:3-Verkleinerung
 
 Gezielte Nachweise: 32768 IMR-Masken-/Ereigniskombinationen, 11701 Mip-/MTBA-
 Fälle, 200 VIF-SQ-Retries, 8230 ENVX-/PMON-Fälle und bisherige Soundprüfungen.
-Die vorhandene 70-Suite-Baseline bestand nach C01/C02; vollständige neue
-78-Suite-Regression, PPC-Fixtures und Wii-Abnahme werden separat protokolliert.
+Die vorhandene 70-Suite-Baseline bestand nach C01/C02. Die vollständige neue
+**78-Suite-Regression besteht**. Neue PPC-Fixtures prüfen auf beiden tatsächlichen
+Wii-ELFs je 40 GS-/VIF-/ENVX-Zugriffe und Rasterfälle. Die bisherigen längeren
+JIT-/Scheduler-Gates laufen separat und werden nach Abschluss protokolliert.
 
 Reproduktion in frischen Quellen:
 ```
@@ -35,9 +37,19 @@ CHAIN_RESIDENCY=0 bash tools/build_beta12_30_accuracy.sh
 SDK: devkitPPC r50/GCC16.1.0/libogc3.1.0, offizielles Image
 `devkitpro/devkitppc@sha256:4c919aa26151dd43d88ca28c922d1fe2409579a8ba60ef56517baf1abdfb1a48`.
 Buildflags entsprechen der bisherigen SPEED/DSI/AOT/GX/Idle/Lightrec-Baseline.
-Ergebnisse/Hashes werden erst nach tatsächlich erfolgreichen Builds ergänzt.
+Beide frischen Builds bestehen DOL-/ELF-Sektionsvergleich und statisches MEM1-Gate.
+Emulator-Buildcommit `640a761`; nachfolgende Tools/Berichte ändern keine Semantik.
 
-Offen: genaue GS-Float-/LOD-/AA-/Feedback-/EXTWRITE-/Field-Semantik,
+| Variante | DOL-Bytes | MEM1-Ende | Statischer MEM1-Rest |
+|---|---:|---|---:|
+| Chain kompiliert, Runtime OFF | 2083672 | `0x815d9a94` | 2254188 |
+| Ohne Chain | 2078072 | `0x815b8494` | 2390892 |
+
+Statischer Rest ist kein dynamischer MEM2-/Heap-/Stabilitätsnachweis.
+Compile-Warnungen, insbesondere ältere Lightning-/libogc-Warnungen, sind
+nicht als beseitigt behauptet. Keine Dolphin-/physische-Wii-Ausführung.
+
+Offen: genaue GS-Float-/LOD-/AA-/Feedback-/EXTWRITE-/Field-Semantik und texturierte Punkte/Linien,
 GPU-Mip-/gemischte Filterpräzision, VU/VIF-/DMA-/IPU-/Schedulerkonformität,
 allgemeines JIT-Dirty-Writeback, Gaussian/Reverb/Silent-Voice-Timing,
 weitere Karten-RPCs und Geräte. Echte Wii-Szenen für BIOS-Kacheln, Crash E3,

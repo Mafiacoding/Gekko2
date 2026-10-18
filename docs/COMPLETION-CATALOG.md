@@ -56,7 +56,7 @@ Vorhandene MMI-, VU0-Macro- und VU-Upper-Audits zusätzlich ausführen.
 | GS-01 | 13 PSM-Quellformate und physische CLUT implementiert | vorhanden_pruefen | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
 | GS-02 | Q/K/L-LOD pro Dreiecksfragment und Sprite, skalierte Mips und sechs Filter | implementiert_getestet | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
 | GS-03 | MTBA erste drei Ebenen und Trilinear implementiert; TBW0/GS-Bitpräzision offen | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
-| GS-04 | AA1 und exakte Linien-/Dreieckskanten | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
+| GS-04 | AA1/Kanten und Texturierung von Punkten/Linien unvollständig | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
 | GS-05 | COLCLAMP/PABE/ALPHA/FBA/FBMSK-Gesamtmatrix | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
 | GS-06 | Texture-Shuffle/Framebuffer-Feedback | teilweise | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
 | GS-07 | Zweikreis-PMODE-Komposition ist implementiert | vorhanden_pruefen | [source/hw/gif.c](../source/hw/gif.c); Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung |
