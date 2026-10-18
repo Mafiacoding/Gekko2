@@ -24,3 +24,14 @@ Nachricht bleibt am Producer, bis der Gast CSR wirklich quittiert.
 Dies sind reproduzierte Corefehler, kein Nachweis, dass die konkrete Crash-E3-
 Sitzung genau diese Zugriffe benutzt oder dass deren Blackscreen behoben ist.
 Vollständiges GS-Reset-/CSR-Readback-/Bus-Timing bleibt getrennt zu bearbeiten.
+
+
+Privater BETA12.24-Logabgleich: die Sitzung mit Crash-Datei-I/O-Merkmalen
+enthält einen nicht wieder aufgenommenen SIGNAL-Wartepfad; in der vorhandenen
+Tracehistorie erscheint keine CSR-ACK-Transition. Der Ring meldet jedoch
+verlorene Ereignisse. Das Fehlen einer ACK-Zeile beweist daher weder den
+konkreten Schreibopcode noch die alleinige Ursache. Die andere Sitzung zeigt
+keinen SIGNAL-Wartepfad; ihre Grafikfehler werden nicht mit diesem Interruptfix
+erklärt. Rohlogs, Register-/Instruktionswerte und private Pfade bleiben außerhalb
+von Git, PRs und Paketen. Der öffentliche Test verwendet ausschließlich eigene
+synthetische Pakete und EE-Instruktionen.
