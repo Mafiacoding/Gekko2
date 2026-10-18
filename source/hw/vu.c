@@ -1,3 +1,4 @@
+#include "core/runtime_profile.h"
 #include "core/hw/game_trace.h"
 /*
  * vu.c - see include/core/hw/vu.h for scope notes and references, and
@@ -683,6 +684,7 @@ static void vu1_run_blocks(void)
 
 void vu1_exec_micro(uint32_t start_addr)
 {
+    unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
     g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
 
@@ -691,6 +693,7 @@ void vu1_exec_micro(uint32_t start_addr)
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu1_run_blocks();
     else if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
+    gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
 }
 
 /* Round 576 (task #551): real MSCNT semantics. Ground-truthed against
@@ -713,6 +716,7 @@ void vu1_exec_micro(uint32_t start_addr)
  * vu1_exec_micro() but without the reset line. */
 void vu1_exec_micro_continue(void)
 {
+    unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
 
     /* Q/P, branch and GIF boundaries can be scalar; later work can
@@ -720,12 +724,14 @@ void vu1_exec_micro_continue(void)
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu1_run_blocks();
     else if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
+    gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
 }
 
 /* Called by the common EE scheduler for a yielded microprogram or a
  * pending transfer after E. No synthetic microinstruction retirement. */
 void vu1_tick(void) {
     if(!g_vu1.running&&!g_vu1.xgkick_pending)return;
+    unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     if(g_vu1.running) {
         int stopped=vu_micro_step_timed(g_vu1.vf,g_vu1.vi,g_vu1.acc,
             g_vu1.mem,VU1_MEM_SIZE-1u,g_vu1.micro,VU1_MICRO_SIZE-1u,
@@ -736,4 +742,5 @@ void vu1_tick(void) {
         if(stopped==2)g_vu1.pipeline.cycle++;
     } else g_vu1.pipeline.cycle++;
     vu1_service_xgkick(!g_vu1.running);
+    gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
 }

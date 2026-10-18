@@ -5089,6 +5089,7 @@ static void vu0_run_blocks(ee_state_t *st)
 
 void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
 {
+    unsigned profile=gp_enter(GP_VU0);uint64_t profile_before=st->vu0_instructions_executed;
     /* VU0's real TPC register is cop2_ctrl[26] (REG_TPC) - kept in
      * sync here so a CFC2/MFC2 read of it during/after execution sees
      * a sensible live value, same real register slot round 12's
@@ -5100,6 +5101,7 @@ void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu0_run_blocks(st);
     else if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
 
+    gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
 }
 
 /* Round 576 (task #551): real MSCNT semantics for VU0 macro mode - see
@@ -5110,12 +5112,14 @@ void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
  * does for MSCAL/MSCALF. */
 void vu0_exec_micro_continue(ee_state_t *st)
 {
+    unsigned profile=gp_enter(GP_VU0);uint64_t profile_before=st->vu0_instructions_executed;
     st->vu0_running = 1;st->cop2_ctrl[29]|=1u;st->vu0_timing.m_yield=0;
 
     /* Re-enter native batching after a branch/Q/P boundary clears. */
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu0_run_blocks(st);
     else if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
 
+    gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
 }
 
 /* Advance a still-running VU0 at the common EE retirement boundary, used
@@ -5123,17 +5127,22 @@ void vu0_exec_micro_continue(ee_state_t *st)
 static void vu0_tick(ee_state_t *st) {
     if(!st->vu0_running)return;
     if(st->vu0_timing.m_yield){st->vu0_timing.m_yield=0;return;}
+    unsigned profile=gp_enter(GP_VU0);uint64_t profile_before=st->vu0_instructions_executed;
     int stopped=vu_micro_step_timed(st->vu0_vf,st->cop2_ctrl,st->vu0_acc,
         st->vu0_mem,4095u,st->vu0_micro,4095u,&st->cop2_ctrl[26],
         &st->vu0_branch_delay,&st->vu0_branch_target,&st->vu0_ebit_delay,
         &st->vu0_instructions_executed,&st->vu0_unimplemented_opcodes_seen,
         &st->vu0_pipeline,&st->vu0_timing);
     if(stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;}
+    gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
 }
 /* COP2 synchronization runs to a real M or end boundary. It does not
  * fabricate a STOP when a runaway microprogram reaches the host cap. */
 void vu0_sync_macro(ee_state_t *st) {
-    if(st->vu0_running&&!st->vu0_timing.m_yield)vu0_run_pairs(st);
+    if(st->vu0_running&&!st->vu0_timing.m_yield) {
+        unsigned profile=gp_enter(GP_VU0);uint64_t profile_before=st->vu0_instructions_executed;
+        vu0_run_pairs(st);gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
+    }
 }
 
 
@@ -6037,7 +6046,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 #endif
        gekko2_opt_enabled(GEKKO2_OPT_EE_JIT) &&
        gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)) {
+        unsigned profile=gp_enter(GP_EE_NATIVE);
         unsigned n=ee_aot_try_execute_fetched(st,budget,instr);
+        gp_work(GP_EE_NATIVE,n);gp_leave(profile);
         if(n||st->halted){*block_retired=n;return st->halted?1:0;}
     }
 #endif
@@ -6053,7 +6064,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         /* Backing came from this instruction's real fetch, not a cached
          * translation. Keep guarded low physical kernel code in C. */
         if(candidate && backed_candidate) {
+            unsigned profile=gp_enter(GP_EE_NATIVE);
             unsigned n=ee_jit_try_execute_chain_fetched(st,budget,instr);
+            gp_work(GP_EE_NATIVE,n);gp_leave(profile);
             if(n){*block_retired=n;return 0;}
         }
     }
@@ -6575,8 +6588,13 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
      * 5345 vs 6626 PPC instructions with single-op LW JIT, and direct RAM
      * also favors inline C (4601 vs 4817). Keep LW translation available
      * for direct callers/block formation, bypass this fragment dispatch. */
-    if (!cheap_scalar && !cheap_branch && op != 0x23u && op != 0x37u && !(op==0x10u && (rs==0u||rs==4u)) &&
-        ee_jit_try_execute_one_at(st, this_pc, instr)) {
+    int native_single=0;
+    if (!cheap_scalar && !cheap_branch && op != 0x23u && op != 0x37u && !(op==0x10u && (rs==0u||rs==4u))) {
+        unsigned profile=gp_enter(GP_EE_NATIVE);
+        native_single=ee_jit_try_execute_one_at(st,this_pc,instr);
+        gp_work(GP_EE_NATIVE,native_single?1u:0u);gp_leave(profile);
+    }
+    if (native_single) {
         if (r1176_sample) {
             r1176_t1 = r1176_tb32();
             g_r1176_prof_jit_tb += (uint32_t)(r1176_t1 - r1176_t0);
@@ -11788,6 +11806,7 @@ unsigned ee_core_step_n(unsigned n)
         uint32_t scalar_entry_pc = g_state.pc;
 #endif
         int halted = ee_step_budget(n-used,&block_retired);
+        gp_work(GP_EE,g_state.instructions_executed-before);
         if(block_retired){retired+=block_retired;used+=block_retired;}
         else {
 #ifdef GEKKO2_SPEED_STUB

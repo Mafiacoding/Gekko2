@@ -64,6 +64,7 @@ int main(int argc,char **argv)
  }
  const char *resume=getenv("GEKKO2_RESUME");if(resume&&checkpoint_load(resume,&bios,&bios,argv[2]))return 8;
  const char *dir=getenv("GEKKO2_CAPTURE"),*control=getenv("GEKKO2_INPUT"),*plan=getenv("GEKKO2_PAD_PLAN");
+ if(control||plan)iop_sio2_pad_connect();
  unsigned slices=strtoul(argv[3],0,0);
  clock_t start=clock();
  for(unsigned n=0;n<slices;n++){
@@ -113,7 +114,9 @@ int main(int argc,char **argv)
  extern uint64_t ee_quiet_arms,ee_quiet_arm_zero,ee_quiet_hits,ee_speed_retire_stats[2],ee_arm_why[12];printf("QUIET arms=%llu zero=%llu hits=%llu retire_lite=%llu full=%llu why:",(unsigned long long)ee_quiet_arms,(unsigned long long)ee_quiet_arm_zero,(unsigned long long)ee_quiet_hits,(unsigned long long)ee_speed_retire_stats[0],(unsigned long long)ee_speed_retire_stats[1]);for(int q=0;q<12;q++)printf(" %llu",(unsigned long long)ee_arm_why[q]);printf("\n");
 #endif
  }
+#ifdef GEKKO2_IDLE_SKIP
  {extern uint64_t ee_spin_stats[4];printf("SPIN hashes=%llu confirmed=%llu skips=%llu slots=%llu\n",(unsigned long long)ee_spin_stats[0],(unsigned long long)ee_spin_stats[1],(unsigned long long)ee_spin_stats[2],(unsigned long long)ee_spin_stats[3]);}
+#endif
  {extern uint64_t system_event_stat(unsigned);for(int q=0;q<5;q++)printf("EVSTAT%d=%llu\n",q,(unsigned long long)system_event_stat(q));}
  {extern uint64_t ee_event_deadline_stats[8];printf("DEADLINE");for(int q=0;q<8;q++)printf(" %llu",(unsigned long long)ee_event_deadline_stats[q]);printf("\n");}
  printf("IOP_TICKS=%llu\n",(unsigned long long)i->sched_ticks);

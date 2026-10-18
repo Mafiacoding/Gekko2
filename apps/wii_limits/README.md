@@ -1,4 +1,4 @@
-# Gekko2 Wii Limits 1.0
+# Gekko2 Wii Limits 1.1
 
 Eigenständige Homebrew-App für die originale Wii. Sie liefert messbare
 Vergleichsgrößen für Optimierungen, keinen universellen Grenzwert und keine
@@ -25,6 +25,8 @@ Getestet werden abhängige Integer-/Float-Rechenketten, MEM1/MEM2 memcpy,
 abhängige 32-Byte-Ladezyklen bei 8/32/256 KiB und 2 MiB Arbeitsmenge,
 D-Cache-Flush, GX-Kleingeometrie/Füllung/Blend/Alpha-Verwerfen, RGBA8-Textur
 nearest/linear, CPU/GPU-Überlappung, RGBA8-EFB-Kopie und CPU-EFB-Peeks.
+Version 1.1 ergänzt MEM1→MEM2 und MEM2→MEM1 bei 32/8192/32768/262144/2097152
+Bytes mit 32-Byte-Ausrichtung und +4-Byte-Versatz. Vollständiger Lauf: 280 Zeilen.
 
 Auswertung aus dem Repository:
 ```

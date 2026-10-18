@@ -417,6 +417,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)(runtime.ticks[GP_GX_WAIT]-g_runtime_previous.ticks[GP_GX_WAIT]),
       (unsigned long long)(runtime.ticks[GP_IPU]-g_runtime_previous.ticks[GP_IPU]),
       (unsigned long long)runtime.overflows);
+    for(unsigned n=0;n<GP_COUNT;n++)fprintf(f,
+      "PROFILE_COST schema=1 scope=sampled_cpu category=%s ticks=%llu entries=%llu work=%llu unit=%s tb_hz=60750000\n",
+      gekko2_profile_name(n),(unsigned long long)(runtime.ticks[n]-g_runtime_previous.ticks[n]),
+      (unsigned long long)(runtime.entries[n]-g_runtime_previous.entries[n]),
+      (unsigned long long)(runtime.work[n]-g_runtime_previous.work[n]),gekko2_profile_unit(n));
     g_runtime_previous=runtime;
     gekko2_profile front;gekko2_profile_get_host(&front);
     uint64_t front_total=0;for(unsigned n=0;n<GP_COUNT;n++)front_total+=front.ticks[n]-g_front_previous.ticks[n];
@@ -427,6 +432,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)(front.ticks[GP_GX_READBACK]-g_front_previous.ticks[GP_GX_READBACK]),
       (unsigned long long)(front.ticks[GP_GX_WAIT]-g_front_previous.ticks[GP_GX_WAIT]),
       (unsigned long long)front.overflows);
+    for(unsigned n=0;n<GP_COUNT;n++)fprintf(f,
+      "PROFILE_COST schema=1 scope=exact_present category=%s ticks=%llu entries=%llu work=%llu unit=%s tb_hz=60750000\n",
+      gekko2_profile_name(n),(unsigned long long)(front.ticks[n]-g_front_previous.ticks[n]),
+      (unsigned long long)(front.entries[n]-g_front_previous.entries[n]),
+      (unsigned long long)(front.work[n]-g_front_previous.work[n]),gekko2_profile_unit(n));
     g_front_previous=front;
     fprintf(f,"HOST_TIME core_tb=%llu presentation_tb=%llu log_tb=%llu log_ms=%llu\n",
       (unsigned long long)core_ticks,(unsigned long long)blit_ticks,

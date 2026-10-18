@@ -17,7 +17,7 @@
 #ifndef LIMITS_COMMIT
 #define LIMITS_COMMIT "unknown"
 #endif
-#define VERSION "GEKKO2-WII-LIMITS-1.0"
+#define VERSION "GEKKO2-WII-LIMITS-1.1"
 #define BLOCK (2u*1024u*1024u)
 #define SAMPLES 5u
 #define TARGET_US 40000u
@@ -130,6 +130,32 @@ static void memory_tests(uint32_t *a,uint32_t *b,const char *pool)
             result("dc_flush_range",s,pool,size,1,size,"range_bytes",ticks,0,0,0,"timing_only",0);
             /* Dirty every line before the next flush, outside measured interval. */
             for(size_t i=0;i<size/4;i+=8)a[i]^=1u;
+        }
+    }
+}
+/* Separate source/destination pools and 32B-aligned versus +4B pointers.
+ * Buffers have 32 spare bytes. Counts always mean payload, not bus traffic. */
+static void cross_copy_tests(uint32_t *mem1,uint32_t *mem2)
+{
+    if(!mem1||!mem2){result("cross_copy",0,"MEM1_MEM2",0,0,0,"payload_bytes",0,0,0,0,"allocation_failed",0);return;}
+    const size_t sizes[]={32,8192,32768,262144,BLOCK};
+    for(unsigned direction=0;direction<2&&!input();direction++)
+    for(unsigned offset=0;offset<2&&!input();offset++)
+    for(unsigned k=0;k<5&&!input();k++) {
+        uint32_t *src=(direction?mem2:mem1)+offset,*dst=(direction?mem1:mem2)+offset;
+        size_t size=sizes[k];limits_fill(src,size);memset(dst,0,size);memcpy(dst,src,size);
+        unsigned repeats=1;
+        while(repeats<16384) {
+            uint64_t begin=now();for(unsigned n=0;n<repeats;n++)memcpy(dst,src,size);
+            if(ticks_to_microsecs(now()-begin)>=TARGET_US)break;
+            repeats*=2;
+        }
+        for(unsigned sample=0;sample<SAMPLES&&!input();sample++) {
+            uint64_t begin=now();for(unsigned n=0;n<repeats;n++)memcpy(dst,src,size);
+            uint64_t elapsed=now()-begin;
+            result(offset?"cross_copy_offset4":"cross_copy_aligned32",sample,
+                direction?"MEM2_to_MEM1":"MEM1_to_MEM2",size,repeats,(uint64_t)size*repeats,
+                "payload_bytes",elapsed,0,0,limits_verify(dst,size),"ok",dst[size/4-1]);
         }
     }
 }
@@ -274,13 +300,14 @@ int main(void)
     }
     if(quit)return 0;
     open_log();cpu_tests();cpu_overlap_reference();
-    uint32_t *a=memalign(32,BLOCK),*b=memalign(32,BLOCK);
-    if(!in_pool(a,BLOCK,0x80000000u,0x81800000u)||!in_pool(b,BLOCK,0x80000000u,0x81800000u)) {
+    uint32_t *a=memalign(32,BLOCK+32),*b=memalign(32,BLOCK+32);
+    if(!in_pool(a,BLOCK+32,0x80000000u,0x81800000u)||!in_pool(b,BLOCK+32,0x80000000u,0x81800000u)) {
         free(a);free(b);a=b=NULL;
     }
-    memory_tests(a,b,"MEM1_cached");free(a);free(b);
-    uint32_t *second=mem2_reserve(2*BLOCK);
-    memory_tests(second,second?second+BLOCK/4:NULL,"MEM2_cached");
+    memory_tests(a,b,"MEM1_cached");
+    uint32_t *second=mem2_reserve(2*(BLOCK+32));
+    memory_tests(second,second?second+BLOCK/4+8:NULL,"MEM2_cached");
+    cross_copy_tests(a,second);free(a);free(b);
     if(!quit)gx_tests();
     printf("\n%s. Check failures=%u, GX timeout=%d\n",quit?"Cancelled":"Finished",failures,gx_failed);
     if(log_file) {fprintf(log_file,"# end=%s check_failures=%u gx_timeout=%d sink=%08lx\n",quit?"cancelled":"finished",failures,gx_failed,(unsigned long)sink);fclose(log_file);}

@@ -70,14 +70,14 @@ uint32_t gs_gx_pack_rgba8_psm(void *dst,uint32_t capacity,uint32_t bp,uint32_t b
 {
  unsigned previous=gp_enter(GP_GX_UPLOAD);
  uint32_t result=gs_gx_pack_rgba8_psm_profile_impl(dst,capacity,bp,bw,sx,sy,width,height,psm);
- gp_leave(previous);return result;
+ gp_work(GP_GX_UPLOAD,result);gp_leave(previous);return result;
 }
 __attribute__((noinline,noclone)) uint32_t gs_gx_pack_rgba8(void *dst,uint32_t capacity,uint32_t bp,uint32_t bw,
                         uint32_t sx,uint32_t sy,uint32_t width,uint32_t height)
 {
  unsigned profile_previous=gp_enter(GP_GX_UPLOAD);
  uint32_t result=gs_gx_pack_rgba8_profile_impl(dst,capacity,bp,bw,sx,sy,width,height);
- gp_leave(profile_previous);
+ gp_work(GP_GX_UPLOAD,result);gp_leave(profile_previous);
  return result;
 }
 
@@ -236,7 +236,7 @@ uint32_t gs_gx_pack_texture(void *out,uint32_t capacity,const gs_gx_texture_draw
 {
  unsigned profile_previous=gp_enter(GP_GX_UPLOAD);
  uint32_t result=gs_gx_pack_texture_profile_impl(out,capacity,d,sample);
- gp_leave(profile_previous);
+ gp_work(GP_GX_UPLOAD,result);gp_leave(profile_previous);
  return result;
 }
 
@@ -629,6 +629,7 @@ static int resolve_capture(void *opaque,uint8_t *vram,uint32_t size)
 {
  unsigned profile_previous=gp_enter(GP_GX_READBACK);
  int result=resolve_capture_profile_impl(opaque,vram,size);
+ if(result)gp_work(GP_GX_READBACK,capture.bytes);
  gp_leave(profile_previous);
  return result;
 }
@@ -727,7 +728,8 @@ static int resolve_surface_profile_impl(void *opaque,uint8_t *vram,uint32_t size
  if(!gs_gx_surface_import_rect(surface,vram,size,readback,bytes,x,y,w,h))return 0;
  surface_texture_valid=0;
  surface_counts[7]+=(uint64_t)surface->width*surface->height*4u-bytes;
- surface_counts[2]++;work_counts[3]++;work_counts[2]+=bytes;return 1;
+ surface_counts[2]++;work_counts[3]++;work_counts[2]+=bytes;
+ gp_work(GP_GX_READBACK,bytes);return 1;
 }
 static int resolve_surface(void *opaque,uint8_t *vram,uint32_t size)
 {

@@ -44,6 +44,19 @@ for size in (8192,32768,262144,2097152):
     call('limits_ring',buffer,size)
     assert call('limits_chase',buffer,0,size//32)==0
     assert call('limits_chase',buffer,0,size//32-1)!=0
+# Real linked libc memcpy, both modeled memory banks and 32B/+4B alignment.
+# These mappings verify copy semantics, not physical MEM1/MEM2 performance.
+u.mem_map(0x90000000,0x800000)
+for direction in (0,1):
+    for offset in (0,4):
+        for size in (32,8192,32768,262144,2097152):
+            src=(0x90010000 if direction else 0x81010000)+offset
+            dst=(0x81010000 if direction else 0x90010000)+offset
+            guard=b'\xa5'*32;u.mem_write(dst-32,guard);u.mem_write(dst+size,guard)
+            call('limits_fill',src,size);expected=bytes(u.mem_read(src,size))
+            assert call('memcpy',dst,src,size)==dst
+            assert bytes(u.mem_read(dst,size))==expected and call('limits_verify',dst,size)==1
+            assert bytes(u.mem_read(dst-32,32))==guard and bytes(u.mem_read(dst+size,32))==guard
 # Exercise the delivered polling fence with platform stubs: delayed completion,
 # token wrap, and a permanently stalled GP. Only mftb is supplied a fake clock.
 # This verifies control flow and timeout behavior, never GPU timing.
@@ -76,4 +89,4 @@ for initial,delay in ((12,0),(65535,2),(41,None)):
     assert result==(0 if delay is None else 1)
     assert int.from_bytes(u.mem_read(syms['gx_failed'],4),'big')==(1 if delay is None else 0)
     assert reads<10
-print(f'PASS {checks} actual-ELF PPC recurrence/ring/pattern/corruption EABI and bounded GX-fence checks; no Wii boot or timing evidence')
+print(f'PASS {checks} actual-ELF PPC recurrence/ring/pattern/corruption/cross-bank-copy EABI and bounded GX-fence checks; no Wii boot or timing evidence')
