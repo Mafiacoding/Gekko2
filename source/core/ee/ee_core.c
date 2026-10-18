@@ -2517,6 +2517,8 @@ uint8_t ee_mem_read8(ee_state_t *st, uint32_t addr)
     if (ee_sio_mmio_read32(ee_hw_mmio_addr(addr), &sio_val))
         return (uint8_t)(sio_val & 0xFFu);
 
+    uint64_t gs_narrow;
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_read(ee_hw_mmio_addr(addr),1u,&gs_narrow))return (uint8_t)gs_narrow;
     uint8_t *p = ee_mem_ptr(st, addr, 1, 0);
     if (p) return *p;
     ee_mem_check_tlb_fault(st, addr, 0);
@@ -2544,6 +2546,8 @@ uint16_t ee_mem_read16(ee_state_t *st, uint32_t addr)
     if (ee_dve_mmio_read16(ee_hw_mmio_addr(addr), &dve_val))
         return dve_val;
 
+    uint64_t gs_narrow;
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_read(ee_hw_mmio_addr(addr),2u,&gs_narrow))return (uint16_t)gs_narrow;
     uint8_t *p = ee_mem_ptr(st, addr, 2, 0);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 0); return 0; }
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -2592,6 +2596,8 @@ uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
      * 0x10002000-0x10002038, is modeled for real as of Round 521/522,
      * task #487 - see ipu.c; real decode logic is still a later,
      * evidence-driven round, see ipu.h's scope note.) */
+    uint64_t gs_narrow;
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_read(ee_hw_mmio_addr(addr),4u,&gs_narrow))return (uint32_t)gs_narrow;
     uint32_t hw_val;
     uint32_t hw_addr = ee_hw_mmio_addr(addr);
     if (dma_mmio_read32(hw_addr, &hw_val)) {
@@ -2756,6 +2762,7 @@ void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)
 #ifdef R1132_WRITE_WATCH
     r1132_watch("write8", addr, (unsigned long long)val, st->pc);
 #endif
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_write(ee_hw_mmio_addr(addr),1u,val))return;
     /* Round 959 (task #952): see ee_mem_read8()'s comment above for the
      * full citation - this is the write-side half of the same real,
      * evidenced gap. ee_sio_mmio_write32() already only extracts the
@@ -2776,6 +2783,7 @@ void ee_mem_write16(ee_state_t *st, uint32_t addr, uint16_t val)
 #ifdef R1132_WRITE_WATCH
     r1132_watch("write16", addr, (unsigned long long)val, st->pc);
 #endif
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_write(ee_hw_mmio_addr(addr),2u,val))return;
     /* Round 950 (task #447/#536/#887): see ee_mem_read16()'s comment
      * just above and include/core/hw/ee_dve.h for the full citation. */
     if (ee_dve_mmio_write16(ee_hw_mmio_addr(addr), val))
@@ -2795,6 +2803,7 @@ void ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val)
 #ifdef R1132_WRITE_WATCH
     r1132_watch("write32", addr, (unsigned long long)val, st->pc);
 #endif
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_write(ee_hw_mmio_addr(addr),4u,val))return;
     uint32_t hw_addr_w = ee_hw_mmio_addr(addr);
     if (r1201_armed && r1201_write_count < 6u &&
         (hw_addr_w == 0x1000c000u || hw_addr_w == 0x1000c010u || hw_addr_w == 0x1000c020u)) {
