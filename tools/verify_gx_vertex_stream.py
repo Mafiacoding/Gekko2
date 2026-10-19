@@ -35,6 +35,7 @@ int run(gs_gx_texel_fn s,const int *xy,const gs_gx_pipeline *p,unsigned flags){
 # Direct attributes used by the real rendering paths: POS XYZ F32, CLR RGBA8,
 # TEX ST F32. Keep descriptor state across submissions like the real CP.
 desc={};pending=None;draws=0;written=0;payload=hashlib.sha256();configuration=[];token=0;fail_fence=False;fake_clock=0;aborts=0;peak_begins=0;objects={}
+depth_interpolations=0;native_instructions=0
 names={v:k for k,v in syms.items() if k.startswith(('GX_','ps_guMtx')) or k in ('guOrtho','gs_gx_dump_flush','gx_wait_timeout_marker')}
 def end():
  global pending,draws
@@ -43,7 +44,8 @@ def end():
  assert written==expected,(count,attributes,expected,written)
  pending=None;draws+=1
 def gpu(uc,address,size,user):
- global pending,written,token,fake_clock,aborts,peak_begins
+ global pending,written,token,fake_clock,aborts,peak_begins,depth_interpolations
+ if address==syms.get('native_fragment_z'):depth_interpolations+=1
  instruction=int.from_bytes(uc.mem_read(address,4),'big')
  # SDK cache/IRQ barriers rely on Wii lazy FPU restoration. Model that
  # platform service so tall draws are not limited by the loader's 32 retries.
@@ -117,10 +119,15 @@ for blend in (0,1,2):
   # HIGHLIGHT adds vertex alpha: AS>128 cannot use source-alpha blend.
   expected=not(blend==1 and flag>>2==2)
   before=guard_count()
-  assert call('test_run',sample,xy,pipe,flag)==expected,(blend,flag)
+  active[0]=True;total[0]=0
+  result=call('test_run',sample,xy,pipe,flag)
+  active[0]=False;native_instructions+=total[0]
+  assert result==expected,(blend,flag)
   native_guards.append((expected,guard_count()-before))
   end()
 print('PASS native GX vertex stream',draws,'primitives: color/fog/TFX and blend/additive-alpha combinations have exact descriptor byte counts; SDK modeled, no GPU pixel claim')
+print('GX_NATIVE_CPU_WORK',json.dumps({'executed_ppc_instructions':native_instructions,
+ 'depth_interpolation_calls':depth_interpolations,'scope':'synthetic linked PPC with SDK modeled; not Wii cycles or FPS'},sort_keys=True))
 # Resident pre-shaded route uses the large descriptor; compare all stable
 # shader arguments and actual FIFO payload across old/new ELFs.
 for blend in (0,1):

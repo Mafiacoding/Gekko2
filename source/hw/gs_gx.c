@@ -1530,6 +1530,8 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  if(!surface_ensure_height(&d->coverage,h))return 0;
  d->coverage.rgba=alpha<<24;
  double inv=1.0/(double)native_edge(xy[0],xy[1],xy[2],xy[3],xy[4],xy[5]);
+ /* Hoist plane classification out of both per-fragment loops. */
+ const int constant_z=vertex_z&&vertex_z[0]==vertex_z[1]&&vertex_z[1]==vertex_z[2];
  if(vertex_z){
   /* Preserve the original complete coverage; a byte per covered pixel can
    * represent any number of alpha/depth islands without widening a span. */
@@ -1537,7 +1539,10 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
   if(!gs_gx_surface_mark(surface,&mark))return 0;
   for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
    uint32_t px=d->coverage.x+x,py=d->coverage.y+y;
-   uint32_t za=native_fragment_z(px,py,xy,vertex_z,inv),stored=0;
+   /* Fragment actions inspect Z only for GEQUAL/GREATER. Z writes below
+    * still compute and commit the actual guest depth independently. */
+   uint32_t za=p->ztest&&p->ztst>=2u?
+    (constant_z?vertex_z[0]:native_fragment_z(px,py,xy,vertex_z,inv)):0u,stored=0;
    if(depth)stored=raw_z(depth,gs_mem_z_offset(p->zbp,bw,px,py,p->zpsm)-zlo,p->zpsm);
    uint32_t sa=native_fragment_alpha(px,py,xy,uv,q,tw,th,ws,wt,linear,color,rgba,inv);
    uint32_t da=surface->alpha[py*surface->bw+px];
@@ -1683,7 +1688,7 @@ static int native_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  if(!gx_resident_submit_done())return 0;
  if(p->zwrite)for(uint32_t y=0;y<d->rows;y++)for(uint32_t x=d->coverage.left[y];x<d->coverage.right[y];x++){
   if(vertex_z&&!(native_actions[y*d->columns+x]&GS_GX_WRITE_Z))continue;
-  uint32_t z=vertex_z?native_fragment_z(d->coverage.x+x,d->coverage.y+y,xy,vertex_z,inv):p->z;
+  uint32_t z=vertex_z?(constant_z?vertex_z[0]:native_fragment_z(d->coverage.x+x,d->coverage.y+y,xy,vertex_z,inv)):p->z;
   gs_mem_write_z(p->zbp,d->coverage.bw,d->coverage.x+x,d->coverage.y+y,p->zpsm,gs_mem_clamp_raster_z(z,p->zpsm));
  }
  if(vertex_z){
