@@ -149,7 +149,7 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  ui_text(rect,48,204,1,fast?"> UPDATE: THROUGHPUT":"> UPDATE: RESPONSIVE",221,237,255);
  ui_text(rect,48,237,1,fps?"> FPS COUNTER: ON":"> FPS COUNTER: OFF",221,237,255);
  ui_text(rect,48,269,1,gx?"> GX (EXPERIMENTAL): ON":"> GX (EXPERIMENTAL): OFF",221,237,255);
- ui_text(rect,48,299,1,"A: HUD    1 / GC X: update    2 / GC Y: FPS",106,171,223);
+ ui_text(rect,48,299,1,"A: screen logs  1 / GC X: update  2 / GC Y: rates",106,171,223);
  ui_text(rect,48,324,1,"LEFT / RIGHT: toggle GX",106,171,223);
  ui_text(rect,48,349,1,"DOWN: CPU / GX OPTIMIZATIONS",106,171,223);
  }else{
@@ -169,7 +169,7 @@ static void ui_settings_draw(ui_rect_fn rect,int selected,int hud,int throughput
  for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
  ui_text(rect,36,28,2,"WII SETTINGS",204,232,255);
  ui_text(rect,36,65,1,"Saved on SD. CPU / GX changes: next cold boot.",106,171,223);
- const char *labels[UI_SET_COUNT]={"Renderer","Sound output","HUD","Input update budget","Rate counters","CPU profile","Experiments","Developer switches","Network logger","Restore defaults"};
+ const char *labels[UI_SET_COUNT]={"Renderer","Sound output","On-screen logs","Input update budget","Rate counters","CPU profile","Experiments","Developer switches","Network logger","Restore defaults"};
  const char *values[UI_SET_COUNT]={gx?"GX HYBRID":"SOFTWARE REFERENCE",gekko2_opt_requested()&GEKKO2_OPT_BIT(GEKKO2_OPT_SOUND)?"ON":"OFF",
   hud?"ON":"OFF",throughput?"50 ms (throughput)":"20 ms (responsive)",fps?"ON":"OFF",gekko2_opt_profile_name(),"OPEN","OPEN","OPEN","APPLY"};
  for(int n=0;n<UI_SET_COUNT;n++){
@@ -180,7 +180,8 @@ static void ui_settings_draw(ui_rect_fn rect,int selected,int hud,int throughput
  }
  ui_text(rect,36,355,1,selected==UI_SET_PROFILE?
   "INTERPRETER REFERENCE disables EE / IOP / VU JIT.":selected==UI_SET_RENDERER?
-  "Renderer choice does not change CPU profile.":
+  "Renderer choice does not change CPU profile.":selected==UI_SET_HUD?
+  "OFF: loading screen. SD / network logs are separate.":
   "Sound OFF mutes output; guest hardware stays active.",117,186,237);
  ui_text(rect,36,375,1,"Rates: guest VBlanks / output presents, not game FPS.",117,186,237);
  ui_text(rect,36,403,1,message?message:"",117,186,237);

@@ -59,6 +59,7 @@
 #include "frontend.h"
 #include <fat.h>
 #include <sys/stat.h>
+#include <sys/iosupport.h>
 #include <stdio.h>
 #include "core/hw/iop_hle_thread.h"
 #include <stdlib.h>
@@ -110,6 +111,21 @@ static void wii_input_scan(void)
  g_input_exit=controller_session(&g_controller,&ignored)==3;
 }
 
+/* Gate only console devices, never fopen SD logs or network telemetry.
+ * Copy each SDK device table: do not mutate libogc's const/shared tables. */
+static int g_console_visible;
+static devoptab_t g_screen_devices[2];
+static ssize_t (*g_screen_writers[2])(struct _reent *,void *,const char *,size_t);
+static ssize_t screen_stdout(struct _reent *r,void *fd,const char *p,size_t n)
+{return g_console_visible && g_screen_writers[0]?g_screen_writers[0](r,fd,p,n):(ssize_t)n;}
+static ssize_t screen_stderr(struct _reent *r,void *fd,const char *p,size_t n)
+{return g_console_visible && g_screen_writers[1]?g_screen_writers[1](r,fd,p,n):(ssize_t)n;}
+static void screen_console_visible(int enabled)
+{
+    if(g_console_visible==!!enabled)return;
+    fflush(stdout);fflush(stderr); /* Never replay buffered hidden output later. */
+    g_console_visible=!!enabled;
+}
 static void wii_console_setup(void)
 {
     VIDEO_Init();
@@ -123,6 +139,14 @@ static void wii_console_setup(void)
     CON_Init(xfb, 20, 20, rmode->fbWidth, rmode->xfbHeight,
              rmode->fbWidth * VI_DISPLAY_PIX_SZ);
 
+    for(unsigned n=0;n<2;n++) {
+        unsigned device=n?STD_ERR:STD_OUT;
+        g_screen_devices[n]=*devoptab_list[device];
+        g_screen_writers[n]=g_screen_devices[n].write_r;
+        g_screen_devices[n].write_r=n?screen_stderr:screen_stdout;
+        devoptab_list[device]=&g_screen_devices[n];
+    }
+    setvbuf(stdout,NULL,_IONBF,0);setvbuf(stderr,NULL,_IONBF,0);
     VIDEO_Configure(rmode);
     VIDEO_SetNextFramebuffer(xfb);
     VIDEO_SetBlack(FALSE);
@@ -214,6 +238,28 @@ static void launcher_logo(int x,int y)
 static void launcher_text(int x,int y,int scale,const char *text,int r,int g,int b)
 {
     frontend_text_draw(xfb,rmode->fbWidth,rmode->xfbHeight,x,y,scale,text,r,g,b);
+}
+/* Real stages and elapsed time, not an invented percentage. Direct XFB
+ * drawing stays independent of both the console gate and emulated GS/GX. */
+static void draw_loading_screen(const char *stage,const char *detail,uint64_t elapsed_ms,int error)
+{
+    draw_gradient_background(6,12,30,0,2,9);
+    launcher_logo(54,30);
+    launcher_text(42,170,2,error?"START INTERRUPTED":"LOADING",204,232,255);
+    launcher_text(42,220,1,stage,221,237,255);
+    launcher_text(42,248,1,detail,117,186,237);
+    if(!error) {
+        unsigned phase=(unsigned)((elapsed_ms/250)%12);
+        for(unsigned n=0;n<12;n++)launcher_rect(42+n*24,290,16,4,
+            n==phase?67:16,n==phase?182:43,n==phase?255:76);
+        char elapsed[80];
+        snprintf(elapsed,sizeof elapsed,"Elapsed %llu:%02llu - emulation may take a long time.",
+            (unsigned long long)(elapsed_ms/60000),(unsigned long long)(elapsed_ms/1000%60));
+        launcher_text(42,330,1,elapsed,117,186,237);
+    }
+    launcher_text(42,390,1,error?"A / B: return to launcher":"HOME: pause and open settings",209,227,246);
+    if(!error)launcher_text(42,416,1,"Settings > On-screen logs: optional diagnostics",117,186,237);
+    flush_screen();VIDEO_SetNextFramebuffer(xfb);VIDEO_Flush();
 }
 static void wait_for_button(uint16_t mask)
 {
@@ -320,7 +366,7 @@ static void save_boot_progress(const char *event)
 static void wii_exit_to_loader(void)
 {
     if(ps2_mc_flush()){
-        printf("Memory card save failed. Check SD before leaving Gekko2.\n");
+        draw_loading_screen("Memory card save failed","Check SD card. Exit blocked; retry after fixing it.",0,1);
         return; /* Keep dirty owners alive for an explicit retry. */
     }
     if(g_system_started){
@@ -1179,8 +1225,8 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
 static void run_real_boot_flow(void)
 {
     if(gs_gx_faulted())return; /* Lost GPU work cannot be resumed safely. */
-    draw_gradient_background(6, 6, 22, 0, 0, 6);
-    flush_screen();
+    screen_console_visible(g_hud_default);
+    draw_loading_screen("Preparing BIOS and storage","Please wait...",0,0);
     goto_rc(16, 40);
     printf("Booting real PS2 BIOS...\n");
 
@@ -1190,6 +1236,7 @@ static void run_real_boot_flow(void)
         printf("\n[!] fatInitDefault() failed - no SD/USB storage found.\n");
         printf("    Insert an SD card with /pcsx2/bios/*.bin and restart to\n");
         printf("    boot a real BIOS. Press A or B to open the launcher.\n");
+        draw_loading_screen("Storage unavailable","Insert SD card and restart Gekko2.",0,1);
         wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
         return;
     }
@@ -1212,6 +1259,7 @@ static void run_real_boot_flow(void)
         printf("\n[!] Could not load a PS2 BIOS image from sd:/pcsx2/bios/\n");
         printf("    Place a legally-dumped PS2 BIOS there (e.g. bios.bin) and\n");
         printf("    restart. Press A or B to open the launcher.\n");
+        draw_loading_screen("BIOS not found","Copy your BIOS to sd:/pcsx2/bios/bios.bin",0,1);
         wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
         return;
     }
@@ -1235,6 +1283,7 @@ static void run_real_boot_flow(void)
         if (system_init(&g_bios, &g_bios) != 0) {
             save_boot_progress("BOOT_FAILED");ee_core_shutdown();iop_core_shutdown();
             printf("Core initialization failed. A/B: launcher.\n");
+            draw_loading_screen("Core initialization failed","See SD session log for details.",0,1);
             wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);return;
         }
         if(cdvd_config_bind_file("sd:/pcsx2/bios-config.bin")<0)printf("BIOS configuration file could not be loaded; saving disabled.\n");
@@ -1291,6 +1340,7 @@ static void run_real_boot_flow(void)
         } else {
             g_disc_checked=0;
             printf("[!] Selected image could not be mounted: %s\nA/B: launcher.\n",g_disc_path);
+            draw_loading_screen("Disc could not be opened","Check the selected image and SD card.",0,1);
             wait_for_button(PAD_BUTTON_A|PAD_BUTTON_B);return;
         }
         }
@@ -1324,7 +1374,7 @@ static void run_real_boot_flow(void)
         if(g_input_exit){exit_requested=1;stopped_by_user=1;break;}
         uint16_t guest_pressed=0;unsigned controls=controller_session(&g_controller,&guest_pressed);
         if(controls==1u){stopped_by_user=1;break;}
-        if(controls==2u){show_hud=!show_hud;g_hud_active=show_hud;last_present_ms=0;}
+        if(controls==2u){show_hud=!show_hud;screen_console_visible(show_hud);g_hud_active=show_hud;last_present_ms=0;}
         if(g_controller.changed||!g_controller.pad.connected){
             pad_latch=(frontend_pad_latch){iop_sio2_pad_sample_count(),0,0};
         }
@@ -1443,7 +1493,7 @@ static void run_real_boot_flow(void)
 
         if(gs_gx_faulted()){gekko2_profile_stop();gx_fault_paused=1;break;}
         if(present_due){
-        if (show_hud || !display_active || !g_first_picture) {
+        if (show_hud) {
         g_xfb_hud_updates++;
         draw_boot_progress_hud(ee->instructions_executed, iop->instructions_executed,
                                 ee->halted, iop->halted, ee->halt_reason, iop->halt_reason,
@@ -1454,6 +1504,11 @@ static void run_real_boot_flow(void)
           g_gx_present,gs_gx_ready(),g_gx_present,g_first_picture,
           (unsigned long)gs_mem_gpu_pending(),(unsigned long)gs_mem_sync_failures());
         frame++;
+        } else if(!g_first_picture) {
+            draw_loading_screen(g_boot_disc?"Starting disc":"Starting PlayStation 2 BIOS",
+                "Waiting for the first emulated picture...",
+                ticks_to_millisecs(gettime()-g_boot_started),0);
+            frame++;
         } else {
             VIDEO_SetNextFramebuffer(xfb); VIDEO_Flush();
             frame++;
@@ -1492,7 +1547,10 @@ static void run_real_boot_flow(void)
       ee->instructions_executed-perf_ee,perf_core,perf_blit);
     audio_output_stop();
     save_boot_progress(gx_fault_paused?"GX_FAULT_PAUSED":exit_requested?"EXIT_REQUEST":stopped_by_user?"PAUSED":"STOPPED");
-    if(ps2_mc_flush())printf("Memory card save failed; dirty data retained. Check SD and retry.\n");
+    if(ps2_mc_flush()) {
+        draw_loading_screen("Memory card save failed","Dirty data retained. Check SD and retry.",0,1);
+        wait_for_button(PAD_BUTTON_A|PAD_BUTTON_B);
+    }
     if(exit_requested)wii_exit_to_loader();
     if (stopped_by_user||gx_fault_paused) return;
     goto_rc(16, 400);
@@ -1503,6 +1561,8 @@ static void run_real_boot_flow(void)
     else
         printf("Reached the safety instruction cap - still executing real code.    \n");
     printf("\nPress A or B to open the launcher.\n");
+    if(!show_hud)draw_loading_screen("Emulation stopped",ee->halted && iop->halted?
+        "Both processors halted. See SD log for details.":"Safety limit reached. See SD log for details.",0,1);
     wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
 }
 
@@ -1560,6 +1620,7 @@ int main(int argc, char **argv)
 {
     (void)argc;(void)argv;
     wii_console_setup();
+    draw_loading_screen("Preparing Gekko2","Reading saved settings...",0,0);
     if (!g_fat_mounted) g_fat_mounted = fatInitDefault() ? 1 : 0;
     int opt_load_status=g_fat_mounted?gekko2_opt_load("sd:/pcsx2/optimization.cfg"):-1;
     if(g_fat_mounted)gs_compat_load();
@@ -1569,7 +1630,7 @@ int main(int argc, char **argv)
     /* Both saved ARM and explicit IOS222 selection are required for reload.
      * Restart after changing ARM: never reload IOS inside a guest session. */
     int ios_result=wii_arm_ios_start((gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER)||gekko2_opt_enabled(GEKKO2_OPT_ARM_CPU_RAM))&&gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222)?222:0,&g_fat_mounted);
-    if(ios_result==-4){printf("IOS recovery failed. Restart Wii before using Gekko2.\n");return 1;}
+    if(ios_result==-4){draw_loading_screen("IOS recovery failed","Restart the Wii before using Gekko2.",0,1);wait_for_button(PAD_BUTTON_A|PAD_BUTTON_B);return 1;}
 #endif
     runtime_telemetry_start("sd:/pcsx2/telemetry.cfg");
     /* Persist a fresh identity before the first launcher draw. Previous
@@ -1602,6 +1663,7 @@ int main(int argc, char **argv)
     uint64_t network_refresh=0,network_repeat=0;
     const char *notice="SD: pcsx2/bios/ and pcsx2/games/";
     for (;;) {
+        screen_console_visible(0); /* Launcher uses its own text renderer. */
         if(page==6&&gettime()>=network_refresh){redraw=1;network_refresh=gettime()+millisecs_to_ticks(250);}
         if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
             if(page==4){
