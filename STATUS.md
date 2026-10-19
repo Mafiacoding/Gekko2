@@ -1,5 +1,13 @@
 # Gekko2 SPEED BETA12.33 – 19 October 2026
 
+**General compatibility follow-up (no release):**
+[six-area report](docs/GENERAL-COMPATIBILITY-BATCH.md), branch
+`codex/general-compatibility-batch`, runtime `9d14d74`. Legal IRX relocation
+variants, textured GS lines, VU ADD/SUB alignment, isolated diagnostic masks;
+89 host gates pass. Synthetic linked PPC measures cheaper warm masked IRQ
+windows, not global Wii FPS. BIOS tiles and GT3 progression remain open; GT3
+file transfer/network access is currently blocked. Release hold remains.
+
 **BETA12.33 GX/deadlines:** branch `codex/beta12-33-gx-deadlines`;
 [report](docs/BETA12.33-GX-DEADLINES.md). Avoid unused/constant native fragment
 Z interpolation; refresh external IOP deadlines before every experimental EE

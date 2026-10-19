@@ -1,5 +1,15 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**General compatibility follow-up / owner means four emulator areas:**
+branch `codex/general-compatibility-batch`, runtime `9d14d74`, on PR #48.
+[Six-area report](GENERAL-COMPATIBILITY-BATCH.md): IRX relocation coverage,
+textured GS lines, VU ADD/SUB exponent alignment and isolated diagnostic options.
+89 host gates pass; final linked-PPC/build evidence is recorded in that report.
+No version/download; release hold retained. BIOS replay before/after line support
+is byte-identical in 77 images, not a tile fix. GT3 volumes exceed the attachment
+transfer limit; provided Japan URL is blocked by the enforced archive.org network
+allowlist. Domain addition saved as a draft only; no GT3 progression run yet.
+
 **Owner release hold / next alpha milestone (19 October):**
 [EE/GS work and acceptance gates](ALPHA-MILESTONE-EE-GS.md). Branch
 `codex/alpha-ee-masked-windows`: stable masked IRQ native-window admission and

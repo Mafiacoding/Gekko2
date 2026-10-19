@@ -5,6 +5,11 @@ substantial, verified improvement is ready. This branch does not bump the
 version, publish a DOL or claim an alpha milestone has been reached.
 Baseline: BETA12.33 source `778ec77`, main still `ca16340` when checked.
 
+Follow-up: [general compatibility batch](GENERAL-COMPATIBILITY-BATCH.md) adds
+textured lines, IRX relocation variants, VU ADD/SUB alignment and actual linked
+PPC window measurements. The initial results below are historical; the larger
+release acceptance gates and owner hold still apply.
+
 ## Implemented first work
 
 **EE stable masked levels.** Native event windows previously rejected any pending

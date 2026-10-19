@@ -1,0 +1,639 @@
+{
+  "date": "2026-10-19",
+  "branch": "codex/general-compatibility-batch",
+  "runtime_source": "9d14d74d92aba76ee180e75f7c31ea8731552093",
+  "base": "9b6a04f",
+  "host": [
+    {
+      "test": "test_gs_dither_admission",
+      "exit_code": 0,
+      "output": "PASS GS dither admission: CT24/32 retain opaque/GX eligibility, CT16/16S keep dither, raw register unchanged\n"
+    },
+    {
+      "test": "test_gs_blend_formats",
+      "exit_code": 0,
+      "output": "GS framebuffer blend/dither oracle: 32768 cases, 0 failures\n"
+    },
+    {
+      "test": "test_vif_direct_streaming",
+      "exit_code": 0,
+      "output": "VIF DIRECT streaming, partial-QWC retention and completion IRQ: 81 checks, 0 failures\n"
+    },
+    {
+      "test": "test_chain_residency_cache",
+      "exit_code": 0,
+      "output": "PASS native-ABI cache companion ownership, active pin, replacement and reset\n"
+    },
+    {
+      "test": "test_gs_psm_convert_beta12_11",
+      "exit_code": 0,
+      "output": "PASS BETA12.11 PSM move / strict and experimental conversions\n"
+    },
+    {
+      "test": "test_beta12_20_gx_alpha",
+      "exit_code": 0,
+      "output": "BETA12.20 GX TEST/DATE/AFAIL/FBMSK: 159 checks, 0 failures\n"
+    },
+    {
+      "test": "test_gx_pipeline_r1298",
+      "exit_code": 0,
+      "output": "GX pipeline: 324 cases, 0 failures\n"
+    },
+    {
+      "test": "test_gs_alias_sync_beta12_13",
+      "exit_code": 0,
+      "output": "PASS GS alias and framebuffer coherence\n"
+    },
+    {
+      "test": "test_scanout_grid_hash",
+      "exit_code": 0,
+      "output": "PASS scanout grid hash: 18 checks (RGB/PSM/offset/bounds/readback)\n"
+    },
+    {
+      "test": "test_scanout_readback_failure",
+      "exit_code": 0,
+      "output": "PASS scanout readback failure/retry: 17 checks\n"
+    },
+    {
+      "test": "test_dma_ipu_stall",
+      "exit_code": 0,
+      "output": "IPU producer / VIF1-GIF REFS selectors: 748 checks, 0 failures\n"
+    },
+    {
+      "test": "test_ipu_idec_fields",
+      "exit_code": 0,
+      "output": "IDEC field/cosine oracle: 384 cases, 399764 checks, 0 failures\n"
+    },
+    {
+      "test": "test_hardware_accuracy_r1384",
+      "exit_code": 0,
+      "output": "PASS R1384 FMAC visibility/lane flags/FDIV/FSSET, M retirement, GIF arbitration and resumable DMA\n"
+    },
+    {
+      "test": "test_gif_signal_backpressure",
+      "exit_code": 0,
+      "output": "PASS SIGNAL PATH1/2/3 stall/retry, SIGLBLID MMIO, IRQ counts, DMA and VU1 E-drain continuation\n"
+    },
+    {
+      "test": "test_vif_transport_r1379",
+      "exit_code": 0,
+      "output": "PASS VIF fill command boundary and register MMIO\n"
+    },
+    {
+      "test": "test_vif_split_irq_beta11",
+      "exit_code": 0,
+      "output": "PASS split MPG/UNPACK IRQ preserves following command until STC\n"
+    },
+    {
+      "test": "test_dma_vif_tag_transfer",
+      "exit_code": 0,
+      "output": "PASS DMA tag VIF commands, MPG payload, DIRECT payload, zero QWC and TTE disabled\n"
+    },
+    {
+      "test": "test_xgkick_timing_aot3",
+      "exit_code": 0,
+      "output": "PASS XGKICK two-cycle clock, live source, wrap, second kick, E drain, BIOS bound\n"
+    },
+    {
+      "test": "test_xgkick_boundary_r1379",
+      "exit_code": 0,
+      "output": "PASS incomplete bounded XGKICK does not poison next kick or PATH3\n"
+    },
+    {
+      "test": "test_gs_dither",
+      "exit_code": 0,
+      "output": "ok:   no DTHE/DIMX configured: pixel is the plain flat color (regression safety)\nok:   DIMX configured, DTHE=0: dithering does not apply (DTHE is the real gate)\nok:   CT32 DTHE=1 at (1,1): DIMX does not change the framebuffer\nok:   CT32 DTHE=1 at (6,6): negative DIMX does not change the framebuffer\nok:   TEXFLUSH write: subsequent draw is completely unaffected (genuine no-op)\nALL TESTS PASSED\n"
+    },
+    {
+      "test": "test_gs_colclamp",
+      "exit_code": 0,
+      "output": "ok:   no COLCLAMP write: modulate overflow (508) clamps to 255 (regression safety)\nok:   COLCLAMP CLAMP=1: modulate overflow clamps to 255\nok:   COLCLAMP MASK retains saturated texture result\nok:   COLCLAMP MASK wraps framebuffer blend RGB 508 to 252, retains alpha\nok:   COLCLAMP CLAMP saturates framebuffer blend RGB\nALL TESTS PASSED\n"
+    },
+    {
+      "test": "test_beta12_19_framebuffer16",
+      "exit_code": 0,
+      "output": "BETA12.19 GS CT16/16S FBA/FBMSK/DATE/Z: 16 checks, 0 failures\n"
+    },
+    {
+      "test": "options-control",
+      "exit_code": 0,
+      "output": "PASS experimental settings: compiled_chain=0, four mode combinations, cold-boot isolation, persistence, strict parsing and backup recovery\n"
+    },
+    {
+      "test": "options-chain",
+      "exit_code": 0,
+      "output": "PASS experimental settings: compiled_chain=1, four mode combinations, cold-boot isolation, persistence, strict parsing and backup recovery\n"
+    },
+    {
+      "test": "options-interpreter",
+      "exit_code": 0,
+      "output": "PASS experimental settings: compiled_chain=0, four mode combinations, cold-boot isolation, persistence, strict parsing and backup recovery\n"
+    },
+    {
+      "test": "chain-map-RAM-control",
+      "exit_code": 0,
+      "output": "PASS demand-selected 128-bit GPR/HI/LO/SA maps, deterministic whole groups and 8 atomic declines\n"
+    },
+    {
+      "test": "PSM-four-modes",
+      "exit_code": 0,
+      "output": "BETA12.21 PSM native/extension and independent chain modes: 21632 cases, 0 failures\n"
+    },
+    {
+      "test": "test_xgkick_live_tag",
+      "exit_code": 0,
+      "output": "PASS 4 XGKICK live/rejected versus accepted tag and ring-wrap cases\n"
+    },
+    {
+      "test": "test_ipu_soft_reset_predictors",
+      "exit_code": 0,
+      "output": "PASS IPU soft-reset DC prediction, latched precision across CTRL changes, BDEC continuation and IRQ\n"
+    },
+    {
+      "test": "test_gs_clut_banks",
+      "exit_code": 0,
+      "output": "PASS CSM2 CSA bank retention and palette reuse for CT32/CT16/CT16S\n"
+    },
+    {
+      "test": "test_gs_depth_texture",
+      "exit_code": 0,
+      "output": "PASS depth-texture PSMZ32/24/16/16S, TEXA/AEM, page and VRAM wrap: 6144 cases\n"
+    },
+    {
+      "test": "test_controller_r1364",
+      "exit_code": 0,
+      "output": "R1364 controller mappings/focus/session/axes: 52 checks passed (hardware not tested)\n"
+    },
+    {
+      "test": "test_gs_clut",
+      "exit_code": 0,
+      "output": "ok:   PSMT4: sampled pixel matches CLUT entry 5's known color\nok:   PSMT4 CSA=2: samples the SECOND palette bank, not CSA=0's\nok:   PSMT8: raw index 8 resolves through the CSM1 swizzle to CLUT entry 16, not entry 8\nok:   PSMT8: raw index 16 resolves through the CSM1 swizzle to CLUT entry 8 (symmetric swap)\nok:   PSMT8: an index with both swizzle bits clear (3) is unaffected by the swap\nok:   PSMCT32 regression: default PSM samples the texel directly, CLUT path not engaged\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_gif_texture",
+      "exit_code": 0,
+      "output": "ok:   DECAL: exactly one triangle drawn\nok:   DECAL: drawn pixel is the texture's blue, NOT the vertex's red - color fully replaced\nok:   MODULATE: red channel = (200*128)/128 = 200 exactly (1.0x vertex multiplier)\nok:   MODULATE: green channel = (100*64)/128 = 50 (0.5x vertex multiplier)\nok:   MODULATE: blue channel = (50*32)/128 = 12 (0.25x vertex multiplier, truncated)\nok:   MODULATE: alpha channel = (255*128)/128 = 255 exactly\nok:   UV origin samples texel 0\nok:   right vertex excluded by top-left coverage\nok:   bottom vertex excluded by top-left coverage\nok:   interior affine UV 5+11/30 samples texel 5\nok:   interior affine UV 10+1/2 samples texel 10\nok:   TME=0 regression: flat triangle still draws the plain vertex color, unaffected by texturing code\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_gx_formats_beta12_22",
+      "exit_code": 0,
+      "output": "PASS 13 GS->GX source formats (832 texels), 1024 four-target VRAM/DATE/ATE/AFAIL/FBA/FBMSK/blend/Z comparisons\n"
+    },
+    {
+      "test": "test_gx_output_psm_r1294",
+      "exit_code": 0,
+      "output": "PASS CT16/CT16S/CT24/CT32 GX presentation; unsupported PSM and pre-image gates decline\n"
+    },
+    {
+      "test": "ipu-coefficient-oracle",
+      "exit_code": 0,
+      "output": "MPEG1/2 escape, inverse-quantization, scan and starvation oracle: 12201 cases, 0 failures\n"
+    },
+    {
+      "test": "test_vu_integer_memory_masks",
+      "exit_code": 0,
+      "output": "PASS 128 independent VU ILW/ISW/ILWR/ISWR lane-mask, zero-mask, alias and wrap cases\n"
+    },
+    {
+      "test": "test_vif_micro_barriers",
+      "exit_code": 0,
+      "output": "PASS 11 VIF micro/GIF barrier retention and exactly-once replay cases\n"
+    },
+    {
+      "test": "test_gs_uv_fraction",
+      "exit_code": 0,
+      "output": "PASS 32 UV fractional decode/reserved-bit cases with triangle, sprite and GX-source bilinear output\n"
+    },
+    {
+      "test": "test_vu_micro",
+      "exit_code": 0,
+      "output": "ok:   VU1: program is not running after vu1_exec_micro() returns\nok:   VU1: executed exactly 4 instructions (the E-bit one plus its real one-instruction delay slot, then stopped)\nok:   VU1: all-zero words now genuinely decode as real (degenerate, no-effect) ADDbc/LQ instructions - see task #94 note above\nok:   VU1: TPC ended up pointing at the (unexecuted) 5th instruction, not wrapped/misplaced\nok:   VU1: MSCAL start_addr is correctly interpreted as an instruction-pair index (*8 for the byte offset)\nok:   VU1: safety cap retains RUN for scheduler continuation\nok:   VU1: safety cap (65536 instructions) was hit, not a real E-bit stop\nok:   VU1: I-flag instruction correctly loaded VI[21] (REG_I) from the lower word's raw bits\nok:   VU1: vu1_micro_write32 stores little-endian, matching this project's other memory helpers\nok:   VU1: micro-instruction memory address wraps at the real 16KB boundary\nok:   VU0: program is not running after vu0_exec_micro() returns\nok:   VU0: executed exactly 3 instructions (the plain one, the E-bit one, and its real delay slot)\nok:   VU0: real TPC register (cop2_ctrl[26], REG_TPC) reflects the live program counter after execution\nok:   VU0: micro memory at offset 0 is untouched by the earlier VU1-only writes (separate memories)\nok:   VU1: real ADD (Class A funct 0x28) computes Fd = Fs + Ft per-lane\nok:   VU1: real ADDA (writes ACC) followed by real MADD (reads ACC) - the accumulator register genuinely works\nok:   VU1: real ADDbc broadcasts the selected lane (bc=2=z here) of Ft to every dest lane\nok:   VU1: real ADDQ uses the Q register (vi[22]) as the second operand, not Ft\nok:   VU1: real B branch - the delay-slot instruction (MOVE vf20) executed, the skipped one (MOVE vf21) did not\nok:   VU1: real B branch - exactly 4 instructions retired (branch, delay slot, E-bit instr at target, its own delay slot)\nok:   VU1: real IADD computes vi[rd] = vi[rs] + vi[rt]\nok:   VU1: real IADDIU computes vi[It] = vi[Is] + real 15-bit unsigned immediate (100+5000=5100)\nok:   VU1: real ISUBIU computes vi[It] = vi[Is] - real 15-bit unsigned immediate (100-30=70)\nok:   VU1: real IADDIU with It=vi0 is correctly a no-op (real hardware's vi0 hardwired-zero guard)\nok:   VU1: real SQ actually wrote the correct raw bytes into data memory (1.5f = 0x3FC00000 little-endian)\nok:   VU1: real LQ reads back exactly what SQ wrote (full quadword round-trip through VU1 data memory)\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_vu_q_pipeline_internal",
+      "exit_code": 0,
+      "output": "PASS 48 VU0/VU1 D/T gate, shared control, E priority and pair-retirement oracles\nPASS EFU/P, flag queries, CLIP ordering and deferred wrapped PATH1\nPASS VU selectors, Q issue/WAITQ/reissue/flags/E-bit and VF pair hazards\n"
+    },
+    {
+      "test": "test_vif",
+      "exit_code": 0,
+      "output": "ok:   VIF0 I-bit: STAT.INT latched after completed command\nok:   VIF0 I-bit: EE INTC source 4 raised\nok:   VIF0 I-bit: exactly one interrupt event counted\nok:   VIF0 I-bit: STAT.VIS exposes interrupt stall\nok:   VIF0 FBRST STC write accepted\nok:   VIF0 FBRST STC clears STAT.INT\nok:   VIF0 IRQ stall: trailing commands preserved but not executed\nok:   VIF0 STC: preserved stream resumes at exact next command\nok:   VIF0 STC: replay drains saved stream and clears stall\nok:   VIF1 I-bit: EE INTC source 5 raised\nok:   NOP: all 4 words in the qword processed cleanly as NOPs\nok:   NOP: not counted as unsupported\nok:   STCYCL: cl/wl decoded correctly from IMM\nok:   ITOP: VIF0 masks ITOPS to 0xFF (VU0 mem is smaller)\nok:   ITOP: VIF1 keeps the full 0x3FF (VU1 mem is larger)\nok:   OFFSET on VIF0: counted as unsupported (VIF1-only on real hardware)\nok:   OFFSET on VIF0: register NOT updated\nok:   BASE on VIF1: accepted (real VIF1-only command)\nok:   BASE on VIF1: register updated correctly\nok:   STMASK: trailing data word stored into mask register\nok:   STMASK: parsing correctly resumed at the marker code right after the data word\nok:   STMASK: exactly 3 codes seen (STMASK, STCYCL marker, trailing NOP)\nok:   STROW: all 4 trailing data words stored into row[0..3] in order\nok:   STCOL: all 4 trailing data words stored into col[0..3] in order\nok:   MPG: no longer counted as unsupported (now writes real VU1 micro-instruction memory)\nok:   MPG: correctly skipped its 4-word data span and parsed the marker code right after it\nok:   MPG: the 4 microprogram words were actually written into VU1 micro-instruction memory at IMM=0\nok:   DIRECT: forwarded exactly the packet's own qword count to the GIF parser\nok:   DIRECT: not counted as unsupported (a real, implemented command)\nok:   DIRECT: the forwarded GIF packet actually drew a sprite\nok:   DIRECT: the sprite's pixels are correct (green) - real DMA->VIF->GIF->pixels path\nok:   DIRECT on VIF0: counted as unsupported (VIF1-only on real hardware)\nok:   DIRECT on VIF0: nothing forwarded to the GIF parser\nok:   UNPACK V4-32: real, implemented code - not counted as unsupported\nok:   UNPACK V4-32: exactly 1 vector written\nok:   UNPACK V4-32: all 4 lanes written correctly to VU1 mem address 0\nok:   UNPACK V4-32: parsing correctly resumed right after the 4 data words\nok:   UNPACK S-32: single source value broadcast to all 4 lanes\nok:   UNPACK V2-16 signed (USN=0): 0x8000 sign-extends to 0xFFFF8000\nok:   UNPACK V2-16 signed (USN=0): 0x1234 stays positive\nok:   UNPACK V2-16: real hardware repeats the pair (Z=v0, W=v1)\nok:   UNPACK V2-16 unsigned (USN=1): 0x8000 zero-extends to 0x00008000\nok:   UNPACK V3-8: the real 3 components land in X/Y/Z\nok:   UNPACK V3-8: W reads 1 byte past the real vector, matching real hardware's documented quirk\nok:   UNPACK V4-5: X decoded via the real bit-shift formula\nok:   UNPACK V4-5: Y decoded via the real bit-shift formula\nok:   UNPACK V4-5: Z decoded via the real bit-shift formula\nok:   UNPACK V4-5: W decoded via the real bit-shift formula\nok:   UNPACK masking: n=0 (Data) writes the real unpacked value\nok:   UNPACK masking: n=1 (MaskRow) writes row[1] instead of the source data\nok:   UNPACK masking: n=2 (MaskCol) writes col[0] (cycle position 0) instead of the source data\nok:   UNPACK masking: n=3 (Write-Protect) leaves VU mem completely untouched\nok:   UNPACK STMOD mode 2: first vector = data(5) + row[0](100) = 105\nok:   UNPACK STMOD mode 2: second vector = data(7) + the UPDATED row[0](105) = 112\nok:   UNPACK STMOD mode 2: row[0] ends at 112 - updated again by the 2nd vector's own accumulate\nok:   UNPACK skip-write (CL=4,WL=2): the first 2 real values land at addresses 0-1\nok:   UNPACK skip-write (CL=4,WL=2): addresses 2-3 are skipped (left untouched)\nok:   UNPACK skip-write (CL=4,WL=2): the 3rd real value starts the NEXT 4-address block at address 4\nok:   UNPACK fill-write (CL=2,WL=4): the 2 real reads land at slots 0-1\nok:   UNPACK fill-write (CL=2,WL=4): slot 2 is a 3rd real read (real hardware's advance-then-read timing), not a repeat of slot 0/1\nok:   UNPACK fill-write (CL=2,WL=4): slot 3 (the true fill slot) repeats slot 2's value\nok:   UNPACK reserved VN/VL (S-5): counted as unsupported\nok:   UNPACK reserved VN/VL: processing stopped immediately\nok:   UNPACK reserved VN/VL: the words right after it were NOT misparsed as ITOP codes\nok:   UNPACK split-transfer: still pending after call 1 (payload incomplete)\nok:   UNPACK split-transfer: buffered exactly 12 of 16 needed bytes after call 1 (a 1-qword call can only ever supply VIFcode+3 words)\nok:   UNPACK split-transfer: VU1 mem X lane untouched after call 1 (real hardware buffers, doesn't write early)\nok:   UNPACK split-transfer: VU1 mem Y lane untouched after call 1\nok:   UNPACK split-transfer: no longer pending after call 2 completes the payload\nok:   UNPACK split-transfer: X lane correct (from call 1's buffered bytes)\nok:   UNPACK split-transfer: Y lane correct (from call 1's buffered bytes)\nok:   UNPACK split-transfer: Z lane correct (from call 1's buffered bytes)\nok:   UNPACK split-transfer: W lane correct (from call 2's completing byte)\nok:   UNPACK split-transfer: the fresh ITOP VIFcode right after the completed payload was parsed correctly, not misparsed as leftover payload data\nok:   UNPACK split-transfer: exactly 1 real vector written total (not double-counted across the two calls)\nok:   UNPACK 3-call split: pending with 12/48 bytes after call 1\nok:   UNPACK 3-call split: a genuinely empty qwc=0 call in between changes nothing\nok:   UNPACK 3-call split: still pending with 44/48 bytes after the 2nd real call (2nd resume)\nok:   UNPACK 3-call split: completed after the 3rd real call (3rd resume)\nok:   UNPACK 3-call split: 1st vector's X/W lanes correct (bytes from calls 1 and 3 stitched together)\nok:   UNPACK 3-call split: 3rd (last) vector's W lane correct (the final completing bytes)\nok:   UNPACK 3-call split: the fresh ITOP VIFcode right after the fully-completed 48-byte payload was parsed correctly\nok:   MSCALF opcode fix: real cmd=0x15 dispatches to the MSCAL/MSCALF handler (mscal_calls==1)\nok:   MSCALF opcode fix: start byte correctly computed as imm*8 (0x10*8=0x80)\nok:   MSCALF opcode fix: real cmd=0x15 must NOT be misrouted into the MSCNT handler\nok:   MSCALF completes E plus delay before the next micro dispatch\nok:   MSCNT opcode fix: real cmd=0x17 dispatches to the MSCNT (resume) handler (mscnt_calls==1)\nok:   MSCNT opcode fix: real cmd=0x17 must NOT be misrouted into the MSCAL/MSCALF handler (count stays 1)\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_vif_payload_r1379",
+      "exit_code": 0,
+      "output": "VIF payload: 16777216 fill/skip combinations passed\n"
+    },
+    {
+      "test": "test_gif_packed_tex_clamp",
+      "exit_code": 0,
+      "output": "packed TEX0/CLAMP PASS\n"
+    },
+    {
+      "test": "test_gs_display_scaling",
+      "exit_code": 0,
+      "output": "PASS GS viewport, interlaced field and scaled Wii framebuffer\n"
+    },
+    {
+      "test": "test_xfb_aspect",
+      "exit_code": 0,
+      "output": "PASS 256 XFB aspect fits: 4:3 identity, 16:9 pillarbox, YUV pair alignment and bounds\n"
+    },
+    {
+      "test": "test_gx_fragment_actions",
+      "exit_code": 0,
+      "output": "PASS native texture bounds and GS fragment actions (24576 DATE/ATE/AFAIL/Z/PABE cases)\nchecks=24576\n"
+    },
+    {
+      "test": "test_gx_fragment_oracle",
+      "exit_code": 0,
+      "output": "PASS 81920 native permission cases against software GS rasterization: CT32/24, all ATE/AFAIL/DATE/Z, four depth formats, FBA/PABE\n"
+    },
+    {
+      "test": "test_gx_extended_admission",
+      "exit_code": 0,
+      "output": "PASS GIF admission: small triangle, 128x1024, linear, variable Z, late alpha/DATE state; framebuffer feedback/fog decline\n"
+    },
+    {
+      "test": "test_gx_protected_hash",
+      "exit_code": 0,
+      "output": "PASS protected texture digest: disjoint ownership, overlap, failed and unknown resolvers\n"
+    },
+    {
+      "test": "test_gx_shaded_triangle_r1370",
+      "exit_code": 0,
+      "output": "PASS 19584 exact shaded-source pixels: STQ/UV, flat/Gouraud, four TFX modes, TCC, nearest/bilinear and triangle/padding coverage\n"
+    },
+    {
+      "test": "test_gx_generic_sources",
+      "exit_code": 0,
+      "output": "PASS 524288 TFX/TCC alpha pairs and 479232 atlas/software samples: 13 formats, tiny textures, all four clamp modes, nearest/bilinear, negative coordinates and expanded physical alias envelopes\n"
+    },
+    {
+      "test": "test_gx_generic_admission",
+      "exit_code": 0,
+      "output": "PASS common GIF admission: HIGHLIGHT, fog/color/vertices, varying alpha, region atlas coordinates/source, tiny textures, untextured Z and runtime gate\n"
+    },
+    {
+      "test": "test_gx_risk_mode",
+      "exit_code": 0,
+      "output": "PASS GX risk: available=1, factory OFF, cold-boot isolation/persistence, strict parsing, independent options; 131072 color/PABE masks, SCANMSK and bounded admission\n"
+    },
+    {
+      "test": "test_alpha_settings",
+      "exit_code": 0,
+      "output": "PASS alpha settings: 16 persisted frontend modes, strict parser/backup, All-OFF under GX test define, profile cold-boot isolation\n"
+    },
+    {
+      "test": "test_alpha_clut",
+      "exit_code": 0,
+      "output": "PASS physical CLUT: CT32/16/16S cross-view, separate halves, 4096 I8 CSA/clamp samples, CSM reinterpretation and no-reload commands\n"
+    },
+    {
+      "test": "test_alpha_scanout",
+      "exit_code": 0,
+      "output": "PASS PCRTC merge: 256 ALP values, source alpha/AMOD, SLBG/BGCOLOR, two offsets, field height, state key and transactional invalid/fence failure\n"
+    },
+    {
+      "test": "test_ps2_memory_card",
+      "exit_code": 0,
+      "output": "PASS native PS2 card: 1024 ECC vectors, raw mount/persistence, NAND read/write/erase, cursor snapshot, malformed/readonly commands, SEND3 and paused SIO2 DMA completion\n"
+    },
+    {
+      "test": "test_ps2_mc_checkpoint",
+      "exit_code": 0,
+      "output": "PASS native card GETINFO type/format DMA, full checkpoint restore and rejection of in-flight serial snapshots\n"
+    },
+    {
+      "test": "test_ps2_mc_files",
+      "exit_code": 0,
+      "output": "PASS standard PS2 FAT, independent fragmented card, 512 READ ABI/alignment/EOF cases, persistence, readonly, corrupt chain and open-file checkpoint\n"
+    },
+    {
+      "test": "test_ipu_cpu_fifo",
+      "exit_code": 0,
+      "output": "PASS EE/IPU FIFO: 200 stalled LQ/SQ retries, exact PC/delay/128-bit state, real input-space resume, one output consumption and LQ r0\n"
+    },
+    {
+      "test": "test_completion_ee_control",
+      "exit_code": 0,
+      "output": "PASS 117 legal C.F.S/reserved EE opcode cases plus nested EXL; full GPRs, EPC/BD and both vectors\n"
+    },
+    {
+      "test": "test_completion_spu2",
+      "exit_code": 0,
+      "output": "SPU2 datapath checks=4196428 failures=0\n"
+    },
+    {
+      "test": "test_mc_ent_space",
+      "exit_code": 0,
+      "output": "PASS GETENTSPACE odd/even directories, deleted entries, RPC shape/ports, errors and readonly persistence\n"
+    },
+    {
+      "test": "test_spu2_mixer",
+      "exit_code": 0,
+      "output": "ok:   SPU2 mixer: renders exact silence when no voice has ever been keyed on\nok:   SPU2 mixer: KON count starts at 0\nok:   SPU2 mixer: KON0 bit0 write increments real KON count\nok:   SPU2 mixer: real ADPCM decode + ADSR attack + volume mixing produces strong non-silent output\nok:   SPU2 mixer: real ADPCM LoopEnd flag (no-repeat) sets the real ENDX0 bit0 via iop_spu2.c's own register file\nok:   SPU2 mixer: voice correctly mutes (goes inactive) after a real LoopEnd-without-repeat flag\nok:   SPU2 mixer: second real KON increments the running total\nok:   SPU2 mixer: self-looping voice 1 reaches strong non-silent output before KOFF\nok:   SPU2 mixer: real KOFF drives Release envelope to 0 and the voice goes inactive (silent) thereafter\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_spu2_regs",
+      "exit_code": 0,
+      "output": "ALL CHECKS PASSED (0 failures)\n"
+    },
+    {
+      "test": "test_iop_spu2",
+      "exit_code": 0,
+      "output": "ok:   SPU2: address in range reads back 0 after init\nok:   SPU2: address just below the real base is correctly NOT claimed\nok:   SPU2: address just past the modeled window is correctly NOT claimed\nok:   SPU2: write16 to a real in-range register is accepted\nok:   SPU2: read16 reads back exactly what write16 stored (real register persistence)\nok:   SPU2: 32-bit write/read round-trip also works (some real IOP code may use LW/SW)\nok:   SPU2: a 32-bit write is visible via 16-bit reads at the same+adjacent offsets (little-endian, shared backing store)\nok:   SPU2: reachable through iop_core.c's real iop_mem_read16/write16 dispatch (LH/SH path)\nok:   SPU2: reachable through iop_core.c's real iop_mem_read32/write32 dispatch (LW/SW path)\nok:   SPU2: dispatch correctly leaves ordinary IOP RAM addresses alone\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_iop_dma_spu2",
+      "exit_code": 0,
+      "output": "ok:   SPU2 DMA: transfer count starts at 0\nok:   SPU2 DMA: real STR-bit kick performs exactly one transfer\nok:   SPU2 DMA: 2-word (8-byte) transfer lands at SPU2 RAM byte 0, matching real IOP-RAM source data exactly\nok:   SPU2 DMA: real hardware auto-clears STR after completion\nok:   SPU2 DMA: real TSA register auto-advances by the transferred 16-bit-word count (0 -> 4)\nok:   SPU2 DMA: second real STR-bit kick counted\nok:   SPU2 DMA: second transfer correctly continues at the advanced TSA destination (byte offset 8), not overwriting the first block\nok:   SPU2 DMA: real BIOS-style explicit TSA reprogram correctly redirects the destination within SPU2 RAM\nok:   SPU2 DMA: out-of-bounds IOP-RAM source is safely dropped, not read past the end\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_checkpoint_rspu2_r1340",
+      "exit_code": 0,
+      "output": "RSPU/CNFG checkpoint: round trip, malformed/duplicate rejection and legacy cold defaults pass\n"
+    },
+    {
+      "test": "test_gs_irq_access",
+      "exit_code": 0,
+      "output": "PASS EE GS byte/half/word/dword aliases, SIGNAL replay, pending-event IMR unmask and W1C lanes\n"
+    },
+    {
+      "test": "test_gs_lod_mtba",
+      "exit_code": 0,
+      "output": "PASS GS Q/K/L, six filters, mip coordinates/trilinear/state preservation and MTBA/TEX2/context/wrap: 11701 checks\n"
+    },
+    {
+      "test": "test_vif_cpu_fifo",
+      "exit_code": 0,
+      "output": "PASS VIF0/1 guest SQ bounded FIFO, 200 full retries, delay/PC/retirement preservation and exactly-once STC resume\n"
+    },
+    {
+      "test": "test_spu2_envx",
+      "exit_code": 0,
+      "output": "PASS SPU2 writable ENVX, phase/counter and checkpoint preservation, actual capture gain and wide PMON: 8230 cases\n"
+    },
+    {
+      "test": "test_gs_mipmap",
+      "exit_code": 0,
+      "output": "ok:   TEX1: LCM decoded correctly\nok:   TEX1: MXL decoded correctly\nok:   TEX1: MMAG decoded correctly\nok:   TEX1: MMIN decoded correctly\nok:   TEX1: MTBA decoded correctly\nok:   TEX1: L decoded correctly\nok:   TEX1: K decoded correctly as a NEGATIVE, sign-extended 12-bit value\nok:   MIPTBP1: level 1 TBP decoded correctly\nok:   MIPTBP1: level 1 TBW decoded correctly\nok:   MIPTBP1: level 2 TBP decoded correctly (straddles word0/word1)\nok:   MIPTBP1: level 2 TBW decoded correctly\nok:   MIPTBP1: level 3 TBP decoded correctly\nok:   MIPTBP1: level 3 TBW decoded correctly\nok:   MIPTBP2: level 4 TBP decoded correctly\nok:   MIPTBP2: level 4 TBW decoded correctly\nok:   MIPTBP2: level 5 TBP decoded correctly (straddles word0/word1)\nok:   MIPTBP2: level 5 TBW decoded correctly\nok:   MIPTBP2: level 6 TBP decoded correctly\nok:   MIPTBP2: level 6 TBW decoded correctly\nok:   fixed K LOD: 64x64 texture into 8x8 screen rect (K=48/16=3) samples mip level 3, not the base level\nok:   MXL clamp: fixed K LOD 3 clamps down to MXL=1, sampling level 1's buffer\nok:   magnification (texture smaller than screen): base level used, mip level 1 NOT sampled\nok:   MMIN below threshold: mipmapping disabled, base level used despite a large minification ratio\nok:   fixed LOD (LCM=1, K=32=2.0): samples level 2's buffer, overriding what the old bounding-box heuristic (LCM=0) would have picked\nok:   MTBA enabled after TEX0: K=0 uses base; automatic addresses are not retroactively generated\nok:   regression: no TEX1 configured (MXL=0 default) - base level used, matching pre-Round-28 behavior exactly\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_gs_mipmap_triangle",
+      "exit_code": 0,
+      "output": "ok:   TRIANGLE fixed K LOD: 64x64 texture, 8x8 bounding box (K=48/16=3) samples mip level 3, not base\nok:   TRIANGLE MXL clamp: fixed K LOD 3 clamps down to MXL=1, sampling level 1's buffer\nok:   TRIANGLE magnification: texture smaller than bounding box always uses base level\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_gs_context2_mipmap",
+      "exit_code": 0,
+      "output": "ok:   context 1 (mipmapping configured via TEX1_1/MIPTBP1_1) samples its own mip level 3, unaffected by context 2's config\nok:   context 2 (TEX1_2 never written) uses the base level, NOT context 1's mip level - genuinely independent state\nok:   ctx1_tex1_mxl permanent storage holds context 1's own MXL=3\nok:   ctx2_tex1_mxl permanent storage stays 0 - context 2's TEX1 was never written\nok:   ctx1_tex_mip_tbp[2] (level 3) holds context 1's configured mip buffer\nok:   ctx2_tex_mip_tbp[2] stays 0 - context 2 never received a MIPTBP1_2 write\n\n0 check(s) failed\n"
+    },
+    {
+      "test": "test_vif_micro_barriers",
+      "exit_code": 0,
+      "output": "PASS 11 VIF micro/GIF barrier retention and exactly-once replay cases\n"
+    },
+    {
+      "test": "runtime_profile_accounting",
+      "exit_code": 0,
+      "output": "PASS scope counts/work units and native/VU nested accounting; exclusive nested scopes, inactive no-op, 32-bit TB wrap, sample completion\n"
+    },
+    {
+      "test": "runtime_profile_real_work",
+      "exit_code": 0,
+      "output": "PASS real EE retirement, VU1 launch and GX packing instrumentation; state and separate work units\n"
+    },
+    {
+      "test": "runtime_profile_analysis",
+      "exit_code": 0,
+      "output": "PASS 12 runtime profile aggregation, separate denominators, private-data exclusion and malformed-record checks\nPASS active CPU masks, interpreter warning, mixed-run warning, attempt semantics and configuration privacy\n"
+    },
+    {
+      "test": "bios_directory_synthetic",
+      "exit_code": 0,
+      "output": "PASS 5 synthetic BIOS directory bounds and offset checks; no proprietary fixture\n"
+    },
+    {
+      "test": "wii_limits_host",
+      "exit_code": 0,
+      "output": "PASS 87 independent host kernel, corruption, full-period ring and CSV accounting/rejection checks; no Wii measurements\n"
+    },
+    {
+      "test": "test_ee_masked_window",
+      "exit_code": 0,
+      "output": "PASS 1557 masked-level window admission/Cause/Count/retirement/timer/decline checks\n"
+    },
+    {
+      "test": "test_gs_textured_point",
+      "exit_code": 0,
+      "output": "PASS 8 textured POINT UV/STQ, CT32/24/16/16S and TEXA cases\n"
+    },
+    {
+      "test": "test_iop_reloc_variants",
+      "exit_code": 0,
+      "output": "PASS 774 IOP NONE/16/LO16/SCE-MHI16 checks, signed links and malformed-chain rejection\n"
+    },
+    {
+      "test": "test_gs_textured_line",
+      "exit_code": 0,
+      "output": "PASS 44 actual LINE/STRIP vertex-queue, XYZ3, UV/STQ and varying-Q pixel checks\n"
+    },
+    {
+      "test": "test_vu_add_alignment",
+      "exit_code": 0,
+      "output": "PASS 9600 VU ADD/SUB broadcast/Q/I/ACC alignment, lane-mask and flag checks\n"
+    },
+    {
+      "test": "diagnostic_option_isolation",
+      "exit_code": false,
+      "output": "seven synthetic missing-file option cases; errors=[]"
+    }
+  ],
+  "linked": [
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "test": "verify_masked_window_linked.py",
+      "exit_code": 0,
+      "output": "PASS 12 complete linked PPC EE/timer/display/IRQ comparisons with actual masked-level native execution\nMASKED_WINDOW_COST [{\"dmac\": 0, \"event_ppc_instructions\": 1992, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6427, \"slots\": 8, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1992, \"event_slots\": 8, \"intc\": 0, \"precise_ppc_instructions\": 7355, \"slots\": 8, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 2002, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6507, \"slots\": 8, \"status\": \"0x10001\"}, {\"dmac\": 0, \"event_ppc_instructions\": 1999, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6427, \"slots\": 8, \"status\": \"0x10801\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1999, \"event_slots\": 8, \"intc\": 0, \"precise_ppc_instructions\": 7355, \"slots\": 8, \"status\": \"0x10401\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1992, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6507, \"slots\": 8, \"status\": \"0x10c03\"}, {\"dmac\": 0, \"event_ppc_instructions\": 6811, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24551, \"slots\": 32, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6811, \"event_slots\": 32, \"intc\": 0, \"precise_ppc_instructions\": 28263, \"slots\": 32, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6851, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24871, \"slots\": 32, \"status\": \"0x10001\"}, {\"dmac\": 0, \"event_ppc_instructions\": 6839, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24551, \"slots\": 32, \"status\": \"0x10801\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6839, \"event_slots\": 32, \"intc\": 0, \"precise_ppc_instructions\": 28263, \"slots\": 32, \"status\": \"0x10401\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6811, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24871, \"slots\": 32, \"status\": \"0x10c03\"}]\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "test": "verify_textured_lines_linked.py",
+      "exit_code": 0,
+      "output": "PASS 88 actual PPC LINE/STRIP pixels, both GS contexts, UV/STQ, varying Q and XYZ3 queue advance\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "test": "verify_iop_relocations_linked.py",
+      "exit_code": 0,
+      "output": "PASS 14 actual PPC IRX NONE/16/LO16/SCE-MHI16 cases and malformed chains; little-endian guest RAM\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "test": "verify_gs_vif_accuracy_linked.py",
+      "exit_code": 0,
+      "output": "PASS linked GS narrow guest ACK/read aliases and pending-IMR edges: 17\nPASS linked Q-dependent fragment mip selection and 18 color-format/context MTBA layouts\nPASS linked VIF0/1 real SQ full-capacity retry, retained bytes and STC resume\nPASS linked writable ENVX changes post-ADSR capture; combined new accuracy checks=40\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "test": "verify_event_scheduler_r1353.py",
+      "exit_code": 0,
+      "output": "PASS 26 full EE/IOP/timer state comparisons against exact 8:1 interleave\nBATCH_COST {64: {'legacy': 3648567, 'event': 4094028}, 65: {'legacy': 3651803, 'event': 4320604}, 257: {'legacy': 4343725, 'event': 8863516}}\nPASS 6 shared mailbox publication / echo grants with exact tick ratio\nPASS event batches and shared barriers actually exercised\nWARM_SCHEDULER_COST {'legacy': 936926, 'event_only': 839993, 'event_long_idle': 665524, 'slices': 256}\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "test": "verify_beta12_22_linked.py",
+      "exit_code": 0,
+      "output": "PASS linked PPC XGKICK rejected live tag and physical ring wrap\nPASS linked PPC CSM2 independent CT32/CT16/CT16S palette banks\nPASS 32 linked PPC depth texels: PSMZ32/24/16/16S, TEXA/AEM and VRAM wrap\nPASS linked PPC IPU soft-reset DC precision rule\nPASS linked PPC multi-button pause and explicit HOME+MINUS exit\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "test": "verify_masked_window_linked.py",
+      "exit_code": 0,
+      "output": "PASS 12 complete linked PPC EE/timer/display/IRQ comparisons with actual masked-level native execution\nMASKED_WINDOW_COST [{\"dmac\": 0, \"event_ppc_instructions\": 1976, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6400, \"slots\": 8, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1976, \"event_slots\": 8, \"intc\": 0, \"precise_ppc_instructions\": 7328, \"slots\": 8, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1986, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6480, \"slots\": 8, \"status\": \"0x10001\"}, {\"dmac\": 0, \"event_ppc_instructions\": 1983, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6400, \"slots\": 8, \"status\": \"0x10801\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1983, \"event_slots\": 8, \"intc\": 0, \"precise_ppc_instructions\": 7328, \"slots\": 8, \"status\": \"0x10401\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1976, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6480, \"slots\": 8, \"status\": \"0x10c03\"}, {\"dmac\": 0, \"event_ppc_instructions\": 6747, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24443, \"slots\": 32, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6747, \"event_slots\": 32, \"intc\": 0, \"precise_ppc_instructions\": 28155, \"slots\": 32, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6787, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24763, \"slots\": 32, \"status\": \"0x10001\"}, {\"dmac\": 0, \"event_ppc_instructions\": 6775, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24443, \"slots\": 32, \"status\": \"0x10801\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6775, \"event_slots\": 32, \"intc\": 0, \"precise_ppc_instructions\": 28155, \"slots\": 32, \"status\": \"0x10401\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6747, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24763, \"slots\": 32, \"status\": \"0x10c03\"}]\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "test": "verify_textured_lines_linked.py",
+      "exit_code": 0,
+      "output": "PASS 88 actual PPC LINE/STRIP pixels, both GS contexts, UV/STQ, varying Q and XYZ3 queue advance\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "test": "verify_iop_relocations_linked.py",
+      "exit_code": 0,
+      "output": "PASS 14 actual PPC IRX NONE/16/LO16/SCE-MHI16 cases and malformed chains; little-endian guest RAM\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "test": "verify_gs_vif_accuracy_linked.py",
+      "exit_code": 0,
+      "output": "PASS linked GS narrow guest ACK/read aliases and pending-IMR edges: 17\nPASS linked Q-dependent fragment mip selection and 18 color-format/context MTBA layouts\nPASS linked VIF0/1 real SQ full-capacity retry, retained bytes and STC resume\nPASS linked writable ENVX changes post-ADSR capture; combined new accuracy checks=40\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "test": "verify_event_scheduler_r1353.py",
+      "exit_code": 0,
+      "output": "PASS 26 full EE/IOP/timer state comparisons against exact 8:1 interleave\nBATCH_COST {64: {'legacy': 3647403, 'event': 4093512}, 65: {'legacy': 3650623, 'event': 4320070}, 257: {'legacy': 4339457, 'event': 8861666}}\nPASS 6 shared mailbox publication / echo grants with exact tick ratio\nPASS event batches and shared barriers actually exercised\nWARM_SCHEDULER_COST {'legacy': 932882, 'event_only': 838249, 'event_long_idle': 663788, 'slices': 256}\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "test": "verify_beta12_22_linked.py",
+      "exit_code": 0,
+      "output": "PASS linked PPC XGKICK rejected live tag and physical ring wrap\nPASS linked PPC CSM2 independent CT32/CT16/CT16S palette banks\nPASS 32 linked PPC depth texels: PSMZ32/24/16/16S, TEXA/AEM and VRAM wrap\nPASS linked PPC IPU soft-reset DC precision rule\nPASS linked PPC multi-button pause and explicit HOME+MINUS exit\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "test": "verify_vu_timing_r1384.py",
+      "exit_code": 0,
+      "output": "PASS actual Wii ELF: delayed FMAC/read query, same-clock FSSET/FDIV and issued-MAC snapshots\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "test": "verify_vu_hybrid_r1385.py",
+      "exit_code": 0,
+      "output": "PASS linked PPC timed hybrid VU blocks: FMAC/query latency, RAW, Q, budgets, warm source invalidation, mid-block invalidation, boundaries, ABI, production VU0/VU1\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "test": "verify_vu_timing_r1384.py",
+      "exit_code": 0,
+      "output": "PASS actual Wii ELF: delayed FMAC/read query, same-clock FSSET/FDIV and issued-MAC snapshots\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "test": "verify_vu_hybrid_r1385.py",
+      "exit_code": 0,
+      "output": "PASS linked PPC timed hybrid VU blocks: FMAC/query latency, RAW, Q, budgets, warm source invalidation, mid-block invalidation, boundaries, ABI, production VU0/VU1\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "test": "verify_vu_add_alignment_linked.py",
+      "exit_code": 0,
+      "output": "PASS 512 linked PPC VU1 programs and 3072 lane/flag checks, scalar and block-option runners\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "test": "verify_vu_add_alignment_linked.py",
+      "exit_code": 0,
+      "output": "PASS 512 linked PPC VU1 programs and 3072 lane/flag checks, scalar and block-option runners\n"
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "Gekko2-BETA12.33-GX-Chain.elf",
+      "bytes": 8525812,
+      "sha256": "0f8e137944114b251e848fe50f3a3523ecd4d7836b675493a97b525caf81fc0e",
+      "runtime_source": "9d14d74d92aba76ee180e75f7c31ea8731552093",
+      "dol_elf_sections_pass": true,
+      "static_mem1_pass": true,
+      "mem1_static_end": "0x815e62f4",
+      "mem1_remaining_bytes": 2202892,
+      "runtime_wii_boot_verified": false,
+      "published": false
+    },
+    {
+      "name": "Gekko2-BETA12.33-GX-Chain.dol",
+      "bytes": 2113348,
+      "sha256": "a2b4815d7714286b2ecc1829f7da695ea20e53bc3285d98d74c1167b409e7583",
+      "runtime_source": "9d14d74d92aba76ee180e75f7c31ea8731552093",
+      "dol_elf_sections_pass": true,
+      "static_mem1_pass": true,
+      "mem1_static_end": "0x815e62f4",
+      "mem1_remaining_bytes": 2202892,
+      "runtime_wii_boot_verified": false,
+      "published": false
+    },
+    {
+      "name": "Gekko2-BETA12.33-GX.elf",
+      "bytes": 8516748,
+      "sha256": "a82e72eb20ed55619bead27fbf0183e2087f0cf090c6846a18c526f0ea22e9e5",
+      "runtime_source": "9d14d74d92aba76ee180e75f7c31ea8731552093",
+      "dol_elf_sections_pass": true,
+      "static_mem1_pass": true,
+      "mem1_static_end": "0x815c4cf4",
+      "mem1_remaining_bytes": 2339596,
+      "runtime_wii_boot_verified": false,
+      "published": false
+    },
+    {
+      "name": "Gekko2-BETA12.33-GX.dol",
+      "bytes": 2107780,
+      "sha256": "ff81683030087556cf13e4cd5e553f9d351d4191e541b98ee822740329693b9d",
+      "runtime_source": "9d14d74d92aba76ee180e75f7c31ea8731552093",
+      "dol_elf_sections_pass": true,
+      "static_mem1_pass": true,
+      "mem1_static_end": "0x815c4cf4",
+      "mem1_remaining_bytes": 2339596,
+      "runtime_wii_boot_verified": false,
+      "published": false
+    }
+  ],
+  "limitations": [
+    "No new physical Wii/Dolphin run or FPS/gameplay proof",
+    "BIOS tile root cause remains unisolated; controlled line-change replay unchanged",
+    "GT3 direct link blocked by enforced network allowlist; no full disc accessible",
+    "Historical verify_beta12_23_linked.py failed on prior ac420e5 build at GC-stripped gs_xfb_fit_4_3 after its VIF and UV assertions passed; that obsolete aspect transform is no longer used by the Wii presentation path",
+    "Standalone mocked DMA CALL/RET fixture cannot use the generic all-core linker; duplicate fixture symbols are a test-driver setup issue, not a passing test"
+  ],
+  "vu_old_arithmetic_regression": "Old ac420e5 source compiled in isolation: expected assertion failure; new source passes 9600 host checks"
+}
