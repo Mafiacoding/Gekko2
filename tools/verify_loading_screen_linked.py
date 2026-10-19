@@ -37,7 +37,7 @@ for height in [480,576]:
   print('PASS linked loading screen',height,'error='+str(error),'title_pixels='+str(bright),'bounded XFB')
   if height==480 and error==0:
    writes=[]
-   def frame_write(uc,address,size,value,user):
+   def frame_write(uc,access,address,size,value,user):
     if 0x93000000<=address<0x93000000+640*height*2:writes.append((address-0x93000000)//1280)
    hook=u.hook_add(UC_HOOK_MEM_WRITE,frame_write)
    call('draw_loading_screen',0x92000100,0x92000200,0,65000,0)

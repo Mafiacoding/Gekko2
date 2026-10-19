@@ -1,5 +1,10 @@
 # Gekko2 SPEED BETA12.33 – 19 October 2026
 
+**Owner regression / loading refresh:** [investigation](docs/LOADING-REFRESH-REGRESSION.md).
+Identical loading frames unnecessarily rewrote the scanout XFB; dirty-strip
+refresh implemented on `codex/loading-refresh-regression`. Current GX Hybrid
+Crash/Tekken boot regression remains open pending the promised session log.
+
 **Alpha frontend / GitHub cleanup:** [report](docs/ALPHA-FRONTEND-CLEANUP.md).
 Public README updated via documentation-only #52; runtime remains on draft #51.
 Loading screen by default, saved optional on-screen logs; no new gameplay/FPS

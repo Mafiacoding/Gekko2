@@ -1,5 +1,10 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Owner regression / loading refresh:** [report](LOADING-REFRESH-REGRESSION.md).
+Runtime `852600c` removes recurring full-screen loading redraws; linked write
+regression fails on delivered `33b057f`, passes corrected control ELF. Do not
+claim Crash/Tekken boot fix: current owner session log has not arrived.
+
 **Latest frontend / repository cleanup:** [report](ALPHA-FRONTEND-CLEANUP.md).
 Runtime `33b057f`, consolidated draft #51 targets main. Default loading screen;
 reuses saved HUD as On-screen logs, SD/network unaffected. Documentation-only
