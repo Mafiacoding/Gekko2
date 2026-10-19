@@ -11242,8 +11242,17 @@ static unsigned ee_core_native_window_begin_impl(ee_state_t *st,uint32_t pc,cons
  return 0;
 #endif
  native_window_stats[2]++;
+ /* A stable masked level is observable in Cause, but cannot take an
+  * exception inside a pure integer window. Keep transient INTC latching
+  * precise, including the four-slot delay and deassertion transition. */
+ int pending_intc=ee_intc_pending_fast();
+ int pending_dmac=dma_dmac_interrupt_pending_fast();
+ uint32_t status=st->cop0[12];
+ int interrupts_enabled=(status&0x10007u)==0x10001u;
  if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending()||
-    ee_intc_pending_fast()||dma_dmac_interrupt_pending_fast()||g_ee_irq.intc_delay||g_ee_irq.intc_armed||
+    g_ee_irq.intc_delay||!!pending_intc!=!!g_ee_irq.intc_armed||
+    (interrupts_enabled&&((pending_intc&&(status&EE_STATUS_IM2))||
+                         (pending_dmac&&(status&EE_STATUS_IM3))))||
     ee_timers_batch_clock[0]<=n||g_ee_display_ticks>UINT64_MAX-n||
     g_ee_display_phase+n>=EE_CYCLES_PER_FRAME_NTSC||
     (g_ee_display_phase<EE_CYCLES_VBLANK_DURATION&&g_ee_display_phase+n>=EE_CYCLES_VBLANK_DURATION)||
@@ -11310,7 +11319,8 @@ static unsigned ee_core_native_window_begin_impl(ee_state_t *st,uint32_t pc,cons
  st->gpr[0].ud0=st->gpr[0].ud1=0;
  st->instructions_executed+=n;st->cop0[9]=after;
  if(after>=st->cop0[11])st->cop0[13]|=EE_CAUSE_IP7;
- st->cop0[13]&=~(EE_CAUSE_IP2|EE_CAUSE_IP3);
+ st->cop0[13]=(st->cop0[13]&~(EE_CAUSE_IP2|EE_CAUSE_IP3))|
+              (pending_intc?EE_CAUSE_IP2:0u)|(pending_dmac?EE_CAUSE_IP3:0u);
  g_ee_display_ticks+=n;g_ee_display_phase+=n;
  ee_timers_batch_clock[0]-=n;ee_timers_batch_clock[1]+=n;
  st->exc_this_pc=pc+4u*(n-1u);st->exc_in_delay_slot=0;st->exc_raised_this_step=0;st->mem_tlb_miss=0;

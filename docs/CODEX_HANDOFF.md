@@ -1,5 +1,11 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Owner release hold / next alpha milestone (19 October):**
+[EE/GS work and acceptance gates](ALPHA-MILESTONE-EE-GS.md). Branch
+`codex/alpha-ee-masked-windows`: stable masked IRQ native-window admission and
+textured GS POINT support. No new version/download; larger milestone, actual
+PPC throughput and matched BIOS/game evidence remain open.
+
 **BETA12.33 GX/deadlines:** branch `codex/beta12-33-gx-deadlines`, runtime build
 `30c68e3`; [report](BETA12.33-GX-DEADLINES.md). Skip unused/constant fragment Z
 interpolation and renew IOP deadlines on every experimental EE admission.

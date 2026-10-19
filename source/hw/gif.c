@@ -1915,8 +1915,8 @@ static void rasterize_sprite(int32_t x0,int32_t y0,int32_t x1,int32_t y1,
 }
 
 /* POINT rasterizer (task: "GS coverage breadth"). Real hardware
- * (PCSX2's `GSRasterizer::DrawPoint`): a single pixel, flat color
- * only (the point's own vertex - `CSetupPrim` selects `last=0` for
+ * (PCSX2's `GSRasterizer::DrawPoint`): a single pixel, vertex color
+ * and optional texture (the point's own vertex selects `last=0` for
  * `GS_POINT_CLASS`, i.e. there's only ever one vertex to begin with,
  * no interpolation of any kind), gated behind the same Z test every
  * other primitive uses. */
@@ -1946,6 +1946,15 @@ static void rasterize_point_profile_impl(int32_t x, int32_t y, uint32_t rgba, ui
      * vertex, so no interpolation is possible or needed (same "no
      * interpolation of any kind" real-hardware rule this file already
      * documents for POINT's color). */
+    if (gs_effective_attr_prim() & PRIM_TME_MASK) {
+        double u=g_gif.cur_u,v=g_gif.cur_v;
+        if (!(gs_effective_attr_prim() & PRIM_FST_MASK)) {
+            double inv_q=g_gif.cur_q!=0.0f?1.0/(double)g_gif.cur_q:0.0;
+            u=(double)g_gif.cur_s*inv_q*(double)(1u<<g_gif.tex_tw);
+            v=(double)g_gif.cur_t*inv_q*(double)(1u<<g_gif.tex_th);
+        }
+        rgba=gs_texture_function(gs_sample_texture_q(u,v,g_gif.cur_q),rgba);
+    }
     gs_finish_draw_pixel(x, y, apply_fog(rgba, fog), z, g_gif.zbuf_configured && !g_gif.zmsk);
     g_gif.points_drawn++;
 }
