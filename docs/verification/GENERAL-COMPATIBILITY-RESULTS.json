@@ -632,8 +632,28 @@
     "No new physical Wii/Dolphin run or FPS/gameplay proof",
     "BIOS tile root cause remains unisolated; controlled line-change replay unchanged",
     "GT3 direct link blocked by enforced network allowlist; no full disc accessible",
-    "Historical verify_beta12_23_linked.py failed on prior ac420e5 build at GC-stripped gs_xfb_fit_4_3 after its VIF and UV assertions passed; that obsolete aspect transform is no longer used by the Wii presentation path",
-    "Standalone mocked DMA CALL/RET fixture cannot use the generic all-core linker; duplicate fixture symbols are a test-driver setup issue, not a passing test"
+    "Historical verify_beta12_23_linked.py failed on prior ac420e5 build at GC-stripped gs_xfb_fit_4_3 after its VIF and UV assertions passed; that obsolete aspect transform is no longer used by the Wii presentation path"
   ],
-  "vu_old_arithmetic_regression": "Old ac420e5 source compiled in isolation: expected assertion failure; new source passes 9600 host checks"
+  "vu_old_arithmetic_regression": "Old ac420e5 source compiled in isolation: expected assertion failure; new source passes 9600 host checks",
+  "additional_host": [
+    {
+      "test": "test_dma_call_ret_beta12_14",
+      "exit_code": 0,
+      "output": "PASS DMA nested CALL/RET, overflow, underflow and payload ordering\n",
+      "link_recipe": "Compile fixture with cached host core objects except source/hw/{dma,gif,gs,vif}.c, because the fixture includes dma.c and defines mock GIF/GS/VIF services. Use -O3 -ffunction-sections -fdata-sections -Iinclude -Isource -Wl,--gc-sections -lm."
+    }
+  ],
+  "private_bios_aggregate": {
+    "mode": "fresh deterministic host cold boot and software GS",
+    "diagnostic_slices": 420,
+    "captured_frames": 81,
+    "exit_code": 0,
+    "ee_halted": false,
+    "iop_halted": false,
+    "final_screen_observed": "regular language selection",
+    "guest_patched": false,
+    "tile_fix_proven": false,
+    "physical_wii_or_dolphin": false,
+    "assets_included": false
+  }
 }

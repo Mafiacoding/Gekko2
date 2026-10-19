@@ -2,7 +2,8 @@
 
 19 October 2026. Branch `codex/general-compatibility-batch`, on top of
 `codex/alpha-ee-masked-windows` (PR #48). Runtime source commits `ac420e5`
-and `9d14d74`. No version bump, published download or alpha-readiness claim.
+and `9d14d74`. [Draft PR #49](https://github.com/Mafiacoding/Gekko2/pull/49).
+No version bump, published download or alpha-readiness claim.
 The owner's release hold remains in effect. These are specific corrections,
 not completion of the four emulator subsystems.
 
@@ -97,6 +98,13 @@ animation phase and input packets still need matching. No isolated color-depth,
 XGKICK or geometry cause is established. All owner BIOS, captures and derived
 data remain outside Git; no artificial tiles or global brightness changes.
 
+After VU alignment was corrected, a fresh private deterministic BIOS cold boot
+completed 420 diagnostic slices with 81 captured software frames, exit 0, no
+EE/IOP halt, and the regular language-selection screen visible at the end.
+This executes the host core/software GS, not the PPC Wii JIT or GX. No tile fix,
+whole-boot pixel equivalence or physical speed claim follows. Outputs remain
+private; only these aggregate findings are published.
+
 ## 6. GT3 after the first screen
 
 The owner supplied sixteen RAR volumes during this work. Volume 16 transferred
@@ -142,6 +150,7 @@ Executed final gates on runtime `9d14d74`:
 | Check | Result |
 | --- | --- |
 | Host wrapper | 89/89 groups PASS |
+| Additional isolated DMA fixture | Nested CALL/RET, overflow, underflow and payload order PASS |
 | Added host assertions | EE masked 1,557; POINT 8; IRX 774; LINE 44; VU ADD/SUB 9,600; seven driver mask cases |
 | Actual linked PPC, each of two ELFs | Nine groups PASS: masked windows, textured lines, IRX, GS/VIF accuracy, event scheduler, XGKICK/IPU, VU alignment, timed FMAC and hybrid VU |
 | VU exact alignment, each ELF | 512 programs / 3,072 lane and flag checks PASS, scalar and block-option runners |
@@ -155,7 +164,9 @@ Historical `verify_beta12_23_linked.py` was also attempted on the preceding
 ac420e5 ELF: its seven VIF barriers and sixteen fractional-UV cases pass, but
 its old pillarbox stage fails setup because `gs_xfb_fit_4_3` is linker-stripped
 after the later fullscreen correction. That complete historical script is not
-counted as passed. The standalone mocked DMA CALL/RET fixture likewise cannot
-use the generic all-core test linker because it defines its own device mocks;
-that attempt is not a passing regression result. Neither limitation was hidden
-by removing assertions or disabling runtime barriers.
+counted as passed. The standalone mocked DMA CALL/RET fixture initially failed
+the generic all-core linker because it defines its own device mocks. Relinking
+against the cached core objects except `dma.c`, `gif.c`, `gs.c` and `vif.c`
+resolves that driver conflict and the actual fixture passes. It is recorded as
+an additional host check, outside the 89-group wrapper. No assertion or runtime
+barrier was removed to obtain a pass.
