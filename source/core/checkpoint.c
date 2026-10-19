@@ -7,6 +7,8 @@
  */
 #include "core/checkpoint.h"
 #include "core/hw/iop_sio2.h"
+#include "core/hw/ps2_memory_card.h"
+#include "core/hw/ps2_mc_files.h"
 #include "core/ee/ee_core.h"
 #include "core/recompiler/ee_jit.h" /* R1317 checkpoint source/mapping invalidation */
 #include "core/ee/ee_hle_thread.h"
@@ -61,6 +63,8 @@ static int write_block(FILE *f, const char tag[4], const void *data, uint32_t si
 
 int checkpoint_save(const char *path)
 {
+    if(ps2_mc_present()&&(iop_sio2_transport_pending()||
+       ((iop_dma_get_state()->ch[11].chcr|iop_dma_get_state()->ch[12].chcr)&0x01000000u)))return -1;
     if(!gs_mem_sync())return -1;
     iop_spu2_sync_now();
     FILE *f = fopen(path, "wb");
@@ -237,6 +241,11 @@ int checkpoint_save(const char *path)
     }
     {uint8_t protocol[IOP_PAD_PROTOCOL_BYTES];iop_sio2_pad_protocol_save(protocol);
      if(write_block(f,"PADP",protocol,sizeof protocol)<0)goto fail;}
+    if(ps2_mc_present()){
+        uint32_t bytes;const void *data=ps2_mc_snapshot(&bytes);
+        if(write_block(f,"P2MC",data,bytes)<0)goto fail;
+        data=ps2_mc_fs_snapshot(&bytes);if(write_block(f,"MCFS",data,bytes)<0)goto fail;
+    }
     if (write_block(f, "END0", NULL, 0) < 0) goto fail;
 
     fclose(f);
@@ -286,6 +295,8 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     uint8_t *era_scratch = malloc(EE_RAM_SIZE_CKPT);
     uint8_t *ira_scratch = malloc(IOP_RAM_SIZE_CKPT);
     uint8_t *spu_ram_scratch=NULL;
+    uint8_t *mc_scratch=NULL;
+    uint32_t mc_size=0;
     uint8_t *spu_state_scratch=malloc(iop_spu2_snapshot_size());
     uint8_t *gsm_scratch = malloc(GS_MEM_SIZE); /* Round 649: gs_mem.c's 4MB pixel/texture buffer - see checkpoint_save()'s citation */
     /* Peripheral scratch buffers - sized generously; read_block()
@@ -322,7 +333,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     EXPECT("ETMR", generic, sizeof(generic), &size); { ee_timers_state_t timers;ee_timers_snapshot(&timers);memcpy(&timers,generic,size);ee_timers_restore(&timers); }
     EXPECT("GIF0", generic, sizeof(generic), &size);
     uint32_t old_gif_size=offsetof(gif_state_t,image_eop_path);
-    if(size!=sizeof(*gif_get_state()) && size!=offsetof(gif_state_t,gif_q_bits) && size!=offsetof(gif_state_t,arb_owner) && size!=((offsetof(gif_state_t,arb_owner)+7u)&~7u) && size!=old_gif_size &&
+    if(size!=sizeof(*gif_get_state()) && size!=offsetof(gif_state_t,clut_words) && size!=offsetof(gif_state_t,gif_q_bits) && size!=offsetof(gif_state_t,arb_owner) && size!=((offsetof(gif_state_t,arb_owner)+7u)&~7u) && size!=old_gif_size &&
        size!=old_gif_size-sizeof(uint64_t))goto fail_close;
     memset(gif_get_state(),0,sizeof(*gif_get_state()));
     memcpy(gif_get_state(),generic,size);
@@ -408,10 +419,24 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     iop_cdrom_legacy_checkpoint_t cdrom={0};
     uint8_t protocol[IOP_PAD_PROTOCOL_BYTES]={0};
     unsigned seen = 0;
+    uint8_t fs_scratch[4096] __attribute__((aligned(4)));uint32_t fs_size=0;
     for (;;) {
         static unsigned char extra[sizeof(rspu2_stream_state_t)>sizeof(ipu_state_t)?sizeof(rspu2_stream_state_t):sizeof(ipu_state_t)];
         long sound_pos=ftell(f);char sound_tag[4];
         if(sound_pos<0||fread(sound_tag,1,4,f)!=4||fseek(f,sound_pos,SEEK_SET))goto fail_close;
+        if(!memcmp(sound_tag,"MCFS",4)){
+          if(seen&2048u)goto fail_close;
+          rc=read_block(f,tag,fs_scratch,sizeof fs_scratch,&fs_size);
+          if(rc!=1||!ps2_mc_fs_snapshot_valid(fs_scratch,fs_size))goto fail_close;
+          seen|=2048u;continue;
+        }
+        if(!memcmp(sound_tag,"P2MC",4)){
+          if(seen&1024u)goto fail_close;
+          mc_scratch=malloc(32u+PS2_MC_IMAGE_BYTES);if(!mc_scratch)goto fail_close;
+          rc=read_block(f,tag,mc_scratch,32u+PS2_MC_IMAGE_BYTES,&mc_size);
+          if(rc!=1||!ps2_mc_snapshot_valid(mc_scratch,mc_size))goto fail_close;
+          seen|=1024u;continue;
+        }
         if(!memcmp(sound_tag,"SPUR",4)){
           if(seen&128u)goto fail_close;
           spu_ram_scratch=malloc(SPU2_MIXER_RAM_SIZE);if(!spu_ram_scratch)goto fail_close;
@@ -451,6 +476,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     }
     if (rc != 0 || memcmp(tag, "END0", 4) != 0 || size != 0u) goto fail_close;
 
+    if((seen&2048u)&&!(seen&1024u))goto fail_close;
     if(!!(seen&128u)!=!!(seen&256u))goto fail_close;
     if((seen&64u)&&cdrom.disc_mounted){iso_image_t probe;
         if(!iso_path||iso_open(iso_path,&probe))goto fail_close;iso_close(&probe);}
@@ -463,6 +489,9 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
      * since we overwrite both fields explicitly right after), then
      * every _bind_*()/_rebind_*() call from include/core/system.h's
      * documented restore-time checklist. */
+    if(mc_scratch){if(ps2_mc_snapshot_load(mc_scratch,mc_size))goto fail_alloc;free(mc_scratch);mc_scratch=NULL;}
+    else if(ps2_mc_eject())goto fail_alloc;
+    if((seen&2048u)&&ps2_mc_fs_snapshot_load(fs_scratch,fs_size))goto fail_alloc;
     ee_state_t *ee = ee_core_get_state();
     iop_state_t *iop = iop_core_get_state();
     memcpy(ee, ee_scratch, sizeof(*ee));
@@ -523,5 +552,6 @@ fail_alloc:
     free(ira_scratch);
     free(gsm_scratch);
     free(spu_ram_scratch);free(spu_state_scratch);
+    free(mc_scratch);
     return -1;
 }

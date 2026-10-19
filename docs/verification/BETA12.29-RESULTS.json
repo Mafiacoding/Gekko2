@@ -1,0 +1,162 @@
+{
+  "build_commit": "9fe55bf",
+  "host_suites": 70,
+  "host_passed": true,
+  "ee_emitter_ppc_cases": 352,
+  "spu2_synthetic_checks": 4196428,
+  "binaries": {
+    "chain": {
+      "files": {
+        "dol": {
+          "bytes": 2080280,
+          "sha256": "f189f58b0a435f6e5df4b9437bfaaee8e6246527e4ae42bb651d57cd4bc8a58c"
+        },
+        "elf": {
+          "bytes": 8421000,
+          "sha256": "30738b3763f655ad41a37b291fd5a39c8b4cf7a4a151376ad6b1b81d56e0d62f"
+        }
+      },
+      "memory": {
+        "mem1_static_end": "0x815d8d74",
+        "mem1_remaining_bytes": 2257548,
+        "minimum_remaining_bytes": 1048576,
+        "passed": true
+      }
+    },
+    "control": {
+      "files": {
+        "dol": {
+          "bytes": 2074712,
+          "sha256": "1f3f9c7d6bb819ee14769287ba26bc94d95d5de290f28ec5fd1f1bb590b8f330"
+        },
+        "elf": {
+          "bytes": 8411936,
+          "sha256": "96077c853f7e839e75f32c8dbbc66e1bf3cd584e213810142307a7beec8e7750"
+        }
+      },
+      "memory": {
+        "mem1_static_end": "0x815b7774",
+        "mem1_remaining_bytes": 2394252,
+        "minimum_remaining_bytes": 1048576,
+        "passed": true
+      }
+    }
+  },
+  "wii_boot_verified": false,
+  "gameplay_verified": false,
+  "fps_gain_verified": false,
+  "ee_linked_full_state_cases_per_build": 98,
+  "catalog": {
+    "entries": 81,
+    "runtime_source_and_include_files": 199,
+    "canonical_ee_forms": 274,
+    "completed_items": [
+      "EE-01",
+      "EE-02",
+      "EE-03",
+      "SPU-01",
+      "SPU-02",
+      "SPU-03"
+    ],
+    "partial_item": "MC-02 GETENTSPACE only"
+  },
+  "sdk": "devkitpro/devkitppc@sha256:4c919aa26151dd43d88ca28c922d1fe2409579a8ba60ef56517baf1abdfb1a48",
+  "defaults": {
+    "chain": false,
+    "psm": false,
+    "gx_risk": false
+  },
+  "known_open": [
+    "general dirty cross-block writeback",
+    "Gaussian, reverb, complete ENVX/key-on/silent-voice timing",
+    "remaining GS/GX mipmap, EXTWRITE and feedback cases",
+    "VU/GIF/IPU and scheduler timing conformity",
+    "raw card RPCs, CheckBlock, directory descriptors, additional ports, MagicGate",
+    "Wii Crash/Tekken/BIOS-tile correctness and measured speed"
+  ],
+  "emulator_source_changes_after_build": false,
+  "legacy_fixture_excluded": {
+    "test": "verify_beta12_23_linked",
+    "observed": "KeyError gs_xfb_fit_4_3 after successful 7 VIF and 16 UV cases",
+    "reason": "BETA12.24a intentionally removed automatic 4:3 call; unused helper is garbage-collected. Replaced with current-image VIF/UV/policy gate, not with a product change."
+  },
+  "linked_suites": [
+    {
+      "test": "verify_chain_alu_linked",
+      "exit_code": 0,
+      "seconds": 82.23,
+      "output": "PASS 24 linked native scalar ALU quiet-batch, fused boundaries, scheduler, mapping and real DMA-SMC comparisons; successors 21\n"
+    },
+    {
+      "test": "verify_chain_memory_linked",
+      "exit_code": 0,
+      "seconds": 157.19,
+      "output": "PASS 72 linked 128-bit LQ/SQ, LD/SD, HI/LO/SA, RAM, budget, IRQ, mapping, TLB-fault and SMC comparisons; successors 38\n"
+    },
+    {
+      "test": "verify_chain_branch_linked",
+      "exit_code": 0,
+      "seconds": 85.21,
+      "output": "PASS branch family 0, cumulative comparisons=28 successors=11\nPASS branch family 1, cumulative comparisons=56 successors=22\nPASS branch family 2, cumulative comparisons=84 successors=33\nPASS branch family 3, cumulative comparisons=112 successors=44\nPASS 112 linked J/JAL/JR/JALR/BEQ/BNE, link alias, 128-bit delay slot, EPC/BD, IRQ and scheduler comparisons; successors 44\n"
+    },
+    {
+      "test": "verify_alpha_modes_linked",
+      "exit_code": 0,
+      "seconds": 50.36,
+      "output": "PASS 16 linked PPC comparisons across all 8 chain/PSM/GX-risk modes; cold-boot isolation, fallback and successors 60\n"
+    },
+    {
+      "test": "verify_gx_formats_linked",
+      "exit_code": 0,
+      "seconds": 0.27,
+      "output": "PASS 208 actual PPC texels: all 13 GS formats uploaded as GX RGBA8\nPASS actual PPC four-format DISPLAY packing and framebuffer import, including CT16/CT16S alpha/FBA\n"
+    },
+    {
+      "test": "verify_ppc_gs_memory",
+      "exit_code": 0,
+      "seconds": 0.07,
+      "output": "PASS 53 actual Wii ELF GS color/depth memory checks on big-endian PPC\n"
+    },
+    {
+      "test": "verify_beta12_22_linked",
+      "exit_code": 0,
+      "seconds": 0.45,
+      "output": "PASS linked PPC XGKICK rejected live tag and physical ring wrap\nPASS linked PPC CSM2 independent CT32/CT16/CT16S palette banks\nPASS 32 linked PPC depth texels: PSMZ32/24/16/16S, TEXA/AEM and VRAM wrap\nPASS linked PPC IPU soft-reset DC precision rule\nPASS linked PPC multi-button pause and explicit HOME+MINUS exit\n"
+    },
+    {
+      "test": "verify_vif_uv_linked",
+      "exit_code": 0,
+      "output": "PASS 7 linked PPC VIF barriers: held while VU runs, exactly-once replay after E/delay\nPASS 16 linked PPC fractional UV decode, vertex assembly and bilinear triangle pixels\nPASS current-image policy: historical automatic 4:3 postprocessor is not linked; no pillarbox assertion applied\n"
+    },
+    {
+      "test": "verify_chain_residency_linked",
+      "exit_code": 0,
+      "output": "PASS 105 linked interpreter/native-residency complete EE/timer/display/IRQ comparisons; selected successors 126\n"
+    },
+    {
+      "test": "verify_completion_ee_linked_chain",
+      "exit_code": 0,
+      "output": "PASS 98 linked EE C.F.S/BC2/RI full-state comparisons; 30 native single-fragment selections; both RI vectors and delay EPC/BD\n"
+    },
+    {
+      "test": "verify_completion_ee_linked_control",
+      "exit_code": 0,
+      "output": "PASS 98 linked EE C.F.S/BC2/RI full-state comparisons; 30 native single-fragment selections; both RI vectors and delay EPC/BD\n"
+    },
+    {
+      "test": "verify_cf_blocks_linked",
+      "exit_code": 0,
+      "output": "PASS 14 linked C.F.S/MMI full-state and EABI block comparisons; chain OFF/ON, precise budgets, successors 18\n"
+    }
+  ],
+  "linked_passed": true,
+  "catalog_status_counts": {
+    "implementiert_getestet": 6,
+    "teilweise": 40,
+    "skalar_absicht": 1,
+    "vorhanden_pruefen": 13,
+    "offen": 8,
+    "hardware_nachweis": 10,
+    "optional_abwesend": 3
+  }
+}

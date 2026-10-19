@@ -1,0 +1,142 @@
+{
+  "release": "R1389-SPEED-BETA12.30-GS-VIF-ACCURACY",
+  "emulator_build_commit": "640a761",
+  "host_suites": 78,
+  "host_passed": true,
+  "binaries": {
+    "chain": {
+      "files": {
+        "dol": {
+          "bytes": 2083672,
+          "sha256": "35d2c36e9c6313ca3da98018e729c1ed9fe8c9a54153a7cf61286f6270604d1f"
+        },
+        "elf": {
+          "bytes": 8428276,
+          "sha256": "0e73c03426d08d4a25b5b7aa7107399a7bc941580e3b40d6fb9fd06fc12535e0"
+        }
+      },
+      "memory": {
+        "mem1_static_end": "0x815d9a94",
+        "mem1_remaining_bytes": 2254188,
+        "minimum_remaining_bytes": 1048576,
+        "passed": true
+      }
+    },
+    "control": {
+      "files": {
+        "dol": {
+          "bytes": 2078072,
+          "sha256": "15f580975987fe33e371277cd43bb5ab598448ea38579fbf96f38a452ceb5cc4"
+        },
+        "elf": {
+          "bytes": 8419216,
+          "sha256": "91d7cbe580a0695734a5fdf30d72fffb73ef1483068691634db03e2aea3c32f5"
+        }
+      },
+      "memory": {
+        "mem1_static_end": "0x815b8494",
+        "mem1_remaining_bytes": 2390892,
+        "minimum_remaining_bytes": 1048576,
+        "passed": true
+      }
+    }
+  },
+  "wii_boot_verified": false,
+  "dolphin_run_verified": false,
+  "fps_gain_verified": false,
+  "gameplay_verified": false,
+  "linked_suites": 14,
+  "linked_passed": true,
+  "linked_results": [
+    {
+      "test": "verify_chain_alu_linked",
+      "exit_code": 0,
+      "seconds": 69.66,
+      "output": "PASS 24 linked native scalar ALU quiet-batch, fused boundaries, scheduler, mapping and real DMA-SMC comparisons; successors 21\n"
+    },
+    {
+      "test": "verify_chain_memory_linked",
+      "exit_code": 0,
+      "seconds": 160.82,
+      "output": "PASS 72 linked 128-bit LQ/SQ, LD/SD, HI/LO/SA, RAM, budget, IRQ, mapping, TLB-fault and SMC comparisons; successors 38\n"
+    },
+    {
+      "test": "verify_chain_branch_linked",
+      "exit_code": 0,
+      "seconds": 82.55,
+      "output": "PASS branch family 0, cumulative comparisons=28 successors=11\nPASS branch family 1, cumulative comparisons=56 successors=22\nPASS branch family 2, cumulative comparisons=84 successors=33\nPASS branch family 3, cumulative comparisons=112 successors=44\nPASS 112 linked J/JAL/JR/JALR/BEQ/BNE, link alias, 128-bit delay slot, EPC/BD, IRQ and scheduler comparisons; successors 44\n"
+    },
+    {
+      "test": "verify_alpha_modes_linked",
+      "exit_code": 0,
+      "seconds": 47.26,
+      "output": "PASS 16 linked PPC comparisons across all 8 chain/PSM/GX-risk modes; cold-boot isolation, fallback and successors 60\n"
+    },
+    {
+      "test": "verify_gx_formats_linked",
+      "exit_code": 0,
+      "seconds": 0.28,
+      "output": "PASS 208 actual PPC texels: all 13 GS formats uploaded as GX RGBA8\nPASS actual PPC four-format DISPLAY packing and framebuffer import, including CT16/CT16S alpha/FBA\n"
+    },
+    {
+      "test": "verify_ppc_gs_memory",
+      "exit_code": 0,
+      "seconds": 0.07,
+      "output": "PASS 53 actual Wii ELF GS color/depth memory checks on big-endian PPC\n"
+    },
+    {
+      "test": "verify_beta12_22_linked",
+      "exit_code": 0,
+      "seconds": 0.47,
+      "output": "PASS linked PPC XGKICK rejected live tag and physical ring wrap\nPASS linked PPC CSM2 independent CT32/CT16/CT16S palette banks\nPASS 32 linked PPC depth texels: PSMZ32/24/16/16S, TEXA/AEM and VRAM wrap\nPASS linked PPC IPU soft-reset DC precision rule\nPASS linked PPC multi-button pause and explicit HOME+MINUS exit\n"
+    },
+    {
+      "test": "verify_vif_uv_linked",
+      "exit_code": 0,
+      "seconds": 2.71,
+      "output": "PASS 7 linked PPC VIF barriers: held while VU runs, exactly-once replay after E/delay\nPASS 16 linked PPC fractional UV decode, vertex assembly and bilinear triangle pixels\nPASS current-image policy: historical automatic 4:3 postprocessor is not linked; no pillarbox assertion applied\n"
+    },
+    {
+      "test": "verify_cf_blocks_linked",
+      "exit_code": 0,
+      "seconds": 40.86,
+      "output": "PASS 14 linked C.F.S/MMI full-state and EABI block comparisons; chain OFF/ON, precise budgets, successors 18\n"
+    },
+    {
+      "test": "verify_completion_ee_linked_chain",
+      "exit_code": 0,
+      "seconds": 20.33,
+      "output": "PASS 98 linked EE C.F.S/BC2/RI full-state comparisons; 30 native single-fragment selections; both RI vectors and delay EPC/BD\n"
+    },
+    {
+      "test": "verify_completion_ee_linked_control",
+      "exit_code": 0,
+      "seconds": 19.33,
+      "output": "PASS 98 linked EE C.F.S/BC2/RI full-state comparisons; 30 native single-fragment selections; both RI vectors and delay EPC/BD\n"
+    },
+    {
+      "test": "verify_chain_residency_linked",
+      "exit_code": 0,
+      "output": "PASS 105 linked interpreter/native-residency complete EE/timer/display/IRQ comparisons; selected successors 126\n"
+    },
+    {
+      "test": "verify_gs_vif_accuracy_linked_chain",
+      "exit_code": 0,
+      "output": "PASS linked GS narrow guest ACK/read aliases and pending-IMR edges: 17\nPASS linked Q-dependent fragment mip selection and 18 color-format/context MTBA layouts\nPASS linked VIF0/1 real SQ full-capacity retry, retained bytes and STC resume\nPASS linked writable ENVX changes post-ADSR capture; combined new accuracy checks=40\n"
+    },
+    {
+      "test": "verify_gs_vif_accuracy_linked_control",
+      "exit_code": 0,
+      "output": "PASS linked GS narrow guest ACK/read aliases and pending-IMR edges: 17\nPASS linked Q-dependent fragment mip selection and 18 color-format/context MTBA layouts\nPASS linked VIF0/1 real SQ full-capacity retry, retained bytes and STC resume\nPASS linked writable ENVX changes post-ADSR capture; combined new accuracy checks=40\n"
+    }
+  ],
+  "catalog_status_counts": {
+    "implementiert_getestet": 7,
+    "teilweise": 39,
+    "skalar_absicht": 1,
+    "vorhanden_pruefen": 13,
+    "offen": 8,
+    "hardware_nachweis": 10,
+    "optional_abwesend": 3
+  }
+}

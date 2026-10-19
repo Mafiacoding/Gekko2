@@ -1,0 +1,163 @@
+{
+  "runtime_commit": "33b057fe64c699b3f5700686488b74e6a8dd85ef",
+  "host_commit": "a4114ba6e4b7e6672d77004d5dcdfbed904dfc2f",
+  "host_groups": 90,
+  "linked_ppc_groups": 9,
+  "physical_wii_tested": false,
+  "dolphin_tested": false,
+  "wii_fps_gain_verified": false,
+  "gameplay_verified": false,
+  "bios_tile_fix_verified": false,
+  "linked": [
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "test": "verify_cdvd_error_rpc_linked.py",
+      "elf_sha256": "95a1e016abeea2ef89579b5b7d343d6cb415560ee9a3959de47628ef54b47015",
+      "exit_code": 0,
+      "output": "PASS 144 linked PPC GetError RPC transactions: actual error, bounded reply, preserved MMIO state\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "test": "verify_masked_window_linked.py",
+      "elf_sha256": "95a1e016abeea2ef89579b5b7d343d6cb415560ee9a3959de47628ef54b47015",
+      "exit_code": 0,
+      "output": "PASS 12 complete linked PPC EE/timer/display/IRQ comparisons with actual masked-level native execution\nMASKED_WINDOW_COST [{\"dmac\": 0, \"event_ppc_instructions\": 1976, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6400, \"slots\": 8, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1976, \"event_slots\": 8, \"intc\": 0, \"precise_ppc_instructions\": 7328, \"slots\": 8, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1986, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6480, \"slots\": 8, \"status\": \"0x10001\"}, {\"dmac\": 0, \"event_ppc_instructions\": 1983, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6400, \"slots\": 8, \"status\": \"0x10801\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1983, \"event_slots\": 8, \"intc\": 0, \"precise_ppc_instructions\": 7328, \"slots\": 8, \"status\": \"0x10401\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1976, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6480, \"slots\": 8, \"status\": \"0x10c03\"}, {\"dmac\": 0, \"event_ppc_instructions\": 6747, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24443, \"slots\": 32, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6747, \"event_slots\": 32, \"intc\": 0, \"precise_ppc_instructions\": 28155, \"slots\": 32, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6787, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24763, \"slots\": 32, \"status\": \"0x10001\"}, {\"dmac\": 0, \"event_ppc_instructions\": 6775, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24443, \"slots\": 32, \"status\": \"0x10801\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6775, \"event_slots\": 32, \"intc\": 0, \"precise_ppc_instructions\": 28155, \"slots\": 32, \"status\": \"0x10401\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6747, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24763, \"slots\": 32, \"status\": \"0x10c03\"}]\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "test": "verify_event_scheduler_r1353.py",
+      "elf_sha256": "95a1e016abeea2ef89579b5b7d343d6cb415560ee9a3959de47628ef54b47015",
+      "exit_code": 0,
+      "output": "PASS 26 full EE/IOP/timer state comparisons against exact 8:1 interleave\nBATCH_COST {64: {'legacy': 3647403, 'event': 4093512}, 65: {'legacy': 3650623, 'event': 4320070}, 257: {'legacy': 4339457, 'event': 8861666}}\nPASS 6 shared mailbox publication / echo grants with exact tick ratio\nPASS event batches and shared barriers actually exercised\nWARM_SCHEDULER_COST {'legacy': 932882, 'event_only': 838249, 'event_long_idle': 663788, 'slices': 256}\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "test": "verify_cdvd_error_rpc_linked.py",
+      "elf_sha256": "653581a735ee7d8de5892a45703e627744a314d420aa0833c2ffdb3caa873612",
+      "exit_code": 0,
+      "output": "PASS 144 linked PPC GetError RPC transactions: actual error, bounded reply, preserved MMIO state\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "test": "verify_masked_window_linked.py",
+      "elf_sha256": "653581a735ee7d8de5892a45703e627744a314d420aa0833c2ffdb3caa873612",
+      "exit_code": 0,
+      "output": "PASS 12 complete linked PPC EE/timer/display/IRQ comparisons with actual masked-level native execution\nMASKED_WINDOW_COST [{\"dmac\": 0, \"event_ppc_instructions\": 1992, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6427, \"slots\": 8, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1992, \"event_slots\": 8, \"intc\": 0, \"precise_ppc_instructions\": 7355, \"slots\": 8, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 2002, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6507, \"slots\": 8, \"status\": \"0x10001\"}, {\"dmac\": 0, \"event_ppc_instructions\": 1999, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6427, \"slots\": 8, \"status\": \"0x10801\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1999, \"event_slots\": 8, \"intc\": 0, \"precise_ppc_instructions\": 7355, \"slots\": 8, \"status\": \"0x10401\"}, {\"dmac\": 1, \"event_ppc_instructions\": 1992, \"event_slots\": 8, \"intc\": 1, \"precise_ppc_instructions\": 6507, \"slots\": 8, \"status\": \"0x10c03\"}, {\"dmac\": 0, \"event_ppc_instructions\": 6811, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24551, \"slots\": 32, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6811, \"event_slots\": 32, \"intc\": 0, \"precise_ppc_instructions\": 28263, \"slots\": 32, \"status\": \"0x0\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6851, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24871, \"slots\": 32, \"status\": \"0x10001\"}, {\"dmac\": 0, \"event_ppc_instructions\": 6839, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24551, \"slots\": 32, \"status\": \"0x10801\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6839, \"event_slots\": 32, \"intc\": 0, \"precise_ppc_instructions\": 28263, \"slots\": 32, \"status\": \"0x10401\"}, {\"dmac\": 1, \"event_ppc_instructions\": 6811, \"event_slots\": 32, \"intc\": 1, \"precise_ppc_instructions\": 24871, \"slots\": 32, \"status\": \"0x10c03\"}]\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "test": "verify_event_scheduler_r1353.py",
+      "elf_sha256": "653581a735ee7d8de5892a45703e627744a314d420aa0833c2ffdb3caa873612",
+      "exit_code": 0,
+      "output": "PASS 26 full EE/IOP/timer state comparisons against exact 8:1 interleave\nBATCH_COST {64: {'legacy': 3648567, 'event': 4094028}, 65: {'legacy': 3651803, 'event': 4320604}, 257: {'legacy': 4343725, 'event': 8863516}}\nPASS 6 shared mailbox publication / echo grants with exact tick ratio\nPASS event batches and shared barriers actually exercised\nWARM_SCHEDULER_COST {'legacy': 936926, 'event_only': 839993, 'event_long_idle': 665524, 'slices': 256}\n"
+    }
+  ],
+  "console": [
+    {
+      "elf": "Gekko2-BETA12.33-GX.elf",
+      "elf_sha256": "95a1e016abeea2ef89579b5b7d343d6cb415560ee9a3959de47628ef54b47015",
+      "exit_code": 0,
+      "output": "PASS 96 linked PPC console routing checks: OFF discards, ON delegates, errors/partial writes preserved\n"
+    },
+    {
+      "elf": "Gekko2-BETA12.33-GX-Chain.elf",
+      "elf_sha256": "653581a735ee7d8de5892a45703e627744a314d420aa0833c2ffdb3caa873612",
+      "exit_code": 0,
+      "output": "PASS 96 linked PPC console routing checks: OFF discards, ON delegates, errors/partial writes preserved\n"
+    }
+  ],
+  "loading": {
+    "elf": "Gekko2-BETA12.33-GX.elf",
+    "elf_sha256": "95a1e016abeea2ef89579b5b7d343d6cb415560ee9a3959de47628ef54b47015",
+    "exit_code": 0,
+    "output": "PASS linked loading screen 480 error=0 title_pixels=1584 bounded XFB\nPASS linked loading screen 480 error=1 title_pixels=3526 bounded XFB\nPASS linked loading screen 576 error=0 title_pixels=1841 bounded XFB\nPASS linked loading screen 576 error=1 title_pixels=4082 bounded XFB\n"
+  },
+  "static_gates": {
+    "control": {
+      "dol": {
+        "dol": "Gekko2-BETA12.33-GX.dol",
+        "sha256": "391fadddca81e3db7e33caadb273e8fd8ff1d082120e3ca27dfc020df9ebcff4",
+        "bytes": 2110852,
+        "entry": "0x80003f00",
+        "sections": 10,
+        "load_end": "0x80207324",
+        "bss_end": "0x815c59f4",
+        "wii_hid4_markers": [
+          "0x80003f20",
+          "0x80136ef4"
+        ],
+        "elf_section_bytes_match": true,
+        "runtime_boot_verified": false
+      },
+      "memory": {
+        "mem1_static_end": "0x815c59f4",
+        "mem1_remaining_bytes": 2336268,
+        "minimum_remaining_bytes": 1048576,
+        "passed": true
+      }
+    },
+    "chain": {
+      "dol": {
+        "dol": "Gekko2-BETA12.33-GX-Chain.dol",
+        "sha256": "7aa98a4ccc8b8b80e24368f49e7abc1f3765ee9e5c8dd8d416e68420c879c3b5",
+        "bytes": 2116420,
+        "entry": "0x80003f00",
+        "sections": 10,
+        "load_end": "0x802088e4",
+        "bss_end": "0x815e6ff4",
+        "wii_hid4_markers": [
+          "0x80003f20",
+          "0x801381d0"
+        ],
+        "elf_section_bytes_match": true,
+        "runtime_boot_verified": false
+      },
+      "memory": {
+        "mem1_static_end": "0x815e6ff4",
+        "mem1_remaining_bytes": 2199564,
+        "minimum_remaining_bytes": 1048576,
+        "passed": true
+      }
+    }
+  },
+  "github": {
+    "main_docs_commit": "999df60c5e14502b289d63569f60fa164a8e2806",
+    "integration_pr": 51,
+    "closed_superseded_prs": [
+      50,
+      49,
+      48,
+      47,
+      46,
+      45,
+      44,
+      43,
+      42,
+      41,
+      40,
+      39,
+      37,
+      36,
+      35,
+      34,
+      33,
+      32,
+      31,
+      30,
+      29,
+      28,
+      27,
+      26,
+      25,
+      24,
+      23,
+      22,
+      21,
+      20,
+      19
+    ],
+    "deleted_branches": false,
+    "deleted_downloads": false,
+    "about_update": "HTTP 403: unavailable integration metadata permission"
+  }
+}

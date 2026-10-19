@@ -1,3 +1,5 @@
+#include "core/runtime_profile.h"
+#include "core/hw/game_trace.h"
 /*
  * vu.c - see include/core/hw/vu.h for scope notes and references, and
  * source/hw/vu_opcodes.h for the real VU instruction encoding this
@@ -18,6 +20,10 @@
 #include <math.h>
 
 static vu1_state_t g_vu1;
+#ifdef GEKKO2_GAME_TRACE
+static uint32_t unknown_words[8][2];
+static unsigned unknown_used;
+#endif
 const vu1_state_t * const vu1_scheduler_view = &g_vu1;
 static void vu1_service_xgkick(int flush);
 static void vu1_issue_xgkick(uint32_t addr);
@@ -25,6 +31,9 @@ static void vu1_issue_xgkick(uint32_t addr);
 void vu1_init(void)
 {
     memset(&g_vu1, 0, sizeof(g_vu1));
+#ifdef GEKKO2_GAME_TRACE
+    unknown_used=0;
+#endif
     /* VF00 is hardwired to (0,0,0,1.0f) on real hardware, matching
      * this project's existing VU0 macro-mode convention (ee_core.c's
      * vu0_vf_read_lane) - see docs/STATUS.md's "round 13" section for
@@ -351,14 +360,14 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
     int upper_ok, lower_ok;
     uint32_t fmac_mac=0,fmac_status=0;
     /* Flags remain invisible to the paired lower instruction. */
-    int arithmetic=timing?(vu_aot_try_timed_upper(vf,vi,acc,upper,&fmac_mac,&fmac_status)||
+    int arithmetic=(timing||vu_fmac_add_alignment_needed(vf,vi,upper))?(vu_aot_try_timed_upper(vf,vi,acc,upper,&fmac_mac,&fmac_status)||
         vu_fmac_arithmetic(vf,vi,acc,upper,&fmac_mac,&fmac_status)):0;
     int fsset=!(upper&0x80000000u)&&VU_L_OPCODE(lower)==21u;
 
     /* I flag (bit 31 of the upper word): only the upper instruction
      * executes this pair; the lower word's raw bits become the real
      * $I$ register (VI[21], REG_I per PCSX2's VU.h VURegFlags enum). */
-    if ((!timing||(!arithmetic&&!fsset))&&!vu_aot_available(upper,lower)&&!qop&&!pop&&!conflict&&!(clip_upper&&clip_lower)&&vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
+    if (!arithmetic&&(!timing||!fsset)&&!vu_aot_available(upper,lower)&&!qop&&!pop&&!conflict&&!(clip_upper&&clip_lower)&&vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
         upper_ok=lower_ok=1;
     } else if (upper & 0x80000000u) {
         upper_ok = arithmetic || vu_aot_try_upper(vf,vi,acc,upper) || vu_jit_try_upper(vf, vi, acc, upper) || vu_exec_upper(vf, vi, acc, upper);
@@ -411,8 +420,16 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
         if(timing&&mem_mask==4095u&&(upper&0x20000000u))timing->m_yield=1;
         pipeline->cycle++;
     }
-    if (!upper_ok || !lower_ok)
+    if (!upper_ok || !lower_ok) {
         (*unimplemented_opcodes_seen)++;
+#ifdef GEKKO2_GAME_TRACE
+        if(mem==g_vu1.mem&&unknown_used<8u) {
+            unsigned i=0;while(i<unknown_used&&(unknown_words[i][0]!=upper||unknown_words[i][1]!=lower))i++;
+            if(i==unknown_used){unknown_words[i][0]=upper;unknown_words[i][1]=lower;unknown_used++;
+                game_trace_record(GT_VU_UNKNOWN,this_pc,upper,lower,((unsigned)upper_ok<<1)|(unsigned)lower_ok);}
+        }
+#endif
+    }
     (*instructions_executed)++;
 
     /* Branch delay-slot mechanism (same 1-instruction-delay pattern as
@@ -499,6 +516,7 @@ int vu_micro_step_pipeline(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
  * cap retains the BIOS malformed-packet bound from GSState::Transfer<0>. */
 static void vu1_start_xgkick(uint32_t addr)
 {
+    game_trace_record(GT_KICK,addr,g_vu1.tpc,gif_get_state()->arb_owner,0);
     g_vu1.xgkick_addr=addr&(VU1_MEM_SIZE-16u);
     g_vu1.xgkick_packet_qwords=0;
     g_vu1.xgkick_ring_qwords=VU1_MEM_SIZE/16u;
@@ -519,23 +537,26 @@ static void vu1_service_xgkick(int flush)
     g_vu1.xgkick_last_cycle=now;
     while(g_vu1.xgkick_pending && (flush || g_vu1.xgkick_cycle_credit>=2u)) {
         uint32_t addr=g_vu1.xgkick_addr;
-        if(!g_vu1.xgkick_packet_qwords) {
+        uint32_t packet=g_vu1.xgkick_packet_qwords,eop=g_vu1.xgkick_eop;
+        int new_tag=!packet;
+        if(new_tag) {
             uint32_t lo=vu_rd_le32(g_vu1.mem+addr);
             uint32_t hi=vu_rd_le32(g_vu1.mem+addr+4u);
             uint32_t loops=lo&0x7fffu,mode=(hi>>26)&3u,nreg=hi>>28;
             if(!nreg)nreg=16u;
             uint32_t payload=mode==0u?loops*nreg:
                 mode==1u?(loops*nreg+1u)/2u:loops;
-            g_vu1.xgkick_packet_qwords=1u+payload;
-            g_vu1.xgkick_eop=!!(lo&0x8000u);
+            packet=1u+payload;
+            eop=!!(lo&0x8000u);
         }
         uint32_t take=flush?g_vu1.xgkick_ring_qwords:
             (uint32_t)(g_vu1.xgkick_cycle_credit/2u > g_vu1.xgkick_ring_qwords ?
                 g_vu1.xgkick_ring_qwords:g_vu1.xgkick_cycle_credit/2u);
-        if(take>g_vu1.xgkick_packet_qwords)take=g_vu1.xgkick_packet_qwords;
+        if(take>packet)take=packet;
         if(take>(VU1_MEM_SIZE-addr)/16u)take=(VU1_MEM_SIZE-addr)/16u;
         take=gif_try_process_quadwords(GIF_PATH_1,g_vu1.mem+addr,take);
-        if(!take)break; /* Backpressure retains live VU ring address. */
+        if(!take)break; /* Rejected tags remain live, including length/EOP. */
+        if(new_tag){g_vu1.xgkick_packet_qwords=packet;g_vu1.xgkick_eop=eop;}
         g_vu1.xgkick_addr=(addr+take*16u)&(VU1_MEM_SIZE-1u);
         g_vu1.xgkick_packet_qwords-=take;
         g_vu1.xgkick_ring_qwords-=take;
@@ -663,6 +684,7 @@ static void vu1_run_blocks(void)
 
 void vu1_exec_micro(uint32_t start_addr)
 {
+    unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
     g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
 
@@ -671,6 +693,7 @@ void vu1_exec_micro(uint32_t start_addr)
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu1_run_blocks();
     else if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
+    gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
 }
 
 /* Round 576 (task #551): real MSCNT semantics. Ground-truthed against
@@ -693,6 +716,7 @@ void vu1_exec_micro(uint32_t start_addr)
  * vu1_exec_micro() but without the reset line. */
 void vu1_exec_micro_continue(void)
 {
+    unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
 
     /* Q/P, branch and GIF boundaries can be scalar; later work can
@@ -700,12 +724,14 @@ void vu1_exec_micro_continue(void)
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu1_run_blocks();
     else if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
+    gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
 }
 
 /* Called by the common EE scheduler for a yielded microprogram or a
  * pending transfer after E. No synthetic microinstruction retirement. */
 void vu1_tick(void) {
     if(!g_vu1.running&&!g_vu1.xgkick_pending)return;
+    unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     if(g_vu1.running) {
         int stopped=vu_micro_step_timed(g_vu1.vf,g_vu1.vi,g_vu1.acc,
             g_vu1.mem,VU1_MEM_SIZE-1u,g_vu1.micro,VU1_MICRO_SIZE-1u,
@@ -716,4 +742,5 @@ void vu1_tick(void) {
         if(stopped==2)g_vu1.pipeline.cycle++;
     } else g_vu1.pipeline.cycle++;
     vu1_service_xgkick(!g_vu1.running);
+    gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
 }

@@ -1,0 +1,151 @@
+{
+  "release": "R1389-SPEED-BETA12.31-RUNTIME-PROFILE",
+  "build_commit": "ee6306d",
+  "host_suites": 83,
+  "host_passed": true,
+  "linked_suites_expected": 16,
+  "wii_boot_verified": false,
+  "dolphin_run_verified": false,
+  "fps_gain_verified": false,
+  "bios_tile_fix_verified": false,
+  "binaries": {
+    "chain": {
+      "memory": {
+        "mem1_static_end": "0x815dad34",
+        "mem1_remaining_bytes": 2249420,
+        "minimum_remaining_bytes": 1048576,
+        "passed": true
+      },
+      "files": {
+        "dol": {
+          "bytes": 2087512,
+          "sha256": "fe970ee6962cab1da62603dc3344beaf49d26ba748a43991fa20415dcc24697d"
+        },
+        "elf": {
+          "bytes": 8458008,
+          "sha256": "bf88cf39bc5c826a1f0c71ebc2e80fd29a25f0389883199a45cc603d60fcb9e8"
+        }
+      }
+    },
+    "control": {
+      "memory": {
+        "mem1_static_end": "0x815b9734",
+        "mem1_remaining_bytes": 2386124,
+        "minimum_remaining_bytes": 1048576,
+        "passed": true
+      },
+      "files": {
+        "dol": {
+          "bytes": 2081912,
+          "sha256": "2a641272f8b1a5ba58ca25484058043fc781496032ab2ba1e685f16e54da7d17"
+        },
+        "elf": {
+          "bytes": 8448948,
+          "sha256": "3471d81b2353954ac930ea9624cb5a2e1f4adeffe22c5dde07dc2be7baa717c1"
+        }
+      }
+    }
+  },
+  "linked_suites": 16,
+  "linked_passed": true,
+  "linked_results": [
+    {
+      "test": "verify_chain_alu_linked",
+      "exit_code": 0,
+      "seconds": 145.6,
+      "output": "PASS 24 linked native scalar ALU quiet-batch, fused boundaries, scheduler, mapping and real DMA-SMC comparisons; successors 21\n"
+    },
+    {
+      "test": "verify_chain_branch_linked",
+      "exit_code": 0,
+      "seconds": 91.89,
+      "output": "PASS branch family 0, cumulative comparisons=28 successors=11\nPASS branch family 1, cumulative comparisons=56 successors=22\nPASS branch family 2, cumulative comparisons=84 successors=33\nPASS branch family 3, cumulative comparisons=112 successors=44\nPASS 112 linked J/JAL/JR/JALR/BEQ/BNE, link alias, 128-bit delay slot, EPC/BD, IRQ and scheduler comparisons; successors 44\n"
+    },
+    {
+      "test": "verify_chain_memory_linked",
+      "exit_code": 0,
+      "seconds": 239.99,
+      "output": "PASS 72 linked 128-bit LQ/SQ, LD/SD, HI/LO/SA, RAM, budget, IRQ, mapping, TLB-fault and SMC comparisons; successors 38\n"
+    },
+    {
+      "test": "verify_gx_formats_linked",
+      "exit_code": 0,
+      "seconds": 0.28,
+      "output": "PASS 208 actual PPC texels: all 13 GS formats uploaded as GX RGBA8\nPASS actual PPC four-format DISPLAY packing and framebuffer import, including CT16/CT16S alpha/FBA\n"
+    },
+    {
+      "test": "verify_ppc_gs_memory",
+      "exit_code": 0,
+      "seconds": 0.07,
+      "output": "PASS 53 actual Wii ELF GS color/depth memory checks on big-endian PPC\n"
+    },
+    {
+      "test": "verify_beta12_22_linked",
+      "exit_code": 0,
+      "seconds": 0.48,
+      "output": "PASS linked PPC XGKICK rejected live tag and physical ring wrap\nPASS linked PPC CSM2 independent CT32/CT16/CT16S palette banks\nPASS 32 linked PPC depth texels: PSMZ32/24/16/16S, TEXA/AEM and VRAM wrap\nPASS linked PPC IPU soft-reset DC precision rule\nPASS linked PPC multi-button pause and explicit HOME+MINUS exit\n"
+    },
+    {
+      "test": "verify_vif_uv_linked",
+      "exit_code": 0,
+      "seconds": 2.83,
+      "output": "PASS 7 linked PPC VIF barriers: held while VU runs, exactly-once replay after E/delay\nPASS 16 linked PPC fractional UV decode, vertex assembly and bilinear triangle pixels\nPASS current-image policy: historical automatic 4:3 postprocessor is not linked; no pillarbox assertion applied\n"
+    },
+    {
+      "test": "verify_alpha_modes_linked",
+      "exit_code": 0,
+      "seconds": 48.14,
+      "output": "PASS 16 linked PPC comparisons across all 8 chain/PSM/GX-risk modes; cold-boot isolation, fallback and successors 60\n"
+    },
+    {
+      "test": "verify_cf_blocks_linked",
+      "exit_code": 0,
+      "seconds": 43.07,
+      "output": "PASS 14 linked C.F.S/MMI full-state and EABI block comparisons; chain OFF/ON, precise budgets, successors 18\n"
+    },
+    {
+      "test": "verify_gs_vif_accuracy_linked_chain",
+      "exit_code": 0,
+      "seconds": 1.76,
+      "output": "PASS linked GS narrow guest ACK/read aliases and pending-IMR edges: 17\nPASS linked Q-dependent fragment mip selection and 18 color-format/context MTBA layouts\nPASS linked VIF0/1 real SQ full-capacity retry, retained bytes and STC resume\nPASS linked writable ENVX changes post-ADSR capture; combined new accuracy checks=40\n"
+    },
+    {
+      "test": "verify_profile_r1332_chain",
+      "exit_code": 0,
+      "seconds": 0.2,
+      "output": "PASS linked PPC exclusive nested timing, TB wrap, completed sample and separate exact presentation totals\n"
+    },
+    {
+      "test": "verify_completion_ee_linked_chain",
+      "exit_code": 0,
+      "seconds": 19.55,
+      "output": "PASS 98 linked EE C.F.S/BC2/RI full-state comparisons; 30 native single-fragment selections; both RI vectors and delay EPC/BD\n"
+    },
+    {
+      "test": "verify_gs_vif_accuracy_linked_control",
+      "exit_code": 0,
+      "seconds": 1.67,
+      "output": "PASS linked GS narrow guest ACK/read aliases and pending-IMR edges: 17\nPASS linked Q-dependent fragment mip selection and 18 color-format/context MTBA layouts\nPASS linked VIF0/1 real SQ full-capacity retry, retained bytes and STC resume\nPASS linked writable ENVX changes post-ADSR capture; combined new accuracy checks=40\n"
+    },
+    {
+      "test": "verify_profile_r1332_control",
+      "exit_code": 0,
+      "seconds": 0.21,
+      "output": "PASS linked PPC exclusive nested timing, TB wrap, completed sample and separate exact presentation totals\n"
+    },
+    {
+      "test": "verify_completion_ee_linked_control",
+      "exit_code": 0,
+      "seconds": 19.08,
+      "output": "PASS 98 linked EE C.F.S/BC2/RI full-state comparisons; 30 native single-fragment selections; both RI vectors and delay EPC/BD\n"
+    },
+    {
+      "test": "verify_chain_residency_linked",
+      "exit_code": 0,
+      "seconds": 509.73,
+      "output": "PASS 105 linked interpreter/native-residency complete EE/timer/display/IRQ comparisons; selected successors 126\n"
+    }
+  ],
+  "benchmark_host_checks": 87,
+  "benchmark_linked_checks": 135
+}

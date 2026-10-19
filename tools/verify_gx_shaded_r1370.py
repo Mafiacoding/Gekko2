@@ -26,23 +26,26 @@ call('gs_mem_init')
 assert call('gs_gx_reset_boot_state')==1
 assert int.from_bytes(u.mem_read(syms['surface_enabled'],4),'big')==1
 word(syms['render_enabled'],1)
-# Reject destination-alpha blending only AFTER a new target was seeded.
-# This previously left an untracked active EFB and a stale valid snapshot.
+# Unsupported destination-alpha blending can reject before seeding in the
+# native-additive build. If it seeds first, ownership must remain tracked.
 call('gs_mem_write_psmct32',0,64,4,4,0x80112233)
 word(pipe+2*4,0);word(pipe+3*4,0);word(pipe+9*4,1)
-word(syms['surface_texture_valid'],1)
+if 'surface_texture_valid' in syms:word(syms['surface_texture_valid'],1)
 assert call('test_run',sample,xy,pipe)==0
-assert call('gs_mem_gpu_pending')==1, 'seeded EFB must be owned even on rejected draw'
-assert int.from_bytes(u.mem_read(syms['surface_texture_valid'],4),'big')==0
-assert int.from_bytes(u.mem_read(syms['texture_in_flight'],4),'big')==1
 seedptr=int.from_bytes(u.mem_read(syms['surface'],4),'big')
-# A software access must fence and release the target before writing.
+if call('gs_mem_gpu_pending'):
+ assert seedptr and int.from_bytes(u.mem_read(syms['texture_in_flight'],4),'big')==1
+ if 'surface_texture_valid' in syms:assert int.from_bytes(u.mem_read(syms['surface_texture_valid'],4),'big')==0
+else:
+ assert not begins, 'early rejection submitted unowned GPU work'
+ assert call('gs_mem_read_psmct32',0,64,4,4)==0x80112233
+# A software access must fence and release any seeded target before writing.
 call('gs_mem_write_psmct32',0,64,0,0,0x11223344)
 assert call('gs_mem_read_psmct32',0,64,0,0)==0x11223344
 assert call('gs_mem_gpu_pending')==0
-assert int.from_bytes(u.mem_read(seedptr+16,4),'big')==0, 'fallback left resident target active'
+if seedptr:assert int.from_bytes(u.mem_read(seedptr+16,4),'big')==0
 call('gs_mem_init')
-word(pipe+2*4,1);word(pipe+3*4,1);word(pipe+9*4,0)
+word(pipe+2*4,1);word(pipe+3*4,1);word(pipe+9*4,0);word(pipe+6*4,0)
 try:
  assert call('test_run',sample,xy,pipe)==1
 except Exception:

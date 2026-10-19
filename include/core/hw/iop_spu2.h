@@ -6,8 +6,8 @@
 /* Native SPU2 beta: two 24-voice cores, register/FIFO/DMA addressing,
  * guest-clock ADPCM synthesis and optional Wii PCM output.
  * Sources: PCSX2 SPU2/{RegTable,spu2sys,Dma,Mixer,ReadInput}.cpp and
- * ps2sdk common/include/libsd-common.h. Reverb, noise, PMON, sweep,
- * Gaussian interpolation, AC3 and CDDA32 remain unsupported. */
+ * ps2sdk common/include/libsd-common.h. Noise/PMON/sweeps are implemented;
+ * reverb, Gaussian interpolation, AC3 and CDDA32 remain open. */
 #define IOP_SPU2_BASE 0x1F900000u
 #define IOP_SPU2_SIZE 0x0800u
 

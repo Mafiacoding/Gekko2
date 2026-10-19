@@ -1,0 +1,32 @@
+{
+  "artifact_commit": "8a4cd1455387ed1178f51ecbc9af853ba61e33be",
+  "source_commit": "101c245f975beb4300e1a9c06ab38143bad055a4",
+  "emulator_build_commit": "ee6306d",
+  "branch": "codex/beta12-31-downloads",
+  "downloads": [
+    {
+      "name": "Gekko2-Wii-Limits-1.1-SD.zip",
+      "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/8a4cd1455387ed1178f51ecbc9af853ba61e33be/downloads/Gekko2-Wii-Limits-1.1-SD.zip",
+      "bytes": 245750,
+      "sha256": "4f1a89c2d671b6ec114b367c90a4f488139619e8c873571fbc738bf5b1604c57",
+      "http_status": 200,
+      "zip_crc_passed": true
+    },
+    {
+      "name": "Gekko2-BETA12.31-SD.zip",
+      "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/8a4cd1455387ed1178f51ecbc9af853ba61e33be/downloads/Gekko2-BETA12.31-SD.zip",
+      "bytes": 1163642,
+      "sha256": "bf1a8f29f5c99116818e922b11277089cbcceaecf98abeb518649660afaa1a67",
+      "http_status": 200,
+      "zip_crc_passed": true
+    },
+    {
+      "name": "Gekko2-BETA12.31-review.zip",
+      "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/8a4cd1455387ed1178f51ecbc9af853ba61e33be/downloads/Gekko2-BETA12.31-review.zip",
+      "bytes": 18687277,
+      "sha256": "5d09f06bb23b439e03b28271f392980cd1250997098417d6693bcd5faccc2e1a",
+      "http_status": 200,
+      "zip_crc_passed": true
+    }
+  ]
+}

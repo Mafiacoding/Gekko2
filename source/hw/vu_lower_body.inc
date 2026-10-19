@@ -74,19 +74,17 @@
                 vu_wr_le32(mem + ((addr + (uint32_t)l * 4u) & mem_mask), vf[rs][l]);
             return 1;
         }
-        case VUL_ILW: { /* It = mem[(Is+imm11)*16 + elem*4], truncated to 16 bits; elem = lowest set dest bit */
-            int elem = 0;
-            for (int l = 0; l < 4; l++) if ((dest >> (3 - l)) & 1) { elem = l; break; }
-            uint32_t addr = (uint32_t)((int32_t)vu_read_vi16(vi, rs) + off11) * 16u + (uint32_t)elem * 4u;
-            uint32_t word = vu_rd_le32(mem + (addr & mem_mask));
-            vu_write_vi(vi, rt, word);
+        case VUL_ILW: { /* Enabled lanes execute x..w; last selected lane wins. */
+            uint32_t addr=(uint32_t)((int32_t)vu_read_vi16(vi,rs)+off11)*16u;
+            for(unsigned l=0;l<4;l++)if(dest&(8u>>l))
+                vu_write_vi(vi,rt,vu_rd_le32(mem+((addr+l*4u)&mem_mask)));
             return 1;
         }
-        case VUL_ISW: { /* mem[(Is+imm11)*16 + elem*4] = It (zero-extended) */
-            int elem = 0;
-            for (int l = 0; l < 4; l++) if ((dest >> (3 - l)) & 1) { elem = l; break; }
-            uint32_t addr = (uint32_t)((int32_t)vu_read_vi16(vi, rs) + off11) * 16u + (uint32_t)elem * 4u;
-            vu_wr_le32(mem + (addr & mem_mask), vu_read_vi16(vi, rt));
+        case VUL_ISW: { /* Replicate zero-extended It to every enabled lane. */
+            uint32_t addr=(uint32_t)((int32_t)vu_read_vi16(vi,rs)+off11)*16u;
+            uint32_t value=vu_read_vi16(vi,rt);
+            for(unsigned l=0;l<4;l++)if(dest&(8u>>l))
+                vu_wr_le32(mem+((addr+l*4u)&mem_mask),value);
             return 1;
         }
 
@@ -165,18 +163,16 @@
                         vu_write_dest(vf, rt, dest, rr);
                         return 1;
                     }
-                    if (bc2 == 2) { /* ILWR: It = mem[Is*16 + elem*4], no immediate */
-                        int elem = 0;
-                        for (int l = 0; l < 4; l++) if ((dest >> (3 - l)) & 1) { elem = l; break; }
-                        uint32_t addr = vu_read_vi16(vi, rs) * 16u + (uint32_t)elem * 4u;
-                        vu_write_vi(vi, rt, vu_rd_le32(mem + (addr & mem_mask)));
+                    if (bc2 == 2) { /* ILWR uses the same x..w priority as ILW. */
+                        uint32_t addr=vu_read_vi16(vi,rs)*16u;
+                        for(unsigned l=0;l<4;l++)if(dest&(8u>>l))
+                            vu_write_vi(vi,rt,vu_rd_le32(mem+((addr+l*4u)&mem_mask)));
                         return 1;
                     }
-                    if (bc2 == 3) { /* ISWR: mem[Is*16 + elem*4] = It, no immediate */
-                        int elem = 0;
-                        for (int l = 0; l < 4; l++) if ((dest >> (3 - l)) & 1) { elem = l; break; }
-                        uint32_t addr = vu_read_vi16(vi, rs) * 16u + (uint32_t)elem * 4u;
-                        vu_wr_le32(mem + (addr & mem_mask), vu_read_vi16(vi, rt));
+                    if (bc2 == 3) { /* ISWR writes all selected lanes. */
+                        uint32_t addr=vu_read_vi16(vi,rs)*16u,value=vu_read_vi16(vi,rt);
+                        for(unsigned l=0;l<4;l++)if(dest&(8u>>l))
+                            vu_wr_le32(mem+((addr+l*4u)&mem_mask),value);
                         return 1;
                     }
                 }

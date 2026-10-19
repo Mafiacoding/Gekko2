@@ -1,5 +1,7 @@
+#include "core/hw/game_trace.h"
 #include "core/chd_reader.h"
 #include "build_version.h"
+#include "core/recompiler/experimental_options.h"
 #include "core/hw/iop_dma.h"
 #include "core/hw/audio_output.h"
 #include "core/hw/controller_input.h"
@@ -12,6 +14,7 @@
 #include "core/hw/guest_error_probe.h"
 #include "core/hw/gs_gx_additive.h"
 #include "core/runtime_profile.h"
+#include "core/hw/runtime_telemetry.h"
 #include "core/recompiler/dynarec_config.h"
 #include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/iop_lightrec.h"
@@ -44,14 +47,19 @@
 #include "core/hw/frontend_text.h"
 #include "core/hw/frontend_logo.h"
 #include "core/hw/frontend_runtime.h"
+#include "core/hw/frontend_settings.h"
+#include "core/hw/ps2_memory_card.h"
 #include "core/hw/frontend_log.h"
 #include "core/recompiler/iop_jit.h"
 #include "core/recompiler/vu_jit.h"
 /* R1308: native Wii launcher followed by real EE/IOP boot. */
 #include <gccore.h>
+#include <ogc/conf.h>
 #include <wiiuse/wpad.h>
 #include "frontend.h"
 #include <fat.h>
+#include <sys/stat.h>
+#include <sys/iosupport.h>
 #include <stdio.h>
 #include "core/hw/iop_hle_thread.h"
 #include <stdlib.h>
@@ -71,6 +79,7 @@
 #include "core/hw/iop_cdvd.h"
 #include "core/hw/iop_cdrom_legacy.h"
 #include "core/hw/gs.h"
+#include "core/hw/vif.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/gs_gx.h"
@@ -87,6 +96,7 @@
 
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
+static int g_present_widescreen;
 
 /* All menu buttons retain libogc PAD bit compatibility. */
 static uint16_t g_input_held,g_input_down;
@@ -101,6 +111,21 @@ static void wii_input_scan(void)
  g_input_exit=controller_session(&g_controller,&ignored)==3;
 }
 
+/* Gate only console devices, never fopen SD logs or network telemetry.
+ * Copy each SDK device table: do not mutate libogc's const/shared tables. */
+static int g_console_visible;
+static devoptab_t g_screen_devices[2];
+static ssize_t (*g_screen_writers[2])(struct _reent *,void *,const char *,size_t);
+static ssize_t screen_stdout(struct _reent *r,void *fd,const char *p,size_t n)
+{return g_console_visible && g_screen_writers[0]?g_screen_writers[0](r,fd,p,n):(ssize_t)n;}
+static ssize_t screen_stderr(struct _reent *r,void *fd,const char *p,size_t n)
+{return g_console_visible && g_screen_writers[1]?g_screen_writers[1](r,fd,p,n):(ssize_t)n;}
+static void screen_console_visible(int enabled)
+{
+    if(g_console_visible==!!enabled)return;
+    fflush(stdout);fflush(stderr); /* Never replay buffered hidden output later. */
+    g_console_visible=!!enabled;
+}
 static void wii_console_setup(void)
 {
     VIDEO_Init();
@@ -108,11 +133,20 @@ static void wii_console_setup(void)
     controller_host_init();
 
     rmode = VIDEO_GetPreferredMode(NULL);
+    g_present_widescreen=CONF_GetAspectRatio()==CONF_ASPECT_16_9;
     xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
 
     CON_Init(xfb, 20, 20, rmode->fbWidth, rmode->xfbHeight,
              rmode->fbWidth * VI_DISPLAY_PIX_SZ);
 
+    for(unsigned n=0;n<2;n++) {
+        unsigned device=n?STD_ERR:STD_OUT;
+        g_screen_devices[n]=*devoptab_list[device];
+        g_screen_writers[n]=g_screen_devices[n].write_r;
+        g_screen_devices[n].write_r=n?screen_stderr:screen_stdout;
+        devoptab_list[device]=&g_screen_devices[n];
+    }
+    setvbuf(stdout,NULL,_IONBF,0);setvbuf(stderr,NULL,_IONBF,0);
     VIDEO_Configure(rmode);
     VIDEO_SetNextFramebuffer(xfb);
     VIDEO_SetBlack(FALSE);
@@ -179,6 +213,8 @@ static int g_hud_default = 0;
 static int g_hud_active;
 static int g_fps_default = 1;
 static uint64_t g_gx_attempts,g_gx_fallbacks;
+static uint64_t g_sw_attempts,g_sw_copies,g_sw_sync_failures,g_sw_invalid;
+static uint64_t g_xfb_updates,g_xfb_guest_copies,g_xfb_hud_updates;
 static int g_gx_present = 0; /* One experimental option enables output and supported primitive drawing. */
 static int g_gx_requested = 0;
 static uint32_t g_fps_milli,g_present_milli;
@@ -202,6 +238,28 @@ static void launcher_logo(int x,int y)
 static void launcher_text(int x,int y,int scale,const char *text,int r,int g,int b)
 {
     frontend_text_draw(xfb,rmode->fbWidth,rmode->xfbHeight,x,y,scale,text,r,g,b);
+}
+/* Real stages and elapsed time, not an invented percentage. Direct XFB
+ * drawing stays independent of both the console gate and emulated GS/GX. */
+static void draw_loading_screen(const char *stage,const char *detail,uint64_t elapsed_ms,int error)
+{
+    draw_gradient_background(6,12,30,0,2,9);
+    launcher_logo(54,30);
+    launcher_text(42,170,3,error?"START INTERRUPTED":"LOADING",204,232,255);
+    launcher_text(42,220,1,stage,221,237,255);
+    launcher_text(42,248,1,detail,117,186,237);
+    if(!error) {
+        unsigned phase=(unsigned)((elapsed_ms/250)%12);
+        for(unsigned n=0;n<12;n++)launcher_rect(42+n*24,290,16,4,
+            n==phase?67:16,n==phase?182:43,n==phase?255:76);
+        char elapsed[80];
+        snprintf(elapsed,sizeof elapsed,"Elapsed %llu:%02llu - emulation may take a long time.",
+            (unsigned long long)(elapsed_ms/60000),(unsigned long long)(elapsed_ms/1000%60));
+        launcher_text(42,330,1,elapsed,117,186,237);
+    }
+    launcher_text(42,390,1,error?"A / B: return to launcher":"HOME: pause and open settings",209,227,246);
+    if(!error)launcher_text(42,416,1,"Settings > On-screen logs: optional diagnostics",117,186,237);
+    flush_screen();VIDEO_SetNextFramebuffer(xfb);VIDEO_Flush();
 }
 static void wait_for_button(uint16_t mask)
 {
@@ -234,18 +292,46 @@ static int   g_disc_ok = 0;
 static int g_first_picture;
 static uint64_t g_log_ticks,g_log_previous;
 static gekko2_profile g_runtime_previous,g_front_previous;
+static uint64_t g_telemetry_epoch;
 static uint64_t g_image_probe_attempts;
 static uint64_t g_boot_started,g_boot_log_next;
 static frontend_log g_session_log;
 static int g_guest_error_reported;
+static uint64_t g_game_trace_cursor;
+static int g_game_context_reported;
 static uint64_t g_fileio_trace_previous_total;
 
 static const char *boot_log_path(void)
 {
     return g_session_log.path;
 }
+/* Independent from SD log success. Only bounded numeric snapshots enter the
+ * queue; socket setup and send run on the lower-priority worker thread. */
+static void send_runtime_snapshot(unsigned event,uint64_t ms,uint64_t presents,
+ uint64_t vblanks,uint64_t ee,uint64_t core,uint64_t present)
+{
+ int state=runtime_telemetry_state();if(state!=1&&state!=2)return;
+ static uint64_t previous_epoch,previous_log;
+ if(previous_epoch!=g_telemetry_epoch){previous_epoch=g_telemetry_epoch;previous_log=0;}
+ runtime_telemetry_sample s={0};
+ gekko2_profile_get(&s.cpu);gekko2_profile_get_host(&s.present);
+ s.value[RT_EPOCH]=g_telemetry_epoch;
+ s.value[RT_SESSION]=g_session_log.sequence;s.value[RT_MS]=ticks_to_millisecs(gettime()-g_boot_started);
+ s.value[RT_MASK]=gekko2_optimization_mask;s.value[RT_GX]=g_gx_present;
+ for(unsigned i=0;i<GEKKO2_EXP_COUNT;i++)s.value[RT_EXPERIMENTS]|=(uint64_t)gekko2_experimental_enabled(i)<<i;
+ s.value[RT_INTERVAL]=ms;s.value[RT_PRESENTS]=presents;s.value[RT_VBLANKS]=vblanks;s.value[RT_EE]=ee;
+ s.value[RT_CORE_TB]=core;s.value[RT_PRESENT_TB]=present;
+ s.value[RT_LOG_TB]=g_log_ticks>=previous_log?g_log_ticks-previous_log:0;previous_log=g_log_ticks;
+ s.value[RT_GX_TIMEOUTS]=gs_gx_watchdog_count(0);
+ s.value[RT_BLOCK_RETIRED]=ee_jit_get_block_retired();
+ s.value[RT_BUDGET_MISSES]=ee_jit_get_budget_cache_stat(1);
+ s.value[RT_WAY_SCANS]=ee_jit_get_budget_cache_stat(7);s.value[RT_EVENT]=event;
+ runtime_telemetry_submit(&s);
+}
 static void save_boot_progress(const char *event)
 {
+    if(!strcmp(event,"PAUSED")||!strcmp(event,"EXIT_HBC")||!strcmp(event,"GX_FAULT_PAUSED"))
+        send_runtime_snapshot(!strcmp(event,"PAUSED")?2:!strcmp(event,"EXIT_HBC")?3:4,0,0,0,0,0,0);
     uint64_t log_begin=gettime();
     if(!g_fat_mounted)return;
     ee_state_t *e=ee_core_get_state();iop_state_t *i=iop_core_get_state();gs_state_t *g=gs_get_state();
@@ -258,6 +344,7 @@ static void save_boot_progress(const char *event)
     fprintf(f,"EVENT session=%lu kind=%s active_mask=%08lx next_boot_mask=%08lx GX=%d next_GX=%d log_errors=%lu\n",
       (unsigned long)g_session_log.sequence,event,(unsigned long)gekko2_optimization_mask,
       (unsigned long)gekko2_opt_requested(),g_gx_present,g_gx_requested,(unsigned long)g_session_log.errors);
+    fprintf(f,"PS2_CARD present=%d port=0 slot=0 filesystem_hle=standard8m raw_rpc=0 magicgate=0\n",ps2_mc_present());
     fprintf(f,"%s ms=%llu BIOS=%s ROMVER=%s size=%u disc=%d EE=%llu PC=%08x IOP=%llu PC=%08x halted=%d/%d STATUS=%08x CAUSE=%08x EPC=%08x PMODE=%llx DISPFB1=%llx DISPFB2=%llx FIRST_IMAGE=%d\n",
         event,(unsigned long long)ticks_to_millisecs(gettime()-g_boot_started),g_bios.name,g_bios.version_string,(unsigned)g_bios.size,g_disc_ok,
         (unsigned long long)e->instructions_executed,e->pc,(unsigned long long)i->instructions_executed,i->pc,e->halted,i->halted,e->cop0[12],e->cop0[13],e->cop0[14],
@@ -270,6 +357,7 @@ static void save_boot_progress(const char *event)
         (unsigned long long)g->smode2,(unsigned long long)(circuit==1?g->display1:g->display2));
     fprintf(f,"DSI_PROGRESS build=" GEKKO2_BUILD_NAME " status=%d emitted=%lu faults=%lu patched=%lu block_sites=%lu block_prepares=%lu\n",
       dsi_fastmem_status(),(unsigned long)dsi_fastmem_stat(5),(unsigned long)dsi_fastmem_stat(0),(unsigned long)dsi_fastmem_stat(1),(unsigned long)dsi_fastmem_stat(6),(unsigned long)dsi_fastmem_stat(7));
+    game_trace_dump(f,&g_game_trace_cursor);
     frontend_log_close(&g_session_log,f);g_log_ticks+=gettime()-log_begin;
 }
 
@@ -277,7 +365,18 @@ static void save_boot_progress(const char *event)
  * SYS_RETURNTOMENU would go to the Wii System Menu instead. */
 static void wii_exit_to_loader(void)
 {
-    if(g_system_started)save_boot_progress("EXIT_HBC");
+    if(ps2_mc_flush()){
+        draw_loading_screen("Memory card save failed","Check SD card. Exit blocked; retry after fixing it.",0,1);
+        return; /* Keep dirty owners alive for an explicit retry. */
+    }
+    if(g_system_started){
+        FILE *f=frontend_log_open(&g_session_log);
+        if(f){fprintf(f,"CONTROL_ACTION action=exit-loader held=%04x down=%04x home=%u home_down=%u controller=%s slot=%d connected=%u gx_timeouts=%llu\n",
+            g_controller.pad.menu,g_controller.down,g_controller.pad.home,g_controller.home_down,
+            controller_kind_name(g_controller.pad.kind),g_controller.active,g_controller.pad.connected,
+            (unsigned long long)gs_gx_watchdog_count(0));frontend_log_close(&g_session_log,f);}
+        save_boot_progress("EXIT_HBC");
+    }
     audio_output_stop();
     controller_host_shutdown();
     gs_gx_shutdown();
@@ -304,8 +403,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
                              uint64_t ee_ins, uint64_t core_ticks, uint64_t blit_ticks)
 {
     uint64_t log_begin=gettime();
-    if (!g_fat_mounted || !ms) return;
+    if(!ms)return;
+    send_runtime_snapshot(0,ms,presents,events,ee_ins,core_ticks,blit_ticks);
+    if (!g_fat_mounted) return;
     FILE *f=frontend_log_open(&g_session_log);if(!f)return;
+    fprintf(f,"NETWORK_TELEMETRY state=%d schema=1 packet_bytes=%u transport=UDP-background\n",runtime_telemetry_state(),RT_PACKET_BYTES);
     fprintf(f,"LOG_STATUS session=%lu ms=%llu errors=%lu last_errno=%d path=%s\n",
       (unsigned long)g_session_log.sequence,(unsigned long long)ticks_to_millisecs(gettime()-g_boot_started),
       (unsigned long)g_session_log.errors,g_session_log.last_error,boot_log_path());
@@ -319,6 +421,24 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         "on"
 #endif
     );
+    if(!g_game_context_reported){
+        const char *base=strrchr(g_disc_path,'/');base=base?base+1:g_disc_path;
+        char label[96];unsigned n=0;while(base[n]&&n+1<sizeof label){unsigned char c=base[n];label[n]=(c>=32u&&c<127u&&c!='"')?(char)c:'?';n++;}label[n]=0;
+        fprintf(f,"GAME_CONTEXT schema=1 image=\"%s\" identity=selected-filename-not-verified-title trace_capacity=64 raw_memory_dump=0\n",label);
+        g_game_context_reported=1;
+    }
+    game_trace_dump(f,&g_game_trace_cursor);
+    fprintf(f,"GAME_WAIT ee_pc=%08lx iop_pc=%08lx vu_pc=%08lx signal_stalls=%llu path=%u vblank_events=%llu draw_qwords=%llu interpretation=not-a-gameplay-detector\n",
+        (unsigned long)ee_core_get_state()->pc,(unsigned long)iop_core_get_state()->pc,
+        (unsigned long)vu1_get_state()->tpc,(unsigned long long)gif_signal_stall_count(),
+        gif_get_state()->arb_owner,(unsigned long long)events,(unsigned long long)gif_get_state()->quadwords_seen);
+    const ee_state_t *probe_cpu=ee_core_get_state();
+    fprintf(f,"GAME_CPU pc=%08lx next=%08lx epc=%08lx status=%08lx cause=%08lx sp=%08lx ra=%08lx v0=%08lx v1=%08lx a0=%08lx a1=%08lx\n",
+        (unsigned long)probe_cpu->pc,(unsigned long)probe_cpu->next_pc,(unsigned long)probe_cpu->cop0[14],
+        (unsigned long)probe_cpu->cop0[12],(unsigned long)probe_cpu->cop0[13],
+        (unsigned long)probe_cpu->gpr[29].ud0,(unsigned long)probe_cpu->gpr[31].ud0,
+        (unsigned long)probe_cpu->gpr[2].ud0,(unsigned long)probe_cpu->gpr[3].ud0,
+        (unsigned long)probe_cpu->gpr[4].ud0,(unsigned long)probe_cpu->gpr[5].ud0);
     /* BETA12.4: single, read-only Crash E3 NuError capture; no guest mutation.
      * The error routine has already formatted both strings on its stack. */
     if (!g_guest_error_reported) {
@@ -374,6 +494,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)(runtime.ticks[GP_GX_WAIT]-g_runtime_previous.ticks[GP_GX_WAIT]),
       (unsigned long long)(runtime.ticks[GP_IPU]-g_runtime_previous.ticks[GP_IPU]),
       (unsigned long long)runtime.overflows);
+    for(unsigned n=0;n<GP_COUNT;n++)fprintf(f,
+      "PROFILE_COST schema=1 scope=sampled_cpu category=%s ticks=%llu entries=%llu work=%llu unit=%s tb_hz=60750000\n",
+      gekko2_profile_name(n),(unsigned long long)(runtime.ticks[n]-g_runtime_previous.ticks[n]),
+      (unsigned long long)(runtime.entries[n]-g_runtime_previous.entries[n]),
+      (unsigned long long)(runtime.work[n]-g_runtime_previous.work[n]),gekko2_profile_unit(n));
     g_runtime_previous=runtime;
     gekko2_profile front;gekko2_profile_get_host(&front);
     uint64_t front_total=0;for(unsigned n=0;n<GP_COUNT;n++)front_total+=front.ticks[n]-g_front_previous.ticks[n];
@@ -384,6 +509,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)(front.ticks[GP_GX_READBACK]-g_front_previous.ticks[GP_GX_READBACK]),
       (unsigned long long)(front.ticks[GP_GX_WAIT]-g_front_previous.ticks[GP_GX_WAIT]),
       (unsigned long long)front.overflows);
+    for(unsigned n=0;n<GP_COUNT;n++)fprintf(f,
+      "PROFILE_COST schema=1 scope=exact_present category=%s ticks=%llu entries=%llu work=%llu unit=%s tb_hz=60750000\n",
+      gekko2_profile_name(n),(unsigned long long)(front.ticks[n]-g_front_previous.ticks[n]),
+      (unsigned long long)(front.entries[n]-g_front_previous.entries[n]),
+      (unsigned long long)(front.work[n]-g_front_previous.work[n]),gekko2_profile_unit(n));
     g_front_previous=front;
     fprintf(f,"HOST_TIME core_tb=%llu presentation_tb=%llu log_tb=%llu log_ms=%llu\n",
       (unsigned long long)core_ticks,(unsigned long long)blit_ticks,
@@ -490,6 +620,18 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long long)ee_runtime->instructions_executed,(unsigned)iop_runtime->idle,
         (unsigned)iop_runtime->halted,(unsigned long long)iop_runtime->sched_ticks);
     const gs_state_t *scanout=gs_get_state();const gif_state_t *draw_target=gif_get_state();
+    fprintf(f,"GS_PRESENT_LAYOUT smode1=%llx cmod=%u display1_xy=%u,%u mag1=%u,%u display2_xy=%u,%u mag2=%u,%u host=%ux%u policy=full-output wii_widescreen=%d\n",
+        (unsigned long long)scanout->smode1,(unsigned)((scanout->smode1>>13)&3u),
+        (unsigned)(scanout->display1&4095u),(unsigned)((scanout->display1>>12)&2047u),
+        (unsigned)(((scanout->display1>>23)&15u)+1u),(unsigned)(((scanout->display1>>27)&3u)+1u),
+        (unsigned)(scanout->display2&4095u),(unsigned)((scanout->display2>>12)&2047u),
+        (unsigned)(((scanout->display2>>23)&15u)+1u),(unsigned)(((scanout->display2>>27)&3u)+1u),
+        (unsigned)rmode->fbWidth,(unsigned)rmode->xfbHeight,g_present_widescreen);
+    fprintf(f,"GS_DISPLAY_REGS schema=1 PMODE=%llx SMODE2=%llx DISPFB1=%llx DISPLAY1=%llx DISPFB2=%llx DISPLAY2=%llx BGCOLOR=%llx\n",
+        (unsigned long long)scanout->pmode,(unsigned long long)scanout->smode2,
+        (unsigned long long)scanout->dispfb1,(unsigned long long)scanout->display1,
+        (unsigned long long)scanout->dispfb2,(unsigned long long)scanout->display2,
+        (unsigned long long)scanout->bgcolor);
     uint64_t scanout_fb=(scanout->pmode&1u)?scanout->dispfb1:scanout->dispfb2;
     uint64_t scanout_display=(scanout->pmode&1u)?scanout->display1:scanout->display2;
     uint32_t scan_bp,scan_bw,scan_x,scan_y,scan_w,scan_h;
@@ -504,13 +646,23 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
      * Never substitute the other buffer: a legitimate black fade remains black. */
     if (g_first_picture && draw_target->fbp != scan_bp && draw_target->fbw) {
         uint32_t back_probe[6]={0};
-        gs_scanout_probe_rgb(draw_target->fbp,draw_target->fbw,0,0,
-                             scan_w<=640u?scan_w:640u,scan_h<=448u?scan_h:448u,back_probe);
+        gs_scanout_probe_rgb_psm(draw_target->fbp,draw_target->fbw,0,0,
+                             scan_w<=640u?scan_w:640u,scan_h<=448u?scan_h:448u,
+                             draw_target->frame_psm,back_probe);
         fprintf(f,"GS_BUFFER_COMPARE display_bp=%lu display_nonblack=%lu draw_bp=%lu draw_nonblack=%lu disp_size=%lux%lu\n",
           (unsigned long)scan_bp,(unsigned long)color_probe[5],
           (unsigned long)draw_target->fbp,(unsigned long)back_probe[5],
           (unsigned long)scan_w,(unsigned long)scan_h);
     }
+    uint32_t display_hash=0,draw_hash=0;
+    int display_valid=gs_scanout_grid_hash(scan_bp,scan_bw,scan_x,scan_y,scan_w,scan_h,
+                                           (uint32_t)((scanout_fb>>15)&31u),&display_hash);
+    int draw_valid=gs_scanout_grid_hash(draw_target->fbp,draw_target->fbw,0,0,
+                                       scan_w<=640u?scan_w:640u,scan_h<=448u?scan_h:448u,
+                                       draw_target->frame_psm,&draw_hash);
+    fprintf(f,"GS_GRID_HASH schema=1 display_valid=%d display_rgb=%08lx draw_valid=%d draw_rgb=%08lx draw_psm=%lu scope=8x8-sampled-RGB-not-full-frame\n",
+        display_valid,(unsigned long)display_hash,draw_valid,(unsigned long)draw_hash,
+        (unsigned long)draw_target->frame_psm);
     fprintf(f,"GS_PSM_CONVERT converted_pixels=%llu rejected_formats=%llu extended=%d\n",
         (unsigned long long)gs_mem_local_converted_pixels(),
         (unsigned long long)gs_mem_local_rejected_formats(),
@@ -534,7 +686,7 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
        (unsigned long)((scanout_fb>>15)&31u),
        (unsigned)((((scanout_fb>>15)&31u)==0u)||(((scanout_fb>>15)&31u)==1u)||
                   (((scanout_fb>>15)&31u)==2u)||(((scanout_fb>>15)&31u)==10u)),
-       (((scanout_fb>>15)&31u)<=1u)?"GX-or-software":"software-CT16");
+       frontend_allow_gx_output(1,1,(unsigned)((scanout_fb>>15)&31u))?"GX-or-software":"unsupported");
     fprintf(f,"GS_SCANOUT PMODE=%llx DISPFB=%llx DISPLAY=%llx bp=%lu bw=%lu origin=%lu,%lu size=%lux%lu image_probes=%llu draw_bp=%lu draw_bw=%lu draw_psm=%lu\n",
         (unsigned long long)scanout->pmode,(unsigned long long)scanout_fb,(unsigned long long)scanout_display,
         (unsigned long)scan_bp,(unsigned long)scan_bw,(unsigned long)scan_x,(unsigned long)scan_y,
@@ -559,6 +711,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned long long)gs_gx_work_count(0),(unsigned long long)gs_gx_work_count(1),
             (unsigned long long)gs_gx_work_count(2),(unsigned long long)gs_gx_work_count(3),
             (unsigned long long)gs_gx_work_count(4));
+    fprintf(f,"GS_PRESENT schema=1 xfb_updates=%llu guest_copies=%llu hud_updates=%llu gx_copies=%llu sw_attempts=%llu sw_copies=%llu sw_sync_failures=%llu sw_invalid=%llu scope=submitted-XFB-not-hardware-display-proof\n",
+        (unsigned long long)g_xfb_updates,(unsigned long long)g_xfb_guest_copies,
+        (unsigned long long)g_xfb_hud_updates,(unsigned long long)(g_gx_attempts-g_gx_fallbacks),
+        (unsigned long long)g_sw_attempts,(unsigned long long)g_sw_copies,
+        (unsigned long long)g_sw_sync_failures,(unsigned long long)g_sw_invalid);
         fprintf(f,"GX_PIPELINE depth_hw=%llu depth_hybrid=%llu blend_hw=%llu blend_hybrid=%llu z32_split=%llu pabe_split=%llu\n",
         (unsigned long long)gs_gx_pipeline_count(0),(unsigned long long)gs_gx_pipeline_count(1),
         (unsigned long long)gs_gx_pipeline_count(2),(unsigned long long)gs_gx_pipeline_count(3),
@@ -593,6 +750,19 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
             (unsigned long long)ee_jit_get_executed_count(),
             (unsigned long long)ee_jit_get_pc_l0_hit_count(),
             (unsigned long long)ee_jit_get_pc_l0_miss_count());
+    fprintf(f,"EE_CHAIN_RESIDENCY enabled=%llu runs=%llu retired=%llu successors=%llu abi=experimental-clean-write-through\n",
+        (unsigned long long)ee_jit_get_chain_residency_stat(0),
+        (unsigned long long)ee_jit_get_chain_residency_stat(1),
+        (unsigned long long)ee_jit_get_chain_residency_stat(2),
+        (unsigned long long)ee_jit_get_chain_residency_stat(3));
+    fprintf(f,"EXPERIMENTAL_OPTIONS chain_compiled=%u chain_requested=%d chain_active=%d psm_requested=%d psm_active=%d apply=cold-boot\n",
+        (gekko2_experimental_available()>>GEKKO2_EXP_CHAIN)&1u,
+        gekko2_experimental_requested(GEKKO2_EXP_CHAIN),gekko2_experimental_enabled(GEKKO2_EXP_CHAIN),
+        gekko2_experimental_requested(GEKKO2_EXP_PSM),gs_mem_get_local_extended_conversion());
+    fprintf(f,"GX_FENCE completion=ordered-PE-token waits=%llu callbacks=%llu polled=%llu timeouts=%llu aborts=%llu last_reason=%llu\n",
+        (unsigned long long)gs_gx_watchdog_count(4),(unsigned long long)gs_gx_watchdog_count(5),
+        (unsigned long long)gs_gx_watchdog_count(6),(unsigned long long)gs_gx_watchdog_count(0),
+        (unsigned long long)gs_gx_watchdog_count(7),(unsigned long long)gs_gx_watchdog_count(1));
     /* R1358: capture the drain/producer pair in the existing log snapshot.
      * No new per-instruction polling or logging. */
     const dma_state_t *d=dma_get_state();
@@ -602,11 +772,43 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         (unsigned long)gc->chcr,(unsigned long)gc->tadr,(unsigned long)gc->madr,
         (unsigned long)gc->qwc,(unsigned long)gc->last_error,(unsigned long)sp->madr,(unsigned long)sp->last_error);
     const gif_state_t *gif=gif_get_state();
+    const vu1_state_t *vu1=vu1_get_state();
+    fprintf(f,"GIF_SIGNAL_STALL calls=%llu scope=unaccepted-producer-qword\n",
+        (unsigned long long)gif_signal_stall_count());
+    const gif_register_carry_t *blocked=&gif->register_carry_path[GIF_PATH_1];
+    fprintf(f,"GIF_BLOCKED_STATE csr=%08lx imr=%08lx intc_stat=%08lx intc_mask=%08lx tag=%08lx,%08lx,%08lx,%08lx mode=%lu nreg=%lu index=%lu remaining=%lu eop=%lu regs=%08lx,%08lx vif1_stat=%08lx vif1_held_words=%lu uv_fractional=1\n",
+        (unsigned long)gs_get_state()->csr,(unsigned long)gs_get_state()->imr,
+        (unsigned long)ee_intc_get_state()->stat,(unsigned long)ee_intc_get_state()->mask,
+        (unsigned long)gif->gif_tag0,(unsigned long)gif->gif_tag1,
+        (unsigned long)gif->gif_tag2,(unsigned long)gif->gif_tag3,
+        (unsigned long)blocked->mode,(unsigned long)blocked->nreg,
+        (unsigned long)blocked->index,(unsigned long)blocked->remaining,(unsigned long)blocked->eop,
+        (unsigned long)blocked->regs_lo,(unsigned long)blocked->regs_hi,
+        (unsigned long)vif1_get_state()->stat,(unsigned long)vif1_get_state()->stall_words);
+    fprintf(f,"GS_TRANSPORT schema=1 qwords=%llu path1_calls=%llu owner=%u pending=%u fifo=%u image_remaining=%lu,%lu,%lu vu1_running=%u vu1_tpc=%08lx vu1_pairs=%llu vu1_unknown=%llu kick_pending=%u kick_addr=%08lx kick_qwords=%lu kick_busy=%llu kick_deferred=%u kick_deferred_stalls=%llu\n",
+        (unsigned long long)gif->quadwords_seen,(unsigned long long)gif->gif_path1_transfers,
+        (unsigned)gif->arb_owner,(unsigned)gif->arb_pending,(unsigned)gif->fifo_count,
+        (unsigned long)gif->image_carry_path[0],(unsigned long)gif->image_carry_path[1],
+        (unsigned long)gif->image_carry_path[2],(unsigned)vu1->running,(unsigned long)vu1->tpc,
+        (unsigned long long)vu1->instructions_executed,(unsigned long long)vu1->unimplemented_opcodes_seen,
+        (unsigned)vu1->xgkick_pending,(unsigned long)vu1->xgkick_addr,
+        (unsigned long)vu1->xgkick_packet_qwords,(unsigned long long)vu1->xgkick_busy_stalls,
+        (unsigned)vu1->xgkick_deferred,(unsigned long long)vu1->xgkick_deferred_stalls);
     fprintf(f,"GS_STATE frame_psm=%lu prim=%lx prmode=%lx ac=%lu zcfg=%lu ate=%lu fbmask=%lx triangles=%llu sprites=%llu\n",
         (unsigned long)gif->frame_psm,(unsigned long)gif->prim,(unsigned long)gif->prmode,
         (unsigned long)gif->prmodecont_ac,(unsigned long)gif->zbuf_configured,(unsigned long)gif->ate,
         (unsigned long)gif->fbmask,(unsigned long long)gif->triangles_drawn,(unsigned long long)gif->sprites_drawn);
     fprintf(f,"GS_DATE enabled=%d datm=%d tested=%llu rejected=%llu scope=destination-alpha-color-and-depth-rejection\n",gif->date,gif->datm,(unsigned long long)gif_date_stat(0),(unsigned long long)gif_date_stat(1));
+    fprintf(f,"GS_PALETTE cpsm=%u csm=%u csa=%u cbp=%u cld=%u cbw=%u cou=%u cov=%u\n",
+        gif_get_state()->tex_cpsm,gif_get_state()->tex_csm,gif_get_state()->tex_csa,
+        gif_get_state()->tex_cbp,gif_get_state()->tex_cld,gif_get_state()->texclut_cbw,
+        gif_get_state()->texclut_cou,gif_get_state()->texclut_cov);
+    const vu1_state_t *kick=vu1_get_state();
+    fprintf(f,"VU1_XGKICK pending=%u addr=%u packet_qwc=%u ring_qwc=%u eop=%u credit=%llu cycle=%llu stalls=%llu owner=%u pending_paths=%u\n",
+        kick->xgkick_pending,kick->xgkick_addr,kick->xgkick_packet_qwords,kick->xgkick_ring_qwords,
+        kick->xgkick_eop,(unsigned long long)kick->xgkick_cycle_credit,
+        (unsigned long long)kick->pipeline.cycle,(unsigned long long)kick->xgkick_busy_stalls,
+        gif_get_state()->arb_owner,gif_get_state()->arb_pending);
     fprintf(f,"GS_DETAIL zmsk=%lu zte=%lu ztst=%lu tex_psm=%lu tw=%lu th=%lu tcc=%lu tfx=%lu mmag=%lu mmin=%lu dthe=%lu fba=%lu\n",
         (unsigned long)gif->zmsk,(unsigned long)gif->zte,(unsigned long)gif->ztst,(unsigned long)gif->tex_psm,
         (unsigned long)gif->tex_tw,(unsigned long)gif->tex_th,(unsigned long)gif->tex_tcc,(unsigned long)gif->tex_tfx,
@@ -630,6 +832,28 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
       (unsigned long long)gs_gx_native_affine_stat(6),(unsigned long long)gs_gx_native_affine_stat(7),
       (unsigned long long)gs_gx_native_affine_stat(8),(unsigned long long)gs_gx_native_affine_stat(9),
       (unsigned long long)gs_gx_native_affine_stat(10));
+#ifdef GEKKO2_GX_EXTENDED_TRIANGLES
+    fprintf(f,"GX_EXTENDED_MODE compiled=1 gate=GX_GOURAUD+GX_RESIDENT precision=experimental-GX\n");
+#else
+    fprintf(f,"GX_EXTENDED_MODE compiled=0 gate=disabled precision=legacy-path\n");
+#endif
+    fprintf(f,"GX_RISK_MODE available=%u requested=%d enabled=%d candidates=%llu fast_draws=%llu fallback=%llu vertices_saved=%llu apply=cold-boot coverage=experimental-GX-edges\n",
+      (gekko2_experimental_available()>>GEKKO2_EXP_GX_RISK)&1u,
+      gekko2_experimental_requested(GEKKO2_EXP_GX_RISK),gekko2_experimental_enabled(GEKKO2_EXP_GX_RISK),
+      (unsigned long long)gs_gx_extended_stat(12),(unsigned long long)gs_gx_extended_stat(13),
+      (unsigned long long)gs_gx_extended_stat(14),(unsigned long long)gs_gx_extended_stat(15));
+#ifdef GEKKO2_GX_GENERIC_SHADER
+    fprintf(f,"GX_COMMON_SHADER compiled=1 untextured=%llu highlight=%llu fog=%llu varying_vertex_alpha=%llu\n",
+      (unsigned long long)gs_gx_extended_stat(8),(unsigned long long)gs_gx_extended_stat(9),
+      (unsigned long long)gs_gx_extended_stat(10),(unsigned long long)gs_gx_extended_stat(11));
+#else
+    fprintf(f,"GX_COMMON_SHADER compiled=0\n");
+#endif
+    fprintf(f,"GX_EXTENDED_TRIANGLES accepted=%llu bbox_pixels=%llu fragment_checks=%llu color_rejected=%llu z_permissions=%llu source_cache_hits=%llu attempts=%llu GPU_vertices=%llu scope=experimental-GX-RGB-CPU-GS-tests\n",
+      (unsigned long long)gs_gx_extended_stat(0),(unsigned long long)gs_gx_extended_stat(1),
+      (unsigned long long)gs_gx_extended_stat(2),(unsigned long long)gs_gx_extended_stat(3),
+      (unsigned long long)gs_gx_extended_stat(4),(unsigned long long)gs_gx_extended_stat(5),
+      (unsigned long long)gs_gx_extended_stat(6),(unsigned long long)gs_gx_extended_stat(7));
     fprintf(f,"GS_TRIANGLE_TEXTURE_CACHE draws=%llu scope=disjoint-draw-local\n",(unsigned long long)gif_get_triangle_texture_cache_draws());
     /* R1330-K: Gouraud/triangle accounting.  submitted = degenerate + offscreen + visible;
      * visible = gx + software.  These are NOT the legacy gouraud_tri counter above. */
@@ -787,9 +1011,10 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         gekko2_opt_enabled(GEKKO2_OPT_EE_JIT),gekko2_opt_enabled(GEKKO2_OPT_IOP_JIT),gekko2_opt_enabled(GEKKO2_OPT_VU_JIT),
         gekko2_opt_enabled(GEKKO2_OPT_NATIVE_LINKS),gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY),gekko2_opt_enabled(GEKKO2_OPT_WORD_ALLOCATION),
         gekko2_opt_enabled(GEKKO2_OPT_GX_SOURCE_CACHE),gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD),gekko2_opt_enabled(GEKKO2_OPT_GX_DISJOINT_WRITES));
-    fprintf(f,"GX_SYNC reuse=%llu readback=%llu present=%llu reuse_tb=%llu readback_tb=%llu present_tb=%llu\n",
+    fprintf(f,"GX_SYNC reuse=%llu readback=%llu present=%llu reuse_tb=%llu readback_tb=%llu present_tb=%llu submit=%llu submit_tb=%llu\n",
       (unsigned long long)gs_gx_sync_count(0),(unsigned long long)gs_gx_sync_count(1),(unsigned long long)gs_gx_sync_count(2),
-      (unsigned long long)gs_gx_sync_count(4),(unsigned long long)gs_gx_sync_count(5),(unsigned long long)gs_gx_sync_count(6));
+      (unsigned long long)gs_gx_sync_count(4),(unsigned long long)gs_gx_sync_count(5),(unsigned long long)gs_gx_sync_count(6),
+      (unsigned long long)gs_gx_sync_count(3),(unsigned long long)gs_gx_sync_count(7));
     fprintf(f,"EE_BLOCK runs=%llu retired=%llu native_successors=%llu dispatch_hits=%llu\n",(unsigned long long)ee_jit_get_block_count(),(unsigned long long)ee_jit_get_block_retired(),(unsigned long long)ee_jit_get_native_successors(),(unsigned long long)ee_jit_get_dispatch_hits());
 #ifdef GEKKO2_EE_AOT
     fprintf(f,"EE_AOT blocks=%u retired=%llu\n",ee_aot_block_count(),(unsigned long long)ee_aot_retired_count());
@@ -997,11 +1222,11 @@ static void draw_boot_progress_hud(uint64_t ee_instr, uint64_t iop_instr,
  * the doc comment above draw_boot_progress_hud() for the full design.
  * Runs automatically once at startup (called from main()) and is also
  * reachable again from the launcher ("Re-run Boot Flow"). */
-static int g_extended_psm_option;
 static void run_real_boot_flow(void)
 {
-    draw_gradient_background(6, 6, 22, 0, 0, 6);
-    flush_screen();
+    if(gs_gx_faulted())return; /* Lost GPU work cannot be resumed safely. */
+    screen_console_visible(g_hud_default);
+    draw_loading_screen("Preparing BIOS and storage","Please wait...",0,0);
     goto_rc(16, 40);
     printf("Booting real PS2 BIOS...\n");
 
@@ -1011,6 +1236,7 @@ static void run_real_boot_flow(void)
         printf("\n[!] fatInitDefault() failed - no SD/USB storage found.\n");
         printf("    Insert an SD card with /pcsx2/bios/*.bin and restart to\n");
         printf("    boot a real BIOS. Press A or B to open the launcher.\n");
+        draw_loading_screen("Storage unavailable","Insert SD card and restart Gekko2.",0,1);
         wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
         return;
     }
@@ -1033,6 +1259,7 @@ static void run_real_boot_flow(void)
         printf("\n[!] Could not load a PS2 BIOS image from sd:/pcsx2/bios/\n");
         printf("    Place a legally-dumped PS2 BIOS there (e.g. bios.bin) and\n");
         printf("    restart. Press A or B to open the launcher.\n");
+        draw_loading_screen("BIOS not found","Copy your BIOS to sd:/pcsx2/bios/bios.bin",0,1);
         wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
         return;
     }
@@ -1047,23 +1274,29 @@ static void run_real_boot_flow(void)
         vu_jit_reset_for_test();
         ppc_dynarec_reset_translation_stats();
         gekko2_opt_apply();
+        gekko2_experimental_apply_cold_boot();
         g_gx_present=g_gx_requested;
+        game_trace_reset();g_game_trace_cursor=0;g_game_context_reported=0;
         g_boot_started=gettime();g_boot_log_next=0;g_guest_error_reported=0;g_fileio_trace_previous_total=0;
         if(frontend_log_begin(&g_session_log,"sd:/pcsx2/logs",g_boot_disc,g_gx_present)<0)
             printf("Could not create session log (errno=%d).\n",g_session_log.last_error);
         if (system_init(&g_bios, &g_bios) != 0) {
             save_boot_progress("BOOT_FAILED");ee_core_shutdown();iop_core_shutdown();
             printf("Core initialization failed. A/B: launcher.\n");
+            draw_loading_screen("Core initialization failed","See SD session log for details.",0,1);
             wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);return;
         }
         if(cdvd_config_bind_file("sd:/pcsx2/bios-config.bin")<0)printf("BIOS configuration file could not be loaded; saving disabled.\n");
+        if(!ps2_mc_present())ps2_mc_mount("sd:/pcsx2/memcards/MemoryCard1.ps2",0);
         g_system_started = 1;
         g_first_picture=0;
         g_image_probe_attempts=0;
         g_gx_attempts=g_gx_fallbacks=0;
+        g_sw_attempts=g_sw_copies=g_sw_sync_failures=g_sw_invalid=0;
+        g_xfb_updates=g_xfb_guest_copies=g_xfb_hud_updates=0;
         gs_init();
         gs_mem_init();
-        gs_mem_set_local_extended_conversion(g_extended_psm_option);
+        gs_mem_set_local_extended_conversion(gekko2_experimental_enabled(GEKKO2_EXP_PSM));
         gs_mem_reset_local_copy_stats();
         save_boot_progress("BOOT");
     } else {
@@ -1107,6 +1340,7 @@ static void run_real_boot_flow(void)
         } else {
             g_disc_checked=0;
             printf("[!] Selected image could not be mounted: %s\nA/B: launcher.\n",g_disc_path);
+            draw_loading_screen("Disc could not be opened","Check the selected image and SD card.",0,1);
             wait_for_button(PAD_BUTTON_A|PAD_BUTTON_B);return;
         }
         }
@@ -1119,14 +1353,14 @@ static void run_real_boot_flow(void)
     uint32_t frame = 0;
     uint64_t last_present_ms=0,last_present_events=ee_core_get_vblank_events();
     uint64_t last_present_quadwords=UINT64_MAX;
-    uint64_t last_dispfb=UINT64_MAX,last_display=UINT64_MAX,last_pmode=UINT64_MAX,last_smode=UINT64_MAX;
+    uint64_t last_dispfb=UINT64_MAX,last_display=UINT64_MAX,last_pmode=UINT64_MAX,last_smode=UINT64_MAX,last_output_key=UINT64_MAX;
     gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
     g_slice_budget=512;g_fps_milli=g_present_milli=0;
     memset(&g_fps_window,0,sizeof(g_fps_window));
-    system_profile_reset();g_profile_previous=(system_profile_t){0};
+    system_profile_reset();g_telemetry_epoch++;g_profile_previous=(system_profile_t){0};
     g_runtime_previous=g_front_previous=(gekko2_profile){0};g_log_ticks=g_log_previous=0;
     uint64_t total_slices = 0;
-    int stopped_by_user = 0,exit_requested=0;
+    int stopped_by_user = 0,exit_requested=0,gx_fault_paused=0;
     int show_hud = g_hud_default;g_hud_active=show_hud;
 
     if(gekko2_opt_enabled(GEKKO2_OPT_SOUND))audio_output_start();
@@ -1140,7 +1374,7 @@ static void run_real_boot_flow(void)
         if(g_input_exit){exit_requested=1;stopped_by_user=1;break;}
         uint16_t guest_pressed=0;unsigned controls=controller_session(&g_controller,&guest_pressed);
         if(controls==1u){stopped_by_user=1;break;}
-        if(controls==2u){show_hud=!show_hud;g_hud_active=show_hud;last_present_ms=0;}
+        if(controls==2u){show_hud=!show_hud;screen_console_visible(show_hud);g_hud_active=show_hud;last_present_ms=0;}
         if(g_controller.changed||!g_controller.pad.connected){
             pad_latch=(frontend_pad_latch){iop_sio2_pad_sample_count(),0,0};
         }
@@ -1153,6 +1387,7 @@ static void run_real_boot_flow(void)
             total_slices += g_slice_budget;
         }
 
+        if(gs_gx_faulted()){gx_fault_paused=1;break;}
         uint64_t chunk_ticks=gettime()-stage_started;
         perf_core+=chunk_ticks;
         g_slice_budget=frontend_next_budget(g_slice_budget,(uint32_t)ticks_to_millisecs(chunk_ticks),g_throughput?50:20);
@@ -1192,6 +1427,8 @@ static void run_real_boot_flow(void)
         int en1 = (gs->pmode & 0x1u) != 0;
         int en2 = (gs->pmode & 0x2u) != 0;
         int display_active = en1 || en2;
+        int output_merge=gs_output_requires_merge(gs);
+        uint64_t output_key=gs_output_state_key(gs);
         uint64_t current_quadwords=gif_get_state()->quadwords_seen;
         uint64_t current_dispfb=en1?gs->dispfb1:gs->dispfb2;
         uint64_t current_display=en1?gs->display1:gs->display2;
@@ -1200,7 +1437,7 @@ static void run_real_boot_flow(void)
          * changes refresh within 500 ms; real guest VBlank refreshes at once.
          * A five-second fallback covers writes outside normal GIF paths. */
         if(g_first_picture && !show_hud && current_events==last_present_events &&
-           current_quadwords==last_present_quadwords && current_dispfb==last_dispfb &&
+           current_quadwords==last_present_quadwords && output_key==last_output_key && current_dispfb==last_dispfb &&
            current_display==last_display && gs->pmode==last_pmode && gs->smode2==last_smode &&
            now_display_ms>=last_present_ms && now_display_ms-last_present_ms<5000)present_due=0;
         if(frontend_probe_first_image(present_due,display_active,g_first_picture)) {
@@ -1208,14 +1445,22 @@ static void run_real_boot_flow(void)
             decode_dispfb(current_dispfb,&probe_bp,&probe_bw);
             gs_decode_display_region(current_dispfb,current_display,gs->smode2,&sx,&sy,&sw,&sh);
             g_image_probe_attempts++;
-            if(probe_bw && gs_display_has_rgb_psm(probe_bp,probe_bw,sx,sy,sw,sh,
-                         (uint32_t)((current_dispfb>>15)&31u))) {
+            if(output_merge?gs_output_has_rgb(gs):(probe_bw && gs_display_has_rgb_psm(probe_bp,probe_bw,sx,sy,sw,sh,
+                         (uint32_t)((current_dispfb>>15)&31u)))) {
                 g_first_picture=1;save_boot_progress("FIRST_IMAGE");
             }
         }
         gs_gx_set_render_enabled(frontend_allow_gx_primitives(g_gx_present,g_first_picture));
         if(present_due)VIDEO_WaitVSync();
+        int guest_copied=0;
         if (present_due && display_active && !show_hud) {
+            if(output_merge){
+                g_sw_attempts++;
+                int copied=g_first_picture?gs_output_present_checked(gs,xfb,rmode->fbWidth,rmode->xfbHeight):0;
+                if(copied>0){g_sw_copies++;guest_copied=1;}
+                else if(copied<0)g_sw_sync_failures++;
+                else g_sw_invalid++;
+            }else{
             uint64_t active_dispfb = en1 ? gs->dispfb1 : gs->dispfb2;
             uint32_t bp_words, bw_pixels;
             decode_dispfb(active_dispfb, &bp_words, &bw_pixels);
@@ -1227,19 +1472,29 @@ static void run_real_boot_flow(void)
                 int gx_ok=0;
                 if(frontend_allow_gx_output(g_gx_present,g_first_picture,(unsigned)((active_dispfb>>15)&31u))) {
                     g_gx_attempts++;
-                    gx_ok=gs_gx_present(xfb,rmode,bp_words,bw_pixels,sx,sy,sw,sh);
+                    gx_ok=gs_gx_present_psm(xfb,rmode,bp_words,bw_pixels,sx,sy,sw,sh,(unsigned)((active_dispfb>>15)&31u));
+                    if(gs_gx_faulted()){gekko2_profile_stop();gx_fault_paused=1;break;}
                     if(!gx_ok)g_gx_fallbacks++;
+                    if(gx_ok)guest_copied=1;
                 }
-                if(g_first_picture && !gx_ok)
-                    gs_blit_scaled_psm_to_xfb(xfb, rmode->fbWidth, blit_h,
+                if(g_first_picture && !gx_ok) {
+                    g_sw_attempts++;
+                    int copied=gs_blit_scaled_psm_to_xfb_checked(xfb, rmode->fbWidth, blit_h,
                                           bp_words, bw_pixels, sx, sy, sw, sh,
                                           (uint32_t)((active_dispfb>>15)&31u));
+                    if(copied>0){g_sw_copies++;guest_copied=1;}
+                    else if(copied<0)g_sw_sync_failures++;
+                    else g_sw_invalid++;
+                }
 
+            }
             }
         }
 
+        if(gs_gx_faulted()){gekko2_profile_stop();gx_fault_paused=1;break;}
         if(present_due){
-        if (show_hud || !display_active || !g_first_picture) {
+        if (show_hud) {
+        g_xfb_hud_updates++;
         draw_boot_progress_hud(ee->instructions_executed, iop->instructions_executed,
                                 ee->halted, iop->halted, ee->halt_reason, iop->halt_reason,
                                 display_active);
@@ -1249,6 +1504,11 @@ static void run_real_boot_flow(void)
           g_gx_present,gs_gx_ready(),g_gx_present,g_first_picture,
           (unsigned long)gs_mem_gpu_pending(),(unsigned long)gs_mem_sync_failures());
         frame++;
+        } else if(!g_first_picture) {
+            draw_loading_screen(g_boot_disc?"Starting disc":"Starting PlayStation 2 BIOS",
+                "Waiting for the first emulated picture...",
+                ticks_to_millisecs(gettime()-g_boot_started),0);
+            frame++;
         } else {
             VIDEO_SetNextFramebuffer(xfb); VIDEO_Flush();
             frame++;
@@ -1256,9 +1516,11 @@ static void run_real_boot_flow(void)
 
         if(g_fps_default && g_first_picture && !show_hud)draw_fps_overlay();
         flush_screen();
+        g_xfb_updates++;
+        if(guest_copied)g_xfb_guest_copies++;
         perf_presents++;last_present_ms=now_display_ms;last_present_events=current_events;
         last_present_quadwords=current_quadwords;last_dispfb=current_dispfb;last_display=current_display;
-        last_pmode=gs->pmode;last_smode=gs->smode2;
+        last_pmode=gs->pmode;last_smode=gs->smode2;last_output_key=output_key;
         }
         gekko2_profile_stop();
         perf_blit+=gettime()-stage_started;
@@ -1284,9 +1546,13 @@ static void run_real_boot_flow(void)
     if(final_ms)save_performance(final_ms,perf_presents,ee_core_get_vblank_events()-perf_events,
       ee->instructions_executed-perf_ee,perf_core,perf_blit);
     audio_output_stop();
-    save_boot_progress(exit_requested?"EXIT_REQUEST":stopped_by_user?"PAUSED":"STOPPED");
+    save_boot_progress(gx_fault_paused?"GX_FAULT_PAUSED":exit_requested?"EXIT_REQUEST":stopped_by_user?"PAUSED":"STOPPED");
+    if(ps2_mc_flush()) {
+        draw_loading_screen("Memory card save failed","Dirty data retained. Check SD and retry.",0,1);
+        wait_for_button(PAD_BUTTON_A|PAD_BUTTON_B);
+    }
     if(exit_requested)wii_exit_to_loader();
-    if (stopped_by_user) return;
+    if (stopped_by_user||gx_fault_paused) return;
     goto_rc(16, 400);
     if (stopped_by_user)
         printf("Stopped by user (B held).                                          \n");
@@ -1295,6 +1561,8 @@ static void run_real_boot_flow(void)
     else
         printf("Reached the safety instruction cap - still executing real code.    \n");
     printf("\nPress A or B to open the launcher.\n");
+    if(!show_hud)draw_loading_screen("Emulation stopped",ee->halted && iop->halted?
+        "Both processors halted. See SD log for details.":"Safety limit reached. See SD log for details.",0,1);
     wait_for_button(PAD_BUTTON_A | PAD_BUTTON_B);
 }
 
@@ -1303,25 +1571,30 @@ static void run_real_boot_flow(void)
 
 static void gs_compat_load(void)
 {
-    FILE *f=fopen("sd:/pcsx2/gs-compat.cfg","r");
-    int v=0;
-    if(f){if(fscanf(f,"GEKKO2_GS_EXTENDED_PSM %d",&v)==1)g_extended_psm_option=(v==1);fclose(f);}
+    gekko2_experimental_load(GEKKO2_EXP_PSM,"sd:/pcsx2/gs-compat.cfg");
+    gekko2_experimental_load(GEKKO2_EXP_CHAIN,"sd:/pcsx2/jit-chain.cfg");
+    gekko2_experimental_load(GEKKO2_EXP_GX_RISK,"sd:/pcsx2/gx-risk.cfg");
 }
-static int gs_compat_save(void)
+static const char *experiment_toggle_save(unsigned n)
 {
-    FILE *f=fopen("sd:/pcsx2/gs-compat.cfg.tmp","w");
-    if(!f)return -1;
-    int ok=fprintf(f,"GEKKO2_GS_EXTENDED_PSM %d\n",g_extended_psm_option)>0;
-    if(fclose(f))ok=0;
-    if(!ok)return -1;
-    if(rename("sd:/pcsx2/gs-compat.cfg.tmp","sd:/pcsx2/gs-compat.cfg")!=0){
-        remove("sd:/pcsx2/gs-compat.cfg");
-        if(rename("sd:/pcsx2/gs-compat.cfg.tmp","sd:/pcsx2/gs-compat.cfg")!=0)return -1;
-    }
-    return 0;
+ static const char *paths[GEKKO2_EXP_COUNT]={"sd:/pcsx2/jit-chain.cfg","sd:/pcsx2/gs-compat.cfg","sd:/pcsx2/gx-risk.cfg"};
+ if(n>=GEKKO2_EXP_COUNT||!gekko2_experimental_request(n,!gekko2_experimental_requested(n)))return "Experiment is not compiled into this build.";
+ return gekko2_experimental_save(n,paths[n])==0?"Saved. Applies at next cold boot.":"Not saved. Check SD space / directory.";
+}
+static void frontend_preferences_load(void)
+{
+ frontend_settings s;frontend_settings_defaults(&s);
+ if(g_fat_mounted)frontend_settings_load(&s,"sd:/pcsx2/frontend.cfg");
+ g_hud_default=s.hud;g_throughput=s.throughput;g_fps_default=s.fps;g_gx_requested=s.gx;
+}
+static int frontend_preferences_save(void)
+{
+ frontend_settings s={(unsigned)g_hud_default,(unsigned)g_throughput,(unsigned)g_fps_default,(unsigned)g_gx_requested};
+ return frontend_settings_save(&s,"sd:/pcsx2/frontend.cfg");
 }
 static int cold_boot_session(int disc)
 {
+ if(ps2_mc_flush())return -1;
 #ifdef GEKKO2_ARM_BETA
  /* Launcher changes precede the first BIOS/disc handles and ARM requests.
   * A paused session requires an app restart; never reload its live IOS. */
@@ -1347,16 +1620,19 @@ int main(int argc, char **argv)
 {
     (void)argc;(void)argv;
     wii_console_setup();
+    draw_loading_screen("Preparing Gekko2","Reading saved settings...",0,0);
     if (!g_fat_mounted) g_fat_mounted = fatInitDefault() ? 1 : 0;
     int opt_load_status=g_fat_mounted?gekko2_opt_load("sd:/pcsx2/optimization.cfg"):-1;
     if(g_fat_mounted)gs_compat_load();
+    frontend_preferences_load();
     gekko2_opt_apply(); /* Startup must use loaded settings before IOS selection. */
 #ifdef GEKKO2_ARM_BETA
     /* Both saved ARM and explicit IOS222 selection are required for reload.
      * Restart after changing ARM: never reload IOS inside a guest session. */
     int ios_result=wii_arm_ios_start((gekko2_opt_enabled(GEKKO2_OPT_ARM_WORKER)||gekko2_opt_enabled(GEKKO2_OPT_ARM_CPU_RAM))&&gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222)?222:0,&g_fat_mounted);
-    if(ios_result==-4){printf("IOS recovery failed. Restart Wii before using Gekko2.\n");return 1;}
+    if(ios_result==-4){draw_loading_screen("IOS recovery failed","Restart the Wii before using Gekko2.",0,1);wait_for_button(PAD_BUTTON_A|PAD_BUTTON_B);return 1;}
 #endif
+    runtime_telemetry_start("sd:/pcsx2/telemetry.cfg");
     /* Persist a fresh identity before the first launcher draw. Previous
      * BIOS logs can survive a failed startup and must not identify this run. */
     {
@@ -1369,38 +1645,52 @@ int main(int argc, char **argv)
                 1
 #endif
             );
+            fprintf(boot,"FRONTEND_OPTIONS hud=%d throughput=%d fps=%d gx_requested=%d gx_session=%d\n",g_hud_default,g_throughput,g_fps_default,g_gx_requested,g_gx_present);
             fprintf(boot,"OPTIONS load_status=%d requested=%08lx active=%08lx ios222=%d\n",opt_load_status,(unsigned long)gekko2_opt_requested(),(unsigned long)gekko2_optimization_mask,gekko2_opt_enabled(GEKKO2_OPT_ARM_IOS222));
+            fprintf(boot,"EXPERIMENTAL_OPTIONS chain_compiled=%u chain_requested=%d chain_active=%d psm_requested=%d psm_active=%d apply=next-cold-boot\n",
+                (gekko2_experimental_available()>>GEKKO2_EXP_CHAIN)&1u,
+                gekko2_experimental_requested(GEKKO2_EXP_CHAIN),gekko2_experimental_enabled(GEKKO2_EXP_CHAIN),
+                gekko2_experimental_requested(GEKKO2_EXP_PSM),gekko2_experimental_enabled(GEKKO2_EXP_PSM));
+            fprintf(boot,"GX_RISK_MODE available=%u requested=%d enabled=%d apply=next-cold-boot\n",
+                (gekko2_experimental_available()>>GEKKO2_EXP_GX_RISK)&1u,
+                gekko2_experimental_requested(GEKKO2_EXP_GX_RISK),gekko2_experimental_enabled(GEKKO2_EXP_GX_RISK));
             fprintf(boot,"ARM_IOS status=%d original=%u active=%u\n",wii_arm_ios_status(),wii_arm_ios_original(),wii_arm_ios_active());
             fclose(boot);
         }
     }
-    int selected=0,page=0,redraw=1,opt_selected=0;
+    int selected=0,page=0,redraw=1,opt_selected=0,settings_selected=0,experiment_selected=0,network_selected=0;
+    runtime_telemetry_settings network_edit;runtime_telemetry_get_settings(&network_edit);
+    uint64_t network_refresh=0,network_repeat=0;
     const char *notice="SD: pcsx2/bios/ and pcsx2/games/";
-#ifdef PCSX2WII_JIT_DISABLE
-    const char *engine="INTERPRETER";
-#else
-    const char *engine="PPC JIT";
-#endif
     for (;;) {
+        screen_console_visible(0); /* Launcher uses its own text renderer. */
+        if(page==6&&gettime()>=network_refresh){redraw=1;network_refresh=gettime()+millisecs_to_ticks(250);}
         if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
             if(page==4){
                 ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
-                ui_text(launcher_rect,36,415,1,
-                  g_extended_psm_option?"X: EXPERIMENTAL PSM CONVERSION ON":"X: EXPERIMENTAL PSM CONVERSION OFF",
-                  227,197,114);
-                char ios_line[90];snprintf(ios_line,sizeof ios_line,"Current IOS: %u | %s",wii_arm_ios_active(),wii_arm_ios_message());
-                ui_text(launcher_rect,36,343,1,ios_line,117,186,237);
             }
+            else if(page==6){runtime_telemetry_status status;runtime_telemetry_settings active;
+                runtime_telemetry_get_status(&status);runtime_telemetry_get_settings(&active);
+                ui_network_draw(launcher_rect,network_selected,&network_edit,&active,&status,notice);
+            }
+            else if(page==5)ui_experiments_draw(launcher_rect,experiment_selected,notice);
+            else if(page==1)ui_settings_draw(launcher_rect,settings_selected,g_hud_default,g_throughput,g_fps_default,g_gx_requested,notice);
             else if(page==3)ui_browser_draw(launcher_rect,&g_browser,notice);
-            else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_requested,engine,notice);
+            else ui_draw(launcher_rect,selected,page,g_system_started,g_hud_default,g_throughput,g_fps_default,g_gx_requested,g_system_started?gekko2_optimization_mask:gekko2_opt_requested(),notice);
             flush_screen();redraw=0;}
         VIDEO_WaitVSync();wii_input_scan();uint16_t down=g_input_down;
+        if(page==6&&network_selected>=RT_EDIT_IP1&&network_selected<=RT_EDIT_PORT){
+            uint16_t held=g_input_held&(PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT);
+            if(down&(PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT))network_repeat=gettime()+millisecs_to_ticks(350);
+            else if(held&&gettime()>=network_repeat){down|=held;network_repeat=gettime()+millisecs_to_ticks(80);}
+            if(!held)network_repeat=0;
+        }
         if(g_input_exit || (g_input_home && page==0))wii_exit_to_loader();
         if(g_input_home){page=0;redraw=1;continue;}
         if(!down)continue;
         redraw=1;
         if(down&PAD_BUTTON_START) {
-            if(g_system_started){page=0;run_real_boot_flow();notice="Paused. START resumes; COLD BOOT starts a new log.";}
+            if(g_system_started){page=0;run_real_boot_flow();notice=gs_gx_faulted()?"GX fence failed. Restart app from HBC; resume blocked.":"Paused. START resumes; COLD BOOT starts a new log.";}
             else notice="No paused session. Choose BIOS or DISC.";
             continue;
         }
@@ -1422,35 +1712,89 @@ int main(int argc, char **argv)
             continue;
         }
         if(page){
-            if(page==4){
-                if(down&PAD_BUTTON_B)page=1;
-                else if(down&PAD_BUTTON_X){
-                    g_extended_psm_option=!g_extended_psm_option;
-                    notice=gs_compat_save()==0?"GS option saved. Next cold boot.":"GS option not saved to SD.";
+            if(page==6){
+                if(down&PAD_BUTTON_B){page=1;notice="Network edits apply only with SAVE / APPLY.";}
+                else if(down&PAD_BUTTON_UP)network_selected=(network_selected+RT_EDIT_COUNT-1)%RT_EDIT_COUNT;
+                else if(down&PAD_BUTTON_DOWN)network_selected=(network_selected+1)%RT_EDIT_COUNT;
+                else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT|PAD_BUTTON_X|PAD_BUTTON_Y)){
+                    if(network_selected==RT_EDIT_SAVE&&(down&PAD_BUTTON_A)){
+                        if(!g_fat_mounted)g_fat_mounted=fatInitDefault()?1:0;
+                        if(g_fat_mounted)mkdir("sd:/pcsx2",0777);
+                        if(runtime_telemetry_save("sd:/pcsx2/telemetry.cfg",&network_edit))notice="Not saved. Check PC IPv4, port and SD.";
+                        else if(runtime_telemetry_apply(&network_edit))notice="Saved; network start failed. See status/error.";
+                        else{notice=network_edit.enabled?"Saved. Start PC logger, then SEND TEST PACKET.":"Saved. Network logger OFF.";}
+                    }else if(network_selected==RT_EDIT_TEST&&(down&PAD_BUTTON_A)){
+                        int rc=runtime_telemetry_test();notice=rc==-2?"Network queue full. Wait and retry test.":rc?"Enable and SAVE first. Retry SAVE after failure.":"Test queued. Wait for PC RECEIPT CONFIRMED.";
+                    }
+                    else{
+                        int delta=down&PAD_BUTTON_LEFT?-1:down&PAD_BUTTON_X?-10:down&PAD_BUTTON_Y?10:1;
+                        if(network_selected==RT_EDIT_PORT&&(down&(PAD_BUTTON_X|PAD_BUTTON_Y)))delta*=100;
+                        if(runtime_telemetry_adjust(&network_edit,(unsigned)network_selected,delta))notice="Editing only. Choose SAVE / APPLY when ready.";
+                    }
                 }
+            }else if(page==4){
+                if(down&PAD_BUTTON_B)page=1;
+                else if(down&PAD_BUTTON_X)notice=experiment_toggle_save(GEKKO2_EXP_PSM);
+                else if(down&PAD_BUTTON_Y)notice=experiment_toggle_save(GEKKO2_EXP_CHAIN);
                 else if(down&PAD_BUTTON_UP)opt_selected=(opt_selected+GEKKO2_OPT_COUNT-1)%GEKKO2_OPT_COUNT;
                 else if(down&PAD_BUTTON_DOWN)opt_selected=(opt_selected+1)%GEKKO2_OPT_COUNT;
                 else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT)){
-                    if(gekko2_opt_toggle(opt_selected))
+                    if(gekko2_opt_toggle((unsigned)opt_selected))
                         notice=gekko2_opt_save("sd:/pcsx2/optimization.cfg")==0?
-                            (opt_selected==GEKKO2_OPT_ARM_WORKER||opt_selected==GEKKO2_OPT_ARM_IOS222||opt_selected==GEKKO2_OPT_ARM_CPU_RAM?"Saved. Exit to HBC and restart for ARM / IOS.":"Saved. Applies to the next cold boot."):
-                            "Could not save options to SD. Check card / directory.";
-                    else notice="This option is unavailable in this build.";
+                          (opt_selected==GEKKO2_OPT_ARM_WORKER||opt_selected==GEKKO2_OPT_ARM_IOS222||opt_selected==GEKKO2_OPT_ARM_CPU_RAM?"Saved. ARM / IOS needs app restart.":"Saved. Applies at next cold boot."):
+                          "Not saved. Check SD space / directory.";
+                    else notice="Backend is not compiled into this build.";
                 }
-                continue;
-            }
-            if(down&PAD_BUTTON_B)page=0;
-            else if(page==1){if(down&PAD_BUTTON_A)g_hud_default=!g_hud_default;if(down&PAD_BUTTON_X)g_throughput=!g_throughput;if(down&PAD_BUTTON_Y)g_fps_default=!g_fps_default;
-                if(down&PAD_BUTTON_DOWN){page=4;notice="A / LEFT / RIGHT: toggle. Next cold boot.";continue;}
-                if(down&(PAD_BUTTON_RIGHT|PAD_BUTTON_LEFT)){g_gx_requested=!g_gx_requested;
-                    notice=g_gx_requested?"Next cold boot: GX ON.":"Next cold boot: GX OFF.";}}
+            }else if(page==5){
+                if(down&PAD_BUTTON_B)page=1;
+                else if(down&PAD_BUTTON_UP)experiment_selected=(experiment_selected+GEKKO2_EXP_COUNT-1)%GEKKO2_EXP_COUNT;
+                else if(down&PAD_BUTTON_DOWN)experiment_selected=(experiment_selected+1)%GEKKO2_EXP_COUNT;
+                else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT))notice=experiment_toggle_save((unsigned)experiment_selected);
+            }else if(page==1){
+                if(down&PAD_BUTTON_B)page=0;
+                else if(down&PAD_BUTTON_UP)settings_selected=(settings_selected+UI_SET_COUNT-1)%UI_SET_COUNT;
+                else if(down&PAD_BUTTON_DOWN)settings_selected=(settings_selected+1)%UI_SET_COUNT;
+                else if(down&(PAD_BUTTON_A|PAD_BUTTON_LEFT|PAD_BUTTON_RIGHT)){
+                    int rc=0;
+                    switch(settings_selected){
+                    case UI_SET_RENDERER:g_gx_requested=!g_gx_requested;rc=frontend_preferences_save();break;
+                    case UI_SET_HUD:g_hud_default=!g_hud_default;rc=frontend_preferences_save();break;
+                    case UI_SET_UPDATE:g_throughput=!g_throughput;rc=frontend_preferences_save();break;
+                    case UI_SET_FPS:g_fps_default=!g_fps_default;rc=frontend_preferences_save();break;
+                    case UI_SET_SOUND:gekko2_opt_toggle(GEKKO2_OPT_SOUND);rc=gekko2_opt_save("sd:/pcsx2/optimization.cfg");break;
+                    case UI_SET_PROFILE:
+                        gekko2_opt_request_profile(!strcmp(gekko2_opt_profile_name(),"WII BASE")?GEKKO2_PROFILE_INTERPRETER:GEKKO2_PROFILE_BASE);
+                        rc=gekko2_opt_save("sd:/pcsx2/optimization.cfg");break;
+                    case UI_SET_EXPERIMENTS:page=5;break;
+                    case UI_SET_DEVELOPER:page=4;break;
+                    case UI_SET_NETWORK:runtime_telemetry_get_settings(&network_edit);
+                        page=6;network_selected=0;network_refresh=0;break;
+                    case UI_SET_DEFAULTS:{
+                        frontend_settings defaults;frontend_settings_defaults(&defaults);
+                        g_hud_default=defaults.hud;g_throughput=defaults.throughput;g_fps_default=defaults.fps;g_gx_requested=defaults.gx;
+                        gekko2_opt_reset_requested();rc=frontend_preferences_save();
+                        if(gekko2_opt_save("sd:/pcsx2/optimization.cfg"))rc=-1;
+                        const char *paths[GEKKO2_EXP_COUNT]={"sd:/pcsx2/jit-chain.cfg","sd:/pcsx2/gs-compat.cfg","sd:/pcsx2/gx-risk.cfg"};
+                        for(unsigned n=0;n<GEKKO2_EXP_COUNT;n++){
+                            gekko2_experimental_request(n,0);
+                            if(gekko2_experimental_save(n,paths[n]))rc=-1;
+                        }
+                        runtime_telemetry_settings network_default;runtime_telemetry_get_settings(&network_default);
+                        network_default.enabled=0;
+                        if(runtime_telemetry_save("sd:/pcsx2/telemetry.cfg",&network_default))rc=-1;
+                        else if(runtime_telemetry_apply(&network_default))rc=-1;
+                        break;}
+                    }
+                    notice=page==6?"Enter PC IPv4 from Windows logger. Save, then test.":rc?"Some settings were not saved. Check SD.":"Saved. CPU / GX: cold boot; ARM / IOS: restart.";
+                }
+            }else if(down&PAD_BUTTON_B)page=0;
 
             continue;
         }
         if(down&(PAD_BUTTON_UP|PAD_BUTTON_LEFT))selected=(selected+UI_MENU_COUNT-1)%UI_MENU_COUNT;
         else if(down&(PAD_BUTTON_DOWN|PAD_BUTTON_RIGHT))selected=(selected+1)%UI_MENU_COUNT;
         else if(down&PAD_BUTTON_A){
-            if(selected==UI_EXIT)wii_exit_to_loader();
+            if(selected==UI_EXIT){wii_exit_to_loader();notice="Memory card save failed; dirty data retained.";continue;}
             if(selected==UI_SETTINGS||selected==UI_ABOUT){page=selected==UI_SETTINGS?1:2;continue;}
             int disc=selected==UI_COLD_BOOT?g_boot_disc:selected==UI_DISC;
             if(selected==UI_SELECT_DISC||(disc&&!g_disc_path[0])) {
@@ -1460,10 +1804,10 @@ int main(int argc, char **argv)
                 if(frontend_browser_init(&g_browser,"sd:/","sd:/pcsx2/games/")<0){notice="Could not open SD card.";continue;}
                 page=3;notice="Choose an ISO / BIN / CHD file.";continue;
             }
-            if(cold_boot_session(disc)<0){notice="Cold boot blocked: GX ownership could not resolve.";continue;}
+            if(cold_boot_session(disc)<0){notice=gs_gx_faulted()?"GX fence failed. Restart app from HBC; resume blocked.":"Cold boot blocked: GX ownership could not resolve.";continue;}
             notice=g_session_log.errors?"Log write failed. Check SD space / access.":
               (disc&&g_system_started&&!g_disc_ok)?"Selected disc failed to mount. SELECT DISC to retry.":
-              g_system_started?"Paused. START resumes; COLD BOOT starts a new log.":"Boot failed. Check BIOS paths on SD.";
+              gs_gx_faulted()?"GX fence failed. Restart app from HBC; resume blocked.":g_system_started?"Paused. START resumes; COLD BOOT starts a new log.":"Boot failed. Check BIOS paths on SD.";
         }
     }
     return 0;
