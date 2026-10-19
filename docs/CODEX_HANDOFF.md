@@ -1,5 +1,11 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Latest frontend / repository cleanup:** [report](ALPHA-FRONTEND-CLEANUP.md).
+Runtime `33b057f`, consolidated draft #51 targets main. Default loading screen;
+reuses saved HUD as On-screen logs, SD/network unaffected. Documentation-only
+#52 merged as `999df60`; no runtime merged. 31 ancestor drafts closed, other
+PRs/branches/downloads retained. Physical loading-screen acceptance still open.
+
 **Owner alpha target / GT2000 demo, 19 October:** branch
 `codex/gt2000-demo-progression`, runtime `ccb7d5c`, on #49.
 [Alpha readiness](ALPHA-READINESS-2026-10-19.md). Five <=32-MiB split ZIP

@@ -1,5 +1,10 @@
 # Gekko2 SPEED BETA12.33 – 19 October 2026
 
+**Alpha frontend / GitHub cleanup:** [report](docs/ALPHA-FRONTEND-CLEANUP.md).
+Public README updated via documentation-only #52; runtime remains on draft #51.
+Loading screen by default, saved optional on-screen logs; no new gameplay/FPS
+claim. 31 included drafts superseded; branches and downloads retained.
+
 **Alpha-/Demo-Prüfung:** branch `codex/gt2000-demo-progression`, Runtime
 `ccb7d5c`. [Aktueller Alpha-Stand](docs/ALPHA-READINESS-2026-10-19.md).
 Die hochgeladene GT2000-Demo ist vollständig; der Host-Kaltstart bleibt nach

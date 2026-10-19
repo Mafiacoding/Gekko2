@@ -2,6 +2,7 @@
 
 | Topic | Current entry point |
 | --- | --- |
+| Frontend and repository cleanup | [Current cleanup report](ALPHA-FRONTEND-CLEANUP.md) |
 | Installation, loading screen and optional diagnostics | [User guide](USER-GUIDE.md) |
 | Current devkitPro / libogc and verification | [Build guide](BUILDING.md) |
 | Alpha readiness, evidence and release blockers | [Alpha readiness](ALPHA-READINESS-2026-10-19.md) |

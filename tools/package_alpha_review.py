@@ -21,6 +21,10 @@ out=a.output.resolve();assert out!=root and root not in out.parents,'keep review
 # Exact names only: the reports directory may also contain private captures.
 host=json.loads((a.reports/'host.json').read_text())
 linked=json.loads((a.reports/'linked.json').read_text())
+console=json.loads((a.reports/'console.json').read_text())
+loading=json.loads((a.reports/'loading.json').read_text())
+assert len(console)==2 and all(r['exit_code']==0 for r in console)
+assert loading['exit_code']==0
 assert len(host)==90 and all(r['exit_code']==0 for r in host)
 assert len(linked)==6 and all(r['exit_code']==0 for r in linked)
 required={'verify_cdvd_error_rpc_linked.py','verify_masked_window_linked.py','verify_event_scheduler_r1353.py'}
@@ -38,15 +42,19 @@ for variant,label in [('GX','control'),('GX-Chain','chain')]:
  rows=[r for r in linked if r['elf']==name+'.elf']
  assert len(rows)==3 and {r['test'] for r in rows}==required
  assert all(r['elf_sha256']==sha(elf) for r in rows)
+ screen=[r for r in console if r['elf']==name+'.elf']
+ assert len(screen)==1 and screen[0]['elf_sha256']==sha(elf)
  binaries[name+'.dol']=dict(sha256=sha(data),bytes=len(data))
  gates[label]=dict(memory=memory,elf_sha256=sha(elf))
 # The control build omits chain-residency compilation; no experimental mode
 # is enabled by this package. Existing user SD settings are not overwritten.
 selected='Gekko2-BETA12.33-GX.dol';data=(root/selected).read_bytes()
+assert loading['elf']=='Gekko2-BETA12.33-GX.elf'
+assert loading['elf_sha256']==sha((root/loading['elf']).read_bytes())
 manifest=dict(kind='private-review-candidate',public_alpha_released=False,
  build_commit=build,source_commit=source,selected_dol=selected,
  toolchain='devkitPPC r50 GCC16.1.0 / libogc3.1.0; retained SPEED/AOT/DSI/GX fence flags',
- host_groups=90,linked_ppc_groups=6,physical_wii_tested=False,
+ host_groups=90,linked_ppc_groups=9,physical_wii_tested=False,
  gameplay_verified=False,wii_fps_gain_verified=False,bios_tile_fix_verified=False,
  included_owner_assets=False,binaries=binaries,gates=gates)
 meta=ET.fromstring((root/'meta.xml').read_bytes())
@@ -60,6 +68,9 @@ readme=('Gekko2: privater Alpha-Pruefkandidat '+build[:7]+'\n\n'
  'und schreibt keine Optionsdatei. Bestehende Einstellungen gelten weiterhin.\n'
  'Zum Abnahmetest Event-Scheduler, PSM-Konvertierung und GX-Risiko deaktivieren;\n'
  '128-Bit-Kettenresidenz ist in diesem Kontrollbuild nicht einkompiliert.\n\n'
+ 'Ladebildschirm ist Standard. Settings > On-screen logs schaltet die\n'
+ 'gespeicherte Bildschirmdiagnose um; SD-/Netzwerklogs sind unabhaengig.\n'
+ 'Alte gespeicherte HUD-ON-Einstellungen bleiben ON.\n\n'
  'Wii-Abnahme: HBC-Start, Controller, Einstellungen speichern, Cold Boot,\n'
  'erste BIOS-Ausgabe, Rueckkehr ins Menue und HBC. Release-ID, Build-ID und\n'
  'aktive Optionen im Log kontrollieren. Der Agent hat keine echte Wii getestet.\n\n'
@@ -70,6 +81,8 @@ items={'apps/Gekko2/boot.dol':data,
  'apps/Gekko2/icon.png':(root/'assets/branding/icon.png').read_bytes(),
  'README-DE.txt':readme.encode(),
  'ALPHA-STAND.md':(root/'docs/ALPHA-READINESS-2026-10-19.md').read_bytes(),
+ 'USER-GUIDE.md':(root/'docs/USER-GUIDE.md').read_bytes(),
+ 'FRONTEND-REPORT.md':(root/'docs/ALPHA-FRONTEND-CLEANUP.md').read_bytes(),
  'manifest.json':(json.dumps(manifest,indent=2)+'\n').encode()}
 out.mkdir(parents=True,exist_ok=True);target=out/('Gekko2-Alpha-Review-'+build[:7]+'-SD.zip')
 with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as z:
