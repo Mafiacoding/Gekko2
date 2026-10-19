@@ -245,7 +245,7 @@ static void draw_loading_screen(const char *stage,const char *detail,uint64_t el
 {
     draw_gradient_background(6,12,30,0,2,9);
     launcher_logo(54,30);
-    launcher_text(42,170,2,error?"START INTERRUPTED":"LOADING",204,232,255);
+    launcher_text(42,170,3,error?"START INTERRUPTED":"LOADING",204,232,255);
     launcher_text(42,220,1,stage,221,237,255);
     launcher_text(42,248,1,detail,117,186,237);
     if(!error) {
