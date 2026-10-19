@@ -1,0 +1,40 @@
+{
+  "release": "BETA12.33-GX-DEADLINES",
+  "build_commit": "30c68e370f6b2d86208e2b5c5cc7f43341f7a6bc",
+  "source_commit": "778ec77b141ac42ccd63fff43c0cd1a7fbd9b7c8",
+  "host_suites": 83,
+  "linked_ppc_suites": 21,
+  "toolchain": "devkitPPC r50 GCC16.1.0 / libogc3.1.0; O1; retained SPEED/DSI/AOT/GX flags",
+  "gx_before": {
+    "depth_interpolation_calls": 17160,
+    "executed_ppc_instructions": 10749246,
+    "scope": "synthetic linked PPC with SDK modeled; not Wii cycles or FPS"
+  },
+  "gx_after": {
+    "depth_interpolation_calls": 0,
+    "executed_ppc_instructions": 9058418,
+    "scope": "synthetic linked PPC with SDK modeled; not Wii cycles or FPS"
+  },
+  "physical_wii_tested": false,
+  "wii_fps_gain_verified": false,
+  "bios_tile_fix_verified": false,
+  "event_scheduler_default": false,
+  "binaries": {
+    "Gekko2-BETA12.33-GX-Chain.dol": {
+      "bytes": 2111268,
+      "sha256": "d939edd65613d3638b80fb444da8f6ff0dc0c32bff1e204602a34c3468c14aa9"
+    },
+    "Gekko2-BETA12.33-GX-Chain.elf": {
+      "bytes": 8519816,
+      "sha256": "c480d00a832888cf3420331925c6fdce3f5ebc35ec5be6b60cc31ad9a90439b4"
+    },
+    "Gekko2-BETA12.33-GX.dol": {
+      "bytes": 2105700,
+      "sha256": "0019a846dc60d48296ea470ce0d08e54bf811337d4d3cd0d3d649fa1cc19d6cf"
+    },
+    "Gekko2-BETA12.33-GX.elf": {
+      "bytes": 8510756,
+      "sha256": "78db85a2c2cbb160f30da9ad69fe8c77d32f9374f276512256826d58e7a80fa5"
+    }
+  }
+}
