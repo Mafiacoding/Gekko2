@@ -4,6 +4,7 @@ Ziel des Besitzers: erste öffentliche Alpha am Abend. Ein Termin ersetzt keine
 Prüfung. Eine technische Testalpha muss ihren begrenzten Umfang klar ausweisen;
 eine spielbare PS2-Alpha ist mit den aktuellen Belegen nicht zugesichert.
 Aktuelle Arbeit: `codex/gt2000-demo-progression`, auf Draft-PR #49.
+[Neuer Draft-PR #50](https://github.com/Mafiacoding/Gekko2/pull/50).
 
 ## Konkreter Fortschritt
 
@@ -50,6 +51,12 @@ devkitPPC r50/GCC16.1.0, libogc3.1.0, bisherige SPEED/AOT/DSI/GX-Fence-Flags:
 DOL-/ELF-Identität und statisches MEM1 bestehen bei beiden Varianten. Rest:
 2.202.828 Bytes mit Chain-Buildflag, 2.339.532 Bytes im Kontrollbuild.
 Keine neue physische Wii-/Dolphin-Ausführung oder gemessene Gesamt-FPS.
+
+Der zusätzliche BIOS-Kaltstart nach der CDVD-Korrektur besteht mit 420 Millionen
+IOP-Slots, 81 erfassten Softwarebildern, Exit 0 und ohne EE-/IOP-Halt. Am Ende
+steht die reguläre Sprachauswahl. Experimentelle Event-/Idle-Batches sind in
+diesem Lauf ausgeschaltet. Dies bestätigt den untersuchten Host-/Softwarepfad,
+keine Kachelkorrektur oder physische Wii-Leistung.
 
 `tools/package_alpha_review.py` erzeugt ein privates SD-Prüfpaket. Es prüft die
 90/6-Ergebnisse, aktuelle ELF-Hashes, eingebettete Build-ID, erneute DOL-/ELF-

@@ -610,7 +610,17 @@
   "limitations": [
     "No new Wii/Dolphin execution or game/FPS/tile-fix proof",
     "GetError correction does not implement asynchronous EE disc data transfers or fix observed VBlank wait",
-    "Full BIOS cold regression is recorded separately when complete; host suites are synthetic",
     "Private candidate, no public alpha release"
-  ]
+  ],
+  "post_fix_bios_aggregate": {
+    "mode": "fresh deterministic host/software BIOS cold boot; legacy requested options 78fd7fff",
+    "iop_slots": 420000000,
+    "captured_frames": 81,
+    "exit_code": 0,
+    "ee_or_iop_halted": false,
+    "final_screen": "regular language selection",
+    "tile_fix_proven": false,
+    "physical_wii_tested": false,
+    "owner_assets_included": false
+  }
 }
