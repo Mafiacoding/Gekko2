@@ -451,10 +451,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         g_game_context_reported=1;
     }
     game_trace_dump(f,&g_game_trace_cursor);
-    fprintf(f,"GAME_WAIT ee_pc=%08lx iop_pc=%08lx vu_pc=%08lx signal_stalls=%llu path=%u vblank_events=%llu draw_qwords=%llu interpretation=not-a-gameplay-detector\n",
+    fprintf(f,"GAME_WAIT ee_pc=%08lx iop_pc=%08lx vu_pc=%08lx signal_stalls=%llu path=%u vblank_events=%llu draw_qwords=%llu vblank_scope=interval vblank_total=%llu interpretation=not-a-gameplay-detector\n",
         (unsigned long)ee_core_get_state()->pc,(unsigned long)iop_core_get_state()->pc,
         (unsigned long)vu1_get_state()->tpc,(unsigned long long)gif_signal_stall_count(),
-        gif_get_state()->arb_owner,(unsigned long long)events,(unsigned long long)gif_get_state()->quadwords_seen);
+        gif_get_state()->arb_owner,(unsigned long long)events,(unsigned long long)gif_get_state()->quadwords_seen,
+        (unsigned long long)ee_core_get_vblank_events());
     const ee_state_t *probe_cpu=ee_core_get_state();
     fprintf(f,"GAME_CPU pc=%08lx next=%08lx epc=%08lx status=%08lx cause=%08lx sp=%08lx ra=%08lx v0=%08lx v1=%08lx a0=%08lx a1=%08lx\n",
         (unsigned long)probe_cpu->pc,(unsigned long)probe_cpu->next_pc,(unsigned long)probe_cpu->cop0[14],

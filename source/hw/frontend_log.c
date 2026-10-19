@@ -7,6 +7,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
+#ifndef GEKKO2_TELEMETRY_COMMIT
+#define GEKKO2_TELEMETRY_COMMIT "unknown"
+#endif
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+#define FRONTEND_CHAIN_COMPILED 1u
+#else
+#define FRONTEND_CHAIN_COMPILED 0u
+#endif
 
 static int failed(frontend_log *log,int error)
 {
@@ -50,6 +58,7 @@ int frontend_log_begin(frontend_log *log,const char *directory,int disc,int gx)
   memcpy(log->path,path,(unsigned)n+1u);
   fprintf(file,"SESSION checkpoint=" GEKKO2_RELEASE " id=%lu mode=%s GX=%d\n",
     (unsigned long)next,disc?"DISC":"BIOS",!!gx);
+  fprintf(file,"BUILD source_commit=" GEKKO2_TELEMETRY_COMMIT " chain_compiled=%u\n",FRONTEND_CHAIN_COMPILED);
   return frontend_log_close(log,file);
  }
  return failed(log,EEXIST);

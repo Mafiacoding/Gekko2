@@ -1,8 +1,8 @@
 # Loading refresh regression — owner report, 19 October 2026
 
 Owner reports flickering and Crash/Tekken no longer reaching visible boot output
-with GX Hybrid. Photograph shows the new loader at elapsed 12:27. The promised
-current run log is not yet available; game-boot cause is **not isolated**.
+with GX Hybrid. Photograph shows the new loader at elapsed 12:27. The subsequent archive is now reviewed in [the follow-up](GX-BOOT-ARCHIVE-REVIEW.md);
+game-boot cause is **not isolated**.
 No game or Wii flicker fix is claimed from the photograph alone.
 
 ## Reproducible frontend defect and correction
@@ -37,7 +37,7 @@ VI double-buffer implementation or proof that guest output cannot tear.
 
 ## Game regression remains open
 
-Use the incoming session/build identity, active CPU/GX options, CPU PCs and
+Use the reviewed archive and any available exact session/build identity, active CPU/GX options, CPU PCs and
 retirement, display registers, GIF/VIF/VU counts, first-image and GX fault data
 to distinguish a guest boot stall, excessive host presentation cost, a failed
 first-image probe or GX failure. Compare with the earlier owner evidence.
