@@ -73,3 +73,7 @@ A fresh private SD review package is generated only after the host, all six core
 linked groups, two console groups, loading renders and both static gates pass.
 The packager verifies each ELF hash and embeds the user guide and frontend
 report. It does not publish a release or overwrite saved SD options.
+
+Packaging negative check PASS: an intentionally mismatched console/ELF hash
+is rejected before ZIP creation. Flattened packaged guide links are pinned to
+the recorded GitHub source commit, rather than broken relative SD ZIP paths.

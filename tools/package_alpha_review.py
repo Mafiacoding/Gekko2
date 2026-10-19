@@ -2,7 +2,7 @@
 """Prepare a private SD review candidate from explicitly gated build records.
 This creates no GitHub release and reads no owner capture/BIOS/disc files.
 """
-import argparse,hashlib,json,subprocess,zipfile
+import argparse,hashlib,json,posixpath,re,subprocess,zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 p=argparse.ArgumentParser(description=__doc__)
@@ -76,13 +76,24 @@ readme=('Gekko2: privater Alpha-Pruefkandidat '+build[:7]+'\n\n'
  'aktive Optionen im Log kontrollieren. Der Agent hat keine echte Wii getestet.\n\n'
  'GT2000-Demo erreicht im untersuchten Hostpfad noch keine Bildausgabe.\n'
  'GT3-Vollversion, Crash und Tekken sind nicht als spielbar bestaetigt.\n')
+def package_doc(name):
+ # Files are flattened in the SD ZIP; pin relative documentation links to
+ # the recorded source commit instead of leaving broken offline paths.
+ def link(match):
+  value=match[1]
+  if value.startswith(('https:','http:','#','/','mailto:')):return match[0]
+  path,sep,fragment=value.partition('#')
+  target=posixpath.normpath(posixpath.join(posixpath.dirname(name),path))
+  assert not target.startswith('../') and (root/target).exists()
+  return '](https://github.com/Mafiacoding/Gekko2/blob/'+source+'/'+target+(sep+fragment if sep else '')+')'
+ return re.sub(r'\]\(([^)]+)\)',link,(root/name).read_text()).encode()
 items={'apps/Gekko2/boot.dol':data,
  'apps/Gekko2/meta.xml':ET.tostring(meta,encoding='utf-8',xml_declaration=True),
  'apps/Gekko2/icon.png':(root/'assets/branding/icon.png').read_bytes(),
  'README-DE.txt':readme.encode(),
- 'ALPHA-STAND.md':(root/'docs/ALPHA-READINESS-2026-10-19.md').read_bytes(),
- 'USER-GUIDE.md':(root/'docs/USER-GUIDE.md').read_bytes(),
- 'FRONTEND-REPORT.md':(root/'docs/ALPHA-FRONTEND-CLEANUP.md').read_bytes(),
+ 'ALPHA-STAND.md':package_doc('docs/ALPHA-READINESS-2026-10-19.md'),
+ 'USER-GUIDE.md':package_doc('docs/USER-GUIDE.md'),
+ 'FRONTEND-REPORT.md':package_doc('docs/ALPHA-FRONTEND-CLEANUP.md'),
  'manifest.json':(json.dumps(manifest,indent=2)+'\n').encode()}
 out.mkdir(parents=True,exist_ok=True);target=out/('Gekko2-Alpha-Review-'+build[:7]+'-SD.zip')
 with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as z:
