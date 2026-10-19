@@ -285,12 +285,16 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
                    vu_pipeline_t *pipeline,vu_timing_t *timing,uint32_t upper,uint32_t lower)
 {
     uint32_t off = *tpc & micro_mask;
+    uint64_t issue_start=pipeline?pipeline->cycle:0;
     /* A second XGKICK cannot replace a still-blocked first kick. */
     if(mem==g_vu1.mem&&pipeline==&g_vu1.pipeline&&!(upper&0x80000000u)&&
        VU_L_OPCODE(lower)==64u&&VU_L_FUNCT6(lower)>=60u&&VU_L_RD(lower)==27u&&(lower&3u)==0u&&g_vu1.xgkick_pending) {
         g_vu1.xgkick_busy_stalls++;
         vu1_service_xgkick(1);
-        if(g_vu1.xgkick_pending)return 2; /* producer stalled; no pair retired */
+        if(g_vu1.xgkick_pending) {
+            vu_vi_age(timing,pipeline->cycle-issue_start);
+            return 2; /* producer stalled; no pair retired */
+        }
     }
     uint32_t this_pc = off;
     uint32_t previous_branch_delay=*branch_delay;
@@ -316,6 +320,7 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
     }
     vu_fmac_stall(timing,pipeline,upper,lower);
     if(pipeline){vu_fmac_publish(timing,vi,pipeline->cycle);vu_q_publish(pipeline,vi);}
+    vu_vi_age(timing,1u+(pipeline?pipeline->cycle-issue_start:0u));
     /* Drain bytes whose VU issue clocks elapsed before this pair can
      * overwrite them. FDIV/EFU stalls contribute to the same clock. */
     if(mem==g_vu1.mem && pipeline==&g_vu1.pipeline)
@@ -326,6 +331,17 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
     if(conflict)memcpy(old_vf,vf[upper_dst],sizeof(old_vf));
     uint32_t old_q=vi[22],old_status=vi[16],old_p=vi[23],old_clip=vi[18];
     int clip_upper=VU_U_IS_SPECIAL(upper)&&VU_SPEC_SUBOP(upper)==7u&&(upper&3u)==3u;
+    int fcset=!(upper&0x80000000u)&&VU_L_OPCODE(lower)==17u;
+    int delayed_clip=timing&&(clip_upper||fcset);
+    int vi_branch=timing&&!(upper&0x80000000u)&&vu_vi_conditional_branch(lower);
+    unsigned vi_dest=timing&&!(upper&0x80000000u)?vu_vi_backup_dest(lower):0;
+    uint32_t vi_before=vi_dest?vi[vi_dest]:0;
+    uint32_t branch_vi=0;
+    if(vi_branch&&timing->vi_age&&timing->vi_reg) {
+        branch_vi=vi[timing->vi_reg];vi[timing->vi_reg]=timing->vi_old;
+    }
+    uint32_t issued_clip=old_clip;
+    if(timing&&clip_upper)vi[18]=vu_clip_issued(timing,old_clip);
     int clip_lower=(VU_L_OPCODE(lower)>=16u&&VU_L_OPCODE(lower)<=19u)||VU_L_OPCODE(lower)==28u;
 
     *tpc = (off + 8u) & micro_mask;
@@ -367,10 +383,11 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
     /* I flag (bit 31 of the upper word): only the upper instruction
      * executes this pair; the lower word's raw bits become the real
      * $I$ register (VI[21], REG_I per PCSX2's VU.h VURegFlags enum). */
-    if (!arithmetic&&(!timing||!fsset)&&!vu_aot_available(upper,lower)&&!qop&&!pop&&!conflict&&!(clip_upper&&clip_lower)&&vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
+    if (!arithmetic&&(!timing||(!fsset&&!delayed_clip))&&!vu_aot_available(upper,lower)&&!qop&&!pop&&!conflict&&!(clip_upper&&clip_lower)&&vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
         upper_ok=lower_ok=1;
     } else if (upper & 0x80000000u) {
         upper_ok = arithmetic || vu_aot_try_upper(vf,vi,acc,upper) || vu_jit_try_upper(vf, vi, acc, upper) || vu_exec_upper(vf, vi, acc, upper);
+        if(delayed_clip){issued_clip=vi[18];vi[18]=old_clip;}
         vi[21] = lower;
         lower_ok = 1; /* the lower word was consumed as data (the I-immediate), not an instruction - correctly decoded, not "unimplemented" */
     } else {
@@ -382,14 +399,20 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
         /* Upper wins a same-VF write collision: discard the lower half,
          * including an LQI/LQD base update, as in the reference pipeline. */
         uint32_t new_clip=vi[18];
-        if(clip_upper&&clip_lower)vi[18]=old_clip;
+        if(clip_upper&&(clip_lower||timing))vi[18]=old_clip;
         if((conflict&&vu_pair_lower_dest(lower)==upper_dst) || (clip_upper&&VU_L_OPCODE(lower)==17u))lower_ok=1;
         else lower_ok = vu_aot_try_lower(vf,vi,mem,mem_mask,this_pc,branch_delay,branch_target,lower) || (!qop&&!pop&&vu_jit_try_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target)) ||
                    vu_exec_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target);
         if(conflict)memcpy(vf[upper_dst],new_vf,sizeof(new_vf));
-        if(clip_upper&&clip_lower)vi[18]=new_clip;
+        if(delayed_clip){issued_clip=clip_upper?new_clip:vi[18];vi[18]=old_clip;}
+        else if(clip_upper&&clip_lower)vi[18]=new_clip;
     }
 
+    if(vi_branch&&timing->vi_age&&timing->vi_reg)vi[timing->vi_reg]=branch_vi;
+    if(vi_dest&&!(conflict&&vu_pair_lower_dest(lower)==upper_dst)) {
+        if(!timing->vi_age||timing->vi_reg!=vi_dest)timing->vi_old=(uint16_t)vi_before;
+        timing->vi_reg=(uint8_t)vi_dest;timing->vi_age=2;
+    }
     if(pipeline) {
         if(qop&&(lower&3u)<3u) {
             pipeline->q_value=vi[22];pipeline->q_status=vi[16]&0x30u;
@@ -400,19 +423,24 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
             pipeline->p_value=vi[23];pipeline->p_ready=pipeline->cycle+vu_efu_latency(lower);
             pipeline->p_pending=1;vi[23]=old_p;
         }
-        if(timing&&(arithmetic||fsset)) {
+        if(timing&&(arithmetic||fsset||delayed_clip)) {
             uint32_t set_status=fsset?vi[16]:fmac_status;
             uint32_t issue_mac=arithmetic?fmac_mac:vi[17];
             if(fsset&&!arithmetic&&timing->count) {
-                unsigned last=(timing->head+timing->count-1u)&3u;
-                issue_mac=timing->flags[last].mac;
-                set_status=(set_status&0xfc0u)|(timing->flags[last].status&15u);
+                for(unsigned i=timing->count;i;i--) {
+                    unsigned last=(timing->head+i-1u)&3u;
+                    if(timing->flags[last].set&4u)continue;
+                    issue_mac=timing->flags[last].mac;
+                    set_status=(set_status&0xfc0u)|(timing->flags[last].status&15u);
+                    break;
+                }
             }
             if(fsset) {
                 if(arithmetic)set_status=(set_status&0xfc0u)|(fmac_status&15u);
                 vi[16]=old_status;
             }
-            vu_fmac_issue(timing,vi,pipeline,issue_mac,set_status,fsset);
+            vu_fmac_issue(timing,vi,pipeline,issue_mac,set_status,
+                (fsset?1u:0u)|(delayed_clip?2u:0u)|((!arithmetic&&!fsset)?4u:0u),issued_clip);
         }
         vu_fmac_mark_write(timing,pipeline,upper_dst,(upper&63u)==46u?14u:((upper>>21)&15u));
         if(!(upper&0x80000000u)&&!(conflict&&vu_pair_lower_dest(lower)==upper_dst))
@@ -463,6 +491,7 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
                 if(pipeline->cycle<timing->flags[last].ready)pipeline->cycle=timing->flags[last].ready;
                 vu_fmac_publish(timing,vi,pipeline->cycle);
             }
+            if(timing)timing->vi_age=0;
             return 1; /* stopped */
         }
     }

@@ -40,18 +40,25 @@ static int vu_fmac_add_alignment_needed(uint32_t vf[32][4],uint32_t *vi,uint32_t
 static void vu_fmac_publish(vu_timing_t *t,uint32_t *vi,uint64_t cycle) {
     while(t&&t->count&&t->flags[t->head].ready<=cycle) {
         unsigned n=t->head;uint32_t s=t->flags[n].status;
-        if(t->flags[n].set)vi[16]=(vi[16]&0x30u)|(s&0xfcfu);
+        if(!(t->flags[n].set&4u)) {
+        if(t->flags[n].set&1u)vi[16]=(vi[16]&0x30u)|(s&0xfcfu);
         else vi[16]=(vi[16]&0xff0u)|(s&15u)|((s&15u)<<6);
         vi[17]=t->flags[n].mac;
+        }
+        if(t->flags[n].set&2u)vi[18]=t->flags[n].clip;
         t->head=(t->head+1u)&3u;t->count--;
     }
 }
 static void vu_fmac_issue(vu_timing_t *t,uint32_t *vi,vu_pipeline_t *p,
-                          uint32_t mac,uint32_t status,int set) {
+                          uint32_t mac,uint32_t status,unsigned set,uint32_t clip) {
     if(!t||!p) {
-        vi[16]=set?((vi[16]&0x30u)|(status&0xfcfu)):
+        if(!(set&4u)) {
+        vi[16]=(set&1u)?((vi[16]&0x30u)|(status&0xfcfu)):
             ((vi[16]&0xff0u)|(status&15u)|((status&15u)<<6));
-        vi[17]=mac;return;
+        vi[17]=mac;
+        }
+        if(set&2u)vi[18]=clip;
+        return;
     }
     if(t->count==4u) {
         if(p->cycle<t->flags[t->head].ready)p->cycle=t->flags[t->head].ready;
@@ -59,7 +66,43 @@ static void vu_fmac_issue(vu_timing_t *t,uint32_t *vi,vu_pipeline_t *p,
     }
     unsigned n=(t->head+t->count)&3u;
     t->flags[n].ready=p->cycle+4u;t->flags[n].mac=mac;
+    t->flags[n].clip=clip;
     t->flags[n].status=status;t->flags[n].set=(uint8_t)set;t->count++;
+}
+/* Consecutive CLIPs shift the latest issued history, while lower queries
+ * observe only the four-cycle retired value. Entries with other flag writes
+ * must not hide an earlier CLIP still in flight. */
+static uint32_t vu_clip_issued(const vu_timing_t *t,uint32_t visible) {
+    for(unsigned i=t?t->count:0;i;i--) {
+        unsigned n=(t->head+i-1u)&3u;
+        if(t->flags[n].set&2u)return t->flags[n].clip;
+    }
+    return visible;
+}
+/* Integer ALU/MTIR and auto-update addresses feed conditional branches
+ * through the preceding VI value for one issue cycle. Other VI readers,
+ * including JR/JALR, use the current value. Flag queries and ILW do not
+ * participate in this bypass (PCSX2 VUops _vuBackupVI call sites). */
+static unsigned vu_vi_backup_dest(uint32_t w) {
+    unsigned op=w>>25,fn=w&63u,sub=(w>>6)&31u;
+    if(op==8u||op==9u)return (w>>16)&15u;
+    if(op!=64u)return 0;
+    if(fn==48u||fn==49u||fn==52u||fn==53u)return sub&15u;
+    if(fn==50u)return (w>>16)&15u;
+    if(fn>=60u&&sub==13u)return (w>>((w&1u)?16:11))&15u;
+    if(fn>=60u&&sub==15u&&(w&3u)==0u)return (w>>16)&15u;
+    return 0;
+}
+static void vu_vi_age(vu_timing_t *t,uint64_t clocks) {
+    if(!t)return;
+    if(t->vi_marker!=0x56u||t->vi_age>2u||t->vi_reg>15u) {
+        t->vi_age=0;t->vi_marker=0x56u;
+    }
+    t->vi_age=clocks>=t->vi_age?0:t->vi_age-(unsigned)clocks;
+}
+static int vu_vi_conditional_branch(uint32_t w) {
+    unsigned op=w>>25;
+    return op==40u||op==41u||(op>=44u&&op<=47u);
 }
 /* Returns one for an arithmetic upper instruction, including VF00 writes.
  * No dependency on the host backend: interpreter/AOT/JIT pairs share this
