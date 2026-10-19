@@ -1,5 +1,12 @@
 # Gekko2 SPEED BETA12.33 – 19 October 2026
 
+**Alpha-/Demo-Prüfung:** branch `codex/gt2000-demo-progression`, Runtime
+`ccb7d5c`. [Aktueller Alpha-Stand](docs/ALPHA-READINESS-2026-10-19.md).
+Die hochgeladene GT2000-Demo ist vollständig; der Host-Kaltstart bleibt nach
+korrigiertem CDVD-GetError im VBlank-Polling ohne Bild. 90 Hostgruppen, sechs
+aktuelle PPC-Prüfgruppen und beide Wii-Buildgates bestanden. Privater
+SD-Prüfkandidat vorbereitet, keine öffentliche Alpha/Spielbarkeit/FPS bestätigt.
+
 **General compatibility follow-up (no release):**
 [six-area report](docs/GENERAL-COMPATIBILITY-BATCH.md), branch
 `codex/general-compatibility-batch`, runtime `9d14d74`. Legal IRX relocation

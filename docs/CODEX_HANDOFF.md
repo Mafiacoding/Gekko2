@@ -1,5 +1,17 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Owner alpha target / GT2000 demo, 19 October:** branch
+`codex/gt2000-demo-progression`, runtime `ccb7d5c`, on #49.
+[Alpha readiness](ALPHA-READINESS-2026-10-19.md). Five <=32-MiB split ZIP
+volumes validate to a complete private GT2000 Japan demo (`PAPX_902.03`),
+distinct from GT3 retail. SCMD GetError now returns actual drive state with
+one bounded word instead of blanket 1/eight-byte overwrite. 90 host groups,
+six linked-PPC groups and chain/control Wii static gates pass. Demo still
+waits on VBlank without scanout after this correction; async NCMD READ with
+NULL recvbuf is also an identified adapter gap. Do not synthesize success,
+force IRQs or claim a game fix. Review SD package is private and not a public
+alpha release; physical Wii candidate acceptance remains outstanding.
+
 **General compatibility follow-up / owner means four emulator areas:**
 branch `codex/general-compatibility-batch`, runtime `9d14d74`, on PR #48.
 [Six-area report](GENERAL-COMPATIBILITY-BATCH.md): IRX relocation coverage,
