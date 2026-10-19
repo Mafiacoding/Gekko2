@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Current 83 host gates plus five EE/GS/IRX/VU regressions and driver options.
+"""Current 83 host gates plus six EE/GS/IRX/VU/CDVD regressions and driver options.
 Only synthetic inputs. No Wii cycles, physical GX pixels or gameplay claim.
 """
 import argparse,json,os,subprocess,sys,tempfile
@@ -10,7 +10,7 @@ with tempfile.TemporaryDirectory(prefix='gekko2-alpha-host-') as td:
  base=Path(td)/'base.json'
  subprocess.run([sys.executable,'tools/test_beta12_31_host.py','--output-json',str(base)],cwd=root,check=True)
  rows=json.loads(base.read_text())
- names=['test_ee_masked_window','test_gs_textured_point','test_iop_reloc_variants','test_gs_textured_line','test_vu_add_alignment','game_check_r1386']
+ names=['test_ee_masked_window','test_gs_textured_point','test_iop_reloc_variants','test_gs_textured_line','test_vu_add_alignment','test_ee_cdvd_error_rpc','game_check_r1386']
  built=subprocess.check_output([sys.executable,'tools/build_host_core.py',*names],cwd=root,text=True).splitlines()
  assert len(built)==len(names)
  for name,exe in zip(names[:-1],built[:-1]):
@@ -27,5 +27,5 @@ with tempfile.TemporaryDirectory(prefix='gekko2-alpha-host-') as td:
   if not ok:errors.append(mask)
  rows.append(dict(test='diagnostic_option_isolation',exit_code=bool(errors),output='seven synthetic missing-file option cases; errors='+repr(errors)))
 a.output_json.parent.mkdir(parents=True,exist_ok=True);a.output_json.write_text(json.dumps(rows,indent=2)+'\n')
-assert len(rows)==89 and all(r['exit_code']==0 for r in rows)
-print('PASS 89 host gates; no Wii/gameplay evidence')
+assert len(rows)==90 and all(r['exit_code']==0 for r in rows)
+print('PASS 90 host gates; no Wii/gameplay evidence')

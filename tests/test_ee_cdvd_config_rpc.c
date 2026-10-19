@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include "core/system.h"
 #include "core/ee/ee_core.c"
 static unsigned fails;
 static unsigned transfer_size=~0u;

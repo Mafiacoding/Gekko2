@@ -9271,6 +9271,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                 ee_mem_write32(st, call_recvbuf + 0u, 0x02u); /* real SCECdComplete - see comment */
                                 r1224_ncmd_rend_arms++;
                                     ee_arm_rpc_call_pending(call_cd);
+                            } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number == 4u) {
+                                /* ps2sdk scmd.c::sceCdGetError / cdvdfsv RPC3:
+                                 * the sole reply word is the current error code,
+                                 * not a generic successful-command boolean.
+                                 * Observe the drive state without clearing its
+                                 * read-to-clear MMIO error register. */
+                                if (call_recvbuf && ee_mem_read32(st, src + 0x2Cu) >= 4u)
+                                    ee_mem_write32(st, call_recvbuf, iop_cdvd_peek_last_ncmd_error());
+                                ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number == 1u) {
                                 /* ps2sdk scmd.c: result word followed by an eight-byte
                                  * sceCdCLOCK. Limit every write to the requested reply. */
