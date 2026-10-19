@@ -360,14 +360,14 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
     int upper_ok, lower_ok;
     uint32_t fmac_mac=0,fmac_status=0;
     /* Flags remain invisible to the paired lower instruction. */
-    int arithmetic=timing?(vu_aot_try_timed_upper(vf,vi,acc,upper,&fmac_mac,&fmac_status)||
+    int arithmetic=(timing||vu_fmac_add_alignment_needed(vf,vi,upper))?(vu_aot_try_timed_upper(vf,vi,acc,upper,&fmac_mac,&fmac_status)||
         vu_fmac_arithmetic(vf,vi,acc,upper,&fmac_mac,&fmac_status)):0;
     int fsset=!(upper&0x80000000u)&&VU_L_OPCODE(lower)==21u;
 
     /* I flag (bit 31 of the upper word): only the upper instruction
      * executes this pair; the lower word's raw bits become the real
      * $I$ register (VI[21], REG_I per PCSX2's VU.h VURegFlags enum). */
-    if ((!timing||(!arithmetic&&!fsset))&&!vu_aot_available(upper,lower)&&!qop&&!pop&&!conflict&&!(clip_upper&&clip_lower)&&vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
+    if (!arithmetic&&(!timing||!fsset)&&!vu_aot_available(upper,lower)&&!qop&&!pop&&!conflict&&!(clip_upper&&clip_lower)&&vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
         upper_ok=lower_ok=1;
     } else if (upper & 0x80000000u) {
         upper_ok = arithmetic || vu_aot_try_upper(vf,vi,acc,upper) || vu_jit_try_upper(vf, vi, acc, upper) || vu_exec_upper(vf, vi, acc, upper);
