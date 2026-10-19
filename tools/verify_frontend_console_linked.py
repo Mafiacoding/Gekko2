@@ -19,7 +19,9 @@ for enabled in [0,1,0,1]:
    word(syms['g_screen_writers']+index*4,callback)
    for length in [0,1,29,1024]:
     # Invalid payload address is deliberate: a disabled gate must not read it.
+    word(syms['g_loading_valid'],1)
     got=call(name,0,0,0xdead0000,length)
+    assert int.from_bytes(u.mem_read(syms['g_loading_valid'],4),'big')==(0 if enabled and callback else 1)
     assert got==(result if enabled and callback else length),(enabled,name,callback,length,got)
     checks+=1
-print('PASS',checks,'linked PPC console routing checks: OFF discards, ON delegates, errors/partial writes preserved')
+print('PASS',checks,'linked PPC console routing checks: OFF discards, ON delegates, errors/partial writes preserved; visible console invalidates loading cache')

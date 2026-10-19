@@ -1,5 +1,18 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Current owner archive:** [review](GX-BOOT-ARCHIVE-REVIEW.md). Ten private
+logs, owner confirms Crash E3. Four Crash runs (three BETA12.32, one BETA12.33)
+never enable PMODE; current run has no GX work or timeout and 86 VBlanks
+across interval counters. Separate BIOS session times out after 655,466
+callbacks. Do not force IRQs or remove fences. Local Crash image/direct link
+requested; existing assets are BIOS and GT2000, no Tekken log in archive.
+Session build identity and cumulative VBlank logging added; no game fix.
+
+**Owner regression / loading refresh:** [report](LOADING-REFRESH-REGRESSION.md).
+Runtime `852600c` removes recurring full-screen loading redraws; linked write
+regression fails on delivered `33b057f`, passes corrected control ELF. Do not
+claim Crash/Tekken boot fix: see the reviewed archive for observations; exact game reproduction remains open.
+
 **Latest frontend / repository cleanup:** [report](ALPHA-FRONTEND-CLEANUP.md).
 Runtime `33b057f`, consolidated draft #51 targets main. Default loading screen;
 reuses saved HUD as On-screen logs, SD/network unaffected. Documentation-only

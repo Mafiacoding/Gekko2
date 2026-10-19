@@ -96,6 +96,7 @@
 
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
+static int g_loading_valid;
 static int g_present_widescreen;
 
 /* All menu buttons retain libogc PAD bit compatibility. */
@@ -117,9 +118,9 @@ static int g_console_visible;
 static devoptab_t g_screen_devices[2];
 static ssize_t (*g_screen_writers[2])(struct _reent *,void *,const char *,size_t);
 static ssize_t screen_stdout(struct _reent *r,void *fd,const char *p,size_t n)
-{return g_console_visible && g_screen_writers[0]?g_screen_writers[0](r,fd,p,n):(ssize_t)n;}
+{if(g_console_visible && g_screen_writers[0]){g_loading_valid=0;return g_screen_writers[0](r,fd,p,n);}return (ssize_t)n;}
 static ssize_t screen_stderr(struct _reent *r,void *fd,const char *p,size_t n)
-{return g_console_visible && g_screen_writers[1]?g_screen_writers[1](r,fd,p,n):(ssize_t)n;}
+{if(g_console_visible && g_screen_writers[1]){g_loading_valid=0;return g_screen_writers[1](r,fd,p,n);}return (ssize_t)n;}
 static void screen_console_visible(int enabled)
 {
     if(g_console_visible==!!enabled)return;
@@ -185,6 +186,7 @@ static void fill_rect(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h, uint8_t 
 static void draw_gradient_background(uint8_t top_r, uint8_t top_g, uint8_t top_b,
                                       uint8_t bot_r, uint8_t bot_g, uint8_t bot_b)
 {
+    g_loading_valid=0;
     uint32_t h = rmode->xfbHeight;
     for (uint32_t y = 0; y < h; y++) {
         uint8_t r = (uint8_t)((int)top_r + ((int)bot_r - (int)top_r) * (int)y / (int)h);
@@ -243,23 +245,44 @@ static void launcher_text(int x,int y,int scale,const char *text,int r,int g,int
  * drawing stays independent of both the console gate and emulated GS/GX. */
 static void draw_loading_screen(const char *stage,const char *detail,uint64_t elapsed_ms,int error)
 {
-    draw_gradient_background(6,12,30,0,2,9);
-    launcher_logo(54,30);
-    launcher_text(42,170,3,error?"START INTERRUPTED":"LOADING",204,232,255);
-    launcher_text(42,220,1,stage,221,237,255);
-    launcher_text(42,248,1,detail,117,186,237);
-    if(!error) {
-        unsigned phase=(unsigned)((elapsed_ms/250)%12);
+    static char last_stage[96],last_detail[96];
+    static unsigned last_width,last_height,last_phase;
+    static uint64_t last_second;
+    unsigned phase=(unsigned)((elapsed_ms/250)%12);
+    uint64_t second=elapsed_ms/1000;
+    int full=error || !g_loading_valid || last_width!=rmode->fbWidth ||
+        last_height!=rmode->xfbHeight || strcmp(stage,last_stage) || strcmp(detail,last_detail);
+    int changed=full;
+    if(full) {
+        draw_gradient_background(6,12,30,0,2,9);
+        launcher_logo(54,30);
+        launcher_text(42,170,3,error?"START INTERRUPTED":"LOADING",204,232,255);
+        launcher_text(42,220,1,stage,221,237,255);
+        launcher_text(42,248,1,detail,117,186,237);
+        launcher_text(42,390,1,error?"A / B: return to launcher":"HOME: pause and open settings",209,227,246);
+        if(!error)launcher_text(42,416,1,"Settings > On-screen logs: optional diagnostics",117,186,237);
+        strncpy(last_stage,stage,sizeof last_stage-1);last_stage[sizeof last_stage-1]=0;
+        strncpy(last_detail,detail,sizeof last_detail-1);last_detail[sizeof last_detail-1]=0;
+        last_width=rmode->fbWidth;last_height=rmode->xfbHeight;
+    }
+    /* Never erase the visible logo/title to animate the loading screen.
+     * The single scanout XFB is still shared with VI; keep recurring writes
+     * confined to two small strips, rather than repainting the whole image. */
+    if(!error && (full || phase!=last_phase)) {
         for(unsigned n=0;n<12;n++)launcher_rect(42+n*24,290,16,4,
             n==phase?67:16,n==phase?182:43,n==phase?255:76);
-        char elapsed[80];
-        snprintf(elapsed,sizeof elapsed,"Elapsed %llu:%02llu - emulation may take a long time.",
-            (unsigned long long)(elapsed_ms/60000),(unsigned long long)(elapsed_ms/1000%60));
-        launcher_text(42,330,1,elapsed,117,186,237);
+        changed=1;
     }
-    launcher_text(42,390,1,error?"A / B: return to launcher":"HOME: pause and open settings",209,227,246);
-    if(!error)launcher_text(42,416,1,"Settings > On-screen logs: optional diagnostics",117,186,237);
-    flush_screen();VIDEO_SetNextFramebuffer(xfb);VIDEO_Flush();
+    if(!error && (full || second!=last_second)) {
+        char elapsed[80];
+        launcher_rect(36,315,568,36,4,8,16);
+        snprintf(elapsed,sizeof elapsed,"Elapsed %llu:%02llu - emulation may take a long time.",
+            (unsigned long long)(elapsed_ms/60000),(unsigned long long)(second%60));
+        launcher_text(42,330,1,elapsed,117,186,237);
+        changed=1;
+    }
+    last_phase=phase;last_second=second;g_loading_valid=!error;
+    if(changed){flush_screen();VIDEO_SetNextFramebuffer(xfb);VIDEO_Flush();}
 }
 static void wait_for_button(uint16_t mask)
 {
@@ -428,10 +451,11 @@ static void save_performance(uint64_t ms, uint64_t presents, uint64_t events,
         g_game_context_reported=1;
     }
     game_trace_dump(f,&g_game_trace_cursor);
-    fprintf(f,"GAME_WAIT ee_pc=%08lx iop_pc=%08lx vu_pc=%08lx signal_stalls=%llu path=%u vblank_events=%llu draw_qwords=%llu interpretation=not-a-gameplay-detector\n",
+    fprintf(f,"GAME_WAIT ee_pc=%08lx iop_pc=%08lx vu_pc=%08lx signal_stalls=%llu path=%u vblank_events=%llu draw_qwords=%llu vblank_scope=interval vblank_total=%llu interpretation=not-a-gameplay-detector\n",
         (unsigned long)ee_core_get_state()->pc,(unsigned long)iop_core_get_state()->pc,
         (unsigned long)vu1_get_state()->tpc,(unsigned long long)gif_signal_stall_count(),
-        gif_get_state()->arb_owner,(unsigned long long)events,(unsigned long long)gif_get_state()->quadwords_seen);
+        gif_get_state()->arb_owner,(unsigned long long)events,(unsigned long long)gif_get_state()->quadwords_seen,
+        (unsigned long long)ee_core_get_vblank_events());
     const ee_state_t *probe_cpu=ee_core_get_state();
     fprintf(f,"GAME_CPU pc=%08lx next=%08lx epc=%08lx status=%08lx cause=%08lx sp=%08lx ra=%08lx v0=%08lx v1=%08lx a0=%08lx a1=%08lx\n",
         (unsigned long)probe_cpu->pc,(unsigned long)probe_cpu->next_pc,(unsigned long)probe_cpu->cop0[14],
@@ -1454,6 +1478,7 @@ static void run_real_boot_flow(void)
         if(present_due)VIDEO_WaitVSync();
         int guest_copied=0;
         if (present_due && display_active && !show_hud) {
+            if(g_first_picture)g_loading_valid=0;
             if(output_merge){
                 g_sw_attempts++;
                 int copied=g_first_picture?gs_output_present_checked(gs,xfb,rmode->fbWidth,rmode->xfbHeight):0;
@@ -1665,7 +1690,7 @@ int main(int argc, char **argv)
     for (;;) {
         screen_console_visible(0); /* Launcher uses its own text renderer. */
         if(page==6&&gettime()>=network_refresh){redraw=1;network_refresh=gettime()+millisecs_to_ticks(250);}
-        if(redraw){ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
+        if(redraw){g_loading_valid=0;ui_text_renderer=launcher_text;ui_logo_renderer=launcher_logo;
             if(page==4){
                 ui_optimization_draw(launcher_rect,opt_selected,gekko2_opt_requested(),gekko2_opt_available(),notice);
             }

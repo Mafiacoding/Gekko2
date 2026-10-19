@@ -4,7 +4,7 @@ Only video/cache/elapsed formatting services are stubbed; pixels use linked code
 Not physical GX/VI execution. Optionally save a synthetic PPM preview outside Git.
 """
 from pathlib import Path
-from unicorn import UC_HOOK_CODE
+from unicorn import UC_HOOK_CODE,UC_HOOK_MEM_WRITE
 from unicorn.ppc_const import UC_PPC_REG_LR,UC_PPC_REG_PC,UC_PPC_REG_3,UC_PPC_REG_4
 exec(compile(Path(__file__).with_name('verify_ppc_gs_memory.py').read_text().split('checks=0')[0].replace('count=10000000','count=80000000'), 'loader', 'exec'))
 u.mem_map(0x92000000,4096);u.mem_map(0x93000000,1024*1024)
@@ -35,6 +35,25 @@ for height in [480,576]:
    bright+=sum(row[x*2]>100 for x in range(42,500))
   assert bright>200,(height,error,'missing title',bright)
   print('PASS linked loading screen',height,'error='+str(error),'title_pixels='+str(bright),'bounded XFB')
+  if height==480 and error==0:
+   writes=[]
+   def frame_write(uc,access,address,size,value,user):
+    if 0x93000000<=address<0x93000000+640*height*2:writes.append((address-0x93000000)//1280)
+   hook=u.hook_add(UC_HOOK_MEM_WRITE,frame_write)
+   call('draw_loading_screen',0x92000100,0x92000200,0,65000,0)
+   assert not writes,('unchanged loading frame repainted',len(writes))
+   call('draw_loading_screen',0x92000100,0x92000200,0,65250,0)
+   assert writes and all(290<=y<294 for y in writes),('animation repainted static pixels',set(writes))
+   writes.clear()
+   call('draw_loading_screen',0x92000100,0x92000200,0,66000,0)
+   assert writes and all(290<=y<294 or 315<=y<351 for y in writes)
+   writes.clear()
+   word(syms['g_loading_valid'],0) # menu / guest / visible-console invalidation
+   call('draw_loading_screen',0x92000100,0x92000200,0,66000,0)
+   assert any(y<170 for y in writes),'invalidated background not restored'
+   u.hook_del(hook)
+   print('PASS loading refresh: unchanged frame has zero XFB writes; animation/time touch only strips; invalidation restores background',flush=True)
+
 # Preview is synthetic launcher UI, never guest/owner pixels.
 import os
 preview=os.environ.get('GEKKO2_LOADING_PREVIEW')
