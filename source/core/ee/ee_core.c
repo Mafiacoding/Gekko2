@@ -11446,6 +11446,7 @@ unsigned ee_core_interleave_quantum=UINT32_MAX;
 static unsigned ee_interleave_left,ee_interleave_stopped;
 static int (*ee_interleave_callback)(void);
 static int (*ee_event_callback)(unsigned);
+static unsigned (*ee_event_limit_window)(unsigned);
 static unsigned ee_event_spent,ee_event_paid,ee_event_slots,ee_event_width,ee_event_busy;
 static uint64_t ee_event_retired_base;
 static unsigned ee_event_urgent;
@@ -11501,14 +11502,29 @@ unsigned ee_core_event_distance(unsigned maximum)
  if(distance<8u)ee_event_deadline_stats[5]++;
  maximum&=~7u;ee_event_deadline_stats[maximum<=8u?6:7]++;return maximum<8u?8u:maximum;
 }
-unsigned ee_core_step_event_n(unsigned quanta,unsigned width,int (*catch_up)(unsigned))
+static unsigned ee_event_next_window(unsigned maximum)
+{
+ unsigned next=ee_core_event_distance(maximum);
+ if(ee_event_limit_window) {
+  unsigned limit=ee_event_limit_window(next);
+  /* The legacy eight-slot interleave is the minimum supported quantum.
+   * An external deadline may shorten, never widen, the EE admission. */
+  limit&=~7u;if(limit<8u)limit=8u;
+  if(limit<next)next=limit;
+ }
+ return next;
+}
+unsigned ee_core_step_event_bounded_n(unsigned quanta,unsigned width,int (*catch_up)(unsigned),
+                                    unsigned (*limit_window)(unsigned))
 {
  if(!quanta||quanta>UINT32_MAX/8u||!catch_up||ee_event_callback||ee_interleave_callback)return 0;
  if(width<8u||width>512u||(width&7u))return 0;
- ee_event_callback=catch_up;ee_event_spent=ee_event_paid=ee_event_busy=0u;
+ ee_event_callback=catch_up;ee_event_limit_window=limit_window;
+ ee_event_spent=ee_event_paid=ee_event_busy=0u;
  ee_event_urgent=0u;ee_event_retired_base=g_state.instructions_executed;
  ee_event_slots=quanta*8u;ee_event_width=width;ee_interleave_stopped=0u;
- ee_core_interleave_quantum=ee_event_slots<width?ee_event_slots:width;
+ unsigned first=ee_event_next_window(width);
+ ee_core_interleave_quantum=ee_event_slots<first?ee_event_slots:first;
  while(ee_event_spent<ee_event_slots&&!ee_interleave_stopped&&!g_state.halted)
   ee_core_step_n(ee_event_slots-ee_event_spent);
  ee_core_event_sync();
@@ -11519,9 +11535,14 @@ unsigned ee_core_step_event_n(unsigned quanta,unsigned width,int (*catch_up)(uns
   ee_event_busy=0u;
  }
  unsigned done=ee_event_paid;
- ee_event_callback=NULL;ee_event_spent=ee_event_paid=ee_event_slots=ee_event_busy=0u;
+ ee_event_callback=NULL;ee_event_limit_window=NULL;
+ ee_event_spent=ee_event_paid=ee_event_slots=ee_event_busy=0u;
  ee_interleave_stopped=0u;ee_core_interleave_quantum=UINT32_MAX;
  return done;
+}
+unsigned ee_core_step_event_n(unsigned quanta,unsigned width,int (*catch_up)(unsigned))
+{
+ return ee_core_step_event_bounded_n(quanta,width,catch_up,NULL);
 }
 
 void ee_core_interleave_account(unsigned slots)
@@ -11533,7 +11554,7 @@ void ee_core_interleave_account(unsigned slots)
   if(!ee_core_interleave_quantum) {
    ee_core_event_sync();ee_event_urgent=0u;
    unsigned left=ee_event_slots-ee_event_spent;
-   unsigned next=ee_core_event_distance(ee_event_width);
+   unsigned next=left?ee_event_next_window(ee_event_width):0u;
    ee_core_interleave_quantum=left<next?left:next;
   } else if(ee_event_urgent) {
    /* An instruction/helper may arm a new event after window admission.

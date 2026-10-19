@@ -231,6 +231,13 @@ void system_shared_sync_reason(unsigned reason)
 }
 void system_shared_sync(void){system_shared_sync_reason(18u);}
 #if GEKKO2_SCHEDULER_QUANTA_ENABLED
+static unsigned system_event_window_limit(unsigned width)
+{
+ /* IOP catch-up can arm timers, thread alarms or interrupt sources. Refresh
+  * their horizon at every EE admission, not just once per frontend grant. */
+ unsigned ticks=iop_core_event_distance(width/8u);
+ return ticks<width/8u?ticks*8u:width;
+}
 static int system_event_catch_up(unsigned ticks)
 {
  g_event_syncing=1u;
@@ -285,13 +292,11 @@ int system_run_interleaved(uint64_t max_slices)
         if(!iop->halted) {
 #if GEKKO2_SCHEDULER_QUANTA_ENABLED
             if(ee_native_schedule&&(GEKKO2_FORCE_EVENT_ON||gekko2_opt_enabled(GEKKO2_OPT_EVENT_SCHEDULER))) {
-                unsigned width=ee_core_event_distance(ee_core_idle_active()?512u:64u);
-                unsigned iop_limit=iop_core_event_distance(width/8u);
-                if(iop_limit*8u<width)width=iop_limit*8u;
-                if(width<8u)width=8u;
+                unsigned width=ee_core_idle_active()?512u:64u;
                 g_event_stats[0]++;g_event_stats[4]+=width;
                 g_event_active=1u;system_begin_ee_quantum();
-                done=ee_core_step_event_n(grant,width,system_event_catch_up);
+                done=ee_core_step_event_bounded_n(grant,width,system_event_catch_up,
+                                                 system_event_window_limit);
                 g_event_active=0u;
             } else if(ee_native_schedule) {
                 system_quantum_grant=grant;system_begin_ee_quantum();
