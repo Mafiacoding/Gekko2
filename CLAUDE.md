@@ -1,3 +1,14 @@
+# Aktueller Claude-Einstieg — 19. Oktober 2026
+
+**Zuerst [aktuelle Übergabe und kopierbaren Arbeitsauftrag](docs/CLAUDE-START-2026-10-19.md) lesen.**
+Branch `codex/loading-refresh-regression`, Runtime `51a9259`. Danach vollständig
+`AGENTS.md`, `docs/CODEX_HANDOFF.md`, `STATUS.md` und die in der Übergabe genannten
+Berichte lesen. Die folgenden älteren R1354-/R1306-Einträge sind Historie und
+ersetzen nicht den aktuellen BETA12.33-Stand. Crash E3 bootet laut letztem
+Owner-Archiv noch nicht bis zum ersten Bild; kein bestätigter Spielfix.
+
+---
+
 # Gekko2 handoff — R1354 Beta
 
 Read docs/R1354-SIF-BARRIERS.md first. Claim SIF registers before synchronization; keep all actual shared access ordering. SYNC_REASONS counts barrier calls, not ticks. CPU_SAMPLE now tracks EE-only tails. Synthetic INTC-read cost drops6.7%; RAM-store cost unchanged. No physical Wii R1354 speed/boot claim before user logs. Same worker, Cold Boot. New IOP catch-up blocks and adaptive cache are OFF by default, stored in version8 settings. Registered sysclib RAM HLE is optional, bounded, with verified ARM-data fallback; not full BIOS HLE. Build tools/build_r1354.sh.
