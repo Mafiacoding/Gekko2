@@ -1987,7 +1987,9 @@ static void rasterize_line_profile_impl(int32_t x0, int32_t y0, int32_t x1, int3
                             uint32_t c0, uint32_t c1, uint32_t z0, uint32_t z1,
                             uint32_t f0, uint32_t f1){
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
-    int gouraud = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
+    uint32_t attributes=gs_effective_attr_prim();
+    int gouraud=(attributes&PRIM_IIP_MASK)!=0;
+    int textured=(attributes&PRIM_TME_MASK)!=0;
     uint32_t flat_r = rgba_channel(c1, 0), flat_g = rgba_channel(c1, 8);
     uint32_t flat_b = rgba_channel(c1, 16), flat_a = rgba_channel(c1, 24);
 
@@ -2037,10 +2039,10 @@ static void rasterize_line_profile_impl(int32_t x0, int32_t y0, int32_t x1, int3
                 g_gif.pixels_ztest_failed++;
             } else {
                 uint32_t out;
+                double t=(gouraud||textured)?(double)i/(double)steps:0.0;
                 if (!gouraud) {
                     out = rgba_pack(flat_r, flat_g, flat_b, flat_a);
                 } else {
-                    double t = (double)i / (double)steps;
                     uint32_t r = (uint32_t)((1.0 - t) * rgba_channel(c0, 0)  + t * rgba_channel(c1, 0)  + 0.5);
                     uint32_t g = (uint32_t)((1.0 - t) * rgba_channel(c0, 8)  + t * rgba_channel(c1, 8)  + 0.5);
                     uint32_t b = (uint32_t)((1.0 - t) * rgba_channel(c0, 16) + t * rgba_channel(c1, 16) + 0.5);
@@ -2050,6 +2052,19 @@ static void rasterize_line_profile_impl(int32_t x0, int32_t y0, int32_t x1, int3
                     b = gs_colclamp_channel((int32_t)b);
                     a = gs_colclamp_channel((int32_t)a);
                     out = rgba_pack(r, g, b, a);
+                }
+                if(textured){
+                    double q=(1.0-t)*g_gif.tri_q[0]+t*g_gif.tri_q[1];
+                    double u,v;
+                    if(attributes&PRIM_FST_MASK){
+                        u=(1.0-t)*g_gif.tri_u[0]+t*g_gif.tri_u[1];
+                        v=(1.0-t)*g_gif.tri_v[0]+t*g_gif.tri_v[1];
+                    }else{
+                        double inv=q!=0.0?1.0/q:0.0;
+                        u=((1.0-t)*g_gif.tri_s[0]+t*g_gif.tri_s[1])*inv*(1u<<g_gif.tex_tw);
+                        v=((1.0-t)*g_gif.tri_t[0]+t*g_gif.tri_t[1])*inv*(1u<<g_gif.tex_th);
+                    }
+                    out=gs_texture_function(gs_sample_texture_q(u,v,q),out);
                 }
                 uint32_t frag_fog = (pf < 0.0) ? 0u : (pf > 255.0 ? 255u : (uint32_t)(pf + 0.5));
                 out = apply_fog(out, frag_fog);
@@ -2156,6 +2171,11 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
             g_gif.line_rgba[slot] = g_gif.rgba;
             g_gif.line_z[slot] = raw_z;
             g_gif.line_f[slot] = g_gif.cur_fog;
+            /* One GS primitive type owns the vertex queue at a time.
+             * Reuse the checkpointed texture lanes instead of adding
+             * uncheckpointed side state or changing the GIF state ABI. */
+            g_gif.tri_u[slot]=g_gif.cur_u;g_gif.tri_v[slot]=g_gif.cur_v;
+            g_gif.tri_s[slot]=g_gif.cur_s;g_gif.tri_t[slot]=g_gif.cur_t;g_gif.tri_q[slot]=g_gif.cur_q;
             if (do_draw_kick && g_gif.line_vseq % 2 == 0)
                 rasterize_line(g_gif.line_x[0], g_gif.line_y[0], g_gif.line_x[1], g_gif.line_y[1],
                                 g_gif.line_rgba[0], g_gif.line_rgba[1],
@@ -2172,9 +2192,13 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
             g_gif.line_x[0] = g_gif.line_x[1]; g_gif.line_y[0] = g_gif.line_y[1];
             g_gif.line_rgba[0] = g_gif.line_rgba[1]; g_gif.line_z[0] = g_gif.line_z[1];
             g_gif.line_f[0] = g_gif.line_f[1];
+            g_gif.tri_u[0]=g_gif.tri_u[1];g_gif.tri_v[0]=g_gif.tri_v[1];
+            g_gif.tri_s[0]=g_gif.tri_s[1];g_gif.tri_t[0]=g_gif.tri_t[1];g_gif.tri_q[0]=g_gif.tri_q[1];
             g_gif.line_x[1] = x; g_gif.line_y[1] = y;
             g_gif.line_rgba[1] = g_gif.rgba; g_gif.line_z[1] = raw_z;
             g_gif.line_f[1] = g_gif.cur_fog;
+            g_gif.tri_u[1]=g_gif.cur_u;g_gif.tri_v[1]=g_gif.cur_v;
+            g_gif.tri_s[1]=g_gif.cur_s;g_gif.tri_t[1]=g_gif.cur_t;g_gif.tri_q[1]=g_gif.cur_q;
             if (do_draw_kick && g_gif.line_vseq >= 2)
                 rasterize_line(g_gif.line_x[0], g_gif.line_y[0], g_gif.line_x[1], g_gif.line_y[1],
                                 g_gif.line_rgba[0], g_gif.line_rgba[1],

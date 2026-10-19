@@ -19,6 +19,8 @@
 #include "core/recompiler/optimization.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <ctype.h>
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/iop_sio2.h"
@@ -48,8 +50,14 @@ extern void ee_core_get_r1252_fault(uint32_t out[112]);
 int main(int argc,char **argv)
 {
  if(argc<4){fprintf(stderr,"usage: %s BIOS ISO IOP-million-slices [private-checkpoint]\n",argv[0]);return 2;}setvbuf(stdout,0,_IOLBF,0);
- if(getenv("GEKKO2_OPTIONS"))gekko2_optimization_mask=strtoul(getenv("GEKKO2_OPTIONS"),NULL,16);
- extern uint32_t gekko2_optimization_mask;gekko2_optimization_mask|=GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_IDLE_BATCH)|GEKKO2_OPT_BIT(GEKKO2_OPT_EVENT_SCHEDULER);
+ const char *options=getenv("GEKKO2_OPTIONS");
+ if(options){
+  char *end;errno=0;unsigned long mask=strtoul(options,&end,16);
+  if(!*options||isspace((unsigned char)*options)||*options=='-'||*options=='+'||
+     errno||*end||mask>UINT32_MAX){fprintf(stderr,"Invalid GEKKO2_OPTIONS mask\n");return 2;}
+  gekko2_optimization_mask=(uint32_t)mask;
+ }
+ printf("OPTIONS mask=%08x forced_scheduler_bits=0 host_PPC_execution=0\n",gekko2_optimization_mask);
  bios_image_t bios;if(bios_load(argv[1],&bios)||system_init(&bios,&bios))return 3;
  if(argv[2][0]!='-'){
   iso_image_t disc;iso_dirent_t cnf;uint8_t bytes[2049];
