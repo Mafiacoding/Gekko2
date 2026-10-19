@@ -4,8 +4,10 @@
 [report](docs/BETA12.32-HOTPATHS-GX.md). Align frontend RAM code floor to guarded 1 MiB backend,
 one cache-way traversal, remove large GX per-pass descriptor copies,
 and extend submission fences to native/seed/flat paths with 64-begin chunks.
-GX stream equivalence checked; physical missing-PE-token timeout still OPEN.
-Network telemetry worked on owner Wii in BETA12.31e; no new Wii speed claim.
+GX stream equivalence checked; two owner BIOS runs now complete with 456,808
+ordered-token waits and no timeout/abort. Broader timeout coverage and BIOS
+tiles remain OPEN. [Wii evidence review](docs/BETA12.32-WII-REVIEW.md).
+Network receipt works; no new Wii speed claim.
 
 **BETA12.31e IOS address ABI fix:** branch `codex/network-ios-address-fix`;
 [report](docs/BETA12.31e-IOS-ADDRESS-FIX.md). Send/receive the 8-byte IOS IPv4 prefix and accept

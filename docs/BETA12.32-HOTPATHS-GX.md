@@ -1,5 +1,11 @@
 # BETA12.32 general EE hotpaths and GX investigation
 
+**Subsequent owner evidence, 19 October:** two real Wii BIOS sessions now
+record no timeout/abort across 456,808 completion waits. See the
+[evidence and BIOS reference review](BETA12.32-WII-REVIEW.md). The original
+build-time verification statements below are historical; BIOS tile accuracy,
+broader GPU compatibility and net Wii FPS improvement remain unproven.
+
 Baseline BETA12.31e / `90ee881`, branch `codex/beta12-32-hotpaths-gx`.
 Two generic CPU changes and one GX CPU-overhead reduction, no game-ID/BIOS-PC specialization:
 
