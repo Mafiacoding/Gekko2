@@ -1,4 +1,13 @@
-# Gekko2 SPEED BETA12.32 – 18 October 2026
+# Gekko2 SPEED BETA12.33 – 19 October 2026
+
+**BETA12.33 GX/deadlines:** branch `codex/beta12-33-gx-deadlines`;
+[report](docs/BETA12.33-GX-DEADLINES.md). Avoid unused/constant native fragment
+Z interpolation; refresh external IOP deadlines before every experimental EE
+window. Event batching remains factory OFF, normal scheduler retained. Local
+PCSX2 v2.8.2 replay of the private controlled BIOS stream also lacks the bright
+small squares: no established tile correction, matched game comparison or
+new Wii FPS claim. Priorities and limits of the scheduler proposal are in the
+report. Owner files remain private.
 
 **BETA12.32 general hotpaths:** branch `codex/beta12-32-hotpaths-gx`;
 [report](docs/BETA12.32-HOTPATHS-GX.md). Align frontend RAM code floor to guarded 1 MiB backend,

@@ -1,5 +1,13 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**BETA12.33 GX/deadlines:** branch `codex/beta12-33-gx-deadlines`, runtime build
+`30c68e3`; [report](BETA12.33-GX-DEADLINES.md). Skip unused/constant fragment Z
+interpolation and renew IOP deadlines on every experimental EE admission.
+Event batches remain default OFF; legacy schedule retained. Controlled local
+PCSX2 software replay also lacks the photograph's bright small squares;
+BIOS tiles, matched BIOS/Tekken/GT3 comparisons and real Wii FPS remain OPEN.
+Do not treat an unmatched photograph as proof of discarded GX geometry.
+
 **BETA12.32 general hotpaths:** branch `codex/beta12-32-hotpaths-gx`;
 [report](BETA12.32-HOTPATHS-GX.md). Align frontend RAM code floor to guarded 1 MiB backend,
 one cache-way traversal, remove large GX per-pass descriptor copies,

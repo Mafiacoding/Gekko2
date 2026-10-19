@@ -62,6 +62,12 @@ for the full SD log. No new measured Wii FPS increase follows from these runs.
 
 ## BIOS image investigation
 
+Follow-up: [BETA12.33 local reference investigation](BETA12.33-GX-DEADLINES.md)
+now includes actual independent PCSX2 software replay, which also lacks the
+bright small squares for the privately captured command stream. The earlier
+host reproduction below is not independent proof of a GS/geometry defect.
+
+
 The supplied PCSX2 reference visibly contains bright small square faces around
 the blue animation and shaded larger cubes. Those small faces are absent or
 much weaker in the owner Wii photograph. Different phases, capture methods
