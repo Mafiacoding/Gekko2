@@ -91,7 +91,10 @@ Implementation and fixtures are synthetic; no PCSX2 program/assets transplanted.
   blocks, flag/query ordering, RAW/Q, budgets, source invalidation, ABI and both
   production runners. Platform allocation/cache services are mocked; no GX/VI
   hardware or cycle measurement. Full ELF-specific records accompany the review
-  artifact. The obsolete `verify_vu_pipeline_internal.py` references removed
+  artifact. **All 13 ELF-specific review groups pass**: five core/VU groups
+  per build, console routing on both, and control loading-screen rendering.
+  The gated SD review ZIP was generated successfully, includes this report and
+  the control DOL, and overwrites no saved options or owner assets. The obsolete `verify_vu_pipeline_internal.py` references removed
   `vu_jit_try_block` and cannot run on this runtime; the current timing/hybrid
   verifiers exercise the production entry points instead.
 - Both fresh Wii builds use current official devkitPro/devkitPPC installation:
