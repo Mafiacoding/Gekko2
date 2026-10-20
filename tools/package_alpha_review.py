@@ -25,9 +25,9 @@ console=json.loads((a.reports/'console.json').read_text())
 loading=json.loads((a.reports/'loading.json').read_text())
 assert len(console)==2 and all(r['exit_code']==0 for r in console)
 assert loading['exit_code']==0
-assert len(host)==90 and all(r['exit_code']==0 for r in host)
-assert len(linked)==6 and all(r['exit_code']==0 for r in linked)
-required={'verify_cdvd_error_rpc_linked.py','verify_masked_window_linked.py','verify_event_scheduler_r1353.py'}
+assert len(host)==92 and all(r['exit_code']==0 for r in host)
+assert len(linked)==10 and all(r['exit_code']==0 for r in linked)
+required={'verify_cdvd_error_rpc_linked.py','verify_masked_window_linked.py','verify_event_scheduler_r1353.py','verify_vu_timing_r1384.py','verify_vu_hybrid_r1385.py'}
 binaries={};gates={}
 for variant,label in [('GX','control'),('GX-Chain','chain')]:
  name='Gekko2-BETA12.33-'+variant
@@ -40,7 +40,7 @@ for variant,label in [('GX','control'),('GX-Chain','chain')]:
  elf=(root/(name+'.elf')).read_bytes();data=(root/(name+'.dol')).read_bytes()
  assert build.encode() in data and build.encode() in elf
  rows=[r for r in linked if r['elf']==name+'.elf']
- assert len(rows)==3 and {r['test'] for r in rows}==required
+ assert len(rows)==5 and {r['test'] for r in rows}==required
  assert all(r['elf_sha256']==sha(elf) for r in rows)
  screen=[r for r in console if r['elf']==name+'.elf']
  assert len(screen)==1 and screen[0]['elf_sha256']==sha(elf)
@@ -54,7 +54,7 @@ assert loading['elf_sha256']==sha((root/loading['elf']).read_bytes())
 manifest=dict(kind='private-review-candidate',public_alpha_released=False,
  build_commit=build,source_commit=source,selected_dol=selected,
  toolchain='devkitPPC r50 GCC16.1.0 / libogc3.1.0; retained SPEED/AOT/DSI/GX fence flags',
- host_groups=90,linked_ppc_groups=9,physical_wii_tested=False,
+ host_groups=92,linked_ppc_groups=13,physical_wii_tested=False,
  gameplay_verified=False,wii_fps_gain_verified=False,bios_tile_fix_verified=False,
  included_owner_assets=False,binaries=binaries,gates=gates)
 meta=ET.fromstring((root/'meta.xml').read_bytes())
@@ -94,6 +94,7 @@ items={'apps/Gekko2/boot.dol':data,
  'ALPHA-STAND.md':package_doc('docs/ALPHA-READINESS-2026-10-19.md'),
  'USER-GUIDE.md':package_doc('docs/USER-GUIDE.md'),
  'FRONTEND-REPORT.md':package_doc('docs/ALPHA-FRONTEND-CLEANUP.md'),
+ 'CRASH-VU-REPORT.md':package_doc('docs/CRASH-E3-VU-TIMING.md'),
  'manifest.json':(json.dumps(manifest,indent=2)+'\n').encode()}
 out.mkdir(parents=True,exist_ok=True);target=out/('Gekko2-Alpha-Review-'+build[:7]+'-SD.zip')
 with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as z:
