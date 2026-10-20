@@ -24,6 +24,8 @@ int main(void){
   reset();vi[1]=old[k];vi[2]=next[k];step(NOP,imm(1,0)|(2u<<11));CHECK(vi[1]==next[k]);
   step(NOP,branch(op[k],1,0));CHECK(bd==1&&vi[1]==next[k]&&bt==56);
   step(NOP,0);CHECK(pc==56&&bd==0&&unknown==0);
+  reset();vi[1]=next[k];vi[2]=old[k];step(NOP,imm(1,0)|(2u<<11));
+  step(NOP,branch(op[k],1,0));CHECK(bd==0&&vi[1]==old[k]);
  }
  /* Branch reads delayed It too, and a gap expires the bypass. */
  reset();step(NOP,imm(1,1));step(NOP,branch(40,0,1));CHECK(bd==1);

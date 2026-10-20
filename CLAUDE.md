@@ -1,3 +1,14 @@
+# Aktueller Crash-E3-Batch — 20. Oktober 2026
+
+Branch `codex/crash-e3-local-repro`, Runtime `e7aae58`.
+Zuerst [Crash-Reproduktion und VU-Korrektur](docs/CRASH-E3-VU-TIMING.md),
+`AGENTS.md`, `docs/CODEX_HANDOFF.md` und `STATUS.md` lesen.
+Das Disc-Image ist jetzt privat vorhanden. VI-Sprungtiming und CLIP-Latenz
+korrigiert; lokal regulär bis zur Ingame-Szene, keine Wii-/FPS-Freigabe.
+Die folgende ältere Übergabe beschreibt den Stand vor diesem Batch.
+
+---
+
 # Aktueller Claude-Einstieg — 19. Oktober 2026
 
 **Zuerst [aktuelle Übergabe und kopierbaren Arbeitsauftrag](docs/CLAUDE-START-2026-10-19.md) lesen.**

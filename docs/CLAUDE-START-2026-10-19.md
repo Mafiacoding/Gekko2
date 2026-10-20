@@ -1,3 +1,10 @@
+> **Überholt durch den Batch vom 20. Oktober:**
+> [aktueller Bericht](CRASH-E3-VU-TIMING.md), Branch
+> `codex/crash-e3-local-repro`, Runtime `e7aae58`. Das private Crash-Image ist
+> vorhanden. Der bisherige lokale VU/GIF-Stau ist nachgewiesen korrigiert;
+> regulärer Übergang bis zur Ingame-Szene beobachtet. Wii-GX/FPS bleiben offen.
+> Die folgenden Angaben zum fehlenden Image/ungeklärten Bootstopp sind Historie.
+
 # Claude: aktueller Einstieg und Arbeitsauftrag
 
 Stand: 19. Oktober 2026. Verwende Branch **`codex/loading-refresh-regression`**,

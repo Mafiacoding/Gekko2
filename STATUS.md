@@ -1,5 +1,16 @@
 # Gekko2 SPEED BETA12.33 – 19 October 2026
 
+**Crash E3 local VU correction — 20 October:**
+[reproduction, fixes and acceptance limits](docs/CRASH-E3-VU-TIMING.md).
+Branch `codex/crash-e3-local-repro`, runtime `e7aae58`. New private disc validates.
+Initial black wait is finite sine-table initialization; later corrupt VU output
+and GIF stall are reproduced, then removed by VI branch timing correction.
+Final cold host run reaches 3D title; normal START input reaches loading and an
+in-game corridor/HUD. CLIP four-cycle visibility also corrected. No Wii/Dolphin
+or FPS/playability proof; BIOS tiles/rare GX timeout remain open. Earlier
+missing-disc/pre-scanout-only statements below are historical.
+
+
 **Owner archive reviewed:** [findings](docs/GX-BOOT-ARCHIVE-REVIEW.md).
 Current Crash E3 stops before enabled scanout/GX draws; older BETA12.32 Crash
 runs already do likewise. 86 interval-counted VBlanks, one separate BIOS GX
