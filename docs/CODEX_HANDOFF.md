@@ -1,5 +1,15 @@
 # Gekko2 → Codex: vollständiger technischer Handoff (15.10.2026)
 
+**Wii recompilation foundation — 24 October:**
+[Two workstreams, commands and limits](../experiments/ps2recomp-wii/README.md). Branch
+`codex/wii-recomp-foundation`: host-only isolated EE oracle plus an integer-leaf
+probe using pinned ran-j/PS2Recomp `e563698`. Synthetic and private Crash leaf
+both match Gekko2 in 76 host/PPC cases with nonzero upper GPR preservation.
+Full private ELF code generation completes with runtime wrappers and warnings;
+no full PPC game link, device-runtime port, Wii/Dolphin run or FPS claim.
+Production emulator runtime remains `e7aae58`; previous VU fixes retained.
+
+
 **Crash E3 local VU correction — 20 October:**
 [reproduction, fixes and acceptance limits](CRASH-E3-VU-TIMING.md).
 Branch `codex/crash-e3-local-repro`, runtime `e7aae58`. New private disc validates.
