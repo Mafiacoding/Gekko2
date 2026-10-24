@@ -1,0 +1,23 @@
+{
+  "kind": "synthetic-PS2Recomp-integer-leaf-probe",
+  "upstream_commit": "e5636981a1c9de368f6b71e819c3dc188dfedbf4",
+  "recompiler_sha256": "ef8d16faf51eab592ea41fa03a3471b051029c24e57ff6035846f974f2528ec5",
+  "generated_sha256": "d616858894797dc83fed479b724b1261bbc2d6b9c9b57943f37351bd102b0b21",
+  "ppc_elf_sha256": "9e9e2c5fe62adff0c9c97f09e6b75f61aafda27c3f4acbeca0a043df6273dd8d",
+  "cases": 76,
+  "compared": [
+    "all GPR128 storage; nonzero upper lanes preserved (no MMI arithmetic)",
+    "HI/LO",
+    "SA",
+    "return PC",
+    "delay-slot result",
+    "PPC callee-save and SP"
+  ],
+  "host_and_ppc_match_gekko2": true,
+  "adapter_scope": "test-only scalar integer leaf; no devices, memory helpers, VU or MMI",
+  "physical_wii_tested": false,
+  "dolphin_tested": false,
+  "owner_input": false,
+  "game_recompiled": false,
+  "fps_claim": false
+}
