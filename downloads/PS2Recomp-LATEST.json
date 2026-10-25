@@ -1,0 +1,36 @@
+{
+  "release": "PS2Recomp Crash Wii P16",
+  "status": "private-owner-test-candidate",
+  "source_commit": "eadc4fdc01090e54e61976ab98b4cbd7428aa020",
+  "full_scene_host_source": "1a715fe",
+  "toolchain": "devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0",
+  "local_scene_verified": true,
+  "physical_wii_tested": false,
+  "dolphin_tested": false,
+  "wii_fps_verified": false,
+  "tests": {
+    "sqrt_host_cases": 3844,
+    "gs_regressions": 74,
+    "vu_regressions": 42,
+    "sqrt_ppc_simulated_cases": 54,
+    "gs_presentation_cases": 296
+  },
+  "known_limits": [
+    "P15 photographed alignment failure not independently resolved on hardware",
+    "Complete game/device/audio behavior remains unverified",
+    "Hybrid device bridge between PS2Recomp and Gekko2 remains open"
+  ],
+  "hybrid_prototype_pr": "https://github.com/Mafiacoding/Gekko2/pull/56",
+  "files": [
+    {
+      "name": "PS2Recomp-Crash-Wii-P16-Update-PASSWORD.zip",
+      "bytes": 7355717,
+      "sha256": "5931845aa3fd8b5e679786d2c458db1fdedcf6e3c3b8bd802337bcd1cc6d0de7"
+    },
+    {
+      "name": "PS2Recomp-Wii-P16-Source.zip",
+      "bytes": 4528066,
+      "sha256": "28b737dbd95f79f15fac7edba43b1474308a86acd21e61b45ad7842d64e4d80b"
+    }
+  ]
+}
