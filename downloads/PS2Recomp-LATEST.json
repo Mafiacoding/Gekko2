@@ -32,5 +32,23 @@
       "bytes": 4528066,
       "sha256": "28b737dbd95f79f15fac7edba43b1474308a86acd21e61b45ad7842d64e4d80b"
     }
-  ]
+  ],
+  "diagnostic_candidate": {
+    "release": "P17 Alignment diagnostic",
+    "source_commit": "fb970a93f88388fa40a859550e131bdf448071e6",
+    "crash_fixed": false,
+    "physical_wii_tested": false,
+    "files": [
+      {
+        "name": "PS2Recomp-Crash-Wii-P17-Diagnostic-PASSWORD.zip",
+        "bytes": 6857578,
+        "sha256": "874d878586588124e038ab06614220309efeaad9e4f6a9b39502560f3b85a58d"
+      },
+      {
+        "name": "PS2Recomp-Wii-P17-Source.zip",
+        "bytes": 4516620,
+        "sha256": "83e9fd5ccb85592302bd73c9f9a90137e0cc02f8d17f7915b3d62f818c99371a"
+      }
+    ]
+  }
 }
