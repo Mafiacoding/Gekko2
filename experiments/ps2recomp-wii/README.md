@@ -145,3 +145,11 @@ Its normal headers use x86 intrinsics or an ARM SSE2NEON alternative; neither
 is a Broadway SIMD implementation. A scalar test leaf succeeding does not solve
 those vector paths. Native speed benefit remains unmeasured. BIOS tiles,
 rare GX timeout, other games and sustained Wii gameplay remain open.
+
+## Guarded native-hybrid CFG follow-up (25 October)
+
+[Implemented compiler stage, real-core handoff tests and remaining boundaries](HYBRID-BATCH.md).
+The offline ELF front end reuses Gekko2's existing 128-bit state, AOT and
+interpreter rather than introducing a second minimal CPU. 512 synthetic mixed
+AOT/interpreter comparisons pass. It is not a complete PS2Recomp/Gekko2 device
+bridge, standalone game converter, new emulator DOL or Wii speed proof.
