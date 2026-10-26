@@ -1,13 +1,24 @@
 # PS2Recomp Wii development status
 
-Current source batch: **P18**, `b7fb741`.
-[Source and P17-to-P18 patch](PS2Recomp-Wii-P18-Source.zip) ·
-[Local test status](PS2Recomp-P18-Status.json) ·
+Current source batch: **P19**, `c762b19`.
+[Source and P18-to-P19 patch](PS2Recomp-Wii-P19-Source.zip) ·
+[Local test status](PS2Recomp-P19-Status.json) ·
 [Checksums](PS2Recomp-SHA256SUMS.txt).
 
-P18 is a source update, **not a request for another owner Wii test**. A new
-runtime is being held until the remaining post-loading/rendering behavior is
+P19 is a source update, **not a request for another owner Wii test**. A new
+runtime is being held until remaining Wii-target post-loading/rendering behavior is
 understood. Physical Wii playability, FPS and a complete game remain unverified.
+
+## New local post-loading evidence
+
+The exact P19 host build passed a 240-second scripted title-to-hub probe:
+12 controller packets delivered, required title/hub geometry and terrain
+loaded, then 171 nonblack captures. A reviewed capture shows Crash, corridor
+and HUD. The runner and game profile reproduce this privately without new
+owner Wii log collection. Its gates do not assert image correctness.
+The optional rem_pio2f HLE guest stores also pass 645 compiled PPC cases;
+that separate endian correction is not claimed as the Crash loading cause.
+See `docs/wii/POSTLOAD-VALIDATION.md` in the source package.
 
 ## Proven native crash cause
 

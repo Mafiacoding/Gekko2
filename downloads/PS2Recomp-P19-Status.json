@@ -1,0 +1,76 @@
+{
+  "release": "P19 source and local post-loading validation",
+  "source_commit": "c762b1914976bfb7f482849ddc4c447af2121f8d",
+  "runtime_published": false,
+  "host_scene_probe": {
+    "matched": true,
+    "source_label": "c762b19",
+    "reached": [
+      "title geometry",
+      "hub geometry",
+      "hub terrain"
+    ],
+    "missing": [],
+    "generated_input_samples": 12,
+    "delivered_input_packets": 12,
+    "nonblack_captures_after_last_load": 171,
+    "valid_gs_frames": 616,
+    "nonblack_gs_frames": 562,
+    "completed_normally": true,
+    "sanitizer_error": false,
+    "visible_image_correctness_verified": false,
+    "physical_wii": false,
+    "scope": "Host input delivery, required load milestones, subsequent GS frames; no FPS or playability proof",
+    "profile": "Crash E3 title-to-hub host probe",
+    "binary_sha256": "3d9bff9f919ddf921776cb049525bc31955d9daaca80f78b52a0869123dfd7a8",
+    "elf_sha256": "1e4e9eb05aab415d809b5d04825d8fe4d88598b0c2c89b7839d341d3c126de89",
+    "host_seconds_requested": 240,
+    "process_exit": 0,
+    "timed_out": false
+  },
+  "capture_review": {
+    "character_and_hud_visible": true,
+    "scene": "Crash E3 hub/corridor",
+    "image_file": "private frame-0103.ppm",
+    "complete_graphics_accuracy_verified": false
+  },
+  "regressions": {
+    "gs_host_passed": 74,
+    "vu_host_passed": 42,
+    "scene_probe_cases_passed": 6,
+    "math_double_abi_functions_passed": 13,
+    "ppc_math_guest_store_cases_passed": 645
+  },
+  "wii_build": {
+    "valid": true,
+    "sha256": "fbb2ebaf4095c4b5470a170c9b53142e912b974e443c1a265a06b0ee3a0caef7",
+    "bytes": 24694704,
+    "initial_arena_bytes": {
+      "MEM1": 4221760,
+      "MEM2": 46328384
+    },
+    "toolchain": "devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0",
+    "physical_wii_tested": false,
+    "new_build_dolphin_tested": false
+  },
+  "implemented": [
+    "Reproducible host title-to-hub probe with delivered input/load/frame gates",
+    "Little-endian guest float stores in optional rem_pio2f HLE; separate from Crash loading cause"
+  ],
+  "retained_previous_corrections": [
+    "P18 MEM1 placement for SDK SRAM DMA and build guards",
+    "P18 bounded DMA chain allocation",
+    "P18 VU and GS HWREG endian corrections"
+  ],
+  "known_limits": [
+    "Remaining rendering/color/geometry defects",
+    "Post-loading gameplay on the Wii-target binary is not verified; P18 Dolphin test showed the lab scene",
+    "No physical Wii FPS or playability claim",
+    "Finite math HLE store tests do not prove full large-argument range reduction accuracy"
+  ],
+  "source_archive": {
+    "name": "PS2Recomp-Wii-P19-Source.zip",
+    "sha256": "1b683480d8fa09699b673fc361fe7b34c9a99f2831b095062552666169ed6972",
+    "bytes": 4547134
+  }
+}
