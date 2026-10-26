@@ -1,0 +1,237 @@
+{
+  "release": "P20 experimental owner graphics batch",
+  "source_commit": "5154c6241149e110d741964138e13e125a23adf5",
+  "physical_wii_tested": false,
+  "wii_fps_verified": false,
+  "all_graphics_fixed": false,
+  "implemented": [
+    "COLCLAMP signed blend wrap versus saturation",
+    "DTHE/DIMX signed RGB dithering before CT16/CT16S packing",
+    "SCANMSK even/odd row color and depth masks",
+    "Fractional sprite UV coordinates",
+    "Flat second-vertex sprite Q",
+    "Negative nearest ST floor before wrapping",
+    "Sprite texture axis reversal",
+    "Exact single-owner shared triangle edges",
+    "Fractional triangle XYOFFSET"
+  ],
+  "regressions": {
+    "gs_groups_passed": 80,
+    "vu_groups_passed": 42,
+    "old_renderer_gs_groups_passed": 74,
+    "old_renderer_new_groups_failed": 6,
+    "ppc_coverage": {
+      "cases": 320,
+      "pixel_ownership_checks": 20480,
+      "matched": true,
+      "physical_wii": false,
+      "scope": "PPC750 production exact edge values/steps/top-left rule; both windings, diagonals, fractional translations and large coordinates"
+    },
+    "scalar_simd_asan": {
+      "source": "5154c62",
+      "seconds": 60,
+      "valid_gs_frames": 131,
+      "nonblack_gs_frames": 112,
+      "reported_asan_errors": 0
+    }
+  },
+  "host_scene_probe": {
+    "matched": true,
+    "source_label": "5154c62",
+    "reached": [
+      "title geometry",
+      "hub geometry",
+      "hub terrain"
+    ],
+    "missing": [],
+    "generated_input_samples": 12,
+    "delivered_input_packets": 12,
+    "nonblack_captures_after_last_load": 171,
+    "valid_gs_frames": 610,
+    "nonblack_gs_frames": 555,
+    "completed_normally": true,
+    "sanitizer_error": false,
+    "visible_image_correctness_verified": false,
+    "physical_wii": false,
+    "scope": "Host input delivery, required load milestones, subsequent GS frames; no FPS or playability proof",
+    "profile": "Crash E3 title-to-hub host probe",
+    "binary_sha256": "f6aa5b05af88556a635b278495c8119c775380f93d02c6299b1976a94a878aad",
+    "elf_sha256": "1e4e9eb05aab415d809b5d04825d8fe4d88598b0c2c89b7839d341d3c126de89",
+    "host_seconds_requested": 240,
+    "process_exit": 0,
+    "timed_out": false
+  },
+  "capture_review": {
+    "scene": "Hub with Crash and HUD",
+    "private_capture": "frame-0103.ppm",
+    "complete_image_correctness_verified": false
+  },
+  "dolphin_capture": {
+    "elf_sha256": "4e774e9aabbf89c967df52e7e6495d0575f217c2169a0844e662dcdfc857355f",
+    "duration_seconds": 330.0,
+    "pc": "812d03a0",
+    "lr": "00000001",
+    "width": 640,
+    "height": 480,
+    "code_address": "0x807d669c",
+    "code_before": "3b9c00707f83e378913f0124",
+    "code_after": "3b9c00707f83e378913f0124",
+    "sampled_code_unchanged": true,
+    "frames": [
+      {
+        "index": 0,
+        "bytes": 614400,
+        "sha256": "f61298af55c1ff8b71f6e52ee4563bc4b279802c2e5513b4c84bf2f50bbc9f28",
+        "nonblack_luma": 29360
+      },
+      {
+        "index": 1,
+        "bytes": 614400,
+        "sha256": "f61298af55c1ff8b71f6e52ee4563bc4b279802c2e5513b4c84bf2f50bbc9f28",
+        "nonblack_luma": 29360
+      }
+    ],
+    "physical_wii": false,
+    "visible_game_image_verified": false
+  },
+  "wii_build": {
+    "valid": true,
+    "scope": "static layout and ELF/DOL integrity; not boot or peak heap validation",
+    "physical_wii": false,
+    "mem1_sdk": {
+      "start": 2168242688,
+      "bytes": 186016,
+      "sram_address": 2168397376,
+      "exi_dma_address": 20913728,
+      "sram_dma_bytes": 64
+    },
+    "bytes": 24695696,
+    "sha256": "5772248bd5c50260df07e962f47b566948bccbe228b4fa1ff008bcb3048f394f",
+    "entry": 2147499776,
+    "sections": [
+      {
+        "kind": "text",
+        "address": 2147499776,
+        "bytes": 164,
+        "bank": "MEM1"
+      },
+      {
+        "kind": "text",
+        "address": 2415927296,
+        "bytes": 2725528,
+        "bank": "MEM2"
+      },
+      {
+        "kind": "text",
+        "address": 2147499952,
+        "bytes": 20742728,
+        "bank": "MEM1"
+      },
+      {
+        "kind": "data",
+        "address": 2168242688,
+        "bytes": 186016,
+        "bank": "MEM1"
+      },
+      {
+        "kind": "data",
+        "address": 2418652832,
+        "bytes": 114196,
+        "bank": "MEM2"
+      },
+      {
+        "kind": "data",
+        "address": 2418767028,
+        "bytes": 12,
+        "bank": "MEM2"
+      },
+      {
+        "kind": "data",
+        "address": 2418767040,
+        "bytes": 143948,
+        "bank": "MEM2"
+      },
+      {
+        "kind": "data",
+        "address": 2418910988,
+        "bytes": 708732,
+        "bank": "MEM2"
+      },
+      {
+        "kind": "data",
+        "address": 2419619720,
+        "bytes": 29881,
+        "bank": "MEM2"
+      },
+      {
+        "kind": "data",
+        "address": 2419649604,
+        "bytes": 172,
+        "bank": "MEM2"
+      },
+      {
+        "kind": "data",
+        "address": 2419649776,
+        "bytes": 148,
+        "bank": "MEM2"
+      },
+      {
+        "kind": "data",
+        "address": 2419649928,
+        "bytes": 43264,
+        "bank": "MEM2"
+      },
+      {
+        "kind": "data",
+        "address": 2419693216,
+        "bytes": 496,
+        "bank": "MEM2"
+      }
+    ],
+    "bss": {
+      "address": 2419693712,
+      "bytes": 4291904
+    },
+    "initial_arena_bytes": {
+      "MEM1": 4220768,
+      "MEM2": 46328352
+    },
+    "main_stack_bytes": 328
+  },
+  "loader_target_validation": {
+    "valid_target_passed": true,
+    "invalid_targets_rejected": 7,
+    "physical_wii": false
+  },
+  "build_guards": {
+    "valid_artifact_passed": true,
+    "invalid_artifacts_rejected": 6,
+    "physical_wii": false
+  },
+  "sdk_dma_validation": {
+    "linked_sdk_exi_dma_executed": true,
+    "sram_buffer": "0x813f1e40",
+    "dma_address": "0x13f1e40",
+    "dma_bytes": 64,
+    "mem2_alias_detected": false,
+    "physical_wii": false
+  },
+  "toolchain": "devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0",
+  "known_limits": [
+    "Remaining GS raster sample/attribute DDA precision differences",
+    "Incomplete or unverified mipmap/LOD and AA1 coverage",
+    "Correctness across all scenes and games unverified",
+    "Wii-target post-loading gameplay unverified; Dolphin lab capture is narrower evidence",
+    "No physical Wii FPS or playability proof",
+    "Audio/MPEG and further device features remain incomplete"
+  ],
+  "installation": {
+    "replace": "sd:/ps2recomp/crash-runtime.dol",
+    "keep": "existing HBC loader boot.dol and owner game assets"
+  },
+  "reference_sha256": {
+    "GSRasterizer.cpp": "a83f3c54c7754b4c384472bf8d284a03ccee9fdd70b2eefaa0ad67ff317f39ac",
+    "GSRendererSW.cpp": "61016efbbd3b3ef60b9df9f9fc5b658f16d30ab525d592f256699a1c357b3570",
+    "GSDrawScanline.cpp": "49c0c51546f31d357518b3a6de993263e8efc2d34f8fb2f1142cbbca77e8dd75"
+  }
+}

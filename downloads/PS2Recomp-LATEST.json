@@ -1,54 +1,37 @@
 {
-  "release": "PS2Recomp Crash Wii P16",
-  "status": "private-owner-test-candidate",
-  "source_commit": "eadc4fdc01090e54e61976ab98b4cbd7428aa020",
-  "full_scene_host_source": "1a715fe",
-  "toolchain": "devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0",
-  "local_scene_verified": true,
+  "release": "PS2Recomp Crash Wii P20 GS batch",
+  "status": "experimental-private-owner-test-candidate",
+  "source_commit": "5154c6241149e110d741964138e13e125a23adf5",
   "physical_wii_tested": false,
-  "dolphin_tested": false,
   "wii_fps_verified": false,
-  "tests": {
-    "sqrt_host_cases": 3844,
-    "gs_regressions": 74,
-    "vu_regressions": 42,
-    "sqrt_ppc_simulated_cases": 54,
-    "gs_presentation_cases": 296
-  },
-  "known_limits": [
-    "P15 photographed alignment failure not independently resolved on hardware",
-    "Complete game/device/audio behavior remains unverified",
-    "Hybrid device bridge between PS2Recomp and Gekko2 remains open"
-  ],
-  "hybrid_prototype_pr": "https://github.com/Mafiacoding/Gekko2/pull/56",
+  "all_graphics_fixed": false,
+  "toolchain": "devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0",
   "files": [
     {
-      "name": "PS2Recomp-Crash-Wii-P16-Update-PASSWORD.zip",
-      "bytes": 7355717,
-      "sha256": "5931845aa3fd8b5e679786d2c458db1fdedcf6e3c3b8bd802337bcd1cc6d0de7"
+      "name": "PS2Recomp-Crash-Wii-P20-GS-Update-PASSWORD.zip",
+      "bytes": 6867647,
+      "sha256": "f0f831cc69d012fa1f6c30a5b39c2cc37f2f7c9b384984302a613af824819428"
     },
     {
-      "name": "PS2Recomp-Wii-P16-Source.zip",
-      "bytes": 4528066,
-      "sha256": "28b737dbd95f79f15fac7edba43b1474308a86acd21e61b45ad7842d64e4d80b"
+      "name": "PS2Recomp-Wii-P20-Source.zip",
+      "bytes": 4558739,
+      "sha256": "6e12e9a48d77400beb35a32ed9d5896a4829f8448f5e3a1914f16e0393a70213"
     }
   ],
-  "diagnostic_candidate": {
-    "release": "P17 Alignment diagnostic",
-    "source_commit": "fb970a93f88388fa40a859550e131bdf448071e6",
-    "crash_fixed": false,
-    "physical_wii_tested": false,
-    "files": [
-      {
-        "name": "PS2Recomp-Crash-Wii-P17-Diagnostic-PASSWORD.zip",
-        "bytes": 6857578,
-        "sha256": "874d878586588124e038ab06614220309efeaad9e4f6a9b39502560f3b85a58d"
-      },
-      {
-        "name": "PS2Recomp-Wii-P17-Source.zip",
-        "bytes": 4516620,
-        "sha256": "83e9fd5ccb85592302bd73c9f9a90137e0cc02f8d17f7915b3d62f818c99371a"
-      }
-    ]
+  "report": "PS2Recomp-P20-Status.json",
+  "install_replace": "sd:/ps2recomp/crash-runtime.dol",
+  "keep": "existing HBC boot.dol and owner game assets",
+  "known_limits": [
+    "Remaining GS raster sample/attribute DDA precision differences",
+    "Incomplete or unverified mipmap/LOD and AA1 coverage",
+    "Correctness across all scenes and games unverified",
+    "Wii-target post-loading gameplay unverified; Dolphin lab capture is narrower evidence",
+    "No physical Wii FPS or playability proof",
+    "Audio/MPEG and further device features remain incomplete"
+  ],
+  "previous_candidate": {
+    "release": "PS2Recomp Crash Wii P16",
+    "source_commit": "eadc4fdc01090e54e61976ab98b4cbd7428aa020",
+    "note": "Archived earlier diagnostic/candidate; do not use as a new recommended test"
   }
 }

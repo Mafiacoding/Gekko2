@@ -1,58 +1,58 @@
-# PS2Recomp Wii development status
+# PS2Recomp Wii experimental owner build
 
-Current source batch: **P19**, `c762b19`.
-[Source and P18-to-P19 patch](PS2Recomp-Wii-P19-Source.zip) ·
-[Local test status](PS2Recomp-P19-Status.json) ·
-[Checksums](PS2Recomp-SHA256SUMS.txt).
+Current batch: **P20 GS accuracy**, source `5154c62`.
+[Protected owner update](PS2Recomp-Crash-Wii-P20-GS-Update-PASSWORD.zip) ·
+[Source and P19-to-P20 patch](PS2Recomp-Wii-P20-Source.zip) ·
+[Test report](PS2Recomp-P20-Status.json) · [Checksums](PS2Recomp-SHA256SUMS.txt).
 
-P19 is a source update, **not a request for another owner Wii test**. A new
-runtime is being held until remaining Wii-target post-loading/rendering behavior is
-understood. Physical Wii playability, FPS and a complete game remain unverified.
+**This is an experimental Crash E3 owner candidate, not a finished alpha or a
+claim that all graphics problems are fixed.** No disc or BIOS is supplied.
+The protected archive uses the existing privately shared owner password.
 
-## New local post-loading evidence
+## Installation
 
-The exact P19 host build passed a 240-second scripted title-to-hub probe:
-12 controller packets delivered, required title/hub geometry and terrain
-loaded, then 171 nonblack captures. A reviewed capture shows Crash, corridor
-and HUD. The runner and game profile reproduce this privately without new
-owner Wii log collection. Its gates do not assert image correctness.
-The optional rem_pio2f HLE guest stores also pass 645 compiled PPC cases;
-that separate endian correction is not claimed as the Crash loading cause.
-See `docs/wii/POSTLOAD-VALIDATION.md` in the source package.
+Replace only **`sd:/ps2recomp/crash-runtime.dol`** from the inner ZIP. Keep the
+working HBC loader **`boot.dol`**, the owner game assets and a backup of the old
+runtime. Do not rename the large runtime to the HBC loader. Old P16/P17 packages
+remain historical comparisons; P17 is a superseded diagnostic.
 
-## Proven native crash cause
+## Implemented GS corrections
 
-The P17 panic photo exposed modified native instructions. Local reproduction of
-the unchanged P17 DOL in Dolphin and native hardware watchpoints identified the
-first writer: SDK SRAM DMA. The custom linker placed its buffer at MEM2
-`907D66A0`; the linked EXI DMA address mask redirected its 64 bytes into MEM1
-native code at `807D66A0`, exactly the reported fault address.
+- COLCLAMP signed blend wrapping/saturation and 16-bit DTHE/DIMX dithering.
+- SCANMSK even/odd color and depth suppression.
+- Sprite fractional UV, flat second-vertex Q, reversed texture axes, and negative
+  nearest texture coordinate rounding.
+- Fractional triangle XYOFFSET and exact single-owner shared triangle edges.
 
-P18 keeps SDK bulk data/BSS in file-backed MEM1 storage and validates SRAM
-alignment, code/heap separation and ELF/DOL initialization. It retains cache
-fences, exceptions and PPC register save/restore. It also reserves DMA chain
-snapshots once, fixes big-endian VU loads/delayed stores and GS HWREG image
-bytes, and adds a bounded local Dolphin capture tool. See the source's
-`docs/wii/EXI-SRAM-CORRUPTION.md`, `DMA-CHAIN-ALLOCATION.md` and
-`VU-MEMORY-ENDIAN.md` for evidence and limits.
+The P18 correction for SDK SRAM DMA overwriting native MEM1 code is retained,
+as are bounded DMA snapshot allocation and earlier VU/HWREG endian fixes.
+P20 changes the PS2Recomp software GS path, not Gekko2's separate GX renderer.
 
-A corrected Wii build locally produces a GS lab-scene framebuffer under
-Dolphin. That observation does not establish correct rendering of all scenes,
-post-loading gameplay, physical Wii behavior or a speed improvement. Test
-counts and exact tested revisions are recorded in the status file.
+## Evidence and limits
 
-## Build and installation
+All **80 GS / 42 VU** test groups pass. The old renderer passes its original
+74 groups and fails all six new groups. Compiled PPC750 tests check **320
+triangle tilings / 20,480 pixel ownership cases**. The 240-second host scene
+probe reaches hub terrain/geometry and subsequent GS frames; a reviewed capture
+shows Crash, corridor and HUD. A separate scalar SIMD/ASan run reports no error.
 
-Use current official devkitPro/devkitPPC and libogc. This batch builds with
-**devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0**. The old bundled toolchain archive
-is not the tested toolchain. Keep generated owner game code and game assets
-private; no disc or BIOS is supplied by the source package.
+The exact P20 Wii build produces a dark lab-scene framebuffer in local Dolphin;
+the sampled code region stays unchanged. That narrower observation does not
+prove post-loading gameplay on the Wii-target binary. ELF/DOL, MEM1, loader and
+SDK DMA address checks pass. Physical Wii behavior and FPS remain unverified.
 
-Keep the working HBC loader `boot.dol`. Future owner runtime updates belong at
-`sd:/ps2recomp/crash-runtime.dol`; do not rename the large runtime to the HBC
-loader. P16/P17 archives remain for historical comparison; P17 is a superseded
-diagnostic and is not a recommended new test.
+GS raster sampling/attribute DDA precision, mipmap/LOD, AA1 and complete visual
+correctness across games remain incomplete or unverified. Audio/MPEG and other
+device features also remain open. See the source's `docs/wii/GS-PIXEL-ACCURACY.md`
+and detailed status file. No claim of full Wii playability or speed gain.
+
+## Build
+
+Use current official **devkitPro/devkitPPC and libogc**. This batch is tested with
+**devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0**, not the old bundled toolchain.
+Keep generated guest functions, owner assets and raw game captures private.
+Preserve upstream license notices when sharing the source.
 
 The separate [guarded native-hybrid compiler draft](https://github.com/Mafiacoding/Gekko2/pull/56)
-is still an integration prototype. It is not a complete shared GS/GX runtime or
-an automatic ISO-to-playable-DOL converter. Gekko2 main is unchanged by P18.
+remains an integration prototype, not an automatic ISO-to-playable-DOL converter.
+Gekko2 main is unchanged by this batch.
