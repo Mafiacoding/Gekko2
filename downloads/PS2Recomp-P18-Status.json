@@ -1,0 +1,75 @@
+{
+  "source_commit": "b7fb741b02b392a59deda32b3912b5e7e2b7b98d",
+  "runtime_sha256": "58b575c3f82af3f06172ee5aa9016cd555599582cdbfbea22a1d51acb048f30b",
+  "physical_wii_tested": false,
+  "native_code_corruption_cause": "libogc SRAM buffer in MEM2 truncated by EXI DMA into MEM1 text",
+  "implemented": [
+    "file-backed MEM1 SDK storage and DMA placement guards",
+    "exact-size DMA chain snapshot reservation",
+    "little-endian VU vector/integer loads and delayed masked stores",
+    "little-endian GS HWREG transfer serialization",
+    "local Dolphin XFB and code capture tool"
+  ],
+  "tests": {
+    "vu_host_passed": 42,
+    "gs_host_passed": 74,
+    "vu_ppc_memory_cases": 1632,
+    "gs_hwreg_ppc_cases": 67,
+    "ppc_guest_memory_comparisons": 68064,
+    "sdk_placement_cases": 6,
+    "invalid_builds_rejected": 6,
+    "dma_parser_budget_and_scheduler": "pass",
+    "full_runtime_scalar_asan_seconds": 60,
+    "full_runtime_asan_errors": 0,
+    "full_runtime_valid_gs_frames": 131,
+    "full_runtime_nonblack_gs_frames": 111,
+    "scalar_asan_with_input_seconds": 90,
+    "scalar_asan_with_input_valid_gs_frames": 149,
+    "scalar_asan_with_input_nonblack_gs_frames": 129,
+    "normal_host_seconds": 60,
+    "normal_host_valid_gs_frames": 206,
+    "normal_host_nonblack_gs_frames": 159,
+    "scope": "Host/ASan and compiled PPC path regressions; no physical Wii performance evidence."
+  },
+  "open": [
+    "Remaining dark/color/geometry rendering defects",
+    "Post-loading progression on Wii-target build",
+    "Physical Wii validation, performance and playability"
+  ],
+  "release_recommendation": "Keep runtime private until visible-image failure is understood; do not request another owner Wii run for this intermediate state.",
+  "dolphin": {
+    "source_commit": "b7fb741b02b392a59deda32b3912b5e7e2b7b98d",
+    "runtime_sha256": "58b575c3f82af3f06172ee5aa9016cd555599582cdbfbea22a1d51acb048f30b",
+    "duration_seconds": 330,
+    "elf_sha256": "268fb055f7bdac4ccd67db7f0db8469ffcadedab85d9586695611e0f1fe21eb5",
+    "sampled_code_address": "0x807d669c",
+    "sampled_code_bytes": 12,
+    "sampled_code_unchanged": true,
+    "width": 640,
+    "height": 480,
+    "frames": [
+      {
+        "index": 0,
+        "bytes": 614400,
+        "sha256": "e05a3b2951db29621a2a74987dd645f7609ef0c9ba466d61d1a18352be19e60f",
+        "nonblack_luma": 119242
+      },
+      {
+        "index": 1,
+        "bytes": 614400,
+        "sha256": "e05a3b2951db29621a2a74987dd645f7609ef0c9ba466d61d1a18352be19e60f",
+        "nonblack_luma": 119242
+      }
+    ],
+    "reviewed_scene": "Visible dark lab environment, with rendering defects; no magenta diagnostic",
+    "visible_gs_scene_verified": true,
+    "post_loading_gameplay_verified": false,
+    "physical_wii": false,
+    "pc": "812cfbc4",
+    "lr": "812d217c"
+  },
+  "source_archive": {
+    "name": "PS2Recomp-Wii-P18-Source.zip",
+    "sha256": "006c622e268b9c6c84ba92549ea0e036cd0efde9a059f1e3b0e2f7b82ed3b189"
+  }
+}

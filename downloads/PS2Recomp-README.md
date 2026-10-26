@@ -1,44 +1,47 @@
-# PS2Recomp Wii owner test candidate
+# PS2Recomp Wii development status
 
-Latest: **P16**, source `eadc4fd`. [Protected owner update](PS2Recomp-Crash-Wii-P16-Update-PASSWORD.zip) · [Source and P15-to-P16 patch](PS2Recomp-Wii-P16-Source.zip) · [Checksums](PS2Recomp-SHA256SUMS.txt).
+Current source batch: **P18**, `b7fb741`.
+[Source and P17-to-P18 patch](PS2Recomp-Wii-P18-Source.zip) ·
+[Local test status](PS2Recomp-P18-Status.json) ·
+[Checksums](PS2Recomp-SHA256SUMS.txt).
 
-## P17: alignment diagnostic only
+P18 is a source update, **not a request for another owner Wii test**. A new
+runtime is being held until the remaining post-loading/rendering behavior is
+understood. Physical Wii playability, FPS and a complete game remain unverified.
 
-The owner still observes a physical Wii alignment panic with P16. The faulting
-instruction shown by the exact ELF is ADDI, and the linked Read128 helper passes
-49 modeled PPC cases; this does not explain the hardware failure.
-[P17 protected diagnostic](PS2Recomp-Crash-Wii-P17-Diagnostic-PASSWORD.zip) ·
-[P17 source and P16-to-P17 patch](PS2Recomp-Wii-P17-Source.zip).
+## Proven native crash cause
 
-Replace only `sd:/ps2recomp/crash-runtime.dol`; keep the existing HBC loader and
-the P16 rollback. One panic photo containing BUILD, PC/LR, DAR/DSISR,
-CODE_VALID, CODE_CACHED and CODE_RAM is sufficient for the next distinction.
-No additional long BIOS/log collection is requested. The code words are sampled
-from cached/uncached RAM before video changes; this is not an I-cache dump.
-Six compiled PPC panic tests and the artifact/stack/memory checks pass.
-**No alignment-crash fix or physical validation is claimed for P17.**
+The P17 panic photo exposed modified native instructions. Local reproduction of
+the unchanged P17 DOL in Dolphin and native hardware watchpoints identified the
+first writer: SDK SRAM DMA. The custom linker placed its buffer at MEM2
+`907D66A0`; the linked EXI DMA address mask redirected its 64 bytes into MEM1
+native code at `807D66A0`, exactly the reported fault address.
 
+P18 keeps SDK bulk data/BSS in file-backed MEM1 storage and validates SRAM
+alignment, code/heap separation and ELF/DOL initialization. It retains cache
+fences, exceptions and PPC register save/restore. It also reserves DMA chain
+snapshots once, fixes big-endian VU loads/delayed stores and GS HWREG image
+bytes, and adds a bounded local Dolphin capture tool. See the source's
+`docs/wii/EXI-SRAM-CORRUPTION.md`, `DMA-CHAIN-ALLOCATION.md` and
+`VU-MEMORY-ENDIAN.md` for evidence and limits.
 
-The AES-protected update is for the owner of the supplied game. No disc or BIOS
-is supplied. Keep the existing owner game files. The HBC loader stays unchanged;
-the replacement runtime is `sd:/ps2recomp/crash-runtime.dol`. Do not rename the
-large runtime to the HBC loader's `boot.dol`. The password is shared privately.
-P15 remains available as a rollback.
+A corrected Wii build locally produces a GS lab-scene framebuffer under
+Dolphin. That observation does not establish correct rendering of all scenes,
+post-loading gameplay, physical Wii behavior or a speed improvement. Test
+counts and exact tested revisions are recorded in the status file.
 
-Correct R5900 SQRT.S operand selection, VU clipping/timing and LIBGS buffer ABI.
-Local cold runs now reach title, loading and the player/corridor/HUD scene;
-a Cross input produces a visible jump. These are host observations. The Wii
-cross-build passes DOL/ELF/static-memory/stack checks, plus simulated PPC tests.
-There is no physical Wii or Dolphin validation or verified Wii FPS gain.
-The previous photographed alignment failure has not been independently resolved
-on hardware. Other graphics, audio and game compatibility remain incomplete.
+## Build and installation
 
-Build with current official devkitPro/devkitPPC and libogc; this candidate uses
-devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0. Full source and test commands accompany
-the source archive. Preserve license notices and keep generated owner game code
-private.
+Use current official devkitPro/devkitPPC and libogc. This batch builds with
+**devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0**. The old bundled toolchain archive
+is not the tested toolchain. Keep generated owner game code and game assets
+private; no disc or BIOS is supplied by the source package.
+
+Keep the working HBC loader `boot.dol`. Future owner runtime updates belong at
+`sd:/ps2recomp/crash-runtime.dol`; do not rename the large runtime to the HBC
+loader. P16/P17 archives remain for historical comparison; P17 is a superseded
+diagnostic and is not a recommended new test.
 
 The separate [guarded native-hybrid compiler draft](https://github.com/Mafiacoding/Gekko2/pull/56)
-reuses Gekko2's AOT/interpreter state and has 512 synthetic handoff comparisons.
-It is not yet the complete shared PS2Recomp/Gekko2 GS/GX runtime or an automatic
-ISO-to-playable-DOL converter. See its report for the open integration work.
+is still an integration prototype. It is not a complete shared GS/GX runtime or
+an automatic ISO-to-playable-DOL converter. Gekko2 main is unchanged by P18.
