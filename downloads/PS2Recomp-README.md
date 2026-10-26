@@ -1,5 +1,12 @@
 # PS2Recomp Wii experimental owner build
 
+> **P20 runtime download recommendation withdrawn pending security review.**
+> Windows Defender reported `Trojan:Script/Ulthar.A!ml` against the published
+> `PS2Recomp-Crash-Wii-P20-GS-Update-PASSWORD.zip` during download. A false positive
+> has not been established. Do not allow-list, restore or bypass the detection.
+> Prior checksum/decryption tests were integrity checks, not malware clearance.
+> The immutable historical commit URL remains accessible; it is not recommended.
+
 Current batch: **P20 GS accuracy**, source `5154c62`.
 [Protected owner update](PS2Recomp-Crash-Wii-P20-GS-Update-PASSWORD.zip) ·
 [Source and P19-to-P20 patch](PS2Recomp-Wii-P20-Source.zip) ·

@@ -1,6 +1,6 @@
 {
   "release": "PS2Recomp Crash Wii P20 GS batch",
-  "status": "experimental-private-owner-test-candidate",
+  "status": "withdrawn-pending-security-review",
   "source_commit": "5154c6241149e110d741964138e13e125a23adf5",
   "physical_wii_tested": false,
   "wii_fps_verified": false,
@@ -33,5 +33,15 @@
     "release": "PS2Recomp Crash Wii P16",
     "source_commit": "eadc4fdc01090e54e61976ab98b4cbd7428aa020",
     "note": "Archived earlier diagnostic/candidate; do not use as a new recommended test"
+  },
+  "download_recommended": false,
+  "security_review": {
+    "reported_detection": "Trojan:Script/Ulthar.A!ml",
+    "reported_item": "PS2Recomp-Crash-Wii-P20-GS-Update-PASSWORD.zip",
+    "observation": "Windows Defender detection during download; user screenshot identifies exact published URL",
+    "malware_confirmed": false,
+    "false_positive_confirmed": false,
+    "windows_defender_scan_available_in_build_environment": false,
+    "instruction": "Keep quarantined. Do not bypass protection or treat checksum matching as malware clearance."
   }
 }
