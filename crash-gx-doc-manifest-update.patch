@@ -48,7 +48,7 @@ Only in src/PS2Recomp/docs/wii: GX-WHOLE-TRIANGLES.md
 Only in src/PS2Recomp/docs/wii: GX-Z24-EXPERIMENT.md
 diff -ru orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md
 --- orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md	2026-10-29 15:25:06.000000000 +0000
-+++ src/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md	2026-10-29 21:17:47.061391458 +0000
++++ src/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md	2026-10-29 21:56:36.476315734 +0000
 @@ -14,7 +14,7 @@
  
  The generated GX adapter has drain-only auxiliary owner registration, a resolve callback before RGB/alpha import, and a read-only source-disjoint callback. It rejects owner changes while GPU work is pending and treats resolve failure as terminal. Connected GPU tests verify ordering before old VRAM is overwritten, mixed CPU/GX transitions and auxiliary source aliases in compact and full staging modes.
@@ -58,6 +58,17 @@ diff -ru orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/GX
  
  ## Driver wiring still to implement
  
+@@ -27,3 +27,10 @@
+ 7. **Acceptance:** mixed native/CPU sequences, source aliases, target changes, TEXFLUSH/transfers, ledger/arena wrap and shutdown; then actual Crash measurements with diagnostics off. No speedup is inferred from the standalone probe.
+ 
+ The runtime currently does not call the new resident-depth path. Direct hardware interpolation remains an unsuccessful precision experiment; canonical-Z input is the verified alternative under development.
++
++## Dolphin game run of the resident Z24 build (2026-10-29, not physical Wii)
++
++`latest-resident-z24/boot.dol` (+ matching `crash_wii.elf` for symbols) booted directly in Dolphin 2503 (OGL, Xvfb/Mesa llvmpipe, `CPUThread=False`, Debian 13 chroot) with a virtual FAT SD image holding `prepare_disc.py` output plus `game.elf`, using the untraced profiler (12 windows x 30 s = 360 s host time). The runtime booted (`gx-native-ready`, VU1 AOT native blocks growing to ~2.7 M, zero VU fallbacks) and drew GX sprites/triangles (about 122,880 draw attempts, ~69 k native; most native triangles are textured projective STQ). The framebuffer stayed very dark; no title/gameplay frame was reached.
++
++`PS2WiiGXDepth24Stats` stayed `[0,0,0,0]` for the whole run (also `PS2WiiGXWholeTriangles` all zero): the resident engine received no eligible draw during this boot/startup span. Handoff acceptance (submissions > 0 on the actual game) is therefore NOT met. Not yet known: whether the engine is simply never eligible in these scenes (they are textured/fade) or whether a later gameplay scene would qualify; reaching one needs controller input that this harness does not provide. There is no matched baseline (no ELF exists for the older DOLs), so no speed comparison, FPS, MEM2-peak or speedup claim is made. Wall-time phase and progress counters are not FPS.
++
 Only in src/PS2Recomp/docs/wii: GX1-EXPERIMENTAL-BUILD.md
 Only in src/PS2Recomp/docs/wii: GX2-PERFORMANCE-FINDINGS.md
 Only in src/PS2Recomp/docs/wii: HYBRID-GX-INTEGRATION.md
