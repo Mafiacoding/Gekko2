@@ -1,35 +1,15 @@
-Only in src/PS2Recomp: .github
-Only in src/PS2Recomp: .gitignore
-Only in src/PS2Recomp: CMakeLists.txt
-Only in src/PS2Recomp: CMakeSettings.json
-Only in src/PS2Recomp: LICENSE
-Only in src/PS2Recomp: README.md
-Only in src/PS2Recomp: android
-Only in src/PS2Recomp/docs/wii: ALIGNMENT-TRIAGE.md
-Only in src/PS2Recomp/docs/wii: BOOT-CHECKPOINTS.md
-Only in src/PS2Recomp/docs/wii: BUILD-AND-STATUS.md
-Only in src/PS2Recomp/docs/wii: BUNDLED-PROGRESS-GUARDS.md
-Only in src/PS2Recomp/docs/wii: COMPUTED-DISPATCH-FIX.md
-Only in src/PS2Recomp/docs/wii: CONVERTER-ROADMAP.md
-Only in src/PS2Recomp/docs/wii: CRASH-GRAPHICS-P22.json
-Only in src/PS2Recomp/docs/wii: CRASH-GRAPHICS-P22.md
-Only in src/PS2Recomp/docs/wii: DMA-CHAIN-ALLOCATION.md
-Only in src/PS2Recomp/docs/wii: DMA-SNAPSHOT-BLOCKS-STATUS.json
-Only in src/PS2Recomp/docs/wii: DMA-SNAPSHOT-BLOCKS.md
-Only in src/PS2Recomp/docs/wii: EXI-SRAM-CORRUPTION.md
-Only in src/PS2Recomp/docs/wii: FIRST-GS-FRAME.md
-Only in src/PS2Recomp/docs/wii: FRAME-MEMORY-DMA-FIX.md
-Only in src/PS2Recomp/docs/wii: FRAME-MEMORY-FAILURE.md
-Only in src/PS2Recomp/docs/wii: FRAME-MEMORY-STATUS.json
-Only in src/PS2Recomp/docs/wii: GS-PIXEL-ACCURACY.md
-Only in src/PS2Recomp/docs/wii: GS-ROW-AND-DECAL-PATHS.md
-Only in src/PS2Recomp/docs/wii: GX-FLAT-FADE.md
-Only in src/PS2Recomp/docs/wii: GX-LINEAR-PROBE-STATUS.json
-Only in src/PS2Recomp/docs/wii: GX-LINEAR-PROGRESS.md
-Only in src/PS2Recomp/docs/wii: GX-PRIMER-FINDINGS.md
-Only in src/PS2Recomp/docs/wii: GX-PROJECTIVE-PROBE-STATUS.json
-Only in src/PS2Recomp/docs/wii: GX-PROJECTIVE-PROGRESS.md
-diff -ru orig/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md src/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md
+diff -ruN orig/PS2Recomp/docs/wii/GS-ROW-AND-DECAL-PATHS.md src/PS2Recomp/docs/wii/GS-ROW-AND-DECAL-PATHS.md
+--- orig/PS2Recomp/docs/wii/GS-ROW-AND-DECAL-PATHS.md	2026-10-29 09:26:46.000000000 +0000
++++ src/PS2Recomp/docs/wii/GS-ROW-AND-DECAL-PATHS.md	2026-10-29 22:02:51.569651921 +0000
+@@ -54,3 +54,7 @@
+ measured game startup; the extended constant-color path was used 3,979 times in a 90-second game
+ run, but did not show a clear overall speed gain. It remains disabled in the
+ private game configuration. Adequate Dolphin gameplay speed is still open.
++
++## GIF arbiter single-packet fast path (unreleased, always on)
++
++`PS2Memory::submitGifPacket` with immediate drain now calls `GifArbiter::submitAndDrain`. With an empty queue and no re-entrancy it snapshots the packet into a reused scratch buffer and processes it directly, skipping the per-packet heap vector, queue push, `stable_sort` temporary buffer and free. A pending queue or a re-entrant call takes the previous submit+drain route, and `drain()` no longer sorts a single entry. Host test `gs_gif_arbiter` compares 20,000 random packets (all paths, DIRECTHL/IMAGE flags, pending-queue and re-entrant cases) byte- and order-identical to the old route; host micro-timing 107 ms -> 18 ms for 2 M 64-byte packets. This is a component timing only: not built into a Wii DOL, no Dolphin or Wii speed measured.
+diff -ruN orig/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md src/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md
 --- orig/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md	2026-10-29 15:20:02.000000000 +0000
 +++ src/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md	2026-10-29 20:57:27.316681329 +0000
 @@ -24,7 +24,7 @@
@@ -41,12 +21,7 @@ diff -ru orig/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md src/PS2Recomp/docs/wii/GX-R
  
  - [ ] Measure actual GS depth/alpha/blend families in title and gameplay captures. Startup measured: Z24, GEQUAL with depth writes; most sampled triangles have unconditional alpha. Title/gameplay capture remains open.
  - [ ] Define depth encoding and precision limits (GS Z32/Z24/Z16 versus GX Z24).
-Only in src/PS2Recomp/docs/wii: GX-STATE-PROFILE.md
-Only in src/PS2Recomp/docs/wii: GX-STQ-PROBE-STATUS.json
-Only in src/PS2Recomp/docs/wii: GX-STQ-PROGRESS.md
-Only in src/PS2Recomp/docs/wii: GX-WHOLE-TRIANGLES.md
-Only in src/PS2Recomp/docs/wii: GX-Z24-EXPERIMENT.md
-diff -ru orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md
+diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md
 --- orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md	2026-10-29 15:25:06.000000000 +0000
 +++ src/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md	2026-10-29 21:56:36.476315734 +0000
 @@ -14,7 +14,7 @@
@@ -69,35 +44,108 @@ diff -ru orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/GX
 +
 +`PS2WiiGXDepth24Stats` stayed `[0,0,0,0]` for the whole run (also `PS2WiiGXWholeTriangles` all zero): the resident engine received no eligible draw during this boot/startup span. Handoff acceptance (submissions > 0 on the actual game) is therefore NOT met. Not yet known: whether the engine is simply never eligible in these scenes (they are textured/fade) or whether a later gameplay scene would qualify; reaching one needs controller input that this harness does not provide. There is no matched baseline (no ELF exists for the older DOLs), so no speed comparison, FPS, MEM2-peak or speedup claim is made. Wall-time phase and progress counters are not FPS.
 +
-Only in src/PS2Recomp/docs/wii: GX1-EXPERIMENTAL-BUILD.md
-Only in src/PS2Recomp/docs/wii: GX2-PERFORMANCE-FINDINGS.md
-Only in src/PS2Recomp/docs/wii: HYBRID-GX-INTEGRATION.md
-Only in src/PS2Recomp/docs/wii: HYBRID-GX-PROBE-STATUS.json
-Only in src/PS2Recomp/docs/wii: HYBRID-PERFORMANCE.md
-Only in src/PS2Recomp/docs/wii: IOP-MEMORY-ALLOCATION-FIX.md
-Only in src/PS2Recomp/docs/wii: NATIVE-SOURCE-CACHE.md
-Only in src/PS2Recomp/docs/wii: NATIVE-TEXTURE-PROBE-STATUS.json
-Only in src/PS2Recomp/docs/wii: NATIVE-TEXTURES.md
-Only in src/PS2Recomp/docs/wii: P15-SINGLE-BUFFER-MIXER.md
-Only in src/PS2Recomp/docs/wii: PANIC-OUTPUT.md
-Only in src/PS2Recomp/docs/wii: POSTLOAD-GS-INVESTIGATION.md
-Only in src/PS2Recomp/docs/wii: POSTLOAD-VALIDATION.md
-Only in src/PS2Recomp/docs/wii: SD-LOADER.md
-Only in src/PS2Recomp/docs/wii: STARTUP-STACK-FIX.md
-Only in src/PS2Recomp/docs/wii: THREAD-STORAGE-FIX.md
-Only in src/PS2Recomp/docs/wii: VU-AOT.md
-Only in src/PS2Recomp/docs/wii: VU-MEMORY-ENDIAN.md
-Only in src/PS2Recomp/docs/wii: VU-OPERAND-EXPERIMENT.md
-Only in src/PS2Recomp: ps2xAnalyzer
-Only in src/PS2Recomp: ps2xIOP
-Only in src/PS2Recomp: ps2xRecomp
-Only in src/PS2Recomp: ps2xRuntime
-Only in src/PS2Recomp: ps2xStudio
-Only in src/PS2Recomp: ps2xTest
-Only in src/PS2Recomp/tests/gs_hybrid: CMakeLists.txt
-Only in src/PS2Recomp/tests/gs_hybrid: README.md
-Only in src/PS2Recomp/tests/gs_hybrid/native: README.md
-diff -ru orig/PS2Recomp/tests/gs_hybrid/native/build_probe.py src/PS2Recomp/tests/gs_hybrid/native/build_probe.py
+diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
+--- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h	2026-10-24 00:58:24.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h	2026-10-29 21:59:21.554986152 +0000
+@@ -32,12 +32,19 @@
+ 
+     void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false);
+ 
++    // Submit one packet and drain at once. With an empty queue this is
++    // observably identical to submit()+drain() (a single packet has nothing to
++    // reorder) but reuses a scratch buffer instead of allocating per packet.
++    void submitAndDrain(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false);
++
+     void drain();
+     bool empty() const { return m_queue.empty(); }
+ 
+ private:
+     ProcessPacketFn m_processFn;
+     std::vector<GifArbiterPacket> m_queue;
++    std::vector<uint8_t> m_scratch;
++    bool m_inFlight = false;
+ 
+     static bool isImagePacket(const uint8_t *data, uint32_t sizeBytes);
+     static uint8_t pathPriority(GifPathId id);
+diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp src/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
+--- orig/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp	2026-10-24 01:43:46.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp	2026-10-29 21:59:21.555674927 +0000
+@@ -34,11 +34,39 @@
+     m_queue.push_back(std::move(pkt));
+ }
+ 
++void GifArbiter::submitAndDrain(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl)
++{
++    if (!data || sizeBytes < 16 || !m_processFn)
++        return;
++
++    if (!m_queue.empty() || m_inFlight)
++    {
++        submit(pathId, data, sizeBytes, path2DirectHl);
++        drain();
++        return;
++    }
++
++    // Snapshot like submit() does, so processing cannot observe later writes to the source.
++    m_scratch.assign(data, data + sizeBytes);
++    m_inFlight = true;
++    try
++    {
++        m_processFn(m_scratch.data(), sizeBytes);
++    }
++    catch (...)
++    {
++        m_inFlight = false;
++        throw;
++    }
++    m_inFlight = false;
++}
++
+ void GifArbiter::drain()
+ {
+     if (!m_processFn)
+         return;
+ 
++    if (m_queue.size() > 1u)
+     std::stable_sort(m_queue.begin(), m_queue.end(),
+                      [](const GifArbiterPacket &a, const GifArbiterPacket &b)
+                      {
+diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/ps2_memory.cpp src/PS2Recomp/ps2xRuntime/src/lib/ps2_memory.cpp
+--- orig/PS2Recomp/ps2xRuntime/src/lib/ps2_memory.cpp	2026-10-28 21:42:40.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/src/lib/ps2_memory.cpp	2026-10-29 21:59:27.456048011 +0000
+@@ -2052,13 +2052,16 @@
+         flushMaskedPath3Packets(false);
+     }
+ 
++    if (m_gifArbiter && drainImmediately)
++    {
++        m_gifArbiter->submitAndDrain(pathId, data, sizeBytes, path2DirectHl);
++        return;
++    }
++
+     if (m_gifArbiter)
+         m_gifArbiter->submit(pathId, data, sizeBytes, path2DirectHl);
+     else if (m_gifPacketCallback)
+         m_gifPacketCallback(data, sizeBytes);
+-
+-    if (m_gifArbiter && drainImmediately)
+-        m_gifArbiter->drain();
+ }
+ 
+ void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
+diff -ruN orig/PS2Recomp/tests/gs_hybrid/CMakeLists.txt src/PS2Recomp/tests/gs_hybrid/CMakeLists.txt
+--- orig/PS2Recomp/tests/gs_hybrid/CMakeLists.txt	2026-10-29 14:37:04.000000000 +0000
++++ src/PS2Recomp/tests/gs_hybrid/CMakeLists.txt	2026-10-29 21:59:42.221908450 +0000
+@@ -67,3 +67,8 @@
+ add_executable(gs_depth24_plan_checks test_depth24_plan.cpp)
+ target_link_libraries(gs_depth24_plan_checks PRIVATE gs_hybrid_under_test)
+ add_test(NAME gs_native_depth24_plan COMMAND gs_depth24_plan_checks)
++
++add_executable(gs_gif_arbiter_checks test_gif_arbiter.cpp ${PS2X_ROOT}/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp)
++target_include_directories(gs_gif_arbiter_checks PRIVATE ${PS2X_ROOT}/ps2xRuntime/include ${PS2X_ROOT}/ps2xIOP/include)
++target_compile_features(gs_gif_arbiter_checks PRIVATE cxx_std_20)
++add_test(NAME gs_gif_arbiter COMMAND gs_gif_arbiter_checks)
+diff -ruN orig/PS2Recomp/tests/gs_hybrid/native/build_probe.py src/PS2Recomp/tests/gs_hybrid/native/build_probe.py
 --- orig/PS2Recomp/tests/gs_hybrid/native/build_probe.py	2026-10-29 15:52:02.000000000 +0000
 +++ src/PS2Recomp/tests/gs_hybrid/native/build_probe.py	2026-10-29 20:57:27.316084752 +0000
 @@ -122,6 +122,10 @@
@@ -111,29 +159,81 @@ diff -ru orig/PS2Recomp/tests/gs_hybrid/native/build_probe.py src/PS2Recomp/test
      (output / 'build.json').write_text(json.dumps(manifest, indent=2) + '\n')
      print(elf)
  
-Only in src/PS2Recomp/tests/gs_hybrid/native: gekko_sources.json
-Only in src/PS2Recomp/tests/gs_hybrid/native: native_connected_probe.cpp
-Only in src/PS2Recomp/tests/gs_hybrid/native: native_depth_probe.cpp
-Only in src/PS2Recomp/tests/gs_hybrid/native: native_gx_probe.cpp
-Only in src/PS2Recomp/tests/gs_hybrid/native: native_hybrid_probe.cpp
-Only in src/PS2Recomp/tests/gs_hybrid/native: native_linear_probe.cpp
-Only in src/PS2Recomp/tests/gs_hybrid/native: native_texture_probe.cpp
-Only in src/PS2Recomp/tests/gs_hybrid/native: probe_texture_bridge.inc
-Only in src/PS2Recomp/tests/gs_hybrid: test_depth24_plan.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_fragment_rows.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_hybrid_backend.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_linear_plan.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_projective_plan.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_run_batch.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_sprite_plan.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_texture_image.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_texture_page.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_texture_rect.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_triangle_spans.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_upload_cursor.cpp
-Only in src/PS2Recomp/tests/gs_hybrid: test_whole_triangle.cpp
-Only in src/PS2Recomp/tests: headless
-Only in src/PS2Recomp/tests: vu_speed
-Only in src/PS2Recomp/tests: wii_portability
-Only in src/PS2Recomp: tools
-Only in src/PS2Recomp: vita
+diff -ruN orig/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp src/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp
+--- orig/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp	2026-10-29 22:02:04.065828695 +0000
+@@ -0,0 +1,73 @@
++#include "runtime/gs/ps2_gif_arbiter.h"
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <random>
++#include <vector>
++
++// submitAndDrain must be indistinguishable from submit()+drain(): same packets,
++// same bytes, same order, also when a queue is pending or processing re-enters.
++namespace {
++struct Seen { std::vector<std::vector<uint8_t>> packets; };
++void Check(bool ok, const char *what) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); std::exit(1); } }
++}
++
++int main()
++{
++    std::mt19937 rng(1234);
++    Seen a, b;
++    GifArbiter ref([&](const uint8_t *d, uint32_t n) { a.packets.emplace_back(d, d + n); });
++    GifArbiter fast([&](const uint8_t *d, uint32_t n) { b.packets.emplace_back(d, d + n); });
++    std::vector<uint8_t> buf(16 * 40);
++    for (unsigned i = 0; i < 20000; ++i)
++    {
++        const uint32_t qw = 1 + rng() % 40;
++        for (uint32_t j = 0; j < qw * 16; ++j) buf[j] = uint8_t(rng());
++        if (rng() % 4 == 0) { buf[7] = uint8_t((buf[7] & 0x03) | (2u << 2)); } // IMAGE-ish tag byte for path3 detection
++        const GifPathId path = GifPathId(1 + rng() % 3);
++        const bool direct = rng() % 3 == 0;
++        if (rng() % 7 == 0)
++        {   // queue several then drain: both arbiters take the same legacy route
++            ref.submit(path, buf.data(), qw * 16, direct);
++            fast.submit(path, buf.data(), qw * 16, direct);
++            ref.submit(GifPathId::Path3, buf.data(), qw * 16, false);
++            fast.submit(GifPathId::Path3, buf.data(), qw * 16, false);
++            ref.drain(); fast.drain();
++        }
++        ref.submit(path, buf.data(), qw * 16, direct); ref.drain();
++        fast.submitAndDrain(path, buf.data(), qw * 16, direct);
++        Check(ref.empty() && fast.empty(), "queues empty");
++    }
++    Check(a.packets == b.packets, "identical packet sequence and bytes");
++    Check(!a.packets.empty(), "packets processed");
++
++    // Snapshot semantics: later writes to the source must not reach processing.
++    std::vector<uint8_t> src(32, 0x11); std::vector<uint8_t> got;
++    GifArbiter snap([&](const uint8_t *d, uint32_t n) { std::memset(src.data(), 0x22, src.size()); got.assign(d, d + n); });
++    snap.submitAndDrain(GifPathId::Path1, src.data(), 32);
++    Check(got == std::vector<uint8_t>(32, 0x11), "snapshot taken before processing");
++
++    // Re-entrant submit during processing uses the legacy path and keeps all data.
++    unsigned calls = 0; bool reenter = true; GifArbiter *self = nullptr;
++    GifArbiter re([&](const uint8_t *, uint32_t) { ++calls; if (reenter) { reenter = false; uint8_t t[16] = {}; self->submit(GifPathId::Path1, t, 16); } });
++    self = &re;
++    uint8_t one[16] = {};
++    re.submitAndDrain(GifPathId::Path1, one, 16);
++    re.drain();
++    Check(calls == 2, "re-entrant packet processed exactly once");
++
++    // Informational timing.
++    unsigned long sink = 0;
++    GifArbiter t1([&](const uint8_t *d, uint32_t n) { sink += d[0] + n; }), t2([&](const uint8_t *d, uint32_t n) { sink += d[0] + n; });
++    uint8_t pkt[64] = {1};
++    auto t0 = std::chrono::steady_clock::now();
++    for (unsigned i = 0; i < 2000000; ++i) { t1.submit(GifPathId::Path2, pkt, 64); t1.drain(); }
++    auto t1e = std::chrono::steady_clock::now();
++    for (unsigned i = 0; i < 2000000; ++i) t2.submitAndDrain(GifPathId::Path2, pkt, 64);
++    auto t2e = std::chrono::steady_clock::now();
++    std::printf("submit+drain %.1f ms, submitAndDrain %.1f ms (2M x 64B, host, sink=%lu)\n",
++        std::chrono::duration<double, std::milli>(t1e - t0).count(), std::chrono::duration<double, std::milli>(t2e - t1e).count(), sink);
++    std::puts("gif arbiter checks passed");
++    return 0;
++}
+Binary files orig/PS2Recomp/tools/wii/__pycache__/prepare_gx_adapter.cpython-313.pyc and src/PS2Recomp/tools/wii/__pycache__/prepare_gx_adapter.cpython-313.pyc differ
