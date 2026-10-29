@@ -1,0 +1,128 @@
+Only in src/PS2Recomp: .github
+Only in src/PS2Recomp: .gitignore
+Only in src/PS2Recomp: CMakeLists.txt
+Only in src/PS2Recomp: CMakeSettings.json
+Only in src/PS2Recomp: LICENSE
+Only in src/PS2Recomp: README.md
+Only in src/PS2Recomp: android
+Only in src/PS2Recomp/docs/wii: ALIGNMENT-TRIAGE.md
+Only in src/PS2Recomp/docs/wii: BOOT-CHECKPOINTS.md
+Only in src/PS2Recomp/docs/wii: BUILD-AND-STATUS.md
+Only in src/PS2Recomp/docs/wii: BUNDLED-PROGRESS-GUARDS.md
+Only in src/PS2Recomp/docs/wii: COMPUTED-DISPATCH-FIX.md
+Only in src/PS2Recomp/docs/wii: CONVERTER-ROADMAP.md
+Only in src/PS2Recomp/docs/wii: CRASH-GRAPHICS-P22.json
+Only in src/PS2Recomp/docs/wii: CRASH-GRAPHICS-P22.md
+Only in src/PS2Recomp/docs/wii: DMA-CHAIN-ALLOCATION.md
+Only in src/PS2Recomp/docs/wii: DMA-SNAPSHOT-BLOCKS-STATUS.json
+Only in src/PS2Recomp/docs/wii: DMA-SNAPSHOT-BLOCKS.md
+Only in src/PS2Recomp/docs/wii: EXI-SRAM-CORRUPTION.md
+Only in src/PS2Recomp/docs/wii: FIRST-GS-FRAME.md
+Only in src/PS2Recomp/docs/wii: FRAME-MEMORY-DMA-FIX.md
+Only in src/PS2Recomp/docs/wii: FRAME-MEMORY-FAILURE.md
+Only in src/PS2Recomp/docs/wii: FRAME-MEMORY-STATUS.json
+Only in src/PS2Recomp/docs/wii: GS-PIXEL-ACCURACY.md
+Only in src/PS2Recomp/docs/wii: GS-ROW-AND-DECAL-PATHS.md
+Only in src/PS2Recomp/docs/wii: GX-FLAT-FADE.md
+Only in src/PS2Recomp/docs/wii: GX-LINEAR-PROBE-STATUS.json
+Only in src/PS2Recomp/docs/wii: GX-LINEAR-PROGRESS.md
+Only in src/PS2Recomp/docs/wii: GX-PRIMER-FINDINGS.md
+Only in src/PS2Recomp/docs/wii: GX-PROJECTIVE-PROBE-STATUS.json
+Only in src/PS2Recomp/docs/wii: GX-PROJECTIVE-PROGRESS.md
+diff -ru orig/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md src/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md
+--- orig/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md	2026-10-29 15:20:02.000000000 +0000
++++ src/PS2Recomp/docs/wii/GX-REBUILD-BATCH.md	2026-10-29 20:57:27.316681329 +0000
+@@ -24,7 +24,7 @@
+ 
+ ## Batch 3 — GX depth and alpha state families
+ 
+-An actual Z24 seed/interpolation/comparison/readback probe is implemented. Direct interpolation fails near ties; canonical source-Z input passes 48 GPU cases including deferred CT32 alpha. The bounded ledger and auxiliary ownership boundaries are implemented; registering the resident depth engine in the runtime is still open. See [GX-Z24-EXPERIMENT.md](GX-Z24-EXPERIMENT.md) and [GX-Z24-INTEGRATION.md](GX-Z24-INTEGRATION.md).
++An actual Z24 seed/interpolation/comparison/readback probe is implemented. Direct interpolation fails near ties; canonical source-Z input passes 48 GPU cases including deferred CT32 alpha. The bounded ledger and auxiliary ownership boundaries are implemented; the resident depth engine is registered in the GX driver behind `PS2X_WII_GX_DEPTH24` (default OFF; private Wii build ON) for opaque untextured Z24 GEQUAL+write draws. Actual game speed is not yet measured. See [GX-Z24-EXPERIMENT.md](GX-Z24-EXPERIMENT.md) and [GX-Z24-INTEGRATION.md](GX-Z24-INTEGRATION.md).
+ 
+ - [ ] Measure actual GS depth/alpha/blend families in title and gameplay captures. Startup measured: Z24, GEQUAL with depth writes; most sampled triangles have unconditional alpha. Title/gameplay capture remains open.
+ - [ ] Define depth encoding and precision limits (GS Z32/Z24/Z16 versus GX Z24).
+Only in src/PS2Recomp/docs/wii: GX-STATE-PROFILE.md
+Only in src/PS2Recomp/docs/wii: GX-STQ-PROBE-STATUS.json
+Only in src/PS2Recomp/docs/wii: GX-STQ-PROGRESS.md
+Only in src/PS2Recomp/docs/wii: GX-WHOLE-TRIANGLES.md
+Only in src/PS2Recomp/docs/wii: GX-Z24-EXPERIMENT.md
+diff -ru orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md
+--- orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md	2026-10-29 15:25:06.000000000 +0000
++++ src/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md	2026-10-29 20:57:27.317221015 +0000
+@@ -14,7 +14,7 @@
+ 
+ The generated GX adapter has drain-only auxiliary owner registration, a resolve callback before RGB/alpha import, and a read-only source-disjoint callback. It rejects owner changes while GPU work is pending and treats resolve failure as terminal. Connected GPU tests verify ordering before old VRAM is overwritten, mixed CPU/GX transitions and auxiliary source aliases in compact and full staging modes.
+ 
+-`GSNativeDrawDriver::NeedsResolveBeforeSubmit` lets the coordinator materialize a pending auxiliary owner before a different native path reads CPU metadata. Host tests verify that this preserves native routing and that query failures remain terminal. No depth engine is registered by the current game runtime yet.
++`GSNativeDrawDriver::NeedsResolveBeforeSubmit` lets the coordinator materialize a pending auxiliary owner before a different native path reads CPU metadata. Host tests verify that this preserves native routing and that query failures remain terminal. With `PS2X_WII_GX_DEPTH24` the driver registers `ps2_wii_gx_depth24_engine.h` (128 KiB upload arena, seed bitmap, resident Z24 ownership, deferred exact CT32 alpha replay, Z copyback before RGB import). Eligibility is opaque untextured triangles with Z24 GEQUAL and depth write over disjoint frame/Z envelopes; everything else resolves and takes the previous path. Canonical source depth is still computed on the CPU. Connected host/Dolphin probe: 346/346 with exact structural VRAM and bounded RGB error. The 347-case mixed sequence (fog fallback, explicit Z read, texture flush, ledger-cap transition, arena wrap) builds but its Dolphin run and any actual game run are pending; no speed or MEM2-headroom claim exists yet.
+ 
+ ## Driver wiring still to implement
+ 
+Only in src/PS2Recomp/docs/wii: GX1-EXPERIMENTAL-BUILD.md
+Only in src/PS2Recomp/docs/wii: GX2-PERFORMANCE-FINDINGS.md
+Only in src/PS2Recomp/docs/wii: HYBRID-GX-INTEGRATION.md
+Only in src/PS2Recomp/docs/wii: HYBRID-GX-PROBE-STATUS.json
+Only in src/PS2Recomp/docs/wii: HYBRID-PERFORMANCE.md
+Only in src/PS2Recomp/docs/wii: IOP-MEMORY-ALLOCATION-FIX.md
+Only in src/PS2Recomp/docs/wii: NATIVE-SOURCE-CACHE.md
+Only in src/PS2Recomp/docs/wii: NATIVE-TEXTURE-PROBE-STATUS.json
+Only in src/PS2Recomp/docs/wii: NATIVE-TEXTURES.md
+Only in src/PS2Recomp/docs/wii: P15-SINGLE-BUFFER-MIXER.md
+Only in src/PS2Recomp/docs/wii: PANIC-OUTPUT.md
+Only in src/PS2Recomp/docs/wii: POSTLOAD-GS-INVESTIGATION.md
+Only in src/PS2Recomp/docs/wii: POSTLOAD-VALIDATION.md
+Only in src/PS2Recomp/docs/wii: SD-LOADER.md
+Only in src/PS2Recomp/docs/wii: STARTUP-STACK-FIX.md
+Only in src/PS2Recomp/docs/wii: THREAD-STORAGE-FIX.md
+Only in src/PS2Recomp/docs/wii: VU-AOT.md
+Only in src/PS2Recomp/docs/wii: VU-MEMORY-ENDIAN.md
+Only in src/PS2Recomp/docs/wii: VU-OPERAND-EXPERIMENT.md
+Only in src/PS2Recomp: ps2xAnalyzer
+Only in src/PS2Recomp: ps2xIOP
+Only in src/PS2Recomp: ps2xRecomp
+Only in src/PS2Recomp: ps2xRuntime
+Only in src/PS2Recomp: ps2xStudio
+Only in src/PS2Recomp: ps2xTest
+Only in src/PS2Recomp/tests/gs_hybrid: CMakeLists.txt
+Only in src/PS2Recomp/tests/gs_hybrid: README.md
+Only in src/PS2Recomp/tests/gs_hybrid/native: README.md
+diff -ru orig/PS2Recomp/tests/gs_hybrid/native/build_probe.py src/PS2Recomp/tests/gs_hybrid/native/build_probe.py
+--- orig/PS2Recomp/tests/gs_hybrid/native/build_probe.py	2026-10-29 15:52:02.000000000 +0000
++++ src/PS2Recomp/tests/gs_hybrid/native/build_probe.py	2026-10-29 20:57:27.316084752 +0000
+@@ -122,6 +122,10 @@
+         manifest['driver_sha256'] = hashlib.sha256((root / 'ps2xRuntime/platform/wii/ps2_wii_gx_driver.h').read_bytes()).hexdigest()
+         manifest['wii_bridge_sha256'] = hashlib.sha256((root / 'ps2xRuntime/platform/wii/ps2_wii_gx_bridge.inc').read_bytes()).hexdigest()
+         manifest['texture_bridge_sha256'] = hashlib.sha256((here / 'probe_texture_bridge.inc').read_bytes()).hexdigest()
++        manifest['resident_depth24'] = bool(args.resident_depth24)
++        if args.resident_depth24:
++            for key, name in (('depth24_engine_sha256', 'ps2_wii_gx_depth24_engine.h'), ('depth24_bridge_sha256', 'ps2_wii_gx_depth24_bridge.h')):
++                manifest[key] = hashlib.sha256((root / 'ps2xRuntime/platform/wii' / name).read_bytes()).hexdigest()
+     (output / 'build.json').write_text(json.dumps(manifest, indent=2) + '\n')
+     print(elf)
+ 
+Only in src/PS2Recomp/tests/gs_hybrid/native: gekko_sources.json
+Only in src/PS2Recomp/tests/gs_hybrid/native: native_connected_probe.cpp
+Only in src/PS2Recomp/tests/gs_hybrid/native: native_depth_probe.cpp
+Only in src/PS2Recomp/tests/gs_hybrid/native: native_gx_probe.cpp
+Only in src/PS2Recomp/tests/gs_hybrid/native: native_hybrid_probe.cpp
+Only in src/PS2Recomp/tests/gs_hybrid/native: native_linear_probe.cpp
+Only in src/PS2Recomp/tests/gs_hybrid/native: native_texture_probe.cpp
+Only in src/PS2Recomp/tests/gs_hybrid/native: probe_texture_bridge.inc
+Only in src/PS2Recomp/tests/gs_hybrid: test_depth24_plan.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_fragment_rows.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_hybrid_backend.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_linear_plan.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_projective_plan.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_run_batch.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_sprite_plan.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_texture_image.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_texture_page.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_texture_rect.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_triangle_spans.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_upload_cursor.cpp
+Only in src/PS2Recomp/tests/gs_hybrid: test_whole_triangle.cpp
+Only in src/PS2Recomp/tests: headless
+Only in src/PS2Recomp/tests: vu_speed
+Only in src/PS2Recomp/tests: wii_portability
+Only in src/PS2Recomp: tools
+Only in src/PS2Recomp: vita
