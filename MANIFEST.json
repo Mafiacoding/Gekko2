@@ -1,0 +1,97 @@
+{
+  "filename": "Crash-GX-Complete-With-Toolchains.zip",
+  "bytes": 890159045,
+  "sha256": "e3eef7fa28907d860f31aa5904096787a085724aff64a08189528ee3d75c33c6",
+  "parts": [
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part001",
+      "bytes": 50331648,
+      "sha256": "e85a4e77ef85d8375166bbca8bc8a48f3a6a3f16301fd2e95f70d40b152d46b4"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part002",
+      "bytes": 50331648,
+      "sha256": "16e5e3715528a427129516fb8db79c72dae956f4a507a4ee697be881bfb98932"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part003",
+      "bytes": 50331648,
+      "sha256": "de6a7916171dd62d49668d91b9e3485447a3975934bc791fbc461723cb8a8d5b"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part004",
+      "bytes": 50331648,
+      "sha256": "bd2c3cb8c4eb94d9d49aa2d36712cf40a4b8fa5febebd1842b329b95cdaeafc8"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part005",
+      "bytes": 50331648,
+      "sha256": "3e811be0e82098c570837cad567fed1c3ad10b2537cb1187d08c43b55abdf8c3"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part006",
+      "bytes": 50331648,
+      "sha256": "cb650332d4c2fb0b8b6eb581eeb2471594b2323758197155d823241a3fed8c9d"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part007",
+      "bytes": 50331648,
+      "sha256": "0fc2a266e95ee20fbca430b2e7c4abce8342d1240a69bc0527824acc9bbefc3e"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part008",
+      "bytes": 50331648,
+      "sha256": "0f61f06d16544400102f5f223f828caa2a61802fc847713f4142bf9ce5eedee5"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part009",
+      "bytes": 50331648,
+      "sha256": "0b97cfa6fc86c22960319bba3260a18f56687e17da493c3b238419ee72b2e367"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part010",
+      "bytes": 50331648,
+      "sha256": "a5061f478409c6d1609307a7c5b0aa761bca8cb14ce382a6be2aa00700ae89b8"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part011",
+      "bytes": 50331648,
+      "sha256": "458a66e2d4a7af96051afc57a7510fc3294f43c030fa997e8c1b858a517e3238"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part012",
+      "bytes": 50331648,
+      "sha256": "bbed2d510e7f1c08b3d9674602460bf06012f55d4ba25bb74e583f409e36d751"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part013",
+      "bytes": 50331648,
+      "sha256": "8dfb2458c1f378208c10eb8d2d349750ec4723414381205b31213092dd9d2ac3"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part014",
+      "bytes": 50331648,
+      "sha256": "55a8db3bff816f3390d7073c2426567bdaaa8552541bcb0ee4b7cb74bf5b45d8"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part015",
+      "bytes": 50331648,
+      "sha256": "b13e806a8f9d808d6bc66bb4f308c805471aef300246c2d82f4daa1e26de6472"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part016",
+      "bytes": 50331648,
+      "sha256": "b8055d2d6cf60b54c2ed626b67dbd166200031d1bd942926dfb8cf54ecc65787"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part017",
+      "bytes": 50331648,
+      "sha256": "d67fcb5d810e1c7e2c4bfc4a0afbf94afb9dfb70373b93e498f32f62be6fdf58"
+    },
+    {
+      "name": "Crash-GX-Complete-With-Toolchains.zip.part018",
+      "bytes": 34521029,
+      "sha256": "c94a6db5f84c26428cef9dde8eecf7863f6f453735e6e27e4e0e80b0465f58f4"
+    }
+  ]
+}
