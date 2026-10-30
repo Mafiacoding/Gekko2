@@ -50,8 +50,8 @@ diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/G
 +
 diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md
 --- orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 09:09:24.049819749 +0000
-@@ -0,0 +1,24 @@
++++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 10:02:22.169623949 +0000
+@@ -0,0 +1,30 @@
 +# Rebuilding the private Crash Wii build from the handoff archives
 +
 +The handoff archives contain no generated guest code and no VU AOT registry. They can be recreated from the owner ELF (private, never commit the outputs):
@@ -76,6 +76,12 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +Findings for the Crash boot (Dolphin): about 199 M IOP instructions in 65 s; the histogram is identical across windows, i.e. a steady loop. In 45 s one RPC accounted for essentially all IOP work: SID `0x12345`, function 0, 19,323 calls, 162 M instructions (about 8,400 per call, roughly 430 calls/s). The hot code is an unoptimised (-O0) IOP sound module that polls SPU2 state per voice through `LIBSD.IRX` imports. The EE side is the game's per-iteration `SoundUpdate` -> `FlushIOPCommand` -> `sceSifCallRpc`. Because emulated time advances with every call, boot time was dominated by interpreting this audio command port.
 +
 +Option `PS2X_IOP_NULL_RPC_SID=<sid>` (cache string, default empty, owner-private): `IopSubsystem::handleRpc` completes that SID at once without running the IOP; the receive buffer is zeroed, nothing else is invented. Audio output is disabled in this runtime anyway. With `0x12345` (Dolphin, wall time, same boot, `CPUThread=False`): first GX draws before 20 s (C1 build: ~55 s, B2 build: ~90 s); the GX attempt counter at 60 s equals the old build at ~2-2.5 minutes; the 40 s frame has the same hash as an earlier frame of the unmodified build; the run continued for 300 s without exception. Not verified: that no later game state needs audio RPC results, any audio behaviour, and any physical Wii timing. Steady-state rendering speed after boot is unchanged (phase shares at 300 s: CPU GS raster 22 %, GIF submit 18 %, VU1 18 %, guest 16 %).
++
++## Batch 4a: steady-state function profile and first fixes (2026-10-30)
++
++PowerPC PC sampling through Dolphin's GDB stub (about 1,490 samples, boot with the audio-RPC bypass, 100-176 s) of the Wii build shows, outside the IOP: `memcmp` 10.6 %, `GSNativeFragmentPlan::Row` 9.3 %, `surface_ensure_height` 4.6 %, `GSMem::TextureByteAddress` 3.8 %, `floorf` 3.6 %, `memcpy` 3.5 %, `memset` 3.4 %, VU1 interpreter functions about 12 % together. `memcmp` comes from the source-image cache check and the retained-page coherence proof (the newlib `memcmp` on Wii is a byte loop).
++
++Changes (results unchanged, new host test `gs_fast_math` plus the existing 14 GS suites pass): `GSEqualBytes` (word-wise equality, same result as `memcmp()==0`) at the two call sites, and `GSFastFloor` (bit-identical to `std::floor(float)` over 25 M random patterns and edge cases) in the fragment plan and the CPU sampler. Dolphin sampling of the new build: `memcmp` 0.1 % but the coherence functions now carry the compare (`GetCoherentNativeImageStamp` 4.0 %, `CommitCoherentNativeSample` 4.2 %), `floorf` 1.3 %. Net gain roughly 4-5 points of the sampled time; deterministic frame hashes at the same checkpoints are identical before and after. The next real saving needs write tracking for the retained texture page (avoid comparing 8 KiB per textured draw), which touches every VRAM writer and is not done.
 diff -ruN orig/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h src/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h
 --- orig/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h	2026-10-24 01:43:46.000000000 +0000
 +++ src/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h	2026-10-30 01:46:03.881147427 +0000
@@ -226,6 +232,92 @@ diff -ruN orig/PS2Recomp/ps2xIOP/src/iop_subsystem.cpp src/PS2Recomp/ps2xIOP/src
          const auto route = m_impl->routes.find(request.sid);
          detail::IopService *hle = route != m_impl->routes.end() ? route->second : nullptr;
  
+diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_fast_math.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_fast_math.h
+--- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_fast_math.h	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_fast_math.h	2026-10-30 09:44:09.445558995 +0000
+@@ -0,0 +1,42 @@
++#ifndef GS_FAST_MATH_H
++#define GS_FAST_MATH_H
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++
++// Exactly std::floor(float) for every input: values with |x| >= 2^23 are already integral (or inf/NaN) and
++// are returned unchanged; otherwise truncation toward zero is corrected for negatives. Avoids the libm call on
++// PowerPC 750, which has no floor instruction.
++[[gnu::always_inline]] inline float GSFastFloor(float x) noexcept
++{
++    if (!(std::fabs(x) < 8388608.0f))
++        return x;
++    const float t = static_cast<float>(static_cast<int32_t>(x));
++    return t > x ? t - 1.0f : (t == 0.0f ? (std::signbit(x) ? -0.0f : 0.0f) : t);
++}
++
++// Equality of two byte ranges (same result as memcmp()==0). Word loads for 4-byte aligned operands: the
++// newlib memcmp used on Wii is a byte loop and dominated the source-image cache and page coherence checks.
++inline bool GSEqualBytes(const void *a, const void *b, size_t n) noexcept
++{
++    if (((reinterpret_cast<uintptr_t>(a) | reinterpret_cast<uintptr_t>(b)) & 3u) != 0u)
++        return std::memcmp(a, b, n) == 0;
++    const uint8_t *x = static_cast<const uint8_t *>(a);
++    const uint8_t *y = static_cast<const uint8_t *>(b);
++    auto load = [](const uint8_t *p) { uint32_t v; std::memcpy(&v, p, 4); return v; };
++    while (n >= 16u)
++    {
++        if (((load(x) ^ load(y)) | (load(x + 4) ^ load(y + 4)) | (load(x + 8) ^ load(y + 8)) | (load(x + 12) ^ load(y + 12))) != 0u)
++            return false;
++        x += 16; y += 16; n -= 16u;
++    }
++    while (n >= 4u)
++    {
++        if (load(x) != load(y))
++            return false;
++        x += 4; y += 4; n -= 4u;
++    }
++    return n == 0u || std::memcmp(x, y, n) == 0;
++}
++#endif
+diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.h
+--- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.h	2026-10-29 08:04:16.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.h	2026-10-30 09:44:09.466537533 +0000
+@@ -3,6 +3,7 @@
+ #include "runtime/gs/gs_native_linear_plan.h"
+ #include "runtime/gs/gs_cpu_backend.h"
+ #include "runtime/gs/gs_texture_coordinates.h"
++#include "runtime/gs/gs_fast_math.h"
+ // Row scratch only; no framebuffer RGB or full-screen action buffer.
+ struct GSNativeFragmentPlan {
+  const GSPrimitiveBatch *batch=nullptr;const GSNativeLinearPlan *plan=nullptr;
+@@ -15,7 +16,7 @@
+   const float inv=1.f/std::fabs(stq[2]);
+   const float u=stq[0]*inv*s.textureWidth-.5f;
+   const float v=stq[1]*inv*s.textureHeight-.5f;
+-  const int x=int(std::floor(u)),y=int(std::floor(v));const float fx=u-x,fy=v-y;
++  const int x=int(GSFastFloor(u)),y=int(GSFastFloor(v));const float fx=u-x,fy=v-y;
+   auto tap=[&](int xx,int yy){
+    xx=GSWrapTextureCoordinate(xx,s.textureWidth,s.context.clamp&3,0,0);
+    yy=GSWrapTextureCoordinate(yy,s.textureHeight,(s.context.clamp>>2)&3,0,0);
+diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h
+--- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h	2026-10-27 16:49:44.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h	2026-10-30 09:44:24.661680148 +0000
+@@ -4,6 +4,7 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstring>
++#include "runtime/gs/gs_fast_math.h"
+ 
+ namespace GSMem
+ {
+@@ -30,7 +31,7 @@
+         bool CoherentWith(const uint8_t *vram) const noexcept
+         {
+             return vram && (m_pageBase == UINT32_MAX ||
+-                std::memcmp(m_bytes.data(), vram + m_pageBase, kPageSize) == 0);
++                GSEqualBytes(m_bytes.data(), vram + m_pageBase, kPageSize));
+         }
+ 
+         // byteAddress is the wrapped, swizzled VRAM address. The returned
 diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
 --- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h	2026-10-24 00:58:24.000000000 +0000
 +++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h	2026-10-30 00:46:15.883599938 +0000
@@ -275,6 +367,54 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/p
  option(PS2X_WII_VU_COMPACT_BLOCKS "Optimize native VU block code size to preserve MEM1 heap" ON)
  if(PS2X_WII_VU_COMPACT_BLOCKS AND PS2X_VU_AOT_DIR AND EXISTS "${PS2X_VU_AOT_DIR}/vu_aot_blocks.cpp")
   set_property(SOURCE "${PS2X_VU_AOT_DIR}/vu_aot_blocks.cpp" APPEND PROPERTY COMPILE_OPTIONS -Os)
+diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h
+--- orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h	2026-10-29 15:54:12.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h	2026-10-30 09:44:24.663058213 +0000
+@@ -11,6 +11,7 @@
+ #include "ps2_wii_progress.h"
+ #endif
+ #include "runtime/gs/gs_cpu_backend.h"
++#include "runtime/gs/gs_fast_math.h"
+ #include "runtime/gs/gs_hybrid_backend.h"
+ #include "runtime/gs/gs_triangle_coverage.h"
+ #include "runtime/gs/gs_native_sprite_plan.h"
+@@ -202,7 +203,7 @@
+             if(!image.valid||image.key!=key||(indexed&&image.palette!=sourcePalette))continue;
+             size_t cursor=0;bool equal=true;
+             for(const auto &span:image.spans){
+-                if(std::memcmp(image.source.data()+cursor,sourceVram+span.offset,span.size)!=0){equal=false;break;}
++                if(!GSEqualBytes(image.source.data()+cursor,sourceVram+span.offset,span.size)){equal=false;break;}
+                 cursor+=span.size;
+             }
+             if(equal){
+diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp src/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+--- orig/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp	2026-10-29 09:00:08.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp	2026-10-30 09:44:24.662449753 +0000
+@@ -6,6 +6,7 @@
+ #include "runtime/gs/gs_cpu_backend.h"
+ #include "runtime/gs/gs_triangle_coverage.h"
+ #include "runtime/gs/gs_texture_coordinates.h"
++#include "runtime/gs/gs_fast_math.h"
+ #include "runtime/gs/ps2_gs_common.h"
+ #include "runtime/gs/ps2_gs_psmct16.h"
+ #include "runtime/gs/ps2_gs_psmct32.h"
+@@ -1325,13 +1326,13 @@
+ 
+     if (!state.linearFilter)
+     {
+-        return samplePoint(static_cast<int>(std::floor(texUf)), static_cast<int>(std::floor(texVf)));
++        return samplePoint(static_cast<int>(GSFastFloor(texUf)), static_cast<int>(GSFastFloor(texVf)));
+     }
+ 
+     const float sampleU = texUf - 0.5f;
+     const float sampleV = texVf - 0.5f;
+-    const int u0 = static_cast<int>(std::floor(sampleU));
+-    const int v0 = static_cast<int>(std::floor(sampleV));
++    const int u0 = static_cast<int>(GSFastFloor(sampleU));
++    const int v0 = static_cast<int>(GSFastFloor(sampleV));
+     const int u1 = u0 + 1;
+     const int v1 = v0 + 1;
+     const float fx = sampleU - static_cast<float>(u0);
 diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp src/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
 --- orig/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp	2026-10-24 01:43:46.000000000 +0000
 +++ src/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp	2026-10-30 00:46:15.883172718 +0000
@@ -345,8 +485,8 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/ps2_memory.cpp src/PS2Recomp/ps2xRu
  void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
 diff -ruN orig/PS2Recomp/tests/gs_hybrid/CMakeLists.txt src/PS2Recomp/tests/gs_hybrid/CMakeLists.txt
 --- orig/PS2Recomp/tests/gs_hybrid/CMakeLists.txt	2026-10-29 14:37:04.000000000 +0000
-+++ src/PS2Recomp/tests/gs_hybrid/CMakeLists.txt	2026-10-29 21:59:42.221908450 +0000
-@@ -67,3 +67,8 @@
++++ src/PS2Recomp/tests/gs_hybrid/CMakeLists.txt	2026-10-30 09:44:24.667942251 +0000
+@@ -67,3 +67,13 @@
  add_executable(gs_depth24_plan_checks test_depth24_plan.cpp)
  target_link_libraries(gs_depth24_plan_checks PRIVATE gs_hybrid_under_test)
  add_test(NAME gs_native_depth24_plan COMMAND gs_depth24_plan_checks)
@@ -355,6 +495,11 @@ diff -ruN orig/PS2Recomp/tests/gs_hybrid/CMakeLists.txt src/PS2Recomp/tests/gs_h
 +target_include_directories(gs_gif_arbiter_checks PRIVATE ${PS2X_ROOT}/ps2xRuntime/include ${PS2X_ROOT}/ps2xIOP/include)
 +target_compile_features(gs_gif_arbiter_checks PRIVATE cxx_std_20)
 +add_test(NAME gs_gif_arbiter COMMAND gs_gif_arbiter_checks)
++
++add_executable(gs_fast_math_checks test_fast_math.cpp)
++target_include_directories(gs_fast_math_checks PRIVATE ${PS2X_ROOT}/ps2xRuntime/include)
++target_compile_features(gs_fast_math_checks PRIVATE cxx_std_20)
++add_test(NAME gs_fast_math COMMAND gs_fast_math_checks)
 diff -ruN orig/PS2Recomp/tests/gs_hybrid/native/build_probe.py src/PS2Recomp/tests/gs_hybrid/native/build_probe.py
 --- orig/PS2Recomp/tests/gs_hybrid/native/build_probe.py	2026-10-29 15:52:02.000000000 +0000
 +++ src/PS2Recomp/tests/gs_hybrid/native/build_probe.py	2026-10-29 20:57:27.316084752 +0000
@@ -369,6 +514,49 @@ diff -ruN orig/PS2Recomp/tests/gs_hybrid/native/build_probe.py src/PS2Recomp/tes
      (output / 'build.json').write_text(json.dumps(manifest, indent=2) + '\n')
      print(elf)
  
+diff -ruN orig/PS2Recomp/tests/gs_hybrid/test_fast_math.cpp src/PS2Recomp/tests/gs_hybrid/test_fast_math.cpp
+--- orig/PS2Recomp/tests/gs_hybrid/test_fast_math.cpp	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/tests/gs_hybrid/test_fast_math.cpp	2026-10-30 09:44:24.667942251 +0000
+@@ -0,0 +1,39 @@
++#include "runtime/gs/gs_fast_math.h"
++#include <bit>
++#include <cstdio>
++#include <cstdlib>
++#include <limits>
++#include <random>
++#include <vector>
++namespace { void Check(bool ok, const char *w) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", w); std::exit(1); } } }
++int main()
++{
++    // GSFastFloor must equal std::floor bit for bit (including -0.0, NaN payload class and infinities).
++    auto same = [](float x) { const float a = GSFastFloor(x), b = std::floor(x); return std::isnan(b) ? std::isnan(a) : std::bit_cast<uint32_t>(a) == std::bit_cast<uint32_t>(b); };
++    const float edge[] = {0.f, -0.f, .5f, -.5f, 1.f, -1.f, .99999994f, -.99999994f, 8388607.5f, -8388607.5f, 8388608.f, -8388608.f, 16777216.f,
++        1e30f, -1e30f, std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(),
++        std::numeric_limits<float>::denorm_min(), -std::numeric_limits<float>::denorm_min(), std::numeric_limits<float>::min(), 2.5f, -2.5f, 1e-7f, -1e-7f};
++    for (float x : edge) Check(same(x), "floor edge case");
++    std::mt19937 rng(7);
++    for (unsigned i = 0; i < 20000000; ++i) Check(same(std::bit_cast<float>(uint32_t(rng()))), "floor random bit pattern");
++    std::uniform_real_distribution<float> d(-5000.f, 5000.f);
++    for (unsigned i = 0; i < 5000000; ++i) Check(same(d(rng)), "floor random range");
++    // GSEqualBytes == (memcmp==0) for all sizes/alignments, mismatches at every position.
++    std::vector<uint8_t> a(4096 + 16), b(4096 + 16);
++    for (auto &v : a) v = uint8_t(rng());
++    for (unsigned off = 0; off < 8; ++off)
++        for (unsigned off2 = 0; off2 < 8; ++off2)
++            for (unsigned n : {0u, 1u, 3u, 4u, 5u, 15u, 16u, 17u, 31u, 64u, 255u, 256u, 1000u, 4096u})
++            {
++                std::memcpy(b.data() + off2, a.data() + off, n);
++                Check(GSEqualBytes(a.data() + off, b.data() + off2, n), "equal ranges");
++                for (unsigned pos = 0; pos < n; pos += (n > 300 ? 37 : 1))
++                {
++                    b[off2 + pos] ^= 0x40;
++                    Check(!GSEqualBytes(a.data() + off, b.data() + off2, n), "single-byte mismatch detected");
++                    b[off2 + pos] ^= 0x40;
++                }
++            }
++    std::puts("gs fast math checks passed");
++    return 0;
++}
 diff -ruN orig/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp src/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp
 --- orig/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp	1970-01-01 00:00:00.000000000 +0000
 +++ src/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp	2026-10-30 00:46:15.884650956 +0000
