@@ -50,8 +50,8 @@ diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/G
 +
 diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md
 --- orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 17:08:54.276470028 +0000
-@@ -0,0 +1,50 @@
++++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 17:54:38.358031848 +0000
+@@ -0,0 +1,61 @@
 +# Rebuilding the private Crash Wii build from the handoff archives
 +
 +The handoff archives contain no generated guest code and no VU AOT registry. They can be recreated from the owner ELF (private, never commit the outputs):
@@ -102,6 +102,17 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +Measurement caveat found on the way: in this Dolphin setup (Mesa llvmpipe software GL) the host spends about 93 % of its time waiting in the native GX phase and the guest advances at the same pace for every build, so host-wall-time throughput cannot show CPU-side gains; use the observer (emulated-time) counters. Earlier boot-time numbers in these notes (86 s -> 52 s -> 20 s) are in Dolphin's emulated timeline, not host seconds.
 +
 +A larger gain needs a different execution model: pre-scheduled blocks whose hazard timing is computed once per program (needs the private per-program word lists and the fuzz/corpus net), not more helper tuning.
++
++## Why blocks seemed useless, and a fair measurement (2026-10-30)
++
++Two findings overturn the earlier note that program blocks give no whole-game gain in Dolphin:
++
++1. Measurement artefact: with Mesa llvmpipe the Dolphin host waits ~93 % of its time on GX, and guest progress at a given host second is identical for every build. "Equal host seconds" comparisons therefore cannot show CPU-side gains. The observer thread's phase samples run on emulated Wii time; compare them per unit of guest work.
++2. Image identity: the block registry needs the exact 16 KiB image that executes. An idle memory dump finds images that differ from the executed ones (the game patches words of its VU1 microcode between draws), so a registry built from such a dump never matches (`native_blocks=0`, results identical to no blocks). New diagnostic option `PS2X_WII_VU_IMAGE_CAPTURE` (default OFF) records unique complete VU1 images at execution time with execution counts (`PS2VuImageCount/Hash/Exec`, `PS2VuImages[64][16384]`), read through `/proc/<dolphin>/mem`.
++
++Result with three captured images (executions 840 / 7 / 5753 in 230 s), `tools/vu/generate_aot.py` with `programs`, blocks ON (`PS2X_WII_VU_COMPACT_BLOCKS`), audio-RPC bypass, Dolphin, 2 paired runs, 5 windows each: `native_blocks` 2.6 M entries; executed upper pairs identical (7,198,075 and 7,198,075; lower 7,193,000 both; 0 fallbacks); frame hashes identical to the no-block build in every window of both pairs; VU1 observer samples per million upper pairs 278.3 / 278.8 (no blocks) vs 199.8 / 200.2 (blocks): 28 % less emulated time per VU pair; VU1 share of cumulative observer time 18.4 % vs 14.0 %; the same guest work took 5.2 % less total observer time. Static check passes with 4,231,040 B MEM1 arena (minimum 4,194,304 B, only 36 KB spare); the build with the blocks module is 26.66 MB. Images not in the registry still run through the exact-match fallback.
++
++Tool note: `tools/vu/aot_blocks.py` copies text from `VU1Interpreter::run()`; it now drops the `committedThisCycle = false;` line that the redundant-commit change added (blocks always commit at the start of each issue). Remaining limits: only three images were captured (title/hub scenes later in the game use other images and fall back), the registry is private capture data and is not committed, and nothing here is a physical-Wii measurement.
 diff -ruN orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md
 --- orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	1970-01-01 00:00:00.000000000 +0000
 +++ src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	2026-10-30 11:06:42.853563281 +0000
@@ -476,8 +487,8 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/ps2_vu1.h src/PS2Recomp/ps2
      void finishXgkick();
 diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt
 --- orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-29 15:57:14.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-30 15:02:37.829573456 +0000
-@@ -243,6 +243,25 @@
++++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-30 17:32:49.318277519 +0000
+@@ -243,6 +243,29 @@
   endforeach()
   set_property(SOURCE ${HOT_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -O2)
  endif()
@@ -499,6 +510,10 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/p
 +option(PS2X_WII_SUB_PROFILE "Diagnostic: sample the innermost GS/GX function id (PS2X_SUB scopes)" OFF)
 +if(PS2X_WII_SUB_PROFILE)
 + target_compile_definitions(crash_wii PRIVATE PS2X_WII_SUB_PROFILE)
++endif()
++option(PS2X_WII_VU_IMAGE_CAPTURE "Diagnostic: record unique complete VU1 microcode images with execution counts" OFF)
++if(PS2X_WII_VU_IMAGE_CAPTURE)
++ set_property(SOURCE "${RUNTIME}/vu/ps2_vu1_core.cpp" APPEND PROPERTY COMPILE_DEFINITIONS PS2X_VU_IMAGE_CAPTURE)
 +endif()
  option(PS2X_WII_VU_COMPACT_BLOCKS "Optimize native VU block code size to preserve MEM1 heap" ON)
  if(PS2X_WII_VU_COMPACT_BLOCKS AND PS2X_VU_AOT_DIR AND EXISTS "${PS2X_VU_AOT_DIR}/vu_aot_blocks.cpp")
@@ -807,7 +822,7 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/ps2_memory.cpp src/PS2Recomp/ps2xRu
  void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
 diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 --- orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp	2026-10-29 08:42:32.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp	2026-10-30 16:25:29.836104305 +0000
++++ src/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp	2026-10-30 17:32:49.317627561 +0000
 @@ -1167,10 +1167,49 @@
      progressXgkick();
  }
@@ -858,7 +873,59 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/p
  }
  
  bool VU1Interpreter::pipelinesPending() const
-@@ -1927,9 +1966,12 @@
+@@ -1910,6 +1949,42 @@
+     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
+ }
+ 
++#if defined(PS2X_VU_IMAGE_CAPTURE)
++// Diagnostic: unique complete VU1 microcode images seen at execution time, with execution counts.
++uint32_t PS2VuImageCount, PS2VuImageHash[64], PS2VuImageExec[64];
++uint8_t PS2VuImages[64][16384];
++static void captureVu1Image(const uint8_t *code, uint64_t generation)
++{
++    static uint64_t lastGeneration = ~0ull;
++    static int lastIndex = -1;
++    if (generation == lastGeneration && lastIndex >= 0)
++    {
++        ++PS2VuImageExec[lastIndex];
++        return;
++    }
++    uint32_t h = 2166136261u;
++    for (uint32_t i = 0; i < 16384u; ++i)
++        h = (h ^ code[i]) * 16777619u;
++    int index = -1;
++    for (uint32_t k = 0; k < PS2VuImageCount; ++k)
++        if (PS2VuImageHash[k] == h && std::memcmp(PS2VuImages[k], code, 16384u) == 0)
++        {
++            index = static_cast<int>(k);
++            break;
++        }
++    if (index < 0 && PS2VuImageCount < 64u)
++    {
++        index = static_cast<int>(PS2VuImageCount++);
++        std::memcpy(PS2VuImages[index], code, 16384u);
++        PS2VuImageHash[index] = h;
++    }
++    lastGeneration = generation;
++    lastIndex = index;
++    if (index >= 0)
++        ++PS2VuImageExec[index];
++}
++#endif
++
+ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+                          uint8_t *vuData, uint32_t dataSize,
+                          GS &gs, PS2Memory *memory, uint32_t maxCycles)
+@@ -1922,14 +1997,21 @@
+     m_activeVuDataSize = dataSize;
+     m_activeGs = &gs;
+     m_activeMemory = memory;
++#if defined(PS2X_VU_IMAGE_CAPTURE)
++    if (m_unit == Unit::VU1 && memory != nullptr && codeSize == 16384u)
++        captureVu1Image(vuCode, memory->getVU1CodeGeneration());
++#endif
+ 
+     const int previousRoundingMode = std::fegetround();
      const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
      const uint64_t budgetEnd = m_cycle + maxCycles;
      bool programEnded = false;
@@ -872,7 +939,7 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/p
          if (m_state.pc + 8u > codeSize)
              break;
  
-@@ -1961,7 +2003,12 @@
+@@ -1961,7 +2043,12 @@
                  break;
              }
              advanceTo(readyCycle);
@@ -886,7 +953,7 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/p
          }
          if (m_cycle >= budgetEnd)
              break;
-@@ -2146,6 +2193,7 @@
+@@ -2146,6 +2233,7 @@
          }
  
          advanceOneCycle();
@@ -1173,4 +1240,16 @@ diff -ruN orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp src/PS2Recomp/tests/v
 Binary files orig/PS2Recomp/tools/vu/__pycache__/aot_blocks.cpython-313.pyc and src/PS2Recomp/tools/vu/__pycache__/aot_blocks.cpython-313.pyc differ
 Binary files orig/PS2Recomp/tools/vu/__pycache__/aot_flags.cpython-313.pyc and src/PS2Recomp/tools/vu/__pycache__/aot_flags.cpython-313.pyc differ
 Binary files orig/PS2Recomp/tools/vu/__pycache__/aot_usage.cpython-313.pyc and src/PS2Recomp/tools/vu/__pycache__/aot_usage.cpython-313.pyc differ
+diff -ruN orig/PS2Recomp/tools/vu/aot_blocks.py src/PS2Recomp/tools/vu/aot_blocks.py
+--- orig/PS2Recomp/tools/vu/aot_blocks.py	2026-10-29 02:29:32.000000000 +0000
++++ src/PS2Recomp/tools/vu/aot_blocks.py	2026-10-30 17:16:02.253724810 +0000
+@@ -105,6 +105,8 @@
+     core=(root/'ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp').read_text()
+     issue=core[core.index('        commitReadyPipelines();',core.index('void VU1Interpreter::run(')):]
+     issue=issue[:issue.index('        advanceOneCycle();')+len('        advanceOneCycle();')]
++    # run() keeps a per-loop flag that skips a redundant commit; block issue always commits first.
++    issue=issue.replace('        committedThisCycle = false;\n','')
+     issue=issue.replace('''        if (m_state.pc + 8u > codeSize)
+             break;
+ 
 Binary files orig/PS2Recomp/tools/wii/__pycache__/prepare_gx_adapter.cpython-313.pyc and src/PS2Recomp/tools/wii/__pycache__/prepare_gx_adapter.cpython-313.pyc differ
