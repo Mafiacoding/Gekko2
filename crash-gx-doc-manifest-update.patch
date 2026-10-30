@@ -50,8 +50,8 @@ diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/G
 +
 diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md
 --- orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 10:02:22.169623949 +0000
-@@ -0,0 +1,30 @@
++++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 15:26:22.389937420 +0000
+@@ -0,0 +1,38 @@
 +# Rebuilding the private Crash Wii build from the handoff archives
 +
 +The handoff archives contain no generated guest code and no VU AOT registry. They can be recreated from the owner ELF (private, never commit the outputs):
@@ -82,6 +82,14 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +PowerPC PC sampling through Dolphin's GDB stub (about 1,490 samples, boot with the audio-RPC bypass, 100-176 s) of the Wii build shows, outside the IOP: `memcmp` 10.6 %, `GSNativeFragmentPlan::Row` 9.3 %, `surface_ensure_height` 4.6 %, `GSMem::TextureByteAddress` 3.8 %, `floorf` 3.6 %, `memcpy` 3.5 %, `memset` 3.4 %, VU1 interpreter functions about 12 % together. `memcmp` comes from the source-image cache check and the retained-page coherence proof (the newlib `memcmp` on Wii is a byte loop).
 +
 +Changes (results unchanged, new host test `gs_fast_math` plus the existing 14 GS suites pass): `GSEqualBytes` (word-wise equality, same result as `memcmp()==0`) at the two call sites, and `GSFastFloor` (bit-identical to `std::floor(float)` over 25 M random patterns and edge cases) in the fragment plan and the CPU sampler. Dolphin sampling of the new build: `memcmp` 0.1 % but the coherence functions now carry the compare (`GetCoherentNativeImageStamp` 4.0 %, `CommitCoherentNativeSample` 4.2 %), `floorf` 1.3 %. Net gain roughly 4-5 points of the sampled time; deterministic frame hashes at the same checkpoints are identical before and after. The next real saving needs write tracking for the retained texture page (avoid comparing 8 KiB per textured draw), which touches every VRAM writer and is not done.
++
++## Sub-phase profiler and VU1 bookkeeping experiment (2026-10-30)
++
++New diagnostic option `PS2X_WII_SUB_PROFILE` (default OFF): `PS2X_SUB(id)` scopes (innermost GS/GX function id: DecodeImage, ImageRange, coherence stamp/snapshot/commit, sprite/linear/projective `Prepare`, fragment `Row`, `ProcessNativeFragmentRow`, `TryCroppedSprite`, `SampleTexture`, CPU `DrawTriangle`/`DrawSprite`, upload, `TrySubmit`) sampled by the existing observer thread into `subSamples[64]` (also written to `progress.txt`). The observer runs on emulated Wii time, so its shares are closer to a real Wii than host-side PC sampling.
++
++Observer phase shares in the Dolphin window 160-240 s (audio-RPC bypass build, one run): VU1 execution 50.9 %, native GX preparation 19.3 %, CPU GS raster 14.2 %, native fragment permissions 8.9 %, GIF submit 4.6 %. This differs from the earlier host-time PC sampling (VU1 about 11-18 %), so the VU1 interpreter is the largest single cost later in the scene, not a small one. Sub-scopes in the same window: DrawTriangle (CPU) 6.8 %, FragmentPlan::Row 6.3 %, TryLinear 5.4 %, SampleTexture (CPU) 5.0 %, LinearPlan::Prepare 3.9 %.
++
++VU1 experiment: bit-iteration instead of fixed 15/4-step loops in `calculatePairReadyCycle`/`markPairWrites` plus an early return in `commitReadyPipelines` when nothing is in flight. A new differential fuzz (`tests/vu_speed/vu_timing_fuzz.cpp`, 200,000 hazard-heavy cases over five seeds, full state and VU data hash) showed bit-identical results, and the fuzz detects a deliberately injected stall bug. Host timing (x86, 60,000 cases x 3 repeats) showed no measurable gain (6.45 s vs 6.40 s), so the change was NOT kept. Conclusion: the VU1 cost is not these helper loops; a real gain needs fewer scheduler steps per VU instruction (program blocks with per-program word lists, which are private capture data and previously measured no gain in Dolphin) or a different execution model.
 diff -ruN orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md
 --- orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	1970-01-01 00:00:00.000000000 +0000
 +++ src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	2026-10-30 11:06:42.853563281 +0000
@@ -306,16 +314,17 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_fast_math.h src/PS2Re
 +#endif
 diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.h
 --- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.h	2026-10-29 08:04:16.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.h	2026-10-30 09:44:09.466537533 +0000
-@@ -3,6 +3,7 @@
++++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.h	2026-10-30 15:02:37.828027388 +0000
+@@ -3,6 +3,8 @@
  #include "runtime/gs/gs_native_linear_plan.h"
  #include "runtime/gs/gs_cpu_backend.h"
  #include "runtime/gs/gs_texture_coordinates.h"
 +#include "runtime/gs/gs_fast_math.h"
++#include "runtime/gs/gs_sub_profile.h"
  // Row scratch only; no framebuffer RGB or full-screen action buffer.
  struct GSNativeFragmentPlan {
   const GSPrimitiveBatch *batch=nullptr;const GSNativeLinearPlan *plan=nullptr;
-@@ -15,7 +16,7 @@
+@@ -15,7 +17,7 @@
    const float inv=1.f/std::fabs(stq[2]);
    const float u=stq[0]*inv*s.textureWidth-.5f;
    const float v=stq[1]*inv*s.textureHeight-.5f;
@@ -324,6 +333,80 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_fragment_plan.
    auto tap=[&](int xx,int yy){
     xx=GSWrapTextureCoordinate(xx,s.textureWidth,s.context.clamp&3,0,0);
     yy=GSWrapTextureCoordinate(yy,s.textureHeight,(s.context.clamp>>2)&3,0,0);
+@@ -27,6 +29,7 @@
+  }
+  static int Row(void *opaque,uint32_t row,uint32_t left,uint32_t right,
+   uint8_t *actions,uint8_t *sourceAlpha,uint8_t *storedAlpha){
++  PS2X_SUB(9);
+   auto &p=*static_cast<GSNativeFragmentPlan*>(opaque);const auto &b=*p.batch;
+   const auto &s=b.state;const auto &t=s.context.tex0;
+   uint32_t z[640];
+diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_linear_plan.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_linear_plan.h
+--- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_linear_plan.h	2026-10-27 21:25:54.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_linear_plan.h	2026-10-30 15:02:37.827510579 +0000
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ #pragma once
++#include "runtime/gs/gs_sub_profile.h"
+ #include "runtime/gs/gs_triangle_coverage.h"
+ #include "runtime/gs/gs_types.h"
+ #include <algorithm>
+@@ -26,6 +27,7 @@
+                 b.vertices[0].q*w[0]+b.vertices[1].q*w[1]+b.vertices[2].q*w[2]};
+     }
+     static bool Prepare(const GSPrimitiveBatch &b,GSNativeLinearPlan &p){
++        PS2X_SUB(7);
+         const auto &s=b.state;const auto &c=s.context;
+         if(c.scissor.x0>c.scissor.x1||c.scissor.y0>c.scissor.y1||c.scissor.x1>=640||c.scissor.y1>=480)return false;
+         if(b.vertexCount!=3||(s.prim.type!=GS_PRIM_TRIANGLE&&s.prim.type!=GS_PRIM_TRISTRIP&&s.prim.type!=GS_PRIM_TRIFAN))return false;
+diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_projective_plan.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_projective_plan.h
+--- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_projective_plan.h	2026-10-27 17:22:32.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_projective_plan.h	2026-10-30 15:02:37.827881895 +0000
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ #pragma once
++#include "runtime/gs/gs_sub_profile.h"
+ #include "runtime/gs/gs_cpu_backend.h"
+ #include "runtime/gs/gs_triangle_coverage.h"
+ #include "runtime/gs/gs_texture_coordinates.h"
+@@ -17,6 +18,7 @@
+     float finalS=0,finalT=0,finalQ=1;
+     unsigned checkedPixels=0;
+     static bool Prepare(const GSPrimitiveBatch &b,GSNativeProjectivePlan &p){
++        PS2X_SUB(8);
+         const auto &s=b.state;const auto &c=s.context;
+         if(b.vertexCount!=3||!s.prim.tme||s.prim.fst||s.linearFilter||
+            (s.prim.type!=GS_PRIM_TRIANGLE&&s.prim.type!=GS_PRIM_TRISTRIP&&s.prim.type!=GS_PRIM_TRIFAN)||
+diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_sprite_plan.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_sprite_plan.h
+--- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_sprite_plan.h	2026-10-27 16:38:56.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_native_sprite_plan.h	2026-10-30 15:02:37.826995975 +0000
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ #pragma once
++#include "runtime/gs/gs_sub_profile.h"
+ #include "runtime/gs/gs_cpu_backend.h"
+ #include "runtime/gs/gs_texture_coordinates.h"
+ #include <algorithm>
+@@ -37,6 +38,7 @@
+         return true;
+     }
+     static bool Prepare(const GSPrimitiveBatch &batch,GSNativeSpritePlan &out){
++        PS2X_SUB(6);
+         const auto &s=batch.state;const auto &c=s.context;
+         if(batch.vertexCount!=2||s.prim.type!=GS_PRIM_SPRITE||!s.prim.tme||s.linearFilter||s.textureWidth<1||s.textureWidth>1024||s.textureHeight<1||s.textureHeight>1024)return false;
+         const auto &a=batch.vertices[0],&b=batch.vertices[1];
+diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_sub_profile.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_sub_profile.h
+--- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_sub_profile.h	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_sub_profile.h	2026-10-30 15:02:37.825782730 +0000
+@@ -0,0 +1,8 @@
++#pragma once
++// PS2X_SUB(id): innermost-function sample id for the Wii observer. Empty unless PS2X_WII_SUB_PROFILE is defined.
++#if defined(PS2X_WII_SUB_PROFILE)
++#include "ps2_wii_progress.h"
++#define PS2X_SUB(id) PS2WiiSubScope ps2xSubScope__(id)
++#else
++#define PS2X_SUB(id) do{}while(0)
++#endif
 diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h
 --- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h	2026-10-27 16:49:44.000000000 +0000
 +++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h	2026-10-30 09:44:24.661680148 +0000
@@ -370,8 +453,8 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h src/PS
      static uint8_t pathPriority(GifPathId id);
 diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt
 --- orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-29 15:57:14.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-30 09:00:49.190471211 +0000
-@@ -243,6 +243,21 @@
++++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-30 15:02:37.829573456 +0000
+@@ -243,6 +243,25 @@
   endforeach()
   set_property(SOURCE ${HOT_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -O2)
  endif()
@@ -390,21 +473,36 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/p
 +if(PS2X_IOP_NULL_RPC_SID)
 + set_property(SOURCE "${IOP}/iop_subsystem.cpp" APPEND PROPERTY COMPILE_DEFINITIONS PS2X_IOP_NULL_RPC_SID=${PS2X_IOP_NULL_RPC_SID})
 +endif()
++option(PS2X_WII_SUB_PROFILE "Diagnostic: sample the innermost GS/GX function id (PS2X_SUB scopes)" OFF)
++if(PS2X_WII_SUB_PROFILE)
++ target_compile_definitions(crash_wii PRIVATE PS2X_WII_SUB_PROFILE)
++endif()
  option(PS2X_WII_VU_COMPACT_BLOCKS "Optimize native VU block code size to preserve MEM1 heap" ON)
  if(PS2X_WII_VU_COMPACT_BLOCKS AND PS2X_VU_AOT_DIR AND EXISTS "${PS2X_VU_AOT_DIR}/vu_aot_blocks.cpp")
   set_property(SOURCE "${PS2X_VU_AOT_DIR}/vu_aot_blocks.cpp" APPEND PROPERTY COMPILE_OPTIONS -Os)
 diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h
 --- orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h	2026-10-29 15:54:12.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h	2026-10-30 09:44:24.663058213 +0000
-@@ -11,6 +11,7 @@
++++ src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h	2026-10-30 15:02:37.826484347 +0000
+@@ -9,8 +9,10 @@
+ #include <stdexcept>
+ #if defined(PS2X_WII)
  #include "ps2_wii_progress.h"
++#include "runtime/gs/gs_sub_profile.h"
  #endif
  #include "runtime/gs/gs_cpu_backend.h"
 +#include "runtime/gs/gs_fast_math.h"
  #include "runtime/gs/gs_hybrid_backend.h"
  #include "runtime/gs/gs_triangle_coverage.h"
  #include "runtime/gs/gs_native_sprite_plan.h"
-@@ -202,7 +203,7 @@
+@@ -180,6 +182,7 @@
+     }
+     void InvalidateImages(){if(imageEpoch!=UINT64_MAX)++imageEpoch;projectiveValid=false;previousKeyValid=false;}
+     bool DecodeImage(const GSDrawState &s,uint64_t clut,uint32_t lo,uint32_t hi,std::vector<uint32_t> &rgba){
++        PS2X_SUB(1);
+ #if defined(PS2X_WII_SOURCE_IMAGE_CACHE)
+ #if defined(PS2X_WII_IMMUTABLE_SOURCE_TILES)
+         decodedSourceImage=nullptr;
+@@ -202,7 +205,7 @@
              if(!image.valid||image.key!=key||(indexed&&image.palette!=sourcePalette))continue;
              size_t cursor=0;bool equal=true;
              for(const auto &span:image.spans){
@@ -413,18 +511,169 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h src/PS2Rec
                  cursor+=span.size;
              }
              if(equal){
+@@ -253,6 +256,7 @@
+         return true;
+     }
+     bool ImageRange(const GSDrawState &s,uint32_t &lo,uint32_t &hi)const{
++        PS2X_SUB(2);
+         const auto &t=s.context.tex0;
+         if(t.tw>7||t.th>7||s.textureWidth!=(1u<<t.tw)||s.textureHeight!=(1u<<t.th)||t.tbp0>=16384||t.tbw>63)return false;
+         const uint64_t key=uint64_t(t.tbp0)|(uint64_t(t.tbw)<<14)|(uint64_t(t.psm)<<20)|(uint64_t(t.tw)<<26)|(uint64_t(t.th)<<30);
+@@ -278,6 +282,7 @@
+     }
+     unsigned linearStage=1;
+     Result TryLinear(const GSPrimitiveBatch &b){
++        PS2X_SUB(17);
+         linearStage=1;
+         const auto &s=b.state;const auto &c=s.context;const auto &t=c.tex0;
+         if(s.prim.fge||s.prim.aa1||c.frame.psm>1||c.frame.fbmsk||(c.test&0x4000)||
+@@ -436,6 +441,7 @@
+         ++triangles;++linearTriangles;return Result::Submitted;
+     }
+     Result TryProjective(const GSPrimitiveBatch &b){
++        PS2X_SUB(18);
+         ++admission[7];
+         const auto &s=b.state;const auto &c=s.context;const auto &t=c.tex0;const auto &z=b.vertices[2];
+         if(s.prim.fge||s.prim.aa1||c.frame.psm>1||c.frame.fbmsk||c.fba||!c.zbuf.zmask||
+@@ -512,6 +518,7 @@
+             (!b.state.prim.fst||b.state.textureWidth>128||b.state.textureHeight>128||b.state.context.tex1!=0);
+     }
+     Result TryCroppedSprite(const GSPrimitiveBatch &b){
++        PS2X_SUB(11);
+         ++admission[0];
+         const auto &s=b.state;const auto &c=s.context;const auto &t=c.tex0;const auto &z=b.vertices[1];
+         if(s.prim.fge||s.prim.aa1||c.frame.psm>1||c.frame.fbmsk||c.fba||!c.zbuf.zmask||(c.test&0x4000)||((c.test>>17)&3)!=1||!(s.colclamp&1)||!c.frame.fbw||c.frame.fbw>10||!ResidentTarget(c.frame)||((c.tex1>>2)&7)||t.tfx>3||t.tcc>1){++admission[1];return Result::Unsupported;}
+@@ -587,6 +594,7 @@
+         ++croppedSprites;return Result::Submitted;
+     }
+     Result TryFlat(const GSPrimitiveBatch &b){
++        PS2X_SUB(19);
+         const auto &s=b.state;const auto &c=s.context;
+         const bool subtract=s.prim.abe&&!s.pabe&&(c.alpha&255u)==0x42u;
+         if(b.vertexCount!=2||s.prim.type!=GS_PRIM_SPRITE||(s.prim.abe&&!subtract)||s.prim.fge||s.prim.aa1||c.frame.psm>1||!ResidentTarget(c.frame)||c.frame.fbmsk||c.fba||!c.zbuf.zmask||(c.test&0x4000)||((c.test>>17)&3)!=1||!(s.colclamp&1)||!c.frame.fbw||c.frame.fbw>10)return Result::Unsupported;
+@@ -674,6 +682,7 @@
+     }
+     Result TrySubmit(const GSPrimitiveBatch &b)override
+     {
++        PS2X_SUB(16);
+ #if defined(PS2X_WII_GIF_TRACE)
+         if (PS2WiiGXDiagnosticSoftwareOnly) return Result::Unsupported;
+ #endif
+diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_progress.cpp src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_progress.cpp
+--- orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_progress.cpp	2026-10-26 17:50:34.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_progress.cpp	2026-10-30 15:02:37.825991229 +0000
+@@ -15,17 +15,18 @@
+  std::atomic<uint32_t> maxVif0Drained{},maxVif1Drained{};
+  std::atomic<uint32_t> history[32]{};
+  std::atomic<bool> stopping{false};
++ std::atomic<uint32_t> subPhase{};
+  std::thread observer;
+  // Only the EE executor touches these throttle fields.
+  uint32_t throttle=0;uint64_t lastYield=0;
+  uint64_t startedAt=0;
+ #if defined(PS2X_WII_SAMPLE_PROFILE)
+  // Only the observer writes these; the final read occurs after joining it.
+- uint32_t phaseSamples[16]{},uiSamples[32]{},sampleCount=0,lastUnknownUi=0;
++ uint32_t phaseSamples[16]{},uiSamples[32]{},subSamples[64]{},sampleCount=0,lastUnknownUi=0;
+  void samplePhases(){
+   const auto ee=phase.load(std::memory_order_relaxed);
+   const auto ui=uiPhase.load(std::memory_order_relaxed);
+-  ++phaseSamples[ee<16?ee:15];++uiSamples[ui<32?ui:31];++sampleCount;
++  ++phaseSamples[ee<16?ee:15];++uiSamples[ui<32?ui:31];{const auto sb=subPhase.load(std::memory_order_relaxed);++subSamples[sb<64?sb:63];}++sampleCount;
+   if(ui>=32)lastUnknownUi=ui;
+  }
+ #endif
+@@ -47,6 +48,8 @@
+      for(unsigned i=0;i<16;++i)std::fprintf(f," %u:%lu",i,(unsigned long)phaseSamples[i]);
+      std::fprintf(f,"\nwall_ui_phase_samples=");
+      for(unsigned i=0;i<32;++i)std::fprintf(f," %u:%lu",i,(unsigned long)uiSamples[i]);
++     std::fprintf(f,"\nwall_sub_phase_samples=");
++     for(unsigned i=0;i<64;++i)if(subSamples[i])std::fprintf(f," %u:%lu",i,(unsigned long)subSamples[i]);
+      std::fprintf(f,"\nprofile_unknown_ui_last=%08lx\n",(unsigned long)lastUnknownUi);
+      std::fprintf(f,"Profile samples are wall-time phase occupancy, not CPU time or physical FPS. EE and UI overlap; do not add them.\n");
+ #endif
+@@ -87,6 +90,8 @@
+ }
+ 
+ uint32_t PS2WiiProgressEnter(uint32_t p){return phase.exchange(p,std::memory_order_relaxed);}
++uint32_t PS2WiiSubEnter(uint32_t id){return subPhase.exchange(id,std::memory_order_relaxed);}
++void PS2WiiSubLeave(uint32_t previous){subPhase.store(previous,std::memory_order_relaxed);}
+ 
+ bool PS2WiiServicePoll(){
+  if((++throttle&127)==0){auto now=gettime();if(ticks_to_microsecs(now-lastYield)>=2000){lastYield=now;usleep(1000);}}
+diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_progress.h src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_progress.h
+--- orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_progress.h	2026-10-26 17:50:34.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_progress.h	2026-10-30 15:02:37.825458127 +0000
+@@ -17,6 +17,16 @@
+  ~PS2WiiProgressScope(){PS2WiiProgressPhase(previous_);}
+ };
+ 
++// Diagnostic sub-phase (PS2X_WII_SUB_PROFILE): innermost active GS/GX function id, sampled by the observer.
++uint32_t PS2WiiSubEnter(uint32_t id);
++void PS2WiiSubLeave(uint32_t previous);
++class PS2WiiSubScope {
++ uint32_t previous_;
++public:
++ explicit PS2WiiSubScope(uint32_t id):previous_(PS2WiiSubEnter(id)){}
++ ~PS2WiiSubScope(){PS2WiiSubLeave(previous_);}
++};
++
+ bool PS2WiiServicePoll();
+ 
+ void PS2WiiHeapSnapshot(uint32_t*out);
 diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp src/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 --- orig/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp	2026-10-29 09:00:08.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp	2026-10-30 09:44:24.662449753 +0000
-@@ -6,6 +6,7 @@
++++ src/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp	2026-10-30 15:02:37.828803486 +0000
+@@ -6,6 +6,8 @@
  #include "runtime/gs/gs_cpu_backend.h"
  #include "runtime/gs/gs_triangle_coverage.h"
  #include "runtime/gs/gs_texture_coordinates.h"
 +#include "runtime/gs/gs_fast_math.h"
++#include "runtime/gs/gs_sub_profile.h"
  #include "runtime/gs/ps2_gs_common.h"
  #include "runtime/gs/ps2_gs_psmct16.h"
  #include "runtime/gs/ps2_gs_psmct32.h"
-@@ -1325,13 +1326,13 @@
+@@ -1020,6 +1022,7 @@
+ bool GSCpuBackend::ProcessNativeFragmentRow(const GSDrawState &s,uint32_t x,uint32_t y,uint32_t count,
+     const uint8_t *alpha,const uint32_t *z,uint8_t *actions,uint8_t *storedAlpha,NativeDepthCounts &counts)
+ {
++    PS2X_SUB(10);
+     const auto &c=s.context;const unsigned test=(c.test>>17)&3;
+     const bool needZ=test>=2||(!c.zbuf.zmask&&test==1);
+     const bool zformat=c.zbuf.psm==GS_PSM_Z32||c.zbuf.psm==GS_PSM_Z24||c.zbuf.psm==GS_PSM_Z16||c.zbuf.psm==GS_PSM_Z16S;
+@@ -1219,6 +1222,7 @@
+ }
+ bool GSCpuBackend::GetCoherentNativeImageStamp(const GSDrawState &s,uint64_t &revision) const
+ {
++    PS2X_SUB(3);
+     if(!coherentImageShape(s))return false;
+     std::lock_guard<std::mutex> lock(m_mutex);
+     if(!m_vram||m_clutRevision==UINT64_MAX||m_texturePageCache.Revision()==UINT64_MAX||!m_texturePageCache.CoherentWith(m_vram))return false;
+@@ -1226,6 +1230,7 @@
+ }
+ bool GSCpuBackend::SnapshotCoherentNativeImage(const GSDrawState &s,std::vector<uint32_t> &rgba)
+ {
++    PS2X_SUB(4);
+     if(!coherentImageShape(s))return false;
+     std::lock_guard<std::mutex> lock(m_mutex);
+     if(!m_vram||m_clutRevision==UINT64_MAX||m_texturePageCache.Revision()==UINT64_MAX||!m_texturePageCache.CoherentWith(m_vram))return false;
+@@ -1257,6 +1262,7 @@
+ }
+ bool GSCpuBackend::CommitCoherentNativeSample(const GSDrawState &s,float u,float v,float q)
+ {
++    PS2X_SUB(5);
+     if(!coherentImageShape(s)||s.prim.fst||!std::isfinite(u)||!std::isfinite(v)||!std::isfinite(q))return false;
+     const float inv=1.f/fabsQ(q),x=u*inv*s.textureWidth,y=v*inv*s.textureHeight;
+     if(!std::isfinite(x)||!std::isfinite(y)||std::fabs(x)>1048576||std::fabs(y)>1048576)return false;
+@@ -1267,6 +1273,7 @@
+ 
+ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v)
+ {
++    PS2X_SUB(12);
+     const auto &ctx = state.context;
+     const auto &tex = ctx.tex0;
+ 
+@@ -1325,13 +1332,13 @@
  
      if (!state.linearFilter)
      {
@@ -441,6 +690,30 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp src/PS2Recomp
      const int u1 = u0 + 1;
      const int v1 = v0 + 1;
      const float fx = sampleU - static_cast<float>(u0);
+@@ -1371,6 +1378,7 @@
+ 
+ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+ {
++    PS2X_SUB(14);
+     const GSDrawState &state = batch.state;
+     const GSVertex &v0 = batch.vertices[0];
+     const GSVertex &v1 = batch.vertices[1];
+@@ -1486,6 +1494,7 @@
+ 
+ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+ {
++    PS2X_SUB(13);
+     const GSDrawState &state = batch.state;
+     const GSVertex &v0 = batch.vertices[0];
+     const GSVertex &v1 = batch.vertices[1];
+@@ -1710,6 +1719,7 @@
+ 
+ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+ {
++    PS2X_SUB(15);
+ #if defined(PS2X_WII)
+     PS2WiiProgressScope progressScope(14); // Upload decoding/swizzle, separate from GIF routing.
+ #endif
 diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp src/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
 --- orig/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp	2026-10-24 01:43:46.000000000 +0000
 +++ src/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp	2026-10-30 00:46:15.883172718 +0000
@@ -668,6 +941,79 @@ diff -ruN orig/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp src/PS2Recomp/test
 +    std::puts("gif arbiter checks passed");
 +    return 0;
 +}
+diff -ruN orig/PS2Recomp/tests/vu_speed/README.md src/PS2Recomp/tests/vu_speed/README.md
+--- orig/PS2Recomp/tests/vu_speed/README.md	2026-10-28 03:04:22.000000000 +0000
++++ src/PS2Recomp/tests/vu_speed/README.md	2026-10-30 15:26:22.389937420 +0000
+@@ -33,3 +33,7 @@
+ VRAM on private snapshots, and reports actual native/fallback instruction counts.
+ `aot_cache.cpp` covers tracked code changes and resume on both VU units. These
+ are separate from the older operand-preparation experiment above.
++
++## Timing/hazard differential fuzz (`vu_timing_fuzz.cpp`)
++
++Random, hazard-heavy VU0/VU1 micro programs (valid FMAC/special upper codes, LQ/SQ/ILW/ISW, integer ops, DIV/SQRT/EFU, flag ops, short branches) run for up to 200 cycles from random register/data state; the output is an FNV hash over the full `VU1State` (including the cycle counter) and VU data memory. Build the same source against a baseline and a candidate `ps2_vu1_core.cpp` with identical flags and compare `cases=... hash=...` for several seeds (`./fuzz N SEED`; a third argument prints per-case hashes). It needs only `PS2Memory`, `GS` and the VU/GS runtime sources (no private registry): `g++ -std=c++20 -O1 -msse4.1 -ffp-contract=off -DPS2X_VU_ACTIVE_PIPELINES -DPS2X_VU_XGKICK_SPANS -DPS2X_VU_LAZY_DECODE -DPS2X_VU_NORMAL_FLAGS_FASTPATH -DPS2X_VU_PACKET_REUSE -Iinclude -I../ps2xIOP/include -Isrc/lib/Kernel tests/vu_speed/vu_timing_fuzz.cpp src/lib/vu/*.cpp src/lib/ps2_memory.cpp src/lib/ps2_vif1_interpreter.cpp src/lib/gs/{gs_frontend,gs_cpu_backend,gs_hybrid_backend,ps2_gs_memory,ps2_gif_arbiter}.cpp -lpthread`. Sensitivity check: deliberately dropping the VI-ready stall changes the hash. Many generated words are reserved and end a program early (average about 31 cycles per case); it is a regression net for the scheduler bookkeeping, not an instruction-accuracy test.
+diff -ruN orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp src/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp
+--- orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp	2026-10-30 15:26:22.389937420 +0000
+@@ -0,0 +1,58 @@
++// Differential fuzz for VU pipeline/hazard bookkeeping: random hazard-heavy micro programs, full state hash incl. cycles.
++#include "runtime/ps2_memory.h"
++#include "runtime/ps2_vu1.h"
++#include "runtime/gs/gs_frontend.h"
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++static uint64_t rs=0x9e3779b97f4a7c15ull;
++static uint32_t rnd(){rs^=rs<<13;rs^=rs>>7;rs^=rs<<17;return uint32_t(rs>>16);}
++static uint64_t fnv(uint64_t h,const void*p,size_t n){const uint8_t*b=(const uint8_t*)p;for(size_t i=0;i<n;++i){h^=b[i];h*=1099511628211ull;}return h;}
++int main(int argc,char**argv){
++ unsigned cases=argc>1?unsigned(atoi(argv[1])):20000;unsigned seed=argc>2?unsigned(atoi(argv[2])):1;rs^=uint64_t(seed)*0x2545F4914F6CDD1Dull;
++ PS2Memory memory;if(!memory.initialize())return 2;GS gs;gs.init(memory.getGSVRAM(),PS2_GS_VRAM_SIZE,nullptr);
++ const uint32_t edges[]={0u,0x80000000u,1u,0x007fffffu,0x00800000u,0x3f800000u,0xbf800000u,0x7f7fffffu,0x7f800000u,0xff800000u,0x7fc00000u,0x40490fdbu,0x3e800000u};
++ const uint32_t upperOps[]={0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x27,0x28,0x29,0x2a,0x2b,0x2c,0x2d,0x2e,0x2f,0x2c0,0x2d0,0x2f0,0x300,0x33c,0x2ff,0x1fc,0x23d};
++ uint64_t all=1469598103934665603ull;unsigned ran=0;
++ for(unsigned unit=0;unit<2;++unit){VU1Interpreter vu(unit?VU1Interpreter::Unit::VU1:VU1Interpreter::Unit::VU0);
++  auto*code=unit?memory.getVU1Code():memory.getVU0Code();auto*data=unit?memory.getVU1Data():memory.getVU0Data();
++  const uint32_t dsz=unit?PS2_VU1_DATA_SIZE:PS2_VU0_DATA_SIZE;
++  for(unsigned c=0;c<cases;++c){
++   vu.reset();
++   for(unsigned r=1;r<32;++r)for(unsigned k=0;k<4;++k){uint32_t raw=(rnd()&3)?rnd():edges[rnd()%13];std::memcpy(&vu.state().vf[r][k],&raw,4);}
++   for(unsigned r=1;r<16;++r)vu.state().vi[r]=int16_t(rnd()&0xff);
++   for(unsigned k=0;k<4;++k){uint32_t raw=edges[rnd()%13];std::memcpy(&vu.state().acc[k],&raw,4);}
++   vu.state().mac=rnd()&0xffff;vu.state().status=rnd()&0xfff;vu.state().clip=rnd()&0xffffff;
++   for(unsigned i=0;i<dsz;i+=4){uint32_t raw=(rnd()&1)?rnd():edges[rnd()%13];Ps2GuestWrite<uint32_t>(data+i,raw);}
++   unsigned pairs=6+rnd()%24;
++   auto R=[&](unsigned n){return rnd()%n;};
++   for(unsigned p=0;p<pairs;++p){
++    uint32_t dest=(R(4)==0)?15:rnd()&15,fs=1+R(6),ft=1+R(6),fd=1+R(6);
++    uint32_t upper;
++    if(R(4)==0){uint32_t hi5=R(12),low2=R(4);upper=(dest<<21)|(ft<<16)|(fs<<11)|(hi5<<6)|0x3c|low2;}
++    else{uint32_t op=R(0x30);upper=(dest<<21)|(ft<<16)|(fs<<11)|(fd<<6)|op;}
++    uint32_t lower,is=1+R(4),it=1+R(4),id=1+R(4);
++    switch(R(11)){
++     case 0:lower=0x8000033c;break;
++     case 1:{static const uint32_t f[]={0x33c,0x33d};lower=0x80000000u|(dest<<21)|(ft<<16)|(fs<<11)|f[R(2)];break;}
++     case 2:lower=(R(2)<<25)|(dest<<21)|(((R(2))?ft:it)<<16)|(is<<11)|R(64);break;                      // LQ/SQ
++     case 3:lower=((R(2)?5u:4u)<<25)|(dest<<21)|(it<<16)|(is<<11)|R(64);break;                           // ILW/ISW
++     case 4:{uint32_t imm=R(0x80);lower=((R(2)?8u:9u)<<25)|(((imm>>11)&15)<<21)|(it<<16)|(is<<11)|(imm&0x7ff);break;} // IADDIU/ISUBIU
++     case 5:{static const uint32_t f[]={0x30,0x31,0x34,0x35};lower=0x80000000u|(it<<16)|(is<<11)|(id<<6)|f[R(4)];break;} // IADD..
++     case 6:{static const uint32_t f[]={0x3bc,0x3bd,0x3be,0x3bf};lower=0x80000000u|(R(4)<<21)|(ft<<16)|(fs<<11)|f[R(4)];break;} // DIV..
++     case 7:{static const uint32_t f[]={0x3fc,0x3fd,0x3fe,0x3ff,0x37c,0x37d,0x37e,0x37f};lower=0x80000000u|(dest<<21)|(ft<<16)|(fs<<11)|f[R(8)];break;}
++     case 8:{static const uint32_t f[]={0x77c,0x77d,0x77e,0x7bc,0x7bd,0x7be,0x7bf,0x7fc,0x7fd,0x7fe,0x7ff};lower=0x80000000u|(R(4)<<21)|(ft<<16)|(fs<<11)|f[R(11)];break;} // EFU
++     case 9:{static const uint32_t o[]={0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x1a,0x1b,0x1c};lower=(o[R(12)]<<25)|(rnd()&0xffffff);break;}
++     default:{static const uint32_t o[]={0x20,0x28,0x29};uint32_t op=o[R(3)];lower=(op<<25)|(it<<16)|(is<<11)|R(3);break;}
++    }
++    if(p==pairs-1)upper|=1u<<30;
++    Ps2GuestWrite<uint32_t>(code+8*p,lower);Ps2GuestWrite<uint32_t>(code+8*p+4,upper);
++   }
++   Ps2GuestWrite<uint32_t>(code+8*pairs,0x8000033c);Ps2GuestWrite<uint32_t>(code+8*pairs+4,0x2ff);
++   if(unit)memory.markVU1CodeModified();else memory.markVU0CodeModified();
++   vu.execute(code,(pairs+2)*8,data,dsz,gs,&memory,0,0,0,200);
++   uint64_t h=1469598103934665603ull;h=fnv(h,&vu.state(),sizeof(vu.state()));h=fnv(h,data,dsz);
++   all^=h+0x9e3779b97f4a7c15ull+(all<<6)+(all>>2);++ran;
++   if(argc>3)std::printf("%u %u %016llx cyc=%llu\n",unit,c,(unsigned long long)h,(unsigned long long)vu.state().cycles);
++  }}
++ std::printf("cases=%u hash=%016llx\n",ran,(unsigned long long)all);return 0;}
 Binary files orig/PS2Recomp/tools/vu/__pycache__/aot_blocks.cpython-313.pyc and src/PS2Recomp/tools/vu/__pycache__/aot_blocks.cpython-313.pyc differ
 Binary files orig/PS2Recomp/tools/vu/__pycache__/aot_flags.cpython-313.pyc and src/PS2Recomp/tools/vu/__pycache__/aot_flags.cpython-313.pyc differ
 Binary files orig/PS2Recomp/tools/vu/__pycache__/aot_usage.cpython-313.pyc and src/PS2Recomp/tools/vu/__pycache__/aot_usage.cpython-313.pyc differ
