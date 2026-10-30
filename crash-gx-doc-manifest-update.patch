@@ -50,8 +50,8 @@ diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/G
 +
 diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md
 --- orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 01:14:35.852948818 +0000
-@@ -0,0 +1,10 @@
++++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 02:08:53.748420594 +0000
+@@ -0,0 +1,16 @@
 +# Rebuilding the private Crash Wii build from the handoff archives
 +
 +The handoff archives contain no generated guest code and no VU AOT registry. They can be recreated from the owner ELF (private, never commit the outputs):
@@ -62,6 +62,63 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +4. Dolphin needs Debian 13 userland libraries (ffmpeg 7, Qt 6, libzip 5); a `debootstrap trixie` chroot works. Prepare the SD image with `tools/wii/prepare_disc.py` plus `game.elf` (FAT, `ps2recomp/` directory).
 +
 +Observation from the 150 s startup window of this rebuild: first GX draws appear after about 90 s of host time, guest EE code is about 67 % of phase samples and GIF submission 7 %. No resident Z24 submission occurred. These are Dolphin wall-time progress numbers, not Wii FPS.
++
++## Boot-time finding and IOP interpreter batch (2026-10-30)
++
++A 100 s guest-PC / PowerPC-PC sampling of the rebuilt Dolphin run showed that the EE sits in `sceSifCallRpc` (73 % of samples; 92-93 % between 20 and 80 s) while the host executes the IOP interpreter: `endian::read<uint32_t>` 21.5 %, `IopCpuCore::executeInstruction` 19 %, `IopEmulator::Impl::step` 19 %, `memset` 9 %, `runCpu` 7 %, `schedulePendingDma` 6 %. The slow image build-up at start is IOP module initialisation, not GS or VU work.
++
++Batch 1 (semantics-preserving): `ps2x::endian::read/write` use a single byte-reversed load/store (`__builtin_bswap*`, always inline) on big-endian hosts instead of a byte loop; `schedulePendingDma` returns early through a cheap `dmaStartPending()` test; new option `PS2X_WII_IOP_O2` compiles the IOP interpreter sources with `-O2` instead of `-Os`. Dolphin A/B (host wall time, time until the EE leaves the RPC wait): old build 86-88 s (2 runs), new build 50-55 s (2 runs), about 40 % shorter. This is Dolphin host time, not Wii time, and only the boot phase.
+diff -ruN orig/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h src/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h
+--- orig/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h	2026-10-24 01:43:46.000000000 +0000
++++ src/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h	2026-10-30 01:46:03.881147427 +0000
+@@ -4,14 +4,22 @@
+ #include <cstring>
+ #include <type_traits>
+ namespace ps2x::endian {
+-template<class T> inline T read(const uint8_t *p){
++template<class T> [[gnu::always_inline]] inline T read(const uint8_t *p){
+  static_assert((std::is_integral_v<T>||std::is_floating_point_v<T>)&&(sizeof(T)==1||sizeof(T)==2||sizeof(T)==4||sizeof(T)==8));
+  T v;if constexpr(std::endian::native==std::endian::little)std::memcpy(&v,p,sizeof v);
++ else if constexpr(std::is_integral_v<T>&&sizeof(T)>1){ // single byte-reversed load instead of a byte loop
++  using U=std::make_unsigned_t<T>;U u;std::memcpy(&u,p,sizeof u);
++  if constexpr(sizeof(T)==2)u=__builtin_bswap16(u);else if constexpr(sizeof(T)==4)u=__builtin_bswap32(u);else u=__builtin_bswap64(u);
++  v=static_cast<T>(u);}
+  else{uint8_t b[sizeof(T)];for(unsigned i=0;i<sizeof(T);i++)b[i]=p[sizeof(T)-1-i];std::memcpy(&v,b,sizeof v);}return v;
+ }
+-template<class T> inline void write(uint8_t*p,T v){
++template<class T> [[gnu::always_inline]] inline void write(uint8_t*p,T v){
+  static_assert((std::is_integral_v<T>||std::is_floating_point_v<T>)&&(sizeof(T)==1||sizeof(T)==2||sizeof(T)==4||sizeof(T)==8));
+  if constexpr(std::endian::native==std::endian::little)std::memcpy(p,&v,sizeof v);
++ else if constexpr(std::is_integral_v<T>&&sizeof(T)>1){
++  using U=std::make_unsigned_t<T>;U u=static_cast<U>(v);
++  if constexpr(sizeof(T)==2)u=__builtin_bswap16(u);else if constexpr(sizeof(T)==4)u=__builtin_bswap32(u);else u=__builtin_bswap64(u);
++  std::memcpy(p,&u,sizeof u);}
+  else{uint8_t b[sizeof(T)];std::memcpy(b,&v,sizeof v);for(unsigned i=0;i<sizeof(T);i++)p[i]=b[sizeof(T)-1-i];}
+ }
+ template<class T> inline T field(T v){return read<T>(reinterpret_cast<const uint8_t*>(&v));}
+diff -ruN orig/PS2Recomp/ps2xIOP/src/emulator/core/iop_memory.h src/PS2Recomp/ps2xIOP/src/emulator/core/iop_memory.h
+--- orig/PS2Recomp/ps2xIOP/src/emulator/core/iop_memory.h	2026-10-24 17:00:52.000000000 +0000
++++ src/PS2Recomp/ps2xIOP/src/emulator/core/iop_memory.h	2026-10-30 01:46:03.881697571 +0000
+@@ -69,6 +69,7 @@
+         void setInterruptControl(uint32_t value) noexcept { m_interruptControl = value & 1u; }
+ 
+         [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
++        [[nodiscard]] bool dmaStartPending() const noexcept { return m_dmaStart.has_value(); }
+         [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
+ 
+         [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
+diff -ruN orig/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp src/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp
+--- orig/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp	2026-10-24 00:58:24.000000000 +0000
++++ src/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp	2026-10-30 01:46:03.882293131 +0000
+@@ -176,6 +176,8 @@
+ 
+         void schedulePendingDma()
+         {
++            if (!memory.dmaStartPending())
++                return;
+             if (const auto dma = memory.takeDmaStart())
+                 pendingDmaInterrupts[dma->irq] = totalCycles + dma->delayCycles;
+         }
 diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
 --- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h	2026-10-24 00:58:24.000000000 +0000
 +++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h	2026-10-30 00:46:15.883599938 +0000
@@ -86,6 +143,23 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h src/PS
  
      static bool isImagePacket(const uint8_t *data, uint32_t sizeBytes);
      static uint8_t pathPriority(GifPathId id);
+diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt
+--- orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-29 15:57:14.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-30 01:46:03.882952723 +0000
+@@ -243,6 +243,13 @@
+  endforeach()
+  set_property(SOURCE ${HOT_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -O2)
+ endif()
++option(PS2X_WII_IOP_O2 "Optimize the IOP interpreter translation units (-O2) instead of -Os" OFF)
++if(PS2X_WII_IOP_O2)
++ set_property(SOURCE "${IOP}/emulator/iop_emulator.cpp" "${IOP}/emulator/core/iop_cpu.cpp"
++  "${IOP}/emulator/core/iop_memory.cpp" "${IOP}/emulator/core/iop_kernel.cpp"
++  "${IOP}/emulator/imports/iop_imports.cpp" "${IOP}/emulator/imports/iop_sysclib.cpp"
++  APPEND PROPERTY COMPILE_OPTIONS -O2)
++endif()
+ option(PS2X_WII_VU_COMPACT_BLOCKS "Optimize native VU block code size to preserve MEM1 heap" ON)
+ if(PS2X_WII_VU_COMPACT_BLOCKS AND PS2X_VU_AOT_DIR AND EXISTS "${PS2X_VU_AOT_DIR}/vu_aot_blocks.cpp")
+  set_property(SOURCE "${PS2X_VU_AOT_DIR}/vu_aot_blocks.cpp" APPEND PROPERTY COMPILE_OPTIONS -Os)
 diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp src/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
 --- orig/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp	2026-10-24 01:43:46.000000000 +0000
 +++ src/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp	2026-10-30 00:46:15.883172718 +0000
