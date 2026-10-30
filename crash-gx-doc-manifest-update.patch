@@ -50,8 +50,8 @@ diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/G
 +
 diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md
 --- orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 15:26:22.389937420 +0000
-@@ -0,0 +1,38 @@
++++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 16:18:53.285690343 +0000
+@@ -0,0 +1,44 @@
 +# Rebuilding the private Crash Wii build from the handoff archives
 +
 +The handoff archives contain no generated guest code and no VU AOT registry. They can be recreated from the owner ELF (private, never commit the outputs):
@@ -90,6 +90,12 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +Observer phase shares in the Dolphin window 160-240 s (audio-RPC bypass build, one run): VU1 execution 50.9 %, native GX preparation 19.3 %, CPU GS raster 14.2 %, native fragment permissions 8.9 %, GIF submit 4.6 %. This differs from the earlier host-time PC sampling (VU1 about 11-18 %), so the VU1 interpreter is the largest single cost later in the scene, not a small one. Sub-scopes in the same window: DrawTriangle (CPU) 6.8 %, FragmentPlan::Row 6.3 %, TryLinear 5.4 %, SampleTexture (CPU) 5.0 %, LinearPlan::Prepare 3.9 %.
 +
 +VU1 experiment: bit-iteration instead of fixed 15/4-step loops in `calculatePairReadyCycle`/`markPairWrites` plus an early return in `commitReadyPipelines` when nothing is in flight. A new differential fuzz (`tests/vu_speed/vu_timing_fuzz.cpp`, 200,000 hazard-heavy cases over five seeds, full state and VU data hash) showed bit-identical results, and the fuzz detects a deliberately injected stall bug. Host timing (x86, 60,000 cases x 3 repeats) showed no measurable gain (6.45 s vs 6.40 s), so the change was NOT kept. Conclusion: the VU1 cost is not these helper loops; a real gain needs fewer scheduler steps per VU instruction (program blocks with per-program word lists, which are private capture data and previously measured no gain in Dolphin) or a different execution model.
++
++## VU1 per-pair cost analysis (2026-10-30, host gprof of `vu_bench.cpp`, 20 M cycles)
++
++20 M VU cycles run only 9.2 M instruction pairs: about half of all cycles are stall cycles that `advanceTo()` steps one at a time (`advanceOneCycle()` = `commitReadyPipelines()` + `progressXgkick()`). Per pair: 3.2 `commitReadyPipelines` scans, 1.4 `calculatePairReadyCycle` evaluations (the stall loop recomputes it after every advance), one `markPairWrites`, several `memcpy` saves/restores of vf/acc, plus the instruction bodies. Flat shares (no inlining, x86): ready-cycle 19.5 %, `normalizeOperand` call overhead 16.6 % (the AOT build uses the inline copy), commit 11.8 %, exact FMAC result (`long double`) 10.9 %, `normalizeFmacExactResult` 5.9 %, `normalizeFmacResult` 5.9 %, `markPairWrites` 5.3 %.
++
++Ideas checked on paper, none implemented because each is worth only a few percent of VU time (VU1 is about half of emulated time in the later scene, so about 1-3 % overall): drop the redundant second `commitReadyPipelines()` at the top of `run()` right after `advanceOneCycle()` (same cycle, no new entries); skip the second `calculatePairReadyCycle()` after a stall unless the pair has an XGKICK/EFU/FDIV term; jump `advanceTo()` to the next pending ready cycle when XGKICK is idle. All keep exact cycle ordering if the commit order is preserved, and can be proven with `vu_timing_fuzz.cpp`. A larger gain needs a different execution model: pre-scheduled blocks whose hazard timing is computed once per program (needs the private per-program word lists and the fuzz/corpus net), not more helper tuning.
 diff -ruN orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md
 --- orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	1970-01-01 00:00:00.000000000 +0000
 +++ src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	2026-10-30 11:06:42.853563281 +0000
@@ -943,8 +949,8 @@ diff -ruN orig/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp src/PS2Recomp/test
 +}
 diff -ruN orig/PS2Recomp/tests/vu_speed/README.md src/PS2Recomp/tests/vu_speed/README.md
 --- orig/PS2Recomp/tests/vu_speed/README.md	2026-10-28 03:04:22.000000000 +0000
-+++ src/PS2Recomp/tests/vu_speed/README.md	2026-10-30 15:26:22.389937420 +0000
-@@ -33,3 +33,7 @@
++++ src/PS2Recomp/tests/vu_speed/README.md	2026-10-30 16:18:53.284348697 +0000
+@@ -33,3 +33,11 @@
  VRAM on private snapshots, and reports actual native/fallback instruction counts.
  `aot_cache.cpp` covers tracked code changes and resume on both VU units. These
  are separate from the older operand-preparation experiment above.
@@ -952,6 +958,46 @@ diff -ruN orig/PS2Recomp/tests/vu_speed/README.md src/PS2Recomp/tests/vu_speed/R
 +## Timing/hazard differential fuzz (`vu_timing_fuzz.cpp`)
 +
 +Random, hazard-heavy VU0/VU1 micro programs (valid FMAC/special upper codes, LQ/SQ/ILW/ISW, integer ops, DIV/SQRT/EFU, flag ops, short branches) run for up to 200 cycles from random register/data state; the output is an FNV hash over the full `VU1State` (including the cycle counter) and VU data memory. Build the same source against a baseline and a candidate `ps2_vu1_core.cpp` with identical flags and compare `cases=... hash=...` for several seeds (`./fuzz N SEED`; a third argument prints per-case hashes). It needs only `PS2Memory`, `GS` and the VU/GS runtime sources (no private registry): `g++ -std=c++20 -O1 -msse4.1 -ffp-contract=off -DPS2X_VU_ACTIVE_PIPELINES -DPS2X_VU_XGKICK_SPANS -DPS2X_VU_LAZY_DECODE -DPS2X_VU_NORMAL_FLAGS_FASTPATH -DPS2X_VU_PACKET_REUSE -Iinclude -I../ps2xIOP/include -Isrc/lib/Kernel tests/vu_speed/vu_timing_fuzz.cpp src/lib/vu/*.cpp src/lib/ps2_memory.cpp src/lib/ps2_vif1_interpreter.cpp src/lib/gs/{gs_frontend,gs_cpu_backend,gs_hybrid_backend,ps2_gs_memory,ps2_gif_arbiter}.cpp -lpthread`. Sensitivity check: deliberately dropping the VI-ready stall changes the hash. Many generated words are reserved and end a program early (average about 31 cycles per case); it is a regression net for the scheduler bookkeeping, not an instruction-accuracy test.
++
++## Synthetic VU1 loop benchmark (`vu_bench.cpp`)
++
++`./bench CYCLES REPS` runs a 24-pair loop (FMAC ADD/MUL/MADD/SUB, LQ/SQ, IADDIU, IBNE with delay slot) and prints total cycles plus a state hash; build it with the same command as the fuzz. With `-pg -fno-inline-functions` and `gprof` on the host it shows where a VU pair costs time. Host numbers are an indication only (x86, `long double` is 80-bit there, no AOT).
+diff -ruN orig/PS2Recomp/tests/vu_speed/vu_bench.cpp src/PS2Recomp/tests/vu_speed/vu_bench.cpp
+--- orig/PS2Recomp/tests/vu_speed/vu_bench.cpp	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/tests/vu_speed/vu_bench.cpp	2026-10-30 16:18:53.284348697 +0000
+@@ -0,0 +1,32 @@
++// VU1 synthetic loop benchmark: FMAC chains + LQ/SQ + integer ops + backward branch. Prints cycles and state hash.
++#include "runtime/ps2_memory.h"
++#include "runtime/ps2_vu1.h"
++#include "runtime/gs/gs_frontend.h"
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++static uint64_t fnv(uint64_t h,const void*p,size_t n){const uint8_t*b=(const uint8_t*)p;for(size_t i=0;i<n;++i){h^=b[i];h*=1099511628211ull;}return h;}
++int main(int argc,char**argv){
++ uint64_t cycles=argc>1?strtoull(argv[1],0,10):5000000ull;
++ PS2Memory memory;if(!memory.initialize())return 2;GS gs;gs.init(memory.getGSVRAM(),PS2_GS_VRAM_SIZE,nullptr);
++ VU1Interpreter vu(VU1Interpreter::Unit::VU1);auto*code=memory.getVU1Code();auto*data=memory.getVU1Data();
++ for(unsigned i=0;i<PS2_VU1_DATA_SIZE;i+=4){uint32_t f=0x3f800000u+((i*2654435761u)>>20);Ps2GuestWrite<uint32_t>(data+i,f);}
++ vu.reset();for(unsigned r=1;r<32;++r)for(unsigned k=0;k<4;++k){float f=1.0f+0.01f*(r+k);std::memcpy(&vu.state().vf[r][k],&f,4);}
++ vu.state().vi[1]=0x7fff;vu.state().vi[2]=8;
++ const uint32_t ups[]={0x28,0x2a,0x29,0x2c,0x0,0x2b,0x2d,0x18,0x1c,0x2e}; // ADD MUL MADD SUB ADDbc ... mix
++ const uint32_t lows[]={0x8000033c,0x0, 0x01u<<25, 0x8000033c, 0x08u<<25};
++ unsigned p=0;
++ for(;p<20;++p){uint32_t fs=1+(p*3)%7,ft=1+(p*5)%7,fd=1+(p*2)%7;uint32_t upper=(15u<<21)|(ft<<16)|(fs<<11)|(fd<<6)|ups[p%10];
++  uint32_t lower;switch(p%5){case 0:lower=0x8000033c;break;case 1:lower=(0u<<25)|(15u<<21)|((1+p%6)<<16)|(2u<<11)|(p&7);break;case 2:lower=(1u<<25)|(15u<<21)|((1+p%5)<<16)|(2u<<11)|(p&7);break;case 3:lower=(8u<<25)|(3u<<16)|(3u<<11)|1;break;default:lower=0x8000033c;}
++  Ps2GuestWrite<uint32_t>(code+8*p,lower);Ps2GuestWrite<uint32_t>(code+8*p+4,upper);}
++ Ps2GuestWrite<uint32_t>(code+8*20,(8u<<25)|(0xfu<<21)|(1u<<16)|(1u<<11)|0x7ff);Ps2GuestWrite<uint32_t>(code+8*20+4,0x000002ff); // IADDIU vi1,vi1,-1 ; upper nop
++ uint32_t imm=(uint32_t)(-22)&0x7ff;Ps2GuestWrite<uint32_t>(code+8*21,(0x29u<<25)|(0u<<16)|(1u<<11)|imm);Ps2GuestWrite<uint32_t>(code+8*21+4,0x000002ff); // IBNE vi1,vi0
++ Ps2GuestWrite<uint32_t>(code+8*22,0x8000033c);Ps2GuestWrite<uint32_t>(code+8*22+4,0x000002ff);
++ Ps2GuestWrite<uint32_t>(code+8*23,0x8000033c);Ps2GuestWrite<uint32_t>(code+8*23+4,0x400002ff);
++ memory.markVU1CodeModified();
++ unsigned reps=argc>2?unsigned(atoi(argv[2])):1;uint64_t total=0;
++ for(unsigned rep=0;rep<reps;++rep){vu.state().vi[1]=0x7fff;vu.state().pc=0;uint64_t c0=vu.state().cycles;
++  vu.execute(code,24*8,data,PS2_VU1_DATA_SIZE,gs,&memory,0,0,0,(uint32_t)cycles);total+=vu.state().cycles-c0;}
++ std::printf("total_cycles=%llu\n",(unsigned long long)total);
++ uint64_t h=1469598103934665603ull;h=fnv(h,&vu.state(),sizeof(vu.state()));h=fnv(h,data,PS2_VU1_DATA_SIZE);
++ std::printf("cycles=%llu pc=%u vi1=%d hash=%016llx\n",(unsigned long long)vu.state().cycles,vu.state().pc,(int)vu.state().vi[1],(unsigned long long)h);return 0;}
 diff -ruN orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp src/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp
 --- orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp	1970-01-01 00:00:00.000000000 +0000
 +++ src/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp	2026-10-30 15:26:22.389937420 +0000
