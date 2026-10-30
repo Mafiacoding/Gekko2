@@ -1,3 +1,4 @@
+#include "core/hw/game_trace.h"
 #include "core/hw/gs_triangle_coverage.h"
 #include "core/runtime_profile.h"
 #include "core/recompiler/optimization.h"
@@ -8,6 +9,7 @@
 #include "core/hw/gif.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_gx.h"
+#include "core/hw/gs_gx_surface.h"
 #include "core/hw/gs.h"
 #include "core/hw/ee_intc.h"
 #ifdef GEKKO
@@ -19,6 +21,9 @@
 static gif_state_t g_gif;
 const gif_state_t * const gif_scheduler_view = &g_gif;
 static uint64_t g_date_stats[2];
+static uint64_t g_signal_stalls;
+static uint8_t signal_wait[3],path_wait[3];
+uint64_t gif_signal_stall_count(void){return g_signal_stalls;}
 uint64_t gif_date_stat(unsigned i){return i<2?g_date_stats[i]:0;}
 static int g_gx_opaque; /* CT24 GPU import preserves destination alpha. */
 static int g_texel_cache_enabled;
@@ -118,6 +123,7 @@ void gif_init(void)
     g_sprite_cached_draws=g_sprite_fast_rows=g_triangle_cached_draws=0;
     memset(g_draw_routes,0,sizeof(g_draw_routes));
     memset(g_date_stats,0,sizeof(g_date_stats));
+    g_signal_stalls=0;memset(signal_wait,0,sizeof signal_wait);memset(path_wait,0,sizeof path_wait);
     memset(g_gst,0,sizeof(g_gst));memset(g_gfb,0,sizeof(g_gfb));
     memset(g_gstate,0,sizeof(g_gstate));memset(g_gdeg,0,sizeof(g_gdeg));
     g_gstate_used=0;g_gstate_overflow=0;
@@ -251,17 +257,13 @@ static inline float u32_to_float(uint32_t v)
  * swizzle (its 16-entry palette has no sub-block structure to
  * rearrange).
  *
- * Only CPSM=PSMCT32 (32-bit RGBA CLUT entries) is supported - see
- * CLUT_ROW_WIDTH's header comment for why CPSM=PSMCT16/16S is a
- * documented, unsupported gap. An unsupported CPSM value falls back
- * to treating the raw index as if it were already a packed RGBA
- * color (better than a crash, honestly wrong rather than silently
- * "correct"). */
+ * Temporary CLUT storage is shared by CT32/CT16/CT16S views. CT32 splits
+ * low/high halfwords into separate 256-entry banks. A CPSM change with
+ * CLD=0 reinterprets these words without touching source VRAM. */
 static uint32_t gs_expand_16(uint32_t v);
-/* GS Users Manual 6.0 sections 2.7.3 and 3.4.7: source palette
- * coordinates and destination CSA in the temporary palette are distinct.
- * The logical cache models same-format palette reuse; cross-format aliases
- * of the physical temporary storage are not yet modeled. */
+/* Behavioral references: GS Users Manual 6.0 2.7.3/3.4.7; PCSX2 GSClut
+ * 091ab687 WriteCLUT/ReadCLUT. Independent scalar implementation: no SIMD
+ * or upstream cache implementation transplanted. */
 static void gs_load_clut(uint32_t psm,uint32_t cbp,uint32_t cpsm,uint32_t csm,uint32_t csa,uint32_t cld)
 {
     int is8=psm==0x13u || psm==0x1bu;
@@ -271,26 +273,49 @@ static void gs_load_clut(uint32_t psm,uint32_t cbp,uint32_t cpsm,uint32_t csm,ui
     if(cld==4u)load=g_gif.clut_cbp0!=cbp;
     if(cld==5u)load=g_gif.clut_cbp1!=cbp;
     if(!load)return;
+    if(!gs_mem_sync())return; /* failed readback must not erase a valid CLUT */
     if(cld==2u || cld==4u)g_gif.clut_cbp0=cbp;
     if(cld==3u || cld==5u)g_gif.clut_cbp1=cbp;
     unsigned mask=cpsm==0u?255u:511u;
-    unsigned dst=csm?0u:(csa&(cpsm==0u?15u:31u))*16u;
-    for(unsigned i=0;i<(is8?256u:16u);i++){
+    unsigned dst=(csa&(cpsm==0u?15u:31u))*16u;
+    /* CSM1 I8/CT32 loads from the selected source bank to the same bank,
+     * rather than rotating all 256 colors through the CSA offset. */
+    unsigned first=(!csm&&is8&&!cpsm)?dst:0u;
+    for(unsigned i=first;i<(is8?256u:16u);i++){
         unsigned x,y,bw;
         if(csm){x=g_gif.texclut_cou*16u+i;y=g_gif.texclut_cov;bw=g_gif.texclut_cbw*64u;if(!bw)bw=64;}
         else if(is8){x=(i&7u)|((i&16u)>>1);y=((i&8u)>>3)|((i&224u)>>4);bw=64;}
         else{x=i&7u;y=i>>3;bw=64;}
         uint32_t v=cpsm==0u?gs_mem_read_psmct32(cbp*64u,bw,x,y):
             (cpsm==10u?gs_mem_read_psmct16s:gs_mem_read_psmct16)(cbp*64u,bw,x,y);
-        g_gif.clut_cache[(dst+i)&mask]=v;
+        unsigned at=(!csm&&is8&&!cpsm)?i:dst+i;
+        g_gif.clut_cache[at&mask]=v;
+        g_gif.clut_words[at]=(uint16_t)v;
+        if(!cpsm)g_gif.clut_words[at+256u]=(uint16_t)(v>>16);
     }
+    g_gif.clut_write_csm=csm;g_gif.clut_words_valid=1;
 }
 static uint32_t gs_sample_clut(uint32_t index)
 {
     unsigned mask=g_gif.tex_cpsm==0u?255u:511u;
-    unsigned start=g_gif.tex_csm?0u:(g_gif.tex_csa&(g_gif.tex_cpsm==0u?15u:31u))*16u;
+    unsigned start=(g_gif.tex_csa&(g_gif.tex_cpsm==0u?15u:31u))*16u;
+    if(g_gif.clut_words_valid){
+        unsigned at=start+index;
+        if(!g_gif.tex_cpsm){
+            int is8=g_gif.tex_psm==0x13u||g_gif.tex_psm==0x1bu;
+            if(is8){unsigned bank=start+(index&~15u);at=(bank>240u?240u:bank)+(index&15u);}
+            else if(g_gif.tex_csm&&!g_gif.clut_write_csm)at=start+(index&7u)+((index&8u)?16u:0u);
+            return g_gif.clut_words[at]|((uint32_t)g_gif.clut_words[at+256u]<<16);
+        }
+        return gs_expand_16(g_gif.clut_words[at]);
+    }
     uint32_t v=g_gif.clut_cache[(start+index)&mask];
     return g_gif.tex_cpsm==0u?v:gs_expand_16(v);
+}
+static uint32_t gs_clut_hash_word(unsigned index)
+{
+ return g_gif.clut_words_valid?(uint32_t)g_gif.clut_words[index*2u]|
+   ((uint32_t)g_gif.clut_words[index*2u+1u]<<16):g_gif.clut_cache[index];
 }
 
 static uint32_t gs_expand_16(uint32_t v)
@@ -301,8 +326,15 @@ static uint32_t gs_expand_16(uint32_t v)
     return rgb | (alpha << 24);
 }
 
+static int gs_is_depth_texture(uint32_t psm)
+{return psm==0x30u||psm==0x31u||psm==0x32u||psm==0x3au;}
 static uint32_t gs_sample_texel_uncached(int32_t tex_x, int32_t tex_y)
 {
+    /* Z textures share texel expansion rules, but use Z block swizzles.
+     * TEXA applies to Z24/16/16S exactly as to the corresponding color view. */
+    if(g_gif.tex_psm==0x32u||g_gif.tex_psm==0x3au)
+        return gs_expand_16(gs_mem_read_z(g_gif.tex_tbp0*64u,g_gif.tex_tbw,
+            (uint32_t)tex_x,(uint32_t)tex_y,g_gif.tex_psm&15u));
     /* Round 640: TBP0 is TEX0.TBP0 - real unit is 256 bytes (Address/64
      * words), not the plain functions' 4-byte-word assumption. */
     if (g_gif.tex_psm == 2u || g_gif.tex_psm == 10u)
@@ -313,9 +345,10 @@ static uint32_t gs_sample_texel_uncached(int32_t tex_x, int32_t tex_y)
         uint32_t idx=gs_mem_read_index(g_gif.tex_tbp0*64u,g_gif.tex_tbw,(uint32_t)tex_x,(uint32_t)tex_y,g_gif.tex_psm);
         return gs_sample_clut(idx);
     }
-    uint32_t raw = gs_mem_read_psmct32_blk(g_gif.tex_tbp0, g_gif.tex_tbw,
-                                            (uint32_t)tex_x, (uint32_t)tex_y);
-    if (g_gif.tex_psm == TEX_PSM_PSMCT24) {
+    uint32_t raw = gs_is_depth_texture(g_gif.tex_psm)?
+        gs_mem_read_z(g_gif.tex_tbp0*64u,g_gif.tex_tbw,(uint32_t)tex_x,(uint32_t)tex_y,g_gif.tex_psm&15u):
+        gs_mem_read_psmct32_blk(g_gif.tex_tbp0,g_gif.tex_tbw,(uint32_t)tex_x,(uint32_t)tex_y);
+    if (g_gif.tex_psm == TEX_PSM_PSMCT24 || g_gif.tex_psm==0x31u) {
         uint32_t rgb = raw & 0x00ffffffu;
         uint32_t alpha = g_gif.texa_aem && rgb == 0 ? 0 : g_gif.texa_ta0;
         return rgb | (alpha << 24);
@@ -428,8 +461,10 @@ static uint32_t gs_framebuffer_rgb_for_blend(uint32_t x,uint32_t y)
         uint16_t packed=(g_gif.frame_psm==TEX_PSM_PSMCT16S?gs_mem_read_psmct16s:gs_mem_read_psmct16)
             (g_gif.fbp,g_gif.fbw,x,y);
         uint32_t r=packed&31u,g=(packed>>5)&31u,b=(packed>>10)&31u;
+        /* The GS expands framebuffer channels with zero low bits, not
+         * normalized 5-to-8-bit replication (GSDrawScanline AlphaBlend). */
         return ((packed&0x8000u)?0x80000000u:0u)|
-            (((b<<3)|(b>>2))<<16)|(((g<<3)|(g>>2))<<8)|((r<<3)|(r>>2));
+            (b<<19)|(g<<11)|(r<<3);
     }
     uint32_t color=gs_mem_read_psmct32(g_gif.fbp,g_gif.fbw,x,y);
     if(g_gif.frame_psm==TEX_PSM_PSMCT24)color=(color&0x00ffffffu)|0x80000000u;
@@ -437,13 +472,14 @@ static uint32_t gs_framebuffer_rgb_for_blend(uint32_t x,uint32_t y)
 }
 /* Apply FRAME.FBMSK to the physical 16-bit destination halfword; the GS
  * swizzle means two adjacent X coordinates need not share a 32-bit word. */
-static void gs_framebuffer_write16(uint32_t x,uint32_t y,uint32_t rgba)
+static void gs_framebuffer_write16(uint32_t x,uint32_t y,uint32_t rgba,int preserve_alpha)
 {
     uint32_t offset=gs_mem_framebuffer16_offset(g_gif.fbp,g_gif.fbw,x,y,g_gif.frame_psm);
     if(offset==UINT32_MAX)return;
     uint16_t packed=(uint16_t)(((rgba>>3)&31u)|(((rgba>>11)&31u)<<5)|
         (((rgba>>19)&31u)<<10)|((rgba&0x80000000u)?0x8000u:0u));
     uint16_t mask=(uint16_t)(g_gif.fbmask>>((offset&2u)?16u:0u));
+    if(preserve_alpha)mask|=0x8000u;
     uint16_t old=(g_gif.frame_psm==TEX_PSM_PSMCT16S?gs_mem_read_psmct16s:gs_mem_read_psmct16)
         (g_gif.fbp,g_gif.fbw,x,y);
     packed=(uint16_t)((packed&~mask)|(old&mask));
@@ -451,6 +487,8 @@ static void gs_framebuffer_write16(uint32_t x,uint32_t y,uint32_t rgba)
         gs_mem_write_psmct16s(g_gif.fbp,g_gif.fbw,x,y,packed);
     else gs_mem_write_psmct16(g_gif.fbp,g_gif.fbw,x,y,packed);
 }
+static int gs_dither_active(void)
+{return g_gif.dthe&&(g_gif.frame_psm==TEX_PSM_PSMCT16||g_gif.frame_psm==TEX_PSM_PSMCT16S);}
 static int gs_blend_shift7(int value)
 {return value>=0?value/128:-((-value+127)/128);}
 static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_t frag_z, int z_write_allowed)
@@ -508,7 +546,8 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
         return;
 
     if (color_write) {
-        uint32_t out_r = frag_r, out_g = frag_g, out_b = frag_b, out_a = frag_a;
+        int32_t out_r = (int32_t)frag_r, out_g = (int32_t)frag_g, out_b = (int32_t)frag_b;
+        uint32_t out_a = frag_a;
 
         /* Round 104 (145th finding, task #254): PABE - real GS Users
          * Manual "Alpha Blending Control in Units of Pixels". When
@@ -559,26 +598,12 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
             int32_t r = gs_blend_shift7((r_a - r_b) * (int32_t)coeff) + r_d;
             int32_t g = gs_blend_shift7((g_a - g_b) * (int32_t)coeff) + g_d;
             int32_t b = gs_blend_shift7((b_a - b_b) * (int32_t)coeff) + b_d;
-            out_r = gs_colclamp_channel(r);
-            out_g = gs_colclamp_channel(g);
-            out_b = gs_colclamp_channel(b);
+            out_r = r;
+            out_g = g;
+            out_b = b;
         }
 
-        if (alpha_test_failed && g_gif.afail == GS_AFAIL_RGB_ONLY &&
-            g_gif.frame_psm==TEX_PSM_PSMCT32) {
-            /* Real AFAIL=RGB_ONLY-on-fail: RGB channels still write,
-             * but the alpha channel keeps its OLD framebuffer value
-             * (exact real-hardware behavior for a genuine 32-bit-
-             * alpha target - this project's gs_mem is PSMCT32-only,
-             * so PCSX2's documented "downgrade to FB_ONLY for non-
-             * 32bit formats" special case never applies here). Only
-             * reached when the alpha test actually failed - a passing
-             * fragment always writes its own real alpha normally. */
-            uint32_t existing = gs_mem_read_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);
-            out_a = rgba_channel(existing, 24);
-        }
-
-        if (g_gif.dthe) {
+        if (gs_dither_active()) {
             /* Round 102 (143rd finding, task #254): dithering - real
              * GS Users Manual "3.6.1 Dithering" formula, applied as
              * the final RGB transform before the pixel is written
@@ -589,41 +614,32 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
              * out of [0,255] just like any other RGB-modifying stage
              * in this pipeline. */
             int32_t d = g_gif.dimx[(uint32_t)yy & 3u][(uint32_t)xx & 3u];
-            out_r = gs_colclamp_channel((int32_t)out_r + d);
-            out_g = gs_colclamp_channel((int32_t)out_g + d);
-            out_b = gs_colclamp_channel((int32_t)out_b + d);
+            out_r += d;
+            out_g += d;
+            out_b += d;
         }
+        out_r = (int32_t)gs_colclamp_channel(out_r);
+        out_g = (int32_t)gs_colclamp_channel(out_g);
+        out_b = (int32_t)gs_colclamp_channel(out_b);
 
         if (g_gif.fba) {
-            /* Round 103 (144th finding, task #254): FBA_1/FBA_2 -
-             * real GS Users Manual "FBA_1 / FBA_2 : Alpha Correction
-             * Value" formula for RGBA32 (this project's only
-             * supported framebuffer format): A = As | (FBA<<7) - the
-             * OR of the fixed FBA bit (placed at bit 7, the alpha
-             * channel's MSB) and the pixel's own alpha, applied
-             * unconditionally at the actual frame-buffer-write moment
-             * per the manual - i.e. the absolute last transform on
-             * the alpha channel, after alpha blending and after the
-             * AFAIL=RGB_ONLY old-alpha-preservation case above. Does
-             * NOT interact with dithering (R/G/B only) so ordering
-             * relative to that block doesn't matter. Gated by fba
-             * itself (0 = pass-through) rather than fba_configured,
-             * matching the manual's literal "OR with a fixed value"
-             * behavior - FBA=0 is already a correct no-op via the OR
-             * identity, so no separate gate is needed beyond fba's
-             * own default of 0. */
+            /* FBA corrects the source alpha before framebuffer write
+             * masks. AFAIL=RGB_ONLY must still forbid an alpha write. */
             out_a = out_a | 0x80u;
         }
 
         /* Native 16-bit framebuffer writes use the CT16/CT16S swizzle,
          * two-byte physical pixels, single-bit alpha and per-halfword FBMSK. */
         if(g_gif.frame_psm==TEX_PSM_PSMCT16||g_gif.frame_psm==TEX_PSM_PSMCT16S) {
-            gs_framebuffer_write16((uint32_t)xx,(uint32_t)yy,rgba_pack(out_r,out_g,out_b,out_a));
+            gs_framebuffer_write16((uint32_t)xx,(uint32_t)yy,rgba_pack(out_r,out_g,out_b,out_a),
+                alpha_test_failed&&g_gif.afail==GS_AFAIL_RGB_ONLY);
         } else {
         /* FRAME.FBMSK is a bit mask: protected bits retain their old value.
          * PSMCT24 additionally preserves the physical alpha byte. */
         uint32_t mask = g_gif.fbmask;
         if (g_gif.frame_psm == TEX_PSM_PSMCT24) mask |= 0xff000000u;
+        if (alpha_test_failed && g_gif.afail == GS_AFAIL_RGB_ONLY &&
+            g_gif.frame_psm == TEX_PSM_PSMCT32) mask |= 0xff000000u;
         uint32_t color = rgba_pack(out_r, out_g, out_b, out_a);
         if (mask) {
             uint32_t old = gs_mem_read_psmct32(g_gif.fbp, g_gif.fbw, (uint32_t)xx, (uint32_t)yy);
@@ -821,11 +837,11 @@ static void gs_activate_context(void)
     if(g_gif.zbuf_configured&&g_gif.zte&&g_gif.ztst!=GS_ZTST_ALWAYS)g_draw_routes[4]++;
     if(g_gif.ate)g_draw_routes[5]++;
     if(g_gif.fbmask)g_draw_routes[6]++;
-    if(g_gif.dthe||g_gif.fba)g_draw_routes[7]++;
+    if(gs_dither_active()||g_gif.fba)g_draw_routes[7]++;
     if(attr&PRIM_FGE_MASK)g_draw_routes[8]++;
     if((attr&PRIM_IIP_MASK)&&(g_gif.prim&7u)>=3u&&(g_gif.prim&7u)<=5u)g_draw_routes[9]++;
     /* Drawing attributes remain fixed during this synchronous primitive. */
-    g_gx_opaque=!g_gif.date && !g_gif.ate && !g_gif.dthe && !g_gif.fba && !g_gif.fbmask &&
+    g_gx_opaque=!g_gif.date && !g_gif.ate && !gs_dither_active() && !g_gif.fba && !g_gif.fbmask &&
         (g_gif.frame_psm==TEX_PSM_PSMCT32 || g_gif.frame_psm==TEX_PSM_PSMCT24) &&
         !(gs_effective_attr_prim()&PRIM_ABE_MASK);
     g_opaque_pixel=g_gx_opaque && g_gif.frame_psm==TEX_PSM_PSMCT32;
@@ -856,10 +872,11 @@ static uint64_t gs_page_end(uint64_t base,uint32_t bw,uint32_t width,uint32_t he
     return base+((((uint64_t)(height-1u)/ph)*pages)+
                  ((uint64_t)(width-1u)/pw)+1u)*8192u;
 }
-static int gs_draw_texture_cache_begin(int32_t sx0,int32_t sy0,int32_t sx1,int32_t sy1)
+static int gs_draw_texture_cache_begin_impl(int32_t sx0,int32_t sy0,int32_t sx1,int32_t sy1,uint32_t minimum_pixels)
 {
+    if(g_gif.tex1_mxl&&g_gif.tex1_mmin>=2u&&g_gif.tex1_mmin<=5u)return 0;
     if(sx0<0||sy0<0||sx1<=sx0||sy1<=sy0||
-       (uint64_t)(sx1-sx0)*(uint32_t)(sy1-sy0)<512u||
+       (uint64_t)(sx1-sx0)*(uint32_t)(sy1-sy0)<minimum_pixels||
        !g_gif.clamp_configured||g_gif.clamp_wms>1u||g_gif.clamp_wmt>1u||g_gif.tex_tw>10u||g_gif.tex_th>10u)return 0;
     uint64_t source=(uint64_t)g_gif.tex_tbp0*256u;
     uint64_t source_end=gs_page_end(source,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.tex_psm);
@@ -871,6 +888,9 @@ static int gs_draw_texture_cache_begin(int32_t sx0,int32_t sy0,int32_t sx1,int32
     }
     memset(g_texel_tags,0xff,sizeof(g_texel_tags));g_texel_cache_enabled=1;return 1;
 }
+
+static int gs_draw_texture_cache_begin(int32_t x0,int32_t y0,int32_t x1,int32_t y1)
+{return gs_draw_texture_cache_begin_impl(x0,y0,x1,y1,512u);}
 
 /* Round 96: real SCISSOR clipping (GS Users Manual "SCISSOR_1/2:
  * Setting for Scissoring Area") - previously entirely unmodeled (see
@@ -981,15 +1001,13 @@ static int32_t gs_apply_clamp_wrap(int32_t coord, uint32_t size_log2, uint32_t w
     }
 }
 
-/* UV/STQ linear filtering when both magnification and non-mipmapped
- * minification request linear. This selection is independent of LOD.
- * Mixed MMAG/MMIN and mipmapped filtering remain on the existing path.
+/* One-level UV/STQ filtering, selected by the Q/K/L caller.
  * GS texel centers are at n+0.5; the bundled PCSX2 scanline reference
  * subtracts 0x8000 in 16.16 coordinates before its four-tap lookup. */
-static uint32_t gs_sample_texture(double u, double v)
+static uint32_t gs_sample_texture_base(double u, double v,int linear)
 {
     /* TEX1 filtering applies to both UV and STQ coordinates. */
-    if (g_gif.tex1_mmag == 1u && g_gif.tex1_mmin == 1u) {
+    if (linear) {
         u -= 0.5; v -= 0.5;
         if (!(u > -2147483647.0 && u < 2147483646.0 &&
               v > -2147483647.0 && v < 2147483646.0)) return 0u;
@@ -1025,6 +1043,54 @@ static uint32_t gs_sample_texture(double u, double v)
     return gs_sample_texel(x,y);
 }
 
+/* Mipmap coordinates and clamp bounds are expressed at the selected level.
+ * Preserve canonical registers; never share a texel cache across levels. */
+static uint32_t gs_sample_level(double u,double v,unsigned level,int linear)
+{
+ if(!level)return gs_sample_texture_base(u,v,linear);
+ uint32_t bp=g_gif.tex_tbp0,bw=g_gif.tex_tbw,tw=g_gif.tex_tw,th=g_gif.tex_th;
+ uint32_t minu=g_gif.clamp_minu,maxu=g_gif.clamp_maxu,minv=g_gif.clamp_minv,maxv=g_gif.clamp_maxv;
+ int cache=g_texel_cache_enabled;g_texel_cache_enabled=0;
+ g_gif.tex_tbp0=g_gif.tex_mip_tbp[level-1];g_gif.tex_tbw=g_gif.tex_mip_tbw[level-1];
+ g_gif.tex_tw=tw>level?tw-level:0;g_gif.tex_th=th>level?th-level:0;
+ g_gif.clamp_minu=minu>>level;g_gif.clamp_maxu=maxu>>level;
+ g_gif.clamp_minv=minv>>level;g_gif.clamp_maxv=maxv>>level;
+ double scale=1.0/(1u<<level);
+ uint32_t color=gs_sample_texture_base(u*scale,v*scale,linear);
+ g_gif.tex_tbp0=bp;g_gif.tex_tbw=bw;g_gif.tex_tw=tw;g_gif.tex_th=th;
+ g_gif.clamp_minu=minu;g_gif.clamp_maxu=maxu;g_gif.clamp_minv=minv;g_gif.clamp_maxv=maxv;
+ g_texel_cache_enabled=cache;return color;
+}
+static uint32_t gs_sample_texture_q(double u,double v,double q)
+{
+ unsigned mode=g_gif.tex1_mmin,mxl=g_gif.tex1_mxl>6u?6u:g_gif.tex1_mxl;
+ /* Preserve the common min==mag fast path: no logarithm for nonmipped draws. */
+ if(mode<=1u&&g_gif.tex1_mmag==(mode==1u))return gs_sample_texture_base(u,v,mode==1u);
+ double lod=(double)g_gif.tex1_k/16.0;
+ if(!g_gif.tex1_lcm&&!(gs_effective_attr_prim()&PRIM_FST_MASK)){
+  double magnitude=fabs(q);
+  if(magnitude>0.0&&isfinite(magnitude))lod-=log2(magnitude)*(1u<<g_gif.tex1_l);
+  else lod=magnitude==0.0?(double)mxl:0.0;
+ }
+ int linear=lod<=0.0?g_gif.tex1_mmag:(mode==1u||mode==4u||mode==5u);
+ if(!mxl||mode<2u||mode>5u||lod<=0.0)return gs_sample_texture_base(u,v,linear);
+ if(lod>mxl)lod=mxl;
+ unsigned level=(unsigned)((mode&1u)?lod:lod+0.5);
+ if(level>mxl)level=mxl;
+ uint32_t first=gs_sample_level(u,v,level,linear);
+ if(!(mode&1u)||level>=mxl)return first;
+ unsigned blend=(unsigned)((lod-level)*32768.0);
+ if(!blend)return first;
+ uint32_t second=gs_sample_level(u,v,level+1u,linear),out=0;
+ for(unsigned shift=0;shift<32;shift+=8){
+  unsigned a=(first>>shift)&255u,b=(second>>shift)&255u;
+  out|=((a*(32768u-blend)+b*blend)>>15)<<shift;
+ }
+ return out;
+}
+static uint32_t gs_sample_texture(double u,double v)
+{return gs_sample_texture_q(u,v,g_gif.cur_q);}
+
 static uint32_t gs_gx_raw_texture_sample(int32_t x,int32_t y);
 
 /* R1330-K: first reason (priority order) why a visible IIP triangle cannot use
@@ -1043,7 +1109,7 @@ static unsigned gouraud_gx_block_reason(int textured,int32_t minx,int32_t miny,i
     uint32_t attr=gs_effective_attr_prim();
     if(textured)return GIF_GFB_TEXTURE;
     if(g_gif.ate)return GIF_GFB_ALPHA_TEST;
-    if(g_gif.dthe||g_gif.fba)return GIF_GFB_DITHER_FBA;
+    if(gs_dither_active()||g_gif.fba)return GIF_GFB_DITHER_FBA;
     if(g_gif.fbmask)return GIF_GFB_FBMASK;
     if(g_gif.zbuf_configured)return GIF_GFB_DEPTH;
     if(attr&PRIM_ABE_MASK)return GIF_GFB_BLEND;
@@ -1087,10 +1153,54 @@ static int triangle_assembly_visible(void)
 #endif
 }
 
-static struct {int32_t xy[6],uv[6],maxx,maxy;float stq[9];uint32_t colors[3];double inv;} gx_triangle;
+#ifdef GEKKO2_GX_GENERIC_SHADER
+static uint32_t gs_gx_white_texel(int32_t x,int32_t y)
+{(void)x;(void)y;return 0x80808080u;}
+static int gs_gx_source_axes(gs_gx_axis_plan *x,gs_gx_axis_plan *y)
+{return g_gif.clamp_configured&&gs_gx_plan_axis(g_gif.tex_tw,g_gif.clamp_wms,g_gif.clamp_minu,g_gif.clamp_maxu,x)&&
+ gs_gx_plan_axis(g_gif.tex_th,g_gif.clamp_wmt,g_gif.clamp_minv,g_gif.clamp_maxv,y)&&gs_gx_native_texture_valid(x->size,y->size);}
+static uint32_t gs_gx_atlas_texel(int32_t x,int32_t y)
+{return gs_sample_texel_uncached(
+ gs_apply_clamp_wrap(x,g_gif.tex_tw,g_gif.clamp_wms,g_gif.clamp_minu,g_gif.clamp_maxu),
+ gs_apply_clamp_wrap(y,g_gif.tex_th,g_gif.clamp_wmt,g_gif.clamp_minv,g_gif.clamp_maxv));}
+static int gs_gx_atlas_disjoint(int32_t sx,int32_t sy,const gs_gx_axis_plan *x,const gs_gx_axis_plan *y)
+{
+ uint64_t base=(uint64_t)g_gif.tex_tbp0*256u;
+ uint64_t end=gs_page_end(base,g_gif.tex_tbw,x->max_index+1u,y->max_index+1u,g_gif.tex_psm);
+ uint64_t frame=(uint64_t)g_gif.fbp*4u,fe=gs_page_end(frame,g_gif.fbw,sx,sy,g_gif.frame_psm);
+ if(end>GS_MEM_SIZE||fe>GS_MEM_SIZE||!(end<=frame||fe<=base))return 0;
+ if(g_gif.zbuf_configured&&(g_gif.zte||!g_gif.zmsk)){
+  uint64_t z=(uint64_t)g_gif.zbp*4u,ze=gs_page_end(z,g_gif.fbw,sx,sy,g_gif.zpsm);
+  if(ze>GS_MEM_SIZE||!(end<=z||ze<=base))return 0;
+ }
+ return 1;
+}
+#endif
+static void gs_gx_native_source_key(void)
+{
+ uint64_t hash=0,base=(uint64_t)g_gif.tex_tbp0*256u;
+ uint64_t end=gs_page_end(base,g_gif.tex_tbw,1u<<g_gif.tex_tw,1u<<g_gif.tex_th,g_gif.tex_psm);
+#ifdef GEKKO2_GX_GENERIC_SHADER
+ gs_gx_axis_plan ax,ay;
+ if(gs_gx_source_axes(&ax,&ay))end=gs_page_end(base,g_gif.tex_tbw,ax.max_index+1u,ay.max_index+1u,g_gif.tex_psm);
+ else end=0;
+#endif
+ int valid=end<=GS_MEM_SIZE&&end>base&&end-base<=2097152u;
+ if(valid)valid=gs_mem_gpu_sync_alias_range((uint32_t)base,(uint32_t)end);
+ if(valid)valid=gs_mem_hash_range((uint32_t)base,(uint32_t)(end-base),&hash);
+ uint32_t state[]={g_gif.tex_tbp0,g_gif.tex_tbw,g_gif.tex_tw,g_gif.tex_th,g_gif.tex_psm,
+  g_gif.tex_cbp,g_gif.tex_cpsm,g_gif.tex_csa,g_gif.tex_csm,g_gif.texa_ta0,g_gif.texa_ta1,g_gif.texa_aem,g_gif.clut_words_valid?g_gif.clut_write_csm:2u,
+  g_gif.clamp_wms,g_gif.clamp_wmt,g_gif.clamp_minu,g_gif.clamp_maxu,g_gif.clamp_minv,g_gif.clamp_maxv};
+ uint32_t lo=(uint32_t)hash,hi=(uint32_t)(hash>>32);
+ for(unsigned n=0;n<sizeof(state)/sizeof(*state);n++){lo=(lo^state[n])*16777619u;hi=((hi<<5)|(hi>>27))^state[n];}
+ if(g_gif.tex_psm==0x13u||g_gif.tex_psm==0x14u||g_gif.tex_psm==0x1bu||g_gif.tex_psm==0x24u||g_gif.tex_psm==0x2cu)
+  for(unsigned n=0;n<512;n++){lo=(lo^gs_clut_hash_word(n))*16777619u;hi=((hi<<5)|(hi>>27))^gs_clut_hash_word(n);}
+ gs_gx_source_key(lo,hi,valid);
+}
+static struct {int32_t xy[6],maxx,maxy;double uv[6];float stq[9];uint32_t colors[3];double inv;} gx_triangle;
 static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
 {
- const int32_t *xy=gx_triangle.xy,*uv=gx_triangle.uv;const float *stq=gx_triangle.stq;
+ const int32_t *xy=gx_triangle.xy;const double *uv=gx_triangle.uv;const float *stq=gx_triangle.stq;
  if(xx>gx_triangle.maxx||yy>gx_triangle.maxy)return 0;
  double b0=(double)edge(xy[2],xy[3],xy[4],xy[5],xx,yy)*gx_triangle.inv;
  double b1=(double)edge(xy[4],xy[5],xy[0],xy[1],xx,yy)*gx_triangle.inv;
@@ -1100,7 +1210,7 @@ static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
     !gs_triangle_edge_inside(edge(xy[4],xy[5],xy[0],xy[1],xx,yy),sign,gs_triangle_edge_inclusive(xy[4],xy[5],xy[0],xy[1],sign))||
     !gs_triangle_edge_inside(edge(xy[0],xy[1],xy[2],xy[3],xx,yy),sign,gs_triangle_edge_inclusive(xy[0],xy[1],xy[2],xy[3],sign)))return 0;
  uint32_t c0=gx_triangle.colors[0],c1=gx_triangle.colors[1],c2=gx_triangle.colors[2];
- int32_t u0=uv[0],v0=uv[1],u1=uv[2],v1=uv[3],u2=uv[4],v2=uv[5];
+ double u0=uv[0],v0=uv[1],u1=uv[2],v1=uv[3],u2=uv[4],v2=uv[5];
  float s0=stq[0],t0=stq[1],q0=stq[2],s1=stq[3],t1=stq[4],q1=stq[5],s2=stq[6],t2=stq[7],q2=stq[8];
  int gouraud=!!(gs_effective_attr_prim()&PRIM_IIP_MASK),textured=1;
  uint32_t flat_r=rgba_channel(c2,0),flat_g=rgba_channel(c2,8),flat_b=rgba_channel(c2,16),flat_a=rgba_channel(c2,24);
@@ -1148,7 +1258,7 @@ static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
                         tu = s_norm * (double)(1u << g_gif.tex_tw);
                         tv = t_norm * (double)(1u << g_gif.tex_th);
                     }
-                    uint32_t texel = gs_sample_texture(tu, tv);
+                    uint32_t texel = gs_sample_texture_q(tu,tv,b0*(double)q0+b1*(double)q1+b2*(double)q2);
                     out = gs_texture_function(texel, rgba_pack(shaded_r, shaded_g, shaded_b, shaded_a));
                 }
  return out;
@@ -1156,7 +1266,7 @@ static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
 
 static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
-                                int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
+                                double u0, double v0, double u1, double v1, double u2, double v2,
                                 float s0, float t0, float q0, float s1, float t1, float q1, float s2, float t2, float q2,
                                 uint32_t z0, uint32_t z1, uint32_t z2,
                                 uint32_t f0, uint32_t f1, uint32_t f2){
@@ -1198,7 +1308,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
             if (g_gif.zbuf_configured && g_gif.zte && g_gif.ztst != GS_ZTST_ALWAYS) key |= 1u << 3;
             if (a & PRIM_FGE_MASK) key |= 1u << 4;
             if (g_gif.ate) key |= 1u << 5;
-            if (g_gif.dthe || g_gif.fba) key |= 1u << 6;
+            if (gs_dither_active() || g_gif.fba) key |= 1u << 6;
             if (g_gif.fbmask) key |= 1u << 7;
             key |= (psm == TEX_PSM_PSMCT32 ? 0u : psm == TEX_PSM_PSMCT24 ? 1u :
                     (psm == TEX_PSM_PSMCT16 || psm == TEX_PSM_PSMCT16S) ? 2u : 3u) << 8;
@@ -1223,6 +1333,67 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
     uint32_t flat_r = rgba_channel(c2, 0), flat_g = rgba_channel(c2, 8);
     uint32_t flat_b = rgba_channel(c2, 16), flat_a = rgba_channel(c2, 24);
 
+#ifdef GEKKO2_GX_EXTENDED_TRIANGLES
+    /* GPU evaluates texture/color interpolation. GS destination permissions,
+     * arbitrary alpha/depth islands and full-precision Z remain canonical. */
+    int native_generic=0,native_axis_ok=0;
+    gs_gx_axis_plan ax={0},ay={0};
+#ifdef GEKKO2_GX_GENERIC_SHADER
+    native_generic=1;native_axis_ok=!textured||gs_gx_source_axes(&ax,&ay);
+#endif
+    if((textured||native_generic)&&(native_generic||!interpolate_color||(g_gif.tex_tfx<=1u&&
+       (c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&
+       !gs_dither_active()&&!g_gif.fbmask&&(native_generic||!(gs_effective_attr_prim()&PRIM_FGE_MASK))&&
+       (!textured||(
+       !g_gif.tex1_mxl&&g_gif.tex1_mmin<=1u&&g_gif.tex1_mmag==g_gif.tex1_mmin&&g_gif.tex_tw<=10u&&g_gif.tex_th<=10u&&
+       (native_generic?native_axis_ok:(gs_gx_native_texture_valid(1u<<g_gif.tex_tw,1u<<g_gif.tex_th)&&
+       g_gif.clamp_configured&&g_gif.clamp_wms<=1u&&g_gif.clamp_wmt<=1u))&&
+       (gs_effective_attr_prim()&PRIM_FST_MASK||(q0>0&&q1>0&&q2>0&&isfinite(q0)&&isfinite(q1)&&isfinite(q2)))))&&
+       gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD)&&gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)&&
+       gs_gx_render_active()&&maxx>=minx&&maxy>=miny&&
+       (g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&(!textured||
+#ifdef GEKKO2_GX_GENERIC_SHADER
+       gs_gx_atlas_disjoint(maxx+1,maxy+1,&ax,&ay)
+#else
+       gs_draw_texture_cache_begin_impl(minx,miny,maxx+1,maxy+1,0u)
+#endif
+       )){
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};float uv[6],qs[3]={q0,q1,q2};
+        uint32_t colors[3]={c0,c1,c2},zs[3]={z0,z1,z2};
+        uint32_t tw=textured?(native_generic?ax.size:1u<<g_gif.tex_tw):4u,th=textured?(native_generic?ay.size:1u<<g_gif.tex_th):4u;
+        if(!textured){memset(uv,0,sizeof uv);qs[0]=qs[1]=qs[2]=1;}
+        else if(gs_effective_attr_prim()&PRIM_FST_MASK){
+            uv[0]=(float)u0/tw;uv[1]=(float)v0/th;
+            uv[2]=(float)u1/tw;uv[3]=(float)v1/th;
+            uv[4]=(float)u2/tw;uv[5]=(float)v2/th;
+            qs[0]=qs[1]=qs[2]=1;
+        }else{float sx=(float)(1u<<g_gif.tex_tw)/tw,sy=(float)(1u<<g_gif.tex_th)/th;
+            uv[0]=s0*sx;uv[1]=t0*sy;uv[2]=s1*sx;uv[3]=t1*sy;uv[4]=s2*sx;uv[5]=t2*sy;}
+        gs_gx_native_color color={c2,textured?g_gif.tex_tcc:0u,textured?g_gif.tex_tfx:0u,g_gif.scissor_configured?g_gif.scissor_y1+1u:0u};
+#ifdef GEKKO2_GX_GENERIC_SHADER
+        color.fog_enabled=!!(gs_effective_attr_prim()&PRIM_FGE_MASK);color.fog_color=g_gif.fogcol;
+        color.fog[0]=f0;color.fog[1]=f1;color.fog[2]=f2;color.untextured=!textured;
+#endif
+        gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
+            g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,z2,
+            !!(gs_effective_attr_prim()&PRIM_ABE_MASK),g_gif.alpha_a,g_gif.alpha_b,g_gif.alpha_c,g_gif.alpha_d,
+            g_gif.alpha_fix,g_gif.pabe,!g_gif.colclamp_configured||g_gif.colclamp,g_gif.fbmask,g_gif.fba,
+            g_gif.date,g_gif.datm,g_gif.ate,g_gif.atst,g_gif.aref,g_gif.afail};
+        gs_gx_texel_fn sampler=gs_sample_texel_uncached;
+        if(textured)gs_gx_native_source_key();
+#ifdef GEKKO2_GX_GENERIC_SHADER
+        else {gs_gx_source_key(0x554e5445u,0x58545552u,1);sampler=gs_gx_white_texel;}
+        if(textured)sampler=gs_gx_atlas_texel;
+#endif
+        int accepted=gs_gx_draw_native_triangle_ex(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,
+            minx,miny,maxx,maxy,xy,uv,textured?qs:NULL,interpolate_color&&(native_generic||g_gif.tex_tfx==TEX_TFX_MODULATE)?colors:NULL,
+            tw,th,textured?(native_generic?ax.clamp:g_gif.clamp_wms):1u,textured?(native_generic?ay.clamp:g_gif.clamp_wmt):1u,
+            textured&&g_gif.tex1_mmag==1u&&g_gif.tex1_mmin==1u,g_gif.scanmsk,sampler,&pipe,zs,&color);
+        g_texel_cache_enabled=0;
+        if(accepted){if(gouraud){g_gst[GIF_GOURAUD_GX]++;g_gst[GIF_GOURAUD_GX_HYBRID]++;}
+            g_gif.triangles_drawn++;return;}
+    }
+#endif
 #ifdef GEKKO2_GX_NATIVE_BIOS_TRI
     uint32_t native_z_min=z0<z1?z0:z1;if(z2<native_z_min)native_z_min=z2;
     int native_z_var=z0!=z1||z1!=z2;
@@ -1231,9 +1402,9 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
        (g_gif.zpsm==0u||(g_gif.zpsm==1u&&z0<=0xffffffu&&z1<=0xffffffu&&z2<=0xffffffu)||
         ((g_gif.zpsm==2u||g_gif.zpsm==10u)&&z0<=0xffffu&&z1<=0xffffu&&z2<=0xffffu)));
     if(textured&&(!interpolate_color||(g_gif.tex_tfx==TEX_TFX_MODULATE&&g_gif.tex_tcc&&(c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&native_z_bound&&
-       !g_gif.ate&&!g_gif.date&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       !g_gif.ate&&!g_gif.date&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&!g_gif.tex1_mxl&&
-       g_gif.tex_tw>=2u&&g_gif.tex_th>=2u&&g_gif.tex_tw<=7u&&g_gif.tex_th<=7u&&
+       g_gif.tex1_mmin<=1u&&g_gif.tex1_mmag==g_gif.tex1_mmin&&g_gif.tex_tw>=2u&&g_gif.tex_th>=2u&&g_gif.tex_tw<=7u&&g_gif.tex_th<=7u&&
        g_gif.clamp_configured&&g_gif.clamp_wms<=1u&&g_gif.clamp_wmt<=1u&&
        (gs_effective_attr_prim()&PRIM_FST_MASK || (q0>0.0f&&q1>0.0f&&q2>0.0f&&isfinite(q0)&&isfinite(q1)&&isfinite(q2)))&&
        gekko2_opt_enabled(GEKKO2_OPT_GX_GOURAUD)&&gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)&&gs_gx_render_active()&&
@@ -1265,10 +1436,10 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
        gekko2_opt_enabled(GEKKO2_OPT_GX_RESIDENT)&&(!g_gif.date && gs_gx_render_active())&&
        (!(gs_effective_attr_prim()&PRIM_ABE_MASK)||g_gif.alpha_c!=0u||
         (!g_gif.tex_tcc&&(c0>>24)==(c1>>24)&&(c1>>24)==(c2>>24)))&&
-       z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       z0==z1&&z1==z2&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&!g_gif.tex1_mxl&&
-       maxx>=minx&&maxy>=miny&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)) {
-        int32_t xy[6]={x0,y0,x1,y1,x2,y2},uv[6]={u0,v0,u1,v1,u2,v2};
+       maxx>=minx&&maxy>=miny&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u||g_gif.frame_psm==2u||g_gif.frame_psm==10u)) {
+        int32_t xy[6]={x0,y0,x1,y1,x2,y2};double uv[6]={u0,v0,u1,v1,u2,v2};
         float stq[9]={s0,t0,q0,s1,t1,q1,s2,t2,q2};uint32_t colors[3]={c0,c1,c2};
         memcpy(gx_triangle.xy,xy,sizeof xy);memcpy(gx_triangle.uv,uv,sizeof uv);
         memcpy(gx_triangle.stq,stq,sizeof stq);memcpy(gx_triangle.colors,colors,sizeof colors);
@@ -1283,9 +1454,9 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
             g_gif.triangles_drawn++;return;
         }
     }
-    if(textured&&(gs_effective_attr_prim()&PRIM_FST_MASK)&&g_gif.tex_tfx==TEX_TFX_DECAL&&
+    if(textured&&!g_gif.tex1_mxl&&(gs_effective_attr_prim()&PRIM_FST_MASK)&&g_gif.tex_tfx==TEX_TFX_DECAL&&
        !g_gif.tex_tcc&&g_gif.tex1_mmag==0u&&g_gif.tex1_mmin==0u&&!gouraud&&
-       gs_depth_is_inactive()&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
+       gs_depth_is_inactive()&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
        !(gs_effective_attr_prim()&(PRIM_FGE_MASK|PRIM_ABE_MASK))&&g_gif.frame_psm==0u&&(!g_gif.date && gs_gx_render_active())) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2};float uv[6]={(float)u0,(float)v0,(float)u1,(float)v1,(float)u2,(float)v2};
         if(gs_gx_draw_uv_decal_triangle(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,minx,miny,maxx,maxy,xy,uv,
@@ -1314,8 +1485,8 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
             gouraud_reason=GIF_GFB_GX_REJECTED;
         }
     }
-    if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
-       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&(!g_gif.date && gs_gx_render_active())) {
+    if(!textured&&!gouraud&&z0==z1&&z1==z2&&!g_gif.ate&&!gs_dither_active()&&!g_gif.fba&&!g_gif.fbmask&&
+       !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&(g_gif.frame_psm==0u||g_gif.frame_psm==1u||g_gif.frame_psm==2u||g_gif.frame_psm==10u)&&(!g_gif.date && gs_gx_render_active())) {
         int32_t xy[6]={x0,y0,x1,y1,x2,y2};
         gs_gx_pipeline pipe={g_gif.zbp,g_gif.zpsm,g_gif.zbuf_configured&&g_gif.zte,
             g_gif.zbuf_configured&&!g_gif.zmsk,g_gif.ztst,z2,
@@ -1332,46 +1503,8 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
     }
     double inv_area = 1.0 / (double)area;
 
-    /* Round 29 continued (14th change): extends Round 28's mipmap
-     * support (previously SPRITE-only - see rasterize_sprite()'s own
-     * comment for the full scope/citation and the honest limitations
-     * this shares: per-PRIMITIVE not per-pixel LOD selection, no
-     * trilinear blending, only MTBA=0 explicit-MIPTBP lookup) to
-     * TRIANGLE. Uses the triangle's screen-space bounding box
-     * (maxx-minx, maxy-miny) as the "screen size" input to the exact
-     * same ratio-based LOD formula SPRITE already uses - the natural
-     * analog of SPRITE's own (sx1-sx0, sy1-sy0) size, since a
-     * triangle has no single well-defined width/height the way an
-     * axis-aligned SPRITE rectangle does. Like SPRITE, the override
-     * is scoped strictly to this one draw call and restored below. */
-    uint32_t saved_mip_tbp0 = g_gif.tex_tbp0;
-    uint32_t saved_mip_tbw = g_gif.tex_tbw;
-    if (textured && g_gif.tex1_mxl > 0 && g_gif.tex1_mmin >= GS_MMIN_MIPMAP_THRESHOLD && !g_gif.tex1_mtba) {
-        uint32_t lod = 0;
-        if (g_gif.tex1_lcm) {
-            double k = (double)g_gif.tex1_k / 16.0;
-            lod = (k <= 0.0) ? 0u : (uint32_t)(k + 0.5);
-        } else {
-            int32_t screen_w = maxx - minx, screen_h = maxy - miny;
-            double tex_w = (double)(1u << g_gif.tex_tw);
-            double tex_h = (double)(1u << g_gif.tex_th);
-            double ratio_w = (screen_w > 0) ? tex_w / (double)screen_w : 1.0;
-            double ratio_h = (screen_h > 0) ? tex_h / (double)screen_h : 1.0;
-            double ratio = (ratio_w > ratio_h) ? ratio_w : ratio_h;
-            if (ratio > 1.0) {
-                double lod_f = log2(ratio);
-                lod = (lod_f < 0.0) ? 0u : (uint32_t)lod_f;
-            }
-        }
-        if (lod > g_gif.tex1_mxl) lod = g_gif.tex1_mxl;
-        if (lod > 0) {
-            g_gif.tex_tbp0 = g_gif.tex_mip_tbp[lod - 1];
-            g_gif.tex_tbw = g_gif.tex_mip_tbw[lod - 1];
-        }
-    }
-
-    /* Per-draw memoization only when texture and both writable targets are
-     * disjoint. Mip selection is already final; no generation guesses. */
+    /* Memoization requires disjoint base-level source/targets. Mipped draws
+     * are excluded because the envelope does not cover all levels. */
     if(textured && maxx>=minx && maxy>=miny)
         g_triangle_cached_draws+=gs_draw_texture_cache_begin(minx,miny,maxx+1,maxy+1);
     const uint32_t draw_attributes=gs_effective_attr_prim();
@@ -1484,7 +1617,7 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
                         tu = s_norm * texture_width;
                         tv = t_norm * texture_height;
                     }
-                    uint32_t texel = gs_sample_texture(tu, tv);
+                    uint32_t texel = gs_sample_texture_q(tu,tv,b0*(double)q0+b1*(double)q1+b2*(double)q2);
                     out = gs_texture_function(texel, rgba_pack(shaded_r, shaded_g, shaded_b, shaded_a));
                 }
                 /* Round 97 (138th finding, task #254): Fog effect -
@@ -1511,16 +1644,11 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
     g_texel_cache_enabled=0;
     g_gif.triangles_drawn++;
 
-    /* Round 29 continued (14th change): restore tex_tbp0/tex_tbw in
-     * case a non-base mip level was temporarily selected above - keeps
-     * the override strictly local to this single draw call, same as
-     * rasterize_sprite()'s own restore. */
-    g_gif.tex_tbp0 = saved_mip_tbp0;
-    g_gif.tex_tbw = saved_mip_tbw;
+
 }
 static void rasterize_triangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
-                                int32_t u0, int32_t v0, int32_t u1, int32_t v1, int32_t u2, int32_t v2,
+                                double u0, double v0, double u1, double v1, double u2, double v2,
                                 float s0, float t0, float q0, float s1, float t1, float q1, float s2, float t2, float q2,
                                 uint32_t z0, uint32_t z1, uint32_t z2,
                                 uint32_t f0, uint32_t f1, uint32_t f2)
@@ -1592,14 +1720,14 @@ static void gs_gx_sprite_key(void)
  uint32_t state[]={g_gx_sprite_textured,g_gx_sprite_linear,g_gx_sprite_fx,g_gx_sprite_fy,g_gif.rgba,
   g_gif.tex_tbp0,g_gif.tex_tbw,g_gif.tex_tw,g_gif.tex_th,g_gif.tex_psm,g_gif.tex_cbp,g_gif.tex_cpsm,
   g_gif.tex_csa,g_gif.tex_csm,g_gif.tex_tcc,g_gif.tex_tfx,g_gif.texa_ta0,g_gif.texa_ta1,g_gif.texa_aem,
-  g_gif.clamp_configured,g_gif.clamp_wms,g_gif.clamp_wmt,g_gif.clamp_minu,g_gif.clamp_maxu,g_gif.clamp_minv,g_gif.clamp_maxv};
+  g_gif.clamp_configured,g_gif.clamp_wms,g_gif.clamp_wmt,g_gif.clamp_minu,g_gif.clamp_maxu,g_gif.clamp_minv,g_gif.clamp_maxv,g_gif.clut_words_valid?g_gif.clut_write_csm:2u};
  uint32_t a=(uint32_t)data,b=data>>32;
  for(unsigned k=0;k<sizeof(state)/sizeof(state[0]);k++){a=(a^state[k])*16777619u;b=((b<<5)|(b>>27))^state[k];}
- for(unsigned k=0;k<512;k++){a=(a^g_gif.clut_cache[k])*16777619u;b=((b<<5)|(b>>27))^g_gif.clut_cache[k];}
+ for(unsigned k=0;k<512;k++){a=(a^gs_clut_hash_word(k))*16777619u;b=((b<<5)|(b>>27))^gs_clut_hash_word(k);}
  gs_gx_source_key(a,b,valid);
 }
 static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
-                              int32_t u0, int32_t v0, int32_t u1, int32_t v1,
+                              double u0, double v0, double u1, double v1,
                               float s0, float t0, float q0, float s1, float t1, float q1,
                               uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1){
     /* GS/reference DrawSprite covers [ceil(min),ceil(max)). Keep the
@@ -1659,54 +1787,6 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     if (sy0 < 0) sy0 = 0;
     clamp_bbox_to_scissor(&sx0, &sx1, &sy0, &sy1, 1); /* sprite: exclusive loop */
 
-    /* Round 28: mipmaps - SPRITE-only, per-PRIMITIVE (not per-pixel)
-     * LOD selection. See gif.h's GS_REG_TEX1_1/MIPTBP1_1/MIPTBP2_1
-     * comment and gif_state_t's tex1_xxx/tex_mip_tbp/tex_mip_tbw
-     * field comments for the full scope: only MTBA=0 (explicit
-     * MIPTBP lookup) is implemented; a single nearest mip level is
-     * selected once for the WHOLE sprite (not varied per-pixel, and
-     * not trilinear-blended between adjacent levels) - a deliberate,
-     * honest simplification consistent with this project's existing
-     * texture sampling for mipmapped modes (trilinear filtering
-     * is not implemented). If a non-zero level is
-     * selected, tex_tbp0/tex_tbw are temporarily overridden for the
-     * duration of this draw and restored before returning - the same
-     * save/override/restore spirit as gs_activate_context(), just
-     * scoped to a single function instead of persisted in gif_state_t. */
-    uint32_t saved_mip_tbp0 = g_gif.tex_tbp0;
-    uint32_t saved_mip_tbw = g_gif.tex_tbw;
-    if (textured && g_gif.tex1_mxl > 0 && g_gif.tex1_mmin >= GS_MMIN_MIPMAP_THRESHOLD && !g_gif.tex1_mtba) {
-        uint32_t lod = 0;
-        if (g_gif.tex1_lcm) {
-            /* Fixed LOD from K (signed, 1/16 units) - L is parsed but
-             * deliberately not applied this round (see tex1_l's field
-             * comment). */
-            double k = (double)g_gif.tex1_k / 16.0;
-            lod = (k <= 0.0) ? 0u : (uint32_t)(k + 0.5);
-        } else {
-            /* Computed from the ratio of texture size to this
-             * sprite's own screen-space size - minification only
-             * (ratio > 1.0); magnification (ratio <= 1.0) always
-             * uses level 0, matching real hardware's own "never
-             * upsample past the base level" behavior. */
-            int32_t screen_w = sx1 - sx0, screen_h = sy1 - sy0;
-            double tex_w = (double)(1u << g_gif.tex_tw);
-            double tex_h = (double)(1u << g_gif.tex_th);
-            double ratio_w = (screen_w > 0) ? tex_w / (double)screen_w : 1.0;
-            double ratio_h = (screen_h > 0) ? tex_h / (double)screen_h : 1.0;
-            double ratio = (ratio_w > ratio_h) ? ratio_w : ratio_h;
-            if (ratio > 1.0) {
-                double lod_f = log2(ratio);
-                lod = (lod_f < 0.0) ? 0u : (uint32_t)lod_f; /* floor, since lod_f >= 0 here */
-            }
-        }
-        if (lod > g_gif.tex1_mxl) lod = g_gif.tex1_mxl;
-        if (lod > 0) {
-            g_gif.tex_tbp0 = g_gif.tex_mip_tbp[lod - 1];
-            g_gif.tex_tbw = g_gif.tex_mip_tbw[lod - 1];
-        }
-    }
-
     /* No texture/mip changes, pixel tests, fog or Z work in this subset.
      * Scissor was already applied; SCANMSK still applies per row. */
     if(g_gx_opaque && !textured && gs_depth_is_inactive() &&
@@ -1737,12 +1817,13 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     g_sprite_cached_draws+=safe_texture;
     /* BETA12.20: Sprite snapshot can evaluate ATE/DATE late in the CPU
      * importer. Resident GX depth/blend paths are independently excluded. */
-    if((!textured||safe_texture)&&!g_gif.dthe&&!g_gif.fba&&!g_gif.fbmask&&
-       (g_gif.frame_psm==0u||g_gif.frame_psm==1u)&&
+    if((!textured||(safe_texture&&!g_gif.tex1_mxl&&g_gif.tex1_mmin<=1u&&g_gif.tex1_mmag==g_gif.tex1_mmin))&&!gs_dither_active()&&
+       ((g_gif.frame_psm==2u||g_gif.frame_psm==10u)||(!g_gif.fba&&!g_gif.fbmask))&&
+       (g_gif.frame_psm==0u||g_gif.frame_psm==1u||g_gif.frame_psm==2u||g_gif.frame_psm==10u)&&
        !(gs_effective_attr_prim()&PRIM_FGE_MASK)&&gs_gx_render_active()&&
        sx1>sx0&&sy1>sy0&&sx1-sx0<=640&&sy1-sy0<=512&&
        (!textured||g_gif.tex_psm==0u||g_gif.tex_psm==1u||g_gif.tex_psm==2u||g_gif.tex_psm==10u||
-        g_gif.tex_psm==0x13u||g_gif.tex_psm==0x14u||g_gif.tex_psm==0x1bu||g_gif.tex_psm==0x24u||g_gif.tex_psm==0x2cu)) {
+        g_gif.tex_psm==0x13u||g_gif.tex_psm==0x14u||g_gif.tex_psm==0x1bu||g_gif.tex_psm==0x24u||g_gif.tex_psm==0x2cu||gs_is_depth_texture(g_gif.tex_psm))) {
         double du=textured&&x_span!=0.0?(tex_u1-tex_u0)/x_span:0.0;
         double dv=textured&&y_span!=0.0?(tex_v1-tex_v0)/y_span:0.0;
         double first_u=!textured?0.0:cached_u?g_sprite_u[0]:tex_u0;
@@ -1761,7 +1842,7 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
            gs_gx_sprite_axis(g_gx_sprite_rows,sy1-sy0,first_v,dv,g_gx_sprite_linear,&g_gx_sprite_fy,textured?g_gx_sprite_v:NULL)&&
            (gs_gx_sprite_key(),gs_gx_draw_texture_sprite(g_gif.frame_psm,g_gif.fbp,g_gif.fbw,sx0,sy0,sx1-sx0,sy1-sy0,
                 g_gx_sprite_columns,g_gx_sprite_rows,du,dv,g_gif.scanmsk,gs_gx_sprite_sample,&pipeline))) {
-            g_texel_cache_enabled=0;g_gif.tex_tbp0=saved_mip_tbp0;g_gif.tex_tbw=saved_mip_tbw;
+            g_texel_cache_enabled=0;
             g_gif.sprites_drawn++;return;
         }
     }
@@ -1800,7 +1881,7 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
                 double frac_x = (x_span != 0.0) ? ((double)xx - pos_x0) / x_span : 0.0;
                 double tu = cached_u?g_sprite_u[xx-sx0]:tex_u0 + frac_x * (tex_u1 - tex_u0);
                 double tv = tex_v0 + frac_y * (tex_v1 - tex_v0);
-                uint32_t texel = gs_sample_texture(tu, tv);
+                uint32_t texel = gs_sample_texture_q(tu,tv,q1);
                 out = gs_texture_function(texel, g_gif.rgba);
             }
             out = apply_fog(out, frag_fog);
@@ -1810,14 +1891,10 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     g_texel_cache_enabled=0;
     g_gif.sprites_drawn++;
 
-    /* Round 28: restore tex_tbp0/tex_tbw in case a mip level other
-     * than the base was temporarily selected above - keeps this
-     * override strictly local to this single draw call. */
-    g_gif.tex_tbp0 = saved_mip_tbp0;
-    g_gif.tex_tbw = saved_mip_tbw;
+
 }
 static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t raw_y1,
-                              int32_t u0, int32_t v0, int32_t u1, int32_t v1,
+                              double u0, double v0, double u1, double v1,
                               float s0, float t0, float q0, float s1, float t1, float q1,
                               uint32_t z0, uint32_t z1, uint32_t f0, uint32_t f1)
 {
@@ -1829,7 +1906,7 @@ static void rasterize_sprite_12_4(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1
 
 /* Integer-coordinate entry used by native rasterizer tests. */
 static void rasterize_sprite(int32_t x0,int32_t y0,int32_t x1,int32_t y1,
-    int32_t u0,int32_t v0,int32_t u1,int32_t v1,
+    double u0,double v0,double u1,double v1,
     float s0,float t0,float q0,float s1,float t1,float q1,
     uint32_t z0,uint32_t z1,uint32_t f0,uint32_t f1)
 {
@@ -1838,8 +1915,8 @@ static void rasterize_sprite(int32_t x0,int32_t y0,int32_t x1,int32_t y1,
 }
 
 /* POINT rasterizer (task: "GS coverage breadth"). Real hardware
- * (PCSX2's `GSRasterizer::DrawPoint`): a single pixel, flat color
- * only (the point's own vertex - `CSetupPrim` selects `last=0` for
+ * (PCSX2's `GSRasterizer::DrawPoint`): a single pixel, vertex color
+ * and optional texture (the point's own vertex selects `last=0` for
  * `GS_POINT_CLASS`, i.e. there's only ever one vertex to begin with,
  * no interpolation of any kind), gated behind the same Z test every
  * other primitive uses. */
@@ -1869,6 +1946,15 @@ static void rasterize_point_profile_impl(int32_t x, int32_t y, uint32_t rgba, ui
      * vertex, so no interpolation is possible or needed (same "no
      * interpolation of any kind" real-hardware rule this file already
      * documents for POINT's color). */
+    if (gs_effective_attr_prim() & PRIM_TME_MASK) {
+        double u=g_gif.cur_u,v=g_gif.cur_v;
+        if (!(gs_effective_attr_prim() & PRIM_FST_MASK)) {
+            double inv_q=g_gif.cur_q!=0.0f?1.0/(double)g_gif.cur_q:0.0;
+            u=(double)g_gif.cur_s*inv_q*(double)(1u<<g_gif.tex_tw);
+            v=(double)g_gif.cur_t*inv_q*(double)(1u<<g_gif.tex_th);
+        }
+        rgba=gs_texture_function(gs_sample_texture_q(u,v,g_gif.cur_q),rgba);
+    }
     gs_finish_draw_pixel(x, y, apply_fog(rgba, fog), z, g_gif.zbuf_configured && !g_gif.zmsk);
     g_gif.points_drawn++;
 }
@@ -1901,7 +1987,9 @@ static void rasterize_line_profile_impl(int32_t x0, int32_t y0, int32_t x1, int3
                             uint32_t c0, uint32_t c1, uint32_t z0, uint32_t z1,
                             uint32_t f0, uint32_t f1){
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
-    int gouraud = (gs_effective_attr_prim() & PRIM_IIP_MASK) != 0;
+    uint32_t attributes=gs_effective_attr_prim();
+    int gouraud=(attributes&PRIM_IIP_MASK)!=0;
+    int textured=(attributes&PRIM_TME_MASK)!=0;
     uint32_t flat_r = rgba_channel(c1, 0), flat_g = rgba_channel(c1, 8);
     uint32_t flat_b = rgba_channel(c1, 16), flat_a = rgba_channel(c1, 24);
 
@@ -1951,10 +2039,10 @@ static void rasterize_line_profile_impl(int32_t x0, int32_t y0, int32_t x1, int3
                 g_gif.pixels_ztest_failed++;
             } else {
                 uint32_t out;
+                double t=(gouraud||textured)?(double)i/(double)steps:0.0;
                 if (!gouraud) {
                     out = rgba_pack(flat_r, flat_g, flat_b, flat_a);
                 } else {
-                    double t = (double)i / (double)steps;
                     uint32_t r = (uint32_t)((1.0 - t) * rgba_channel(c0, 0)  + t * rgba_channel(c1, 0)  + 0.5);
                     uint32_t g = (uint32_t)((1.0 - t) * rgba_channel(c0, 8)  + t * rgba_channel(c1, 8)  + 0.5);
                     uint32_t b = (uint32_t)((1.0 - t) * rgba_channel(c0, 16) + t * rgba_channel(c1, 16) + 0.5);
@@ -1964,6 +2052,19 @@ static void rasterize_line_profile_impl(int32_t x0, int32_t y0, int32_t x1, int3
                     b = gs_colclamp_channel((int32_t)b);
                     a = gs_colclamp_channel((int32_t)a);
                     out = rgba_pack(r, g, b, a);
+                }
+                if(textured){
+                    double q=(1.0-t)*g_gif.tri_q[0]+t*g_gif.tri_q[1];
+                    double u,v;
+                    if(attributes&PRIM_FST_MASK){
+                        u=(1.0-t)*g_gif.tri_u[0]+t*g_gif.tri_u[1];
+                        v=(1.0-t)*g_gif.tri_v[0]+t*g_gif.tri_v[1];
+                    }else{
+                        double inv=q!=0.0?1.0/q:0.0;
+                        u=((1.0-t)*g_gif.tri_s[0]+t*g_gif.tri_s[1])*inv*(1u<<g_gif.tex_tw);
+                        v=((1.0-t)*g_gif.tri_t[0]+t*g_gif.tri_t[1])*inv*(1u<<g_gif.tex_th);
+                    }
+                    out=gs_texture_function(gs_sample_texture_q(u,v,q),out);
                 }
                 uint32_t frag_fog = (pf < 0.0) ? 0u : (pf > 255.0 ? 255u : (uint32_t)(pf + 0.5));
                 out = apply_fog(out, frag_fog);
@@ -2070,6 +2171,11 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
             g_gif.line_rgba[slot] = g_gif.rgba;
             g_gif.line_z[slot] = raw_z;
             g_gif.line_f[slot] = g_gif.cur_fog;
+            /* One GS primitive type owns the vertex queue at a time.
+             * Reuse the checkpointed texture lanes instead of adding
+             * uncheckpointed side state or changing the GIF state ABI. */
+            g_gif.tri_u[slot]=g_gif.cur_u;g_gif.tri_v[slot]=g_gif.cur_v;
+            g_gif.tri_s[slot]=g_gif.cur_s;g_gif.tri_t[slot]=g_gif.cur_t;g_gif.tri_q[slot]=g_gif.cur_q;
             if (do_draw_kick && g_gif.line_vseq % 2 == 0)
                 rasterize_line(g_gif.line_x[0], g_gif.line_y[0], g_gif.line_x[1], g_gif.line_y[1],
                                 g_gif.line_rgba[0], g_gif.line_rgba[1],
@@ -2086,9 +2192,13 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
             g_gif.line_x[0] = g_gif.line_x[1]; g_gif.line_y[0] = g_gif.line_y[1];
             g_gif.line_rgba[0] = g_gif.line_rgba[1]; g_gif.line_z[0] = g_gif.line_z[1];
             g_gif.line_f[0] = g_gif.line_f[1];
+            g_gif.tri_u[0]=g_gif.tri_u[1];g_gif.tri_v[0]=g_gif.tri_v[1];
+            g_gif.tri_s[0]=g_gif.tri_s[1];g_gif.tri_t[0]=g_gif.tri_t[1];g_gif.tri_q[0]=g_gif.tri_q[1];
             g_gif.line_x[1] = x; g_gif.line_y[1] = y;
             g_gif.line_rgba[1] = g_gif.rgba; g_gif.line_z[1] = raw_z;
             g_gif.line_f[1] = g_gif.cur_fog;
+            g_gif.tri_u[1]=g_gif.cur_u;g_gif.tri_v[1]=g_gif.cur_v;
+            g_gif.tri_s[1]=g_gif.cur_s;g_gif.tri_t[1]=g_gif.cur_t;g_gif.tri_q[1]=g_gif.cur_q;
             if (do_draw_kick && g_gif.line_vseq >= 2)
                 rasterize_line(g_gif.line_x[0], g_gif.line_y[0], g_gif.line_x[1], g_gif.line_y[1],
                                 g_gif.line_rgba[0], g_gif.line_rgba[1],
@@ -2247,6 +2357,23 @@ static void apply_rgbaq(uint32_t r, uint32_t g, uint32_t b, uint32_t a)
 
 static void image_write_bytes(const uint8_t *q, uint32_t byte_count);
 
+static void gs_mtba(unsigned context,unsigned bp,unsigned tw,unsigned psm)
+{
+ unsigned enabled=context?g_gif.ctx2_tex1_mtba:g_gif.ctx1_tex1_mtba;
+ unsigned bpp=psm==2u||psm==10u?16u:psm==0x13u?8u:psm==0x14u?4u:32u;
+ int color=psm==0u||psm==1u||psm==2u||psm==10u||psm==0x13u||psm==0x14u||psm==0x1bu||psm==0x24u||psm==0x2cu;
+ if(!enabled||!color||tw<5u||tw>(bpp==32u?9u:10u))return;
+ unsigned width=1u<<tw,bw=width>>6;if(!bw)bw=1;
+ unsigned blocks=width*width*bpp/2048u;
+ uint32_t *bases=context?g_gif.ctx2_tex_mip_tbp:g_gif.ctx1_tex_mip_tbp;
+ uint32_t *strides=context?g_gif.ctx2_tex_mip_tbw:g_gif.ctx1_tex_mip_tbw;
+ for(unsigned i=0;i<3;i++){
+  bp=(bp+blocks)&0x3fffu;bw=bw>1u?bw/2u:1u;
+  blocks=blocks>3u?blocks/4u:1u;bases[i]=bp;strides[i]=bw*64u;
+  if(!context){g_gif.tex_mip_tbp[i]=bases[i];g_gif.tex_mip_tbw[i]=strides[i];}
+ }
+}
+
 static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
 {
     vertex_encoding=1;
@@ -2383,13 +2510,10 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         g_gif.ctx2_xyoffset_y = data_hi & 0xFFFFu;
         break;
     case GS_REG_UV:
-        /* Real hardware: 12.4 fixed-point texel coordinates (this
-         * project's "FST=1" assumption - see gif.h's scope comment) -
-         * same >>4 conversion as XYZ2's screen coordinates, no
-         * XYOFFSET-equivalent subtraction (UV addresses texture
-         * memory directly, not screen space). */
-        g_gif.cur_u = (int32_t)(data_lo & 0xFFFFu) >> 4;
-        g_gif.cur_v = (int32_t)((data_lo >> 16) & 0xFFFFu) >> 4;
+        /* UV has fourteen meaningful bits: 10 integer, 4 fractional.
+         * Keep the phase through vertex assembly and both render paths. */
+        g_gif.cur_u = (double)(data_lo & 0x3fffu) / 16.0;
+        g_gif.cur_v = (double)((data_lo >> 16) & 0x3fffu) / 16.0;
         break;
     case GS_REG_ST:
         /* Real hardware (FST=0 mode, task #88): S/T are real IEEE-754
@@ -2438,6 +2562,7 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         uint32_t cld = (data_hi >> 29) & 0x7u;
         uint32_t csm = (data_hi >> 23) & 1u;
         gs_load_clut(psm,cbp,cpsm,csm,csa,cld);
+        gs_mtba(addr==GS_REG_TEX0_2,tbp0,tw,psm);
 
         if (addr == GS_REG_TEX0_1) {
             g_gif.tex_tbp0 = tbp0; g_gif.tex_tbw = tbw; g_gif.tex_tfx = tfx;
@@ -2559,8 +2684,10 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * GS_REG_SIGNAL/FINISH/LABEL comment for the full citation
          * and honest scope (SIGLBLID storage only, no EE/IOP
          * interrupt-controller wiring). */
+        game_trace_record(GT_SIGNAL,s_gif_active_path,data_lo,data_hi,(uint32_t)gs_get_state()->csr);
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_sigid = (g_gif.siglblid_sigid & ~idmsk) | (id & idmsk);
+        gs_get_state()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
         if (gs_raise_event(0u)) ee_intc_raise(0); /* INTC_GS */
     } break;
     case GS_REG_FINISH:
@@ -2579,8 +2706,10 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
         /* Round 108 (149th finding, task #254 - FINAL): LABEL -
          * identical masked-update formula to SIGNAL, but targets
          * SIGLBLID.LBLID instead of SIGID. */
+        game_trace_record(GT_SIGNAL,s_gif_active_path,data_lo,data_hi,(uint32_t)gs_get_state()->csr);
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_lblid = (g_gif.siglblid_lblid & ~idmsk) | (id & idmsk);
+        gs_get_state()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
     } break;
     case GS_REG_TEX2_1:
     case GS_REG_TEX2_2: {
@@ -3034,8 +3163,8 @@ static void apply_packed_register(uint32_t reg_code, const uint8_t *q)
                 g_gif.gif_q_bits = w2;
                 break;
             case GS_REG_UV:
-                g_gif.cur_u = (w0 & 0x3fffu) >> 4;
-                g_gif.cur_v = (w1 & 0x3fffu) >> 4;
+                g_gif.cur_u = (double)(w0 & 0x3fffu) / 16.0;
+                g_gif.cur_v = (double)(w1 & 0x3fffu) / 16.0;
                 break;
             /* Packed TEX0/CLAMP carry their natural 64-bit register in
              * the low half of the quadword. GSState::ResetHandlers in
@@ -3157,6 +3286,7 @@ static uint32_t process_one_packet(const uint8_t *p, uint32_t len)
      * within one call here, so there is never a genuine in-flight
      * offset to report - see gif_path1_transfers (Round 577) for the
      * real way to observe PATH1 activity instead. */
+    game_trace_record(GT_TAG_PATH1+s_gif_active_path,tag_w0,tag_w1,tag_w2,tag_w3);
     g_gif.gif_tag0 = tag_w0;
     g_gif.gif_tag1 = tag_w1;
     g_gif.gif_tag2 = tag_w2;
@@ -3310,10 +3440,27 @@ uint32_t gif_try_process_quadwords(int path,const uint8_t *data,uint32_t qwc) {
         unsigned owner=g_gif.arb_owner;
         int slice=owner==3u&&path!=GIF_PATH_3&&(g_gif.gif_mode&4u)&&
                   g_gif.image_carry_path[GIF_PATH_3];
-        if((g_gif.gif_ctrl&8u)||(owner&&owner!=(unsigned)path+1u&&!slice)||
-           (path==GIF_PATH_3&&owner!=3u&&((g_gif.gif_mode&1u)||g_gif.arb_m3p||
-            (g_gif.arb_pending&3u)))||
-           (path==GIF_PATH_2&&owner!=2u&&(g_gif.arb_pending&1u)))break;
+        unsigned wait=(g_gif.gif_ctrl&8u)?1u:
+            (owner&&owner!=(unsigned)path+1u&&!slice)?2u:
+            (path==GIF_PATH_3&&owner!=3u&&((g_gif.gif_mode&1u)||g_gif.arb_m3p))?3u:
+            (path==GIF_PATH_3&&owner!=3u&&(g_gif.arb_pending&3u))?4u:
+            (path==GIF_PATH_2&&owner!=2u&&(g_gif.arb_pending&1u))?5u:0u;
+        if(wait){if(path_wait[path]!=wait){path_wait[path]=(uint8_t)wait;game_trace_record(GT_GIF_WAIT,path,wait,owner,g_gif.arb_pending);}break;}
+        if(path_wait[path]){game_trace_record(GT_GIF_RESUME,path,path_wait[path],owner,g_gif.arb_pending);path_wait[path]=0;}
+        /* The synchronous consumer has no hidden borrowed-payload queue.
+         * Keep a second SIGNAL at its producer until CSR.SIGNAL is cleared.
+         * The entire qword is still unaccepted: DMA/VIF/VU may retry it
+         * without duplicate writes, lost parser position or a fake IRQ.
+         * A+D exists only in PACKED, one register per qword. */
+        const gif_register_carry_t *c=&g_gif.register_carry_path[path];
+        if(c->remaining&&c->mode==0u&&
+           regs_nibble(c->regs_lo,c->regs_hi,c->index)==GIF_REG_AD&&
+           (rd_le32(data+done*16u+8u)&255u)==GS_REG_SIGNAL&&
+           (gs_get_state()->csr&1u)) {
+            if(!signal_wait[path]){signal_wait[path]=1;game_trace_record(GT_SIGNAL_WAIT,path,c->remaining,rd_le32(data+done*16u),rd_le32(data+done*16u+4u));}
+            g_signal_stalls++;break;
+        }
+        if(signal_wait[path]){signal_wait[path]=0;game_trace_record(GT_SIGNAL_RESUME,path,c->remaining,(uint32_t)gs_get_state()->csr,0);}
         if(!owner||slice)g_gif.arb_owner=(uint8_t)(path+1);
         int tag=!g_gif.register_carry_path[path].remaining&&!g_gif.image_carry_path[path];
         if(tag)g_gif.arb_eop[path]=!!(data[done*16u+1u]&0x80u);

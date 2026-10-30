@@ -6,7 +6,8 @@ int main(void){
  unsigned checked=0;
  for(unsigned mode=0;mode<64;mode++){
   gif_init();gs_mem_init();
-  int32_t xy[6]={2,3,18,4,5,20},uv[6]={1,2,7,0,3,7};
+  int32_t xy[6]={2,3,18,4,5,20};
+  double uv[6]={1,2,7,0,3,7};
   float stq[9]={.1f,.2f,1.f,.8f,.05f,1.25f,.4f,.9f,.75f};
   uint32_t colors[3]={0x80123456,0x80785634,0x809abcde};
   g_gif.prim=3|PRIM_TME_MASK|((mode&1)?PRIM_FST_MASK:0)|((mode&2)?PRIM_IIP_MASK:0);

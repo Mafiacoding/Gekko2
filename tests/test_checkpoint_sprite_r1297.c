@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stddef.h>
 #include <unistd.h>
 #include "core/system.h"
 #include "core/checkpoint.h"
@@ -18,7 +19,11 @@ static int legacy(const char*path){
  long p=8;int found=0;
  while(p+8<=n){unsigned size;memcpy(&size,b+p+4,4);
   if(!memcmp(b+p,"GIF0",4)){if(size!=sizeof(gif_state_t)){free(b);return -1;}
-   memmove(b+p+8+size-8,b+p+8+size,n-(p+8+size));size-=8;memcpy(b+p+4,&size,4);n-=8;found=1;break;}
+   /* Original layout: the block ends eight bytes before image_eop_path, i.e. before the appended
+    * exact sprite coordinates. The struct has grown at its tail since this test was written
+    * (clut_words and later), so truncate at the historic boundary rather than at sizeof-8. */
+   unsigned legacy_size=(unsigned)offsetof(gif_state_t,image_eop_path)-8u;
+   memmove(b+p+8+legacy_size,b+p+8+size,n-(p+8+size));n-=size-legacy_size;size=legacy_size;memcpy(b+p+4,&size,4);found=1;break;}
   p+=8+size;
  }
  if(found){f=fopen(path,"wb");fwrite(b,1,n,f);fclose(f);}free(b);return found?0:-1;

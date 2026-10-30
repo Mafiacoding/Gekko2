@@ -322,7 +322,7 @@ int checkpoint_load(const char *path, const bios_image_t *ee_bios,
     EXPECT("ETMR", generic, sizeof(generic), &size); { ee_timers_state_t timers;ee_timers_snapshot(&timers);memcpy(&timers,generic,size);ee_timers_restore(&timers); }
     EXPECT("GIF0", generic, sizeof(generic), &size);
     uint32_t old_gif_size=offsetof(gif_state_t,image_eop_path);
-    if(size!=sizeof(*gif_get_state()) && size!=offsetof(gif_state_t,gif_q_bits) && size!=offsetof(gif_state_t,arb_owner) && size!=((offsetof(gif_state_t,arb_owner)+7u)&~7u) && size!=old_gif_size &&
+    if(size!=sizeof(*gif_get_state()) && size!=offsetof(gif_state_t,clut_words) && size!=offsetof(gif_state_t,gif_q_bits) && size!=offsetof(gif_state_t,arb_owner) && size!=((offsetof(gif_state_t,arb_owner)+7u)&~7u) && size!=old_gif_size &&
        size!=old_gif_size-sizeof(uint64_t))goto fail_close;
     memset(gif_get_state(),0,sizeof(*gif_get_state()));
     memcpy(gif_get_state(),generic,size);

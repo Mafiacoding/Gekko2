@@ -3,6 +3,8 @@
 #include <stdint.h>
 /* GX RGBA8 tiled presentation copy of current PSMCT32/24 RGB VRAM. Returns bytes,
  * or zero on unsupported/bounded input. Does not render PS2 primitives. */
+uint32_t gs_gx_pack_rgba8_psm(void *dst,uint32_t capacity,uint32_t bp,uint32_t bw,
+    uint32_t sx,uint32_t sy,uint32_t width,uint32_t height,uint32_t psm);
 uint32_t gs_gx_pack_rgba8(void *dst,uint32_t capacity,uint32_t bp,uint32_t bw,
                         uint32_t sx,uint32_t sy,uint32_t width,uint32_t height);
 /* Import exact tiled GX RGBA8 RGB with a known GS alpha into shared VRAM.
@@ -36,7 +38,7 @@ typedef struct {
     uint32_t blend,a,b,c,d,fix,pabe,colclamp;
     uint32_t fbmask,fba; /* GS FRAME.FBMSK and alpha correction; zero is the legacy default */
     /* Exact late pixel tests for CPU-side GX import; all default to disabled.
-     * GPU submission must STILL reject unsupported alpha/DATE state. */
+     * GPU submission must STILL reject any state unsupported by its selected path. */
     uint32_t date,datm,ate,atst,aref,afail;
 } gs_gx_pipeline;
 /* Exact late framebuffer merge for PSMCT32/24: alpha correction precedes FBMSK. */
@@ -82,12 +84,24 @@ int gs_gx_draw_native_affine_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
 /* Experimental projective STQ and optional vertex RGB modulation.
  * RGB hardware precision differs from GS; alpha remains uniform.
  * conservative_z requires no Z writes and all lower-bound Z tests to pass. */
-typedef struct { uint32_t rgba,tcc,tfx,target_height; } gs_gx_native_color;
+typedef struct {
+ uint32_t rgba,tcc,tfx,target_height;
+ /* BETA12.26 common shader inputs; zero keeps the BETA12.25 contract. */
+ uint32_t fog_enabled,fog_color,fog[3],untextured;
+} gs_gx_native_color;
 int gs_gx_draw_native_stq_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
  const float *st,const float *q,const uint32_t *rgba,uint32_t tex_w,uint32_t tex_h,
  uint32_t wrap_s,uint32_t wrap_t,uint32_t linear,uint32_t scanmsk,
  gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline,uint32_t conservative_z,const gs_gx_native_color *color);
+/* Extended experimental GX source rasterization with exact CPU permissions
+ * and arbitrary depth/alpha-test holes. Actual interpolated Z is shadowed. */
+int gs_gx_draw_native_triangle_ex(uint32_t psm,uint32_t bp,uint32_t bw,
+ int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
+ const float *st,const float *q,const uint32_t *rgba,uint32_t tex_w,uint32_t tex_h,
+ uint32_t wrap_s,uint32_t wrap_t,uint32_t linear,uint32_t scanmsk,
+ gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline,const uint32_t z[3],const gs_gx_native_color *color);
+uint64_t gs_gx_extended_stat(unsigned index);
 uint64_t gs_gx_native_affine_stat(unsigned n);
 int gs_gx_draw_shaded_triangle(uint32_t psm,uint32_t bp,uint32_t bw,
  int32_t minx,int32_t miny,int32_t maxx,int32_t maxy,const int32_t *xy,
@@ -98,12 +112,15 @@ int gs_gx_draw_mapped_triangle(uint32_t psm,uint32_t bp,uint32_t bw,int32_t x,in
  gs_gx_texel_fn sample,const gs_gx_pipeline *pipeline);
 void gs_gx_set_render_enabled(int enabled);
 int gs_gx_ready(void);
+/* Terminal fence failure; guest execution/resume requires an app restart. */
+int gs_gx_faulted(void);
 int gs_gx_render_active(void);
 /* 0=accepted draws, 1=quads, 2=readback bytes, 3=resolve waits, 4=attempts. */
 uint64_t gs_gx_work_count(unsigned index);
 /* CPU waits: 0 source reuse, 1 readback, 2 XFB present, 3 shutdown;
  * 4..7 corresponding Broadway time-base ticks (wrap-safe per wait). */
 uint64_t gs_gx_sync_count(unsigned index);
+uint64_t gs_gx_watchdog_count(unsigned index);
 /* 0 candidates, 1 accepted textured sprites, 2 uploaded bytes, 3 layout rejects. */
 uint64_t gs_gx_texture_count(unsigned index);
 /* 0 depth hardware, 1 depth hybrid, 2 blend hardware, 3 blend hybrid,
@@ -132,6 +149,8 @@ int gs_gx_draw_flat(uint32_t kind,uint32_t bp,uint32_t bw,
 #include <gccore.h>
 int gs_gx_present(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
                   uint32_t sx,uint32_t sy,uint32_t width,uint32_t height);
+int gs_gx_present_psm(void *xfb,GXRModeObj *mode,uint32_t bp,uint32_t bw,
+                  uint32_t sx,uint32_t sy,uint32_t width,uint32_t height,uint32_t psm);
 /* Capture an already-rendered EFB rectangle (origin 0,0) for deferred VRAM
  * readback. Only aligned opaque RGB PSMCT32 targets; alpha is known GS data.
  * This queues a copy, not a draw. Caller must synchronize before changing EFB. */
