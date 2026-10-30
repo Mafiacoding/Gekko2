@@ -50,8 +50,8 @@ diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/G
 +
 diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md
 --- orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 02:08:53.748420594 +0000
-@@ -0,0 +1,16 @@
++++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 09:09:24.049819749 +0000
+@@ -0,0 +1,24 @@
 +# Rebuilding the private Crash Wii build from the handoff archives
 +
 +The handoff archives contain no generated guest code and no VU AOT registry. They can be recreated from the owner ELF (private, never commit the outputs):
@@ -68,6 +68,14 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +A 100 s guest-PC / PowerPC-PC sampling of the rebuilt Dolphin run showed that the EE sits in `sceSifCallRpc` (73 % of samples; 92-93 % between 20 and 80 s) while the host executes the IOP interpreter: `endian::read<uint32_t>` 21.5 %, `IopCpuCore::executeInstruction` 19 %, `IopEmulator::Impl::step` 19 %, `memset` 9 %, `runCpu` 7 %, `schedulePendingDma` 6 %. The slow image build-up at start is IOP module initialisation, not GS or VU work.
 +
 +Batch 1 (semantics-preserving): `ps2x::endian::read/write` use a single byte-reversed load/store (`__builtin_bswap*`, always inline) on big-endian hosts instead of a byte loop; `schedulePendingDma` returns early through a cheap `dmaStartPending()` test; new option `PS2X_WII_IOP_O2` compiles the IOP interpreter sources with `-O2` instead of `-Os`. Dolphin A/B (host wall time, time until the EE leaves the RPC wait): old build 86-88 s (2 runs), new build 50-55 s (2 runs), about 40 % shorter. This is Dolphin host time, not Wii time, and only the boot phase.
++
++## Batch 2: IOP profile and audio-RPC bypass (2026-10-30, owner-private diagnostic)
++
++New diagnostic option `PS2X_WII_IOP_PC_PROFILE` (default OFF): `PS2IopPcHist` (1-in-16 IOP PC histogram, 16-byte buckets), `PS2IopInstrTotal`, a one-shot 64 KiB IOP RAM dump (`PS2IopRamDump`, from 0x3E000 after 60 M instructions) and `PS2IopRpcStats[3][64]` (calls / IOP instructions / sid per RPC function). Read through `/proc/<dolphin>/mem` like the existing profiler.
++
++Findings for the Crash boot (Dolphin): about 199 M IOP instructions in 65 s; the histogram is identical across windows, i.e. a steady loop. In 45 s one RPC accounted for essentially all IOP work: SID `0x12345`, function 0, 19,323 calls, 162 M instructions (about 8,400 per call, roughly 430 calls/s). The hot code is an unoptimised (-O0) IOP sound module that polls SPU2 state per voice through `LIBSD.IRX` imports. The EE side is the game's per-iteration `SoundUpdate` -> `FlushIOPCommand` -> `sceSifCallRpc`. Because emulated time advances with every call, boot time was dominated by interpreting this audio command port.
++
++Option `PS2X_IOP_NULL_RPC_SID=<sid>` (cache string, default empty, owner-private): `IopSubsystem::handleRpc` completes that SID at once without running the IOP; the receive buffer is zeroed, nothing else is invented. Audio output is disabled in this runtime anyway. With `0x12345` (Dolphin, wall time, same boot, `CPUThread=False`): first GX draws before 20 s (C1 build: ~55 s, B2 build: ~90 s); the GX attempt counter at 60 s equals the old build at ~2-2.5 minutes; the 40 s frame has the same hash as an earlier frame of the unmodified build; the run continued for 300 s without exception. Not verified: that no later game state needs audio RPC results, any audio behaviour, and any physical Wii timing. Steady-state rendering speed after boot is unchanged (phase shares at 300 s: CPU GS raster 22 %, GIF submit 18 %, VU1 18 %, guest 16 %).
 diff -ruN orig/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h src/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h
 --- orig/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h	2026-10-24 01:43:46.000000000 +0000
 +++ src/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h	2026-10-30 01:46:03.881147427 +0000
@@ -109,8 +117,23 @@ diff -ruN orig/PS2Recomp/ps2xIOP/src/emulator/core/iop_memory.h src/PS2Recomp/ps
          [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
 diff -ruN orig/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp src/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp
 --- orig/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp	2026-10-24 00:58:24.000000000 +0000
-+++ src/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp	2026-10-30 01:46:03.882293131 +0000
-@@ -176,6 +176,8 @@
++++ src/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp	2026-10-30 08:56:00.399942071 +0000
+@@ -25,6 +25,14 @@
+ #include <sstream>
+ #include <utility>
+ 
++#if defined(PS2X_IOP_PC_PROFILE)
++constexpr uint32_t kPcHistBuckets = 1u << 17;
++volatile uint32_t PS2IopPcHist[kPcHistBuckets];
++volatile uint32_t PS2IopInstrTotal;
++volatile uint32_t PS2IopRamDumped;
++uint8_t PS2IopRamDump[0x10000];
++#endif
++
+ namespace ps2x::iop::detail
+ {
+     namespace
+@@ -176,6 +184,8 @@
  
          void schedulePendingDma()
          {
@@ -119,6 +142,90 @@ diff -ruN orig/PS2Recomp/ps2xIOP/src/emulator/iop_emulator.cpp src/PS2Recomp/ps2
              if (const auto dma = memory.takeDmaStart())
                  pendingDmaInterrupts[dma->irq] = totalCycles + dma->delayCycles;
          }
+@@ -404,6 +414,17 @@
+             const uint64_t start = totalInstructions;
+             while (!cpu.stopped && !cpu.yielded && totalInstructions - start < instructionBudget)
+             {
++#if defined(PS2X_IOP_PC_PROFILE)
++                // Diagnostic only: 1-in-16 instruction PC histogram (16-byte buckets) for the host profiler.
++                if ((totalInstructions & 15u) == 0u)
++                    ++PS2IopPcHist[(physicalAddress(cpu.pc) >> 4) & (kPcHistBuckets - 1u)];
++                PS2IopInstrTotal = static_cast<uint32_t>(totalInstructions);
++                if (!PS2IopRamDumped && totalInstructions > 60000000u)
++                {
++                    memory.readRam(0x3E000u, PS2IopRamDump, sizeof PS2IopRamDump);
++                    PS2IopRamDumped = 1;
++                }
++#endif
+                 if (!step(cpu))
+                     break;
+                 if (!servicingDmaInterrupts && !pendingDmaInterrupts.empty())
+diff -ruN orig/PS2Recomp/ps2xIOP/src/emulator/services/iop_rpc.cpp src/PS2Recomp/ps2xIOP/src/emulator/services/iop_rpc.cpp
+--- orig/PS2Recomp/ps2xIOP/src/emulator/services/iop_rpc.cpp	2026-10-24 01:56:40.000000000 +0000
++++ src/PS2Recomp/ps2xIOP/src/emulator/services/iop_rpc.cpp	2026-10-30 08:58:52.159864941 +0000
+@@ -12,6 +12,11 @@
+ #include <limits>
+ #include <vector>
+ 
++#if defined(PS2X_IOP_PC_PROFILE)
++extern volatile uint32_t PS2IopInstrTotal;
++volatile uint32_t PS2IopRpcStats[3][64]; // [0]=calls [1]=instructions [2]=sid of last call, indexed by function&63
++#endif
++
+ namespace ps2x::iop::detail
+ {
+     IopRpcBridge::IopRpcBridge(IopHost &host, IopMemory &memory, IopKernel &kernel) noexcept
+@@ -293,12 +298,23 @@
+             }
+         }
+ 
++#if defined(PS2X_IOP_PC_PROFILE)
++        const uint32_t profStart = PS2IopInstrTotal;
++#endif
+         uint32_t returnPointer = executor.executeGuestFunction(server.function,
+                                                                request.function,
+                                                                server.buffer,
+                                                                request.send.size,
+                                                                0u,
+                                                                server.gp);
++#if defined(PS2X_IOP_PC_PROFILE)
++        {
++            const uint32_t slot = request.function & 63u;
++            ++PS2IopRpcStats[0][slot];
++            PS2IopRpcStats[1][slot] += PS2IopInstrTotal - profStart;
++            PS2IopRpcStats[2][slot] = request.sid;
++        }
++#endif
+         if (returnPointer == 0u)
+             returnPointer = server.buffer;
+         if (request.receive.address != 0u && request.receive.size != 0u && returnPointer != 0u)
+diff -ruN orig/PS2Recomp/ps2xIOP/src/iop_subsystem.cpp src/PS2Recomp/ps2xIOP/src/iop_subsystem.cpp
+--- orig/PS2Recomp/ps2xIOP/src/iop_subsystem.cpp	2026-10-24 00:58:24.000000000 +0000
++++ src/PS2Recomp/ps2xIOP/src/iop_subsystem.cpp	2026-10-30 09:00:49.189428160 +0000
+@@ -196,6 +196,23 @@
+ 
+     RpcResult IopSubsystem::handleRpc(const RpcRequest &request)
+     {
++#if defined(PS2X_IOP_NULL_RPC_SID)
++        // Owner-private diagnostic: complete one RPC server (the game's audio command port) at once,
++        // without running the emulated IOP. Audio output is disabled on this runtime; the receive
++        // buffer is zeroed, nothing is invented. Off unless the build defines the SID.
++        if (request.sid == static_cast<uint32_t>(PS2X_IOP_NULL_RPC_SID))
++        {
++            if (request.receive.address != 0u && request.receive.size != 0u)
++                (void)m_impl->host.zeroGuest(request.receive.address, request.receive.size);
++            RpcResult result;
++            result.handled = true;
++            result.resultAddress = request.receive.address;
++            result.serverDispatchPolicy = ServerDispatchPolicy::Suppress;
++            result.signalNowaitCompletion = true;
++            result.signalCompletion = true;
++            return result;
++        }
++#endif
+         const auto route = m_impl->routes.find(request.sid);
+         detail::IopService *hle = route != m_impl->routes.end() ? route->second : nullptr;
+ 
 diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h src/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
 --- orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h	2026-10-24 00:58:24.000000000 +0000
 +++ src/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h	2026-10-30 00:46:15.883599938 +0000
@@ -145,8 +252,8 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h src/PS
      static uint8_t pathPriority(GifPathId id);
 diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt
 --- orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-29 15:57:14.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-30 01:46:03.882952723 +0000
-@@ -243,6 +243,13 @@
++++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-30 09:00:49.190471211 +0000
+@@ -243,6 +243,21 @@
   endforeach()
   set_property(SOURCE ${HOT_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -O2)
  endif()
@@ -156,6 +263,14 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/p
 +  "${IOP}/emulator/core/iop_memory.cpp" "${IOP}/emulator/core/iop_kernel.cpp"
 +  "${IOP}/emulator/imports/iop_imports.cpp" "${IOP}/emulator/imports/iop_sysclib.cpp"
 +  APPEND PROPERTY COMPILE_OPTIONS -O2)
++endif()
++option(PS2X_WII_IOP_PC_PROFILE "Diagnostic: sample IOP guest PCs into PS2IopPcHist" OFF)
++if(PS2X_WII_IOP_PC_PROFILE)
++ set_property(SOURCE "${IOP}/emulator/iop_emulator.cpp" "${IOP}/emulator/services/iop_rpc.cpp" APPEND PROPERTY COMPILE_DEFINITIONS PS2X_IOP_PC_PROFILE)
++endif()
++set(PS2X_IOP_NULL_RPC_SID "" CACHE STRING "Diagnostic: RPC server id completed without running the IOP (owner-private)")
++if(PS2X_IOP_NULL_RPC_SID)
++ set_property(SOURCE "${IOP}/iop_subsystem.cpp" APPEND PROPERTY COMPILE_DEFINITIONS PS2X_IOP_NULL_RPC_SID=${PS2X_IOP_NULL_RPC_SID})
 +endif()
  option(PS2X_WII_VU_COMPACT_BLOCKS "Optimize native VU block code size to preserve MEM1 heap" ON)
  if(PS2X_WII_VU_COMPACT_BLOCKS AND PS2X_VU_AOT_DIR AND EXISTS "${PS2X_VU_AOT_DIR}/vu_aot_blocks.cpp")
