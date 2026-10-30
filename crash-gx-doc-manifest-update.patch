@@ -50,8 +50,8 @@ diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/G
 +
 diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md
 --- orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 16:18:53.285690343 +0000
-@@ -0,0 +1,44 @@
++++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 17:08:54.276470028 +0000
+@@ -0,0 +1,50 @@
 +# Rebuilding the private Crash Wii build from the handoff archives
 +
 +The handoff archives contain no generated guest code and no VU AOT registry. They can be recreated from the owner ELF (private, never commit the outputs):
@@ -95,7 +95,13 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +
 +20 M VU cycles run only 9.2 M instruction pairs: about half of all cycles are stall cycles that `advanceTo()` steps one at a time (`advanceOneCycle()` = `commitReadyPipelines()` + `progressXgkick()`). Per pair: 3.2 `commitReadyPipelines` scans, 1.4 `calculatePairReadyCycle` evaluations (the stall loop recomputes it after every advance), one `markPairWrites`, several `memcpy` saves/restores of vf/acc, plus the instruction bodies. Flat shares (no inlining, x86): ready-cycle 19.5 %, `normalizeOperand` call overhead 16.6 % (the AOT build uses the inline copy), commit 11.8 %, exact FMAC result (`long double`) 10.9 %, `normalizeFmacExactResult` 5.9 %, `normalizeFmacResult` 5.9 %, `markPairWrites` 5.3 %.
 +
-+Ideas checked on paper, none implemented because each is worth only a few percent of VU time (VU1 is about half of emulated time in the later scene, so about 1-3 % overall): drop the redundant second `commitReadyPipelines()` at the top of `run()` right after `advanceOneCycle()` (same cycle, no new entries); skip the second `calculatePairReadyCycle()` after a stall unless the pair has an XGKICK/EFU/FDIV term; jump `advanceTo()` to the next pending ready cycle when XGKICK is idle. All keep exact cycle ordering if the commit order is preserved, and can be proven with `vu_timing_fuzz.cpp`. A larger gain needs a different execution model: pre-scheduled blocks whose hazard timing is computed once per program (needs the private per-program word lists and the fuzz/corpus net), not more helper tuning.
++Implemented afterwards (exact, in `ps2_vu1_core.cpp`/`ps2_vu1.h`): (1) `run()` no longer repeats `commitReadyPipelines()` at the top of the loop right after the `advanceOneCycle()` that ended the previous pair (same cycle, nothing queued in between); (2) the second `calculatePairReadyCycle()` after a stall is only evaluated for XGKICK pairs (every other term is an absolute ready cycle that `advanceTo()` has just reached); (3) `advanceTo()` jumps over idle cycles to the next pending ready cycle when XGKICK is idle (`nextPipelineEvent()`), still stepping the committing cycle normally. Proof: `vu_timing_fuzz.cpp` (now with XGKICK and a valid GIF packet) gives bit-identical state/VU-data hashes between the original and the new core for 240,000 cases over six seeds; dropping the XGKICK term or the VI stall changes the hash (sensitivity checked). `vu_bench.cpp` hash identical, host time median 7.55 s vs 8.81 s (about 14 % faster, noisy machine). The AOT registry must be regenerated after this change (`generate_aot.py` stamps the core hash).
++
++Dolphin measurement in emulated Wii time (observer samples, 4 runs, 5 windows each): VU1 observer samples per million executed upper instruction pairs fall from 298.0 / 298.6 (old) to 278.3 / 278.7 (new), i.e. 6.7 % less time per VU pair, stable across all windows. VU1 is about 19 % of cumulative observer time in the 200 s run (51 % in the 160-240 s window), so the whole-program effect is a few percent.
++
++Measurement caveat found on the way: in this Dolphin setup (Mesa llvmpipe software GL) the host spends about 93 % of its time waiting in the native GX phase and the guest advances at the same pace for every build, so host-wall-time throughput cannot show CPU-side gains; use the observer (emulated-time) counters. Earlier boot-time numbers in these notes (86 s -> 52 s -> 20 s) are in Dolphin's emulated timeline, not host seconds.
++
++A larger gain needs a different execution model: pre-scheduled blocks whose hazard timing is computed once per program (needs the private per-program word lists and the fuzz/corpus net), not more helper tuning.
 diff -ruN orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md
 --- orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	1970-01-01 00:00:00.000000000 +0000
 +++ src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	2026-10-30 11:06:42.853563281 +0000
@@ -457,6 +463,17 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h src/PS
  
      static bool isImagePacket(const uint8_t *data, uint32_t sizeBytes);
      static uint8_t pathPriority(GifPathId id);
+diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/ps2_vu1.h src/PS2Recomp/ps2xRuntime/include/runtime/ps2_vu1.h
+--- orig/PS2Recomp/ps2xRuntime/include/runtime/ps2_vu1.h	2026-10-28 22:55:40.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/include/runtime/ps2_vu1.h	2026-10-30 16:21:36.945718946 +0000
+@@ -317,6 +317,7 @@
+     void commitReadyPipelines();
+     void advanceOneCycle();
+     void advanceTo(uint64_t targetCycle);
++    uint64_t nextPipelineEvent() const;
+     void flushPipelines();
+     void progressXgkick();
+     void finishXgkick();
 diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt
 --- orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-29 15:57:14.000000000 +0000
 +++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-30 15:02:37.829573456 +0000
@@ -788,6 +805,95 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/ps2_memory.cpp src/PS2Recomp/ps2xRu
  }
  
  void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
+diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+--- orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp	2026-10-29 08:42:32.000000000 +0000
++++ src/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp	2026-10-30 16:25:29.836104305 +0000
+@@ -1167,10 +1167,49 @@
+     progressXgkick();
+ }
+ 
++uint64_t VU1Interpreter::nextPipelineEvent() const
++{
++    // Earliest ready cycle among the entries commitReadyPipelines() would visit.
++    uint64_t next = UINT64_MAX;
++    auto consider = [&next](bool valid, uint64_t ready) {
++        if (valid && ready < next)
++            next = ready;
++    };
++    for (const FlagPipelineEntry &entry : occupiedEntries(m_flagPipeline, m_flagMask))
++        consider(entry.valid, entry.readyCycle);
++    consider(m_fdiv.valid, m_fdiv.readyCycle);
++    for (const ScalarPipelineEntry &entry : m_efu)
++        consider(entry.valid, entry.readyCycle);
++    for (const PendingStore &store : occupiedEntries(m_storePipeline, m_storeMask))
++        consider(store.valid, store.readyCycle);
++    for (const PendingVfWrite &write : occupiedEntries(m_vfWritePipeline, m_vfMask))
++        consider(write.valid, write.readyCycle);
++    for (const PendingViWrite &write : occupiedEntries(m_viWritePipeline, m_viMask))
++        consider(write.valid, write.readyCycle);
++    for (const PendingAccWrite &write : occupiedEntries(m_accWritePipeline, m_accMask))
++        consider(write.valid, write.readyCycle);
++    return next;
++}
++
+ void VU1Interpreter::advanceTo(uint64_t targetCycle)
+ {
+     while (m_cycle < targetCycle)
++    {
++        // With PATH1 idle, a cycle only increments the counter until the first pending entry is
++        // ready. Jump over those cycles; the cycle that commits something is still stepped normally.
++        if (!m_xgkick.active && targetCycle - m_cycle > 1u)
++        {
++            const uint64_t last = std::min(targetCycle, nextPipelineEvent());
++            if (last > m_cycle + 1u)
++            {
++                m_cycle = last - 1u;
++                if (m_cycle >= m_viBranchBackupUntil)
++                    m_viBranchBackupValid = false;
++                m_state.cycles = m_cycle;
++            }
++        }
+         advanceOneCycle();
++    }
+ }
+ 
+ bool VU1Interpreter::pipelinesPending() const
+@@ -1927,9 +1966,12 @@
+     const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
+     const uint64_t budgetEnd = m_cycle + maxCycles;
+     bool programEnded = false;
++    bool committedThisCycle = false; // advanceOneCycle() at the end of a pair already committed this cycle
+     while (m_cycle < budgetEnd && !m_stopRequested)
+     {
+-        commitReadyPipelines();
++        if (!committedThisCycle)
++            commitReadyPipelines();
++        committedThisCycle = false;
+         if (m_state.pc + 8u > codeSize)
+             break;
+ 
+@@ -1961,7 +2003,12 @@
+                 break;
+             }
+             advanceTo(readyCycle);
+-            readyCycle = calculatePairReadyCycle(decoded);
++            // Every other term is an absolute ready cycle that advanceTo() has just reached; only the
++            // XGKICK term depends on the (moved) current cycle and PATH1 state.
++            if (decoded.lowerUsage.pipeline == PipelineXgkick)
++                readyCycle = calculatePairReadyCycle(decoded);
++            else
++                readyCycle = m_cycle;
+         }
+         if (m_cycle >= budgetEnd)
+             break;
+@@ -2146,6 +2193,7 @@
+         }
+ 
+         advanceOneCycle();
++        committedThisCycle = true;
+         if (programEnded)
+             break;
+     }
 diff -ruN orig/PS2Recomp/tests/gs_hybrid/CMakeLists.txt src/PS2Recomp/tests/gs_hybrid/CMakeLists.txt
 --- orig/PS2Recomp/tests/gs_hybrid/CMakeLists.txt	2026-10-29 14:37:04.000000000 +0000
 +++ src/PS2Recomp/tests/gs_hybrid/CMakeLists.txt	2026-10-30 09:44:24.667942251 +0000
@@ -949,7 +1055,7 @@ diff -ruN orig/PS2Recomp/tests/gs_hybrid/test_gif_arbiter.cpp src/PS2Recomp/test
 +}
 diff -ruN orig/PS2Recomp/tests/vu_speed/README.md src/PS2Recomp/tests/vu_speed/README.md
 --- orig/PS2Recomp/tests/vu_speed/README.md	2026-10-28 03:04:22.000000000 +0000
-+++ src/PS2Recomp/tests/vu_speed/README.md	2026-10-30 16:18:53.284348697 +0000
++++ src/PS2Recomp/tests/vu_speed/README.md	2026-10-30 17:08:54.277084429 +0000
 @@ -33,3 +33,11 @@
  VRAM on private snapshots, and reports actual native/fallback instruction counts.
  `aot_cache.cpp` covers tracked code changes and resume on both VU units. These
@@ -957,7 +1063,7 @@ diff -ruN orig/PS2Recomp/tests/vu_speed/README.md src/PS2Recomp/tests/vu_speed/R
 +
 +## Timing/hazard differential fuzz (`vu_timing_fuzz.cpp`)
 +
-+Random, hazard-heavy VU0/VU1 micro programs (valid FMAC/special upper codes, LQ/SQ/ILW/ISW, integer ops, DIV/SQRT/EFU, flag ops, short branches) run for up to 200 cycles from random register/data state; the output is an FNV hash over the full `VU1State` (including the cycle counter) and VU data memory. Build the same source against a baseline and a candidate `ps2_vu1_core.cpp` with identical flags and compare `cases=... hash=...` for several seeds (`./fuzz N SEED`; a third argument prints per-case hashes). It needs only `PS2Memory`, `GS` and the VU/GS runtime sources (no private registry): `g++ -std=c++20 -O1 -msse4.1 -ffp-contract=off -DPS2X_VU_ACTIVE_PIPELINES -DPS2X_VU_XGKICK_SPANS -DPS2X_VU_LAZY_DECODE -DPS2X_VU_NORMAL_FLAGS_FASTPATH -DPS2X_VU_PACKET_REUSE -Iinclude -I../ps2xIOP/include -Isrc/lib/Kernel tests/vu_speed/vu_timing_fuzz.cpp src/lib/vu/*.cpp src/lib/ps2_memory.cpp src/lib/ps2_vif1_interpreter.cpp src/lib/gs/{gs_frontend,gs_cpu_backend,gs_hybrid_backend,ps2_gs_memory,ps2_gif_arbiter}.cpp -lpthread`. Sensitivity check: deliberately dropping the VI-ready stall changes the hash. Many generated words are reserved and end a program early (average about 31 cycles per case); it is a regression net for the scheduler bookkeeping, not an instruction-accuracy test.
++Random, hazard-heavy VU0/VU1 micro programs (valid FMAC/special upper codes, LQ/SQ/ILW/ISW, integer ops, DIV/SQRT/EFU, flag ops, short branches, XGKICK with a valid GIF packet on VU1) run for up to 200 cycles from random register/data state; the output is an FNV hash over the full `VU1State` (including the cycle counter) and VU data memory. Build the same source against a baseline and a candidate `ps2_vu1_core.cpp` with identical flags and compare `cases=... hash=...` for several seeds (`./fuzz N SEED`; a third argument prints per-case hashes). It needs only `PS2Memory`, `GS` and the VU/GS runtime sources (no private registry): `g++ -std=c++20 -O1 -msse4.1 -ffp-contract=off -DPS2X_VU_ACTIVE_PIPELINES -DPS2X_VU_XGKICK_SPANS -DPS2X_VU_LAZY_DECODE -DPS2X_VU_NORMAL_FLAGS_FASTPATH -DPS2X_VU_PACKET_REUSE -Iinclude -I../ps2xIOP/include -Isrc/lib/Kernel tests/vu_speed/vu_timing_fuzz.cpp src/lib/vu/*.cpp src/lib/ps2_memory.cpp src/lib/ps2_vif1_interpreter.cpp src/lib/gs/{gs_frontend,gs_cpu_backend,gs_hybrid_backend,ps2_gs_memory,ps2_gif_arbiter}.cpp -lpthread`. Sensitivity check: deliberately dropping the VI-ready stall changes the hash. Many generated words are reserved and end a program early (average about 31 cycles per case); it is a regression net for the scheduler bookkeeping, not an instruction-accuracy test.
 +
 +## Synthetic VU1 loop benchmark (`vu_bench.cpp`)
 +
@@ -1000,8 +1106,8 @@ diff -ruN orig/PS2Recomp/tests/vu_speed/vu_bench.cpp src/PS2Recomp/tests/vu_spee
 + std::printf("cycles=%llu pc=%u vi1=%d hash=%016llx\n",(unsigned long long)vu.state().cycles,vu.state().pc,(int)vu.state().vi[1],(unsigned long long)h);return 0;}
 diff -ruN orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp src/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp
 --- orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp	2026-10-30 15:26:22.389937420 +0000
-@@ -0,0 +1,58 @@
++++ src/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp	2026-10-30 17:08:54.257071577 +0000
+@@ -0,0 +1,62 @@
 +// Differential fuzz for VU pipeline/hazard bookkeeping: random hazard-heavy micro programs, full state hash incl. cycles.
 +#include "runtime/ps2_memory.h"
 +#include "runtime/ps2_vu1.h"
@@ -1028,6 +1134,9 @@ diff -ruN orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp src/PS2Recomp/tests/v
 +   for(unsigned k=0;k<4;++k){uint32_t raw=edges[rnd()%13];std::memcpy(&vu.state().acc[k],&raw,4);}
 +   vu.state().mac=rnd()&0xffff;vu.state().status=rnd()&0xfff;vu.state().clip=rnd()&0xffffff;
 +   for(unsigned i=0;i<dsz;i+=4){uint32_t raw=(rnd()&1)?rnd():edges[rnd()%13];Ps2GuestWrite<uint32_t>(data+i,raw);}
++   if(unit){vu.state().vi[7]=0x300;
++    uint64_t tag[2]={1ull|(1ull<<15)|(0ull<<58)|(1ull<<60),0xEull};uint64_t ad[2]={0ull,0x3full};
++    std::memcpy(data+0x3000,tag,16);std::memcpy(data+0x3010,ad,16);}
 +   unsigned pairs=6+rnd()%24;
 +   auto R=[&](unsigned n){return rnd()%n;};
 +   for(unsigned p=0;p<pairs;++p){
@@ -1036,7 +1145,7 @@ diff -ruN orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp src/PS2Recomp/tests/v
 +    if(R(4)==0){uint32_t hi5=R(12),low2=R(4);upper=(dest<<21)|(ft<<16)|(fs<<11)|(hi5<<6)|0x3c|low2;}
 +    else{uint32_t op=R(0x30);upper=(dest<<21)|(ft<<16)|(fs<<11)|(fd<<6)|op;}
 +    uint32_t lower,is=1+R(4),it=1+R(4),id=1+R(4);
-+    switch(R(11)){
++    switch(R(unit?13:11)){
 +     case 0:lower=0x8000033c;break;
 +     case 1:{static const uint32_t f[]={0x33c,0x33d};lower=0x80000000u|(dest<<21)|(ft<<16)|(fs<<11)|f[R(2)];break;}
 +     case 2:lower=(R(2)<<25)|(dest<<21)|(((R(2))?ft:it)<<16)|(is<<11)|R(64);break;                      // LQ/SQ
@@ -1047,6 +1156,7 @@ diff -ruN orig/PS2Recomp/tests/vu_speed/vu_timing_fuzz.cpp src/PS2Recomp/tests/v
 +     case 7:{static const uint32_t f[]={0x3fc,0x3fd,0x3fe,0x3ff,0x37c,0x37d,0x37e,0x37f};lower=0x80000000u|(dest<<21)|(ft<<16)|(fs<<11)|f[R(8)];break;}
 +     case 8:{static const uint32_t f[]={0x77c,0x77d,0x77e,0x7bc,0x7bd,0x7be,0x7bf,0x7fc,0x7fd,0x7fe,0x7ff};lower=0x80000000u|(R(4)<<21)|(ft<<16)|(fs<<11)|f[R(11)];break;} // EFU
 +     case 9:{static const uint32_t o[]={0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x1a,0x1b,0x1c};lower=(o[R(12)]<<25)|(rnd()&0xffffff);break;}
++     case 11:case 12:lower=0x80000000u|(7u<<11)|0x6fc;break; // XGKICK vi7 (VU1 only)
 +     default:{static const uint32_t o[]={0x20,0x28,0x29};uint32_t op=o[R(3)];lower=(op<<25)|(it<<16)|(is<<11)|R(3);break;}
 +    }
 +    if(p==pairs-1)upper|=1u<<30;
