@@ -82,6 +82,32 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +PowerPC PC sampling through Dolphin's GDB stub (about 1,490 samples, boot with the audio-RPC bypass, 100-176 s) of the Wii build shows, outside the IOP: `memcmp` 10.6 %, `GSNativeFragmentPlan::Row` 9.3 %, `surface_ensure_height` 4.6 %, `GSMem::TextureByteAddress` 3.8 %, `floorf` 3.6 %, `memcpy` 3.5 %, `memset` 3.4 %, VU1 interpreter functions about 12 % together. `memcmp` comes from the source-image cache check and the retained-page coherence proof (the newlib `memcmp` on Wii is a byte loop).
 +
 +Changes (results unchanged, new host test `gs_fast_math` plus the existing 14 GS suites pass): `GSEqualBytes` (word-wise equality, same result as `memcmp()==0`) at the two call sites, and `GSFastFloor` (bit-identical to `std::floor(float)` over 25 M random patterns and edge cases) in the fragment plan and the CPU sampler. Dolphin sampling of the new build: `memcmp` 0.1 % but the coherence functions now carry the compare (`GetCoherentNativeImageStamp` 4.0 %, `CommitCoherentNativeSample` 4.2 %), `floorf` 1.3 %. Net gain roughly 4-5 points of the sampled time; deterministic frame hashes at the same checkpoints are identical before and after. The next real saving needs write tracking for the retained texture page (avoid comparing 8 KiB per textured draw), which touches every VRAM writer and is not done.
+diff -ruN orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md
+--- orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	2026-10-30 11:06:42.853563281 +0000
+@@ -0,0 +1,22 @@
++# Study: reducing dependence on the emulated VU1 and IOP (Crash, Wii host)
++
++Measured with the Dolphin harness (host wall time, not Wii time); see REBUILD-FROM-HANDOFF.md for the method.
++
++## IOP
++- Boot cost was one RPC: SID 0x12345 function 0 (the game's audio command port), ~19 k calls / 162 M IOP instructions in 45 s, executed by the IOP interpreter (an -O0 sound module polling SPU2 state through LIBSD).
++- Done: interpreter micro-optimisations (boot ~86 s -> ~52 s) and the optional `PS2X_IOP_NULL_RPC_SID` bypass (first GX draws before 20 s). Audio is disabled in this runtime, so nothing audible is lost; whether any later game state needs audio RPC results is unverified beyond a 300 s run.
++- Remaining IOP work if audio is ever wanted: an HLE of that command port (decode the command buffer, drive the existing audio sink) instead of the bypass.
++
++## VU1
++- After boot, sampled PowerPC time (1,492 samples): VU1 interpreter/scheduler functions 11.3 %, VU AOT native instruction bodies 0.7 %. The cost is the cycle/hazard machinery (`commitReadyPipelines` 3.2 %, `calculatePairReadyCycle` 2.8 %, `run` 2.0 %, `markPairWrites` 1.0 %, `getDecodedInstructionPairForPc` 0.7 %), not the arithmetic. Native per-instruction handlers therefore cannot help much further.
++- Options, in order of expected value/risk:
++  1. Program-block execution (`PS2X_VU_BLOCKS`): needs the per-program word lists, which are private capture data and were not part of the handoff. Earlier notes measured no gain from blocks in Dolphin throughput; re-measure with this profiler before investing.
++  2. Faster bookkeeping inside the interpreter (e.g. skip the pipeline commit when no queue entry is ready, cache pair ready-cycles per decoded pair). Semantics-preserving; verify with the existing 63,488-state corpus.
++  3. Game-specific native replacement of the few hot VU1 microprograms (transform/clip/light -> GIF packets). Highest gain, highest risk: must reproduce VU float rules, flags, XGKICK timing and GIF output byte for byte; needs a captured-program corpus to prove equivalence. Not started.
++- Not measured: how the VU1 share varies between hub, track and menu scenes (only the startup-to-fade section was sampled).
++
++## What is not covered
++Rewriting the game's own EE code to avoid VU/IOP calls entirely was not attempted: the profile shows EE guest code at ~16 % of samples after boot, so the remaining cost is GS-side (CPU raster, GIF, GX preparation), VU1 bookkeeping and texture-cache checks, not EE logic.
++
++## Texture-page coherence (not done on purpose)
++`GSTexturePageCache::CoherentWith` compares an 8 KiB retained page against VRAM per textured draw (~8 % of samples after the faster compare). Skipping it needs a VRAM write serial bumped by every writer, including the GX adapter code in the read-only Gekko2 dependency. A missed writer would show stale textures, so it was not implemented without a verification mode (assert every skipped compare against the real one over a long game run).
 diff -ruN orig/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h src/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h
 --- orig/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h	2026-10-24 01:43:46.000000000 +0000
 +++ src/PS2Recomp/ps2xIOP/include/ps2x/guest_endian.h	2026-10-30 01:46:03.881147427 +0000
