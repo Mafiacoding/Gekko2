@@ -70,8 +70,8 @@ diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/G
 +
 diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md
 --- orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-10-30 17:54:38.358031848 +0000
-@@ -0,0 +1,61 @@
++++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-11-01 14:43:33.562962765 +0000
+@@ -0,0 +1,67 @@
 +# Rebuilding the private Crash Wii build from the handoff archives
 +
 +The handoff archives contain no generated guest code and no VU AOT registry. They can be recreated from the owner ELF (private, never commit the outputs):
@@ -133,6 +133,12 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +Result with three captured images (executions 840 / 7 / 5753 in 230 s), `tools/vu/generate_aot.py` with `programs`, blocks ON (`PS2X_WII_VU_COMPACT_BLOCKS`), audio-RPC bypass, Dolphin, 2 paired runs, 5 windows each: `native_blocks` 2.6 M entries; executed upper pairs identical (7,198,075 and 7,198,075; lower 7,193,000 both; 0 fallbacks); frame hashes identical to the no-block build in every window of both pairs; VU1 observer samples per million upper pairs 278.3 / 278.8 (no blocks) vs 199.8 / 200.2 (blocks): 28 % less emulated time per VU pair; VU1 share of cumulative observer time 18.4 % vs 14.0 %; the same guest work took 5.2 % less total observer time. Static check passes with 4,231,040 B MEM1 arena (minimum 4,194,304 B, only 36 KB spare); the build with the blocks module is 26.66 MB. Images not in the registry still run through the exact-match fallback.
 +
 +Tool note: `tools/vu/aot_blocks.py` copies text from `VU1Interpreter::run()`; it now drops the `committedThisCycle = false;` line that the redundant-commit change added (blocks always commit at the start of each issue). Remaining limits: only three images were captured (title/hub scenes later in the game use other images and fall back), the registry is private capture data and is not committed, and nothing here is a physical-Wii measurement.
++
++## Blocks for six captured images (2026-11-01)
++
++With the automatic Start/A input and `-v Null` (see DOLPHIN-AUTOINPUT.md) a 900-1300 s Dolphin run reached further scenes: six distinct complete VU1 images (issue counts 913,958 / 1,795,742 / 28,138,485 / 2,178,560 / 2,465,098 / 1,802,060 pairs; execution counts 840 / 34 / 27,720 / 2,288 / 1,422 / 1,524). The capture build also counts issued pairs per 64-byte block (`PS2VuBlockHits[64][256]`): 418 (image, block) pairs were hit, 206 unique after sharing; 100 unique blocks already cover 98.65 % of issued pairs. Tools: `tools/wii/capture_vu_images.py` (reads the diagnostics from a running Dolphin) and `tools/vu/profile_from_capture.py` (writes the `generate_aot.py` profile with programs and block lists; `--top N` keeps only the N hottest unique blocks).
++
++Build with all 418 hit blocks: valid static check, MEM1 arena 4,608,512 B (4,194,304 B required, 414 KB spare), image 26.29 MB. Dolphin OGL with auto-input, 5 windows: VU1 observer samples per million upper pairs 206 vs 278.0 without blocks (26 % less); the frame hash sequence of the block build (3eea1d46, 2ab9b880, 217bbf31, 217bbf31 ...) is the same sequence as the no-block build with the same input, reached earlier (one additional intermediate frame 567d168b appears in the block run). Not verified: exact cycle-for-cycle equality beyond the guards of the generator (frames and pair counts agree in the earlier paired runs), any scene beyond these six images, real Wii timing.
 diff -ruN orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md
 --- orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	1970-01-01 00:00:00.000000000 +0000
 +++ src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	2026-10-30 11:06:42.853563281 +0000
@@ -842,7 +848,7 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/ps2_memory.cpp src/PS2Recomp/ps2xRu
  void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
 diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 --- orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp	2026-10-29 08:42:32.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp	2026-10-30 17:32:49.317627561 +0000
++++ src/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp	2026-11-01 14:08:47.624816442 +0000
 @@ -1167,10 +1167,49 @@
      progressXgkick();
  }
@@ -893,13 +899,15 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/p
  }
  
  bool VU1Interpreter::pipelinesPending() const
-@@ -1910,6 +1949,42 @@
+@@ -1910,6 +1949,45 @@
      run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
  }
  
 +#if defined(PS2X_VU_IMAGE_CAPTURE)
 +// Diagnostic: unique complete VU1 microcode images seen at execution time, with execution counts.
 +uint32_t PS2VuImageCount, PS2VuImageHash[64], PS2VuImageExec[64];
++uint32_t PS2VuBlockHits[64][256]; // issued pairs per 64-byte (8-pair) block of each captured image
++static int gVuImageIndex = -1;
 +uint8_t PS2VuImages[64][16384];
 +static void captureVu1Image(const uint8_t *code, uint64_t generation)
 +{
@@ -928,6 +936,7 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/p
 +    }
 +    lastGeneration = generation;
 +    lastIndex = index;
++    gVuImageIndex = index;
 +    if (index >= 0)
 +        ++PS2VuImageExec[index];
 +}
@@ -936,7 +945,7 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/p
  void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                           uint8_t *vuData, uint32_t dataSize,
                           GS &gs, PS2Memory *memory, uint32_t maxCycles)
-@@ -1922,14 +1997,21 @@
+@@ -1922,14 +2000,25 @@
      m_activeVuDataSize = dataSize;
      m_activeGs = &gs;
      m_activeMemory = memory;
@@ -953,13 +962,17 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/p
      while (m_cycle < budgetEnd && !m_stopRequested)
      {
 -        commitReadyPipelines();
++#if defined(PS2X_VU_IMAGE_CAPTURE)
++        if (m_unit == Unit::VU1 && gVuImageIndex >= 0 && codeSize == 16384u)
++            ++PS2VuBlockHits[gVuImageIndex][(m_state.pc >> 6) & 255u];
++#endif
 +        if (!committedThisCycle)
 +            commitReadyPipelines();
 +        committedThisCycle = false;
          if (m_state.pc + 8u > codeSize)
              break;
  
-@@ -1961,7 +2043,12 @@
+@@ -1961,7 +2050,12 @@
                  break;
              }
              advanceTo(readyCycle);
@@ -973,7 +986,7 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp src/PS2Recomp/p
          }
          if (m_cycle >= budgetEnd)
              break;
-@@ -2146,6 +2233,7 @@
+@@ -2146,6 +2240,7 @@
          }
  
          advanceOneCycle();
@@ -1272,4 +1285,79 @@ diff -ruN orig/PS2Recomp/tools/vu/aot_blocks.py src/PS2Recomp/tools/vu/aot_block
      issue=issue.replace('''        if (m_state.pc + 8u > codeSize)
              break;
  
+diff -ruN orig/PS2Recomp/tools/vu/profile_from_capture.py src/PS2Recomp/tools/vu/profile_from_capture.py
+--- orig/PS2Recomp/tools/vu/profile_from_capture.py	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/tools/vu/profile_from_capture.py	2026-11-01 14:43:33.393528352 +0000
+@@ -0,0 +1,28 @@
++#!/usr/bin/env python3
++"""Build a generate_aot.py profile with VU1 programs and hot blocks from a capture_vu_images.py pickle.
++
++usage: profile_from_capture.py CAPTURE.pkl BASE_PROFILE.json OUT_PROFILE.json [--top N]
++Every captured complete image becomes a program; its `blocks` list holds the 64-byte VU PCs that were issued during
++the capture (or only the N hottest unique blocks with --top). Images are private game data: keep outputs private.
++"""
++import argparse,hashlib,json,pickle
++import numpy as np
++p=argparse.ArgumentParser();p.add_argument('capture');p.add_argument('base');p.add_argument('out');p.add_argument('--top',type=int,default=0)
++a=p.parse_args()
++_,cnt,exec_counts,imgs,hits=pickle.load(open(a.capture,'rb'))[-1]
++H=np.array(hits,dtype=np.uint64).reshape(64,256)[:cnt]
++chosen=None
++if a.top:
++    sig={}
++    for i in range(cnt):
++        for b in range(256):
++            if H[i,b]:
++                d=sig.setdefault(hashlib.sha1(imgs[i][b*64:(b+1)*64]+bytes([b])).hexdigest(),{'hits':0,'where':[]});d['hits']+=int(H[i,b]);d['where'].append((i,b))
++    chosen={(i,b) for d in sorted(sig.values(),key=lambda d:-d['hits'])[:a.top] for i,b in d['where']}
++prof=json.load(open(a.base));up=set(prof['upper']);lo=set(prof['lower']);programs=[]
++for k,img in enumerate(imgs):
++    words=[int(x) for x in np.frombuffer(img,dtype='<u4')]
++    blocks=[b*64 for b in range(256) if H[k,b] and (chosen is None or (k,b) in chosen)]
++    programs.append({'unit':1,'words':words,'blocks':blocks});lo.update(words[0::2]);up.update(words[1::2])
++json.dump(dict(prof,upper=sorted(up),lower=sorted(lo),programs=programs),open(a.out,'w'))
++print('images',cnt,'executions',exec_counts[:cnt],'blocks',[len(x['blocks']) for x in programs])
 Binary files orig/PS2Recomp/tools/wii/__pycache__/prepare_gx_adapter.cpython-313.pyc and src/PS2Recomp/tools/wii/__pycache__/prepare_gx_adapter.cpython-313.pyc differ
+diff -ruN orig/PS2Recomp/tools/wii/capture_vu_images.py src/PS2Recomp/tools/wii/capture_vu_images.py
+--- orig/PS2Recomp/tools/wii/capture_vu_images.py	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/tools/wii/capture_vu_images.py	2026-11-01 14:43:33.391082885 +0000
+@@ -0,0 +1,39 @@
++# Read PS2VuImage* diagnostics (build with PS2X_WII_VU_IMAGE_CAPTURE=ON) from a running Dolphin through /proc/<pid>/mem.
++# usage: capture_vu_images.py BUILD_DIR OUT.pkl SECONDS[,SECONDS...]  (env VIDEO=Null skips rendering; PS2X_DOLPHIN_BASE = user dir parent)
++# Needs Linux, Dolphin nogui and Xvfb; the output holds private game microcode - never commit it.
++import os,sys,subprocess,select,time,struct,pickle
++from pathlib import Path
++build=sys.argv[1];outp=sys.argv[2];times=[float(x) for x in sys.argv[3].split(',')]
++base=Path(os.environ.get('PS2X_DOLPHIN_BASE','/workspace/private-crash-e3/recomp'));elf=Path(build)/'crash_wii.elf';dol=Path(build)/'boot.dol'
++nm='/workspace/.devkitpro/devkitPPC/bin/powerpc-eabi-nm'
++sy={p[2]:int(p[0],16) for l in subprocess.check_output([nm,str(elf)],text=True).splitlines() if len(p:=l.split())==3}
++env=dict(os.environ,LD_LIBRARY_PATH='/workspace/dolphin-local/sysroot/usr/lib/x86_64-linux-gnu',PYTHONHOME='/workspace/dolphin-local/sysroot/usr',LIBGL_ALWAYS_SOFTWARE='1',EGL_PLATFORM='x11')
++srv=subprocess.Popen(['/usr/bin/Xvfb',':0','-screen','0','800x600x24','-nolisten','tcp','-ac'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL) if False else subprocess.Popen(['/usr/bin/Xvfb','-displayfd','1','-screen','0','800x600x24','-nolisten','tcp','-ac'],env=env,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
++select.select([srv.stdout],[],[],10);env['DISPLAY']=':'+srv.stdout.readline().strip()
++cmd=['/workspace/dolphin-local/dolphin-emu-nogui','-u',str(base/'gx-game-user'),'-p','x11','-v',os.environ.get('VIDEO','OGL')]
++for c in ['Dolphin.Core.WiiSDCard=True','Dolphin.General.WiiSDCardPath='+str(base/'gx-game-user/Wii/sd.raw'),'Dolphin.Core.SIDevice0=6','Dolphin.Core.FallbackRegion=2','Dolphin.Core.CPUThread=False','Dolphin.Core.CPUCore=1','Dolphin.Core.EmulationSpeed=0.0','Dolphin.Core.GDBPort=-1','Dolphin.DSP.Backend=No Audio Output','Graphics.Settings.SafeTextureCacheColorSamples=0','Graphics.Hacks.EFBAccessEnable=True','Graphics.Hacks.EFBToTextureEnable=False','Graphics.Hacks.DeferEFBCopies=False']:cmd+=['-C',c]
++cmd+=['-e',str(dol)]
++run=subprocess.Popen(cmd,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT);t0=time.monotonic();snaps=[]
++try:
++  time.sleep(16)
++  maps=[]
++  for l in Path('/proc/%d/maps'%run.pid).read_text().splitlines():
++    if '/dev/shm/dolphin-emu.' in l:
++      f=l.split();lo,hi=[int(v,16) for v in f[0].split('-')];maps.append((lo,hi,int(f[2],16)))
++  mem1=next(lo for lo,hi,off in maps if off==0 and hi-lo>=0x1800000);mem2=next(lo for lo,hi,off in maps if off==0x2040000 and hi-lo>=0x4000000)
++  fd=os.open('/proc/%d/mem'%run.pid,os.O_RDONLY)
++  def rdn(a,n):
++    a&=0x3fffffff;h=mem1+a if a<0x1800000 else mem2+a-0x10000000;return os.pread(fd,n,h)
++  for ts in times:
++    while time.monotonic()-t0<ts:time.sleep(0.2)
++    os.kill(run.pid,19);os.waitpid(run.pid,2)
++    cnt=struct.unpack('>I',rdn(sy['PS2VuImageCount'],4))[0]
++    ex=list(struct.unpack('>64I',rdn(sy['PS2VuImageExec'],256)))
++    imgs=[rdn(sy['PS2VuImages']+16384*k,16384) for k in range(min(cnt,64))]
++    hits=list(struct.unpack('>16384I',rdn(sy['PS2VuBlockHits'],65536)))
++    snaps.append((ts,cnt,ex,imgs,hits))
++    pickle.dump(snaps,open(outp,'wb'));print('snap',ts,cnt,flush=True)
++    os.kill(run.pid,18)
++finally:
++  run.terminate();srv.terminate()
++pickle.dump(snaps,open(outp,'wb'));print('snapshots',len(snaps),'images',[s[1] for s in snaps])
