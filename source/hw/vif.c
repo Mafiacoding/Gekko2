@@ -1,3 +1,4 @@
+#include "core/hw/game_trace.h"
 /*
  * vif.c - see include/core/hw/vif.h for scope notes and references.
  */
@@ -69,6 +70,30 @@ const vif_state_t * const vif1_scheduler_view = &g_vif1;
 #define EE_INTC_IRQ_VIF0 4
 #define EE_INTC_IRQ_VIF1 5
 
+/* VU execution can now yield on GIF backpressure or its execution cap.
+ * Retain interlocked commands until the real producer/consumer finishes;
+ * do not restart a running microprogram or overwrite its MPG instructions. */
+static int vif_micro_barrier(vif_state_t *vif,uint32_t code) {
+    unsigned cmd=(code>>24)&127u;
+    int wait_vu=cmd==VIF_CMD_FLUSHE||cmd==VIF_CMD_MSCAL||
+        cmd==VIF_CMD_MSCALF||cmd==VIF_CMD_MSCNT||cmd==VIF_CMD_MPG||
+        (vif->is_vif1&&(cmd==VIF_CMD_FLUSH||cmd==VIF_CMD_FLUSHA));
+    if(!wait_vu)return 0;
+    unsigned old_wait=vif->stat&12u;
+    int vu_busy=vif->is_vif1?vu1_get_state()->running:ee_core_get_state()->vu0_running;
+    int gif_busy=0;
+    if(vif->is_vif1&&(cmd==VIF_CMD_FLUSH||cmd==VIF_CMD_FLUSHA||cmd==VIF_CMD_MSCALF)) {
+        const gif_state_t *g=gif_get_state();
+        gif_busy=vu1_get_state()->xgkick_pending||g->arb_owner==1u||g->arb_owner==2u||
+            (g->arb_pending&3u);
+        if(cmd==VIF_CMD_FLUSHA)gif_busy|=g->arb_owner||g->arb_pending||g->fifo_count;
+    }
+    if(vu_busy)vif->stat|=1u<<2;else vif->stat&=~(1u<<2);
+    if(gif_busy)vif->stat|=1u<<3;else vif->stat&=~(1u<<3);
+    if((vif->stat&12u)!=old_wait)game_trace_record(vu_busy||gif_busy?GT_VIF_WAIT:GT_VIF_RESUME,
+        vif->is_vif1,code,vif->stat,vif->is_vif1?vu1_get_state()->tpc:0);
+    return vu_busy||gif_busy;
+}
 static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_words);
 
 static int vif_complete_code(vif_state_t *vif, uint32_t code)
@@ -100,7 +125,11 @@ int vif_mmio_read32(uint32_t addr, uint32_t *out)
     } else return 0;
     if (!out || (offset & 15u)) return 0;
     switch (offset) {
-    case 0x00: *out = vif->stat | (vif->is_vif1 && vif->dbf ? (1u << 7) : 0); break;
+    case 0x00: {
+        unsigned queued=(vif->stall_words+3u)/4u,capacity=vif->is_vif1?16u:8u;
+        if(queued>capacity)queued=capacity;
+        *out=(vif->stat&~(31u<<24))|(queued<<24)|(vif->is_vif1&&vif->dbf?(1u<<7):0u);
+    } break;
     case 0x30: *out = vif->mark; break;
     case 0x40: *out = vif->cycle_cl | ((uint32_t)vif->cycle_wl << 8); break;
     case 0x50: *out = vif->mode; break;
@@ -417,14 +446,18 @@ static void vif_latch_micro(vif_state_t *vif)
 /* DIRECT retains its own immutable payload while GIF denies PATH2.
  * DIRECTHL never interrupts an active PATH3 IMAGE packet. */
 static int vif_direct_drain(vif_state_t *vif) {
-    if(!vif->direct_needed_words||vif->direct_have_words<vif->direct_needed_words)return 1;
-    uint32_t left=(vif->direct_needed_words-vif->direct_sent_words)/4u;
+    if(!vif->direct_needed_words)return 1;
+    /* DIRECT is a stream: publish every complete arriving QWC, not only
+     * after all IMM QWCs have accumulated (Vif_Codes.cpp pass2). Keep
+     * the incomplete 1..3 words and unaccepted PATH2 data immutable. */
+    uint32_t left=(vif->direct_have_words-vif->direct_sent_words)/4u;
     uint32_t done=0;
     if(!(vif->direct_hl&&gif_get_state()->arb_owner==3u))
         done=gif_try_process_quadwords(GIF_PATH_2,vif->direct_buffer+vif->direct_sent_words*4u,left);
     vif->direct_sent_words+=done*4u;vif->direct_qwords_forwarded+=done;
     if(done<left){gif_get_state()->arb_pending|=2u;vif->stat|=1u<<3;return 0;}
     vif->stat&=~(1u<<3);
+    if(vif->direct_sent_words<vif->direct_needed_words)return 1;
     vif->direct_needed_words=vif->direct_have_words=vif->direct_sent_words=0;
     vif_complete_code(vif,vif->code);return 1;
 }
@@ -450,10 +483,10 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
         memcpy(vif->direct_buffer + vif->direct_have_words * 4u, data, take * 4u);
         vif->direct_have_words += take;
         pos += take;
-        if (vif->direct_have_words < vif->direct_needed_words) return;
         if(!vif_direct_drain(vif)||vif->irq_stalled) {
             vif_hold_words(vif,data+pos*4u,total_words-pos);return;
         }
+        if(vif->direct_needed_words)return;
     }
 
 
@@ -529,6 +562,9 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
 
     while (pos < total_words) {
         uint32_t code = vif_rd_le32(data + pos * 4u);
+        if(vif_micro_barrier(vif,code)) {
+            vif_hold_words(vif,data+pos*4u,total_words-pos);return;
+        }
         pos++;
         vif->code = code;
         vif->codes_processed++;
@@ -629,12 +665,7 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             break;
 
         case VIF_CMD_FLUSHE:
-            /* Real hardware waits for the VU's microprogram to
-             * finish; this project's vu0_exec_micro()/vu1_exec_micro()
-             * already run synchronously to completion (or the safety
-             * cap) inside MSCAL/MSCNT/MSCALF below, so by the time
-             * control reaches a later FLUSHE there is never anything
-             * left to wait for - a correct no-op given that. */
+            /* The predecode barrier has observed VU completion. */
             break;
 
         case VIF_CMD_MSCAL:
@@ -768,18 +799,13 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
             uint32_t words = (imm ? imm : 65536u) * 4u;
             uint32_t avail = total_words - pos;
             vif->direct_sent_words=0;vif->direct_hl=cmd==VIF_CMD_DIRECTHL;
-            if (words > avail) {
-                vif->direct_needed_words = words;
-                vif->direct_have_words = avail;
-                memcpy(vif->direct_buffer, data + pos * 4u, avail * 4u);
-                pos += avail;
-            } else {
-                vif->direct_needed_words=vif->direct_have_words=words;
-                memcpy(vif->direct_buffer,data+pos*4u,words*4u);pos+=words;
-                if(!vif_direct_drain(vif)||vif->irq_stalled) {
-                    vif_hold_words(vif,data+pos*4u,total_words-pos);return;
-                }
+            uint32_t take=words<avail?words:avail;
+            vif->direct_needed_words=words;vif->direct_have_words=take;
+            memcpy(vif->direct_buffer,data+pos*4u,take*4u);pos+=take;
+            if(!vif_direct_drain(vif)||vif->irq_stalled) {
+                vif_hold_words(vif,data+pos*4u,total_words-pos);return;
             }
+            if(vif->direct_needed_words)return;
         } break;
 
         default:
@@ -819,21 +845,38 @@ static void vif_service_one(vif_state_t *vif) {
     if(vif->irq_stalled)return;
     if(!vif_direct_drain(vif)||vif->irq_stalled)return;
     if(vif->stall_words) {
+        /* A held barrier is immutable. Avoid copying/reparsing the entire
+         * FIFO on every EE tick while its producer is still busy. */
+        if(vif_micro_barrier(vif,vif_rd_le32(vif->stall_buffer)))return;
         uint8_t replay[sizeof(vif->stall_buffer)];uint32_t words=vif->stall_words;
         memcpy(replay,vif->stall_buffer,words*4u);vif->stall_words=0;
         vif_process(vif,replay,words);
     }
 }
 void vif_service(void){vif_service_one(&g_vif0);vif_service_one(&g_vif1);}
+/* A guest SQ must have room for an entire qword before retirement.
+ * Use the same bounded producer contract as DMA, including I-bit stalls. */
+int vif_cpu_fifo_ready(unsigned channel)
+{
+ if(channel>1u)return 0;
+ vif_state_t *vif=channel?&g_vif1:&g_vif0;
+ vif_service_one(vif);
+ if(vif->irq_stalled||vif->stall_words||
+    (vif->direct_needed_words&&vif->direct_have_words==vif->direct_needed_words))
+  return vif->stall_words<=(channel?60u:28u);
+ return 1;
+}
 uint32_t vif_accept_quadwords(int channel,const uint8_t *data,uint32_t qwc) {
     vif_state_t *vif=channel==1?&g_vif1:&g_vif0;
     vif_service_one(vif);
     if(vif->irq_stalled||vif->stall_words||
        (vif->direct_needed_words&&vif->direct_have_words==vif->direct_needed_words)) {
-        uint32_t room=vif->stall_words<64u?(64u-vif->stall_words)/4u:0;
+        uint32_t capacity=channel==1?64u:32u;
+        uint32_t room=vif->stall_words<capacity?(capacity-vif->stall_words)/4u:0;
         uint32_t take=qwc<room?qwc:room;vif_hold_words(vif,data,take*4u);return take;
     }
-    uint32_t take=qwc<16u?qwc:16u;
+    uint32_t capacity=channel==1?16u:8u;
+    uint32_t take=qwc<capacity?qwc:capacity;
     vif_process(vif,data,take*4u);return take;
 }
 

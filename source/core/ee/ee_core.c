@@ -731,6 +731,11 @@ void ee_core_raise_trap(ee_state_t *st)
     st->exc_raised_this_step=1;
     ee_raise_exception(st,EE_EXC_CODE_TR,st->exc_this_pc,st->exc_in_delay_slot);
 }
+void ee_core_raise_reserved(ee_state_t *st)
+{
+    st->exc_raised_this_step=1;
+    ee_raise_exception(st,10u<<2,st->exc_this_pc,st->exc_in_delay_slot);
+}
 
 void ee_core_raise_overflow(ee_state_t *st)
 {
@@ -2660,9 +2665,10 @@ uint64_t ee_mem_read64(ee_state_t *st, uint32_t addr)
 void ee_mem_read128(ee_state_t *st,uint32_t addr,ee_reg128_t *out)
 {
     uint8_t q[16];
-    if(ipu_fifo_read128(ee_hw_mmio_addr(addr),q)) {
+    int result=ipu_fifo_read128(ee_hw_mmio_addr(addr),q);
+    if(result>0) {
         out->ud0=guest_read_le64(q);out->ud1=guest_read_le64(q+8);
-    } else {
+    } else if(!result) {
         /* Read both halves before publishing: LQ may alias its base register. */
         uint64_t lo=ee_mem_read64(st,addr),hi=ee_mem_read64(st,addr+8);
         out->ud0=lo;out->ud1=hi;
@@ -2675,8 +2681,8 @@ void ee_mem_write128(ee_state_t *st,uint32_t addr,const ee_reg128_t *value)
     if(page==0x10004000u||page==0x10005000u||page==0x10006000u||hw==0x10007010u) {
         uint8_t q[16];
         for(unsigned n=0;n<8;n++){q[n]=(uint8_t)(lo>>(n*8));q[n+8]=(uint8_t)(hi>>(n*8));}
-        if(page==0x10004000u){cpu_fifo_writes[0]++;vif0_process_quadwords(0,q,1);}
-        else if(page==0x10005000u){cpu_fifo_writes[1]++;vif1_process_quadwords(0,q,1);}
+        if(page==0x10004000u){if(vif_accept_quadwords(0,q,1))cpu_fifo_writes[0]++;}
+        else if(page==0x10005000u){if(vif_accept_quadwords(1,q,1))cpu_fifo_writes[1]++;}
         else if(page==0x10006000u){cpu_fifo_writes[2]++;gif_fifo_write(q);}
         else ipu_fifo_write128(0x10007010u,q);
     } else {ee_mem_write64(st,addr,lo);ee_mem_write64(st,addr+8,hi);}
@@ -5895,11 +5901,23 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
      * destination is changed. Native/AOT memory proofs reject this MMIO. */
     if((instr>>26)==0x1fu) {
         uint32_t address=(uint32_t)st->gpr[(instr>>21)&31u].ud0+(uint32_t)(int32_t)(int16_t)instr;
+        uint32_t page=address&0x1ffff000u;
+        if((page==0x10004000u||page==0x10005000u)&&!vif_cpu_fifo_ready(page==0x10005000u)){
+            st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
+        }
         if((address&0x1ffff000u)==0x10006000u&&gif_get_state()->fifo_count==16u) {
             gif_fifo_service();
             if(gif_get_state()->fifo_count==16u) {
                 st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
             }
+        }
+    }
+    if((instr>>26)==0x1fu||((instr>>26)==0x1eu&&((instr>>16)&31u))){
+        uint32_t address=(uint32_t)st->gpr[(instr>>21)&31u].ud0+(uint32_t)(int32_t)(int16_t)instr;
+        uint32_t hw=ee_hw_mmio_addr(address)&~15u;
+        int writing=(instr>>26)==0x1fu;
+        if(hw==(writing?0x10007010u:0x10007000u)&&!ipu_cpu_fifo_ready(writing)){
+            st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
         }
     }
     if((instr>>26)==0x12u&&st->vu0_running) {
@@ -5928,12 +5946,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         int candidate=ee_jit_block_candidate(instr)||ee_jit_block_terminal(instr);
         uintptr_t ram_offset=(uintptr_t)code_backing-(uintptr_t)st->ram;
         int backed_candidate=code_backing &&
-            ((ram_offset>=0x200000u&&ram_offset<st->ram_size)||
+            ((ram_offset>=0x100000u&&ram_offset<st->ram_size)||
              (st->bios&&(uintptr_t)code_backing-(uintptr_t)st->bios->data<st->bios->size));
-        /* Backing came from this instruction's real fetch, not a cached
-         * translation. Keep guarded low physical kernel code in C. */
+        /* Match ee_core_block_pointer's 1 MiB admission floor. Backing
+         * came from this instruction's real fetch, not a cached translation.
+         * Keep the low physical kernel region on its guarded scalar path. */
         if(candidate && backed_candidate) {
+            unsigned profile=gp_enter(GP_EE_NATIVE);
             unsigned n=ee_jit_try_execute_chain_fetched(st,budget,instr);
+            gp_work(GP_EE_NATIVE,n);gp_leave(profile);
             if(n){*block_retired=n;return 0;}
         }
     }
@@ -9142,6 +9163,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                 ee_mem_write32(st, call_recvbuf + 0u, 0x02u); /* real SCECdComplete - see comment */
                                 r1224_ncmd_rend_arms++;
                                     ee_arm_rpc_call_pending(call_cd);
+                            } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number == 4u) {
+                                /* ps2sdk scmd.c::sceCdGetError / cdvdfsv RPC3:
+                                 * the sole reply word is the current error code,
+                                 * not a generic successful-command boolean.
+                                 * Observe the drive state without clearing its
+                                 * read-to-clear MMIO error register. */
+                                if (call_recvbuf && ee_mem_read32(st, src + 0x2Cu) >= 4u)
+                                    ee_mem_write32(st, call_recvbuf, iop_cdvd_peek_last_ncmd_error());
+                                ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number == 1u) {
                                 /* ps2sdk scmd.c: result word followed by an eight-byte
                                  * sceCdCLOCK. Limit every write to the requested reply. */
@@ -10530,8 +10560,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         case 0x3E: /* DSRL32 */ if (rd) GPR(rd) = GPR(rt) >> (sa + 32); break;
         case 0x3F: /* DSRA32 */ if (rd) GPR(rd) = (uint64_t)((int64_t)GPR(rt) >> (sa + 32)); break;
         default:
-            halt("unimplemented SPECIAL funct");
-            return 1;
+            ee_core_raise_reserved(st);
+            break;
         }
         break;
 
@@ -10613,8 +10643,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             st->sa_reg = (uint32_t)(((rs32 & 0x7u) ^ ((uint32_t)imm & 0x7u)) << 1);
             break;
         default:
-            halt("unimplemented REGIMM opcode");
-            return 1;
+            ee_core_raise_reserved(st);
+            break;
         }
         break;
 
@@ -10669,24 +10699,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 #include "ee_mem_switch.inc"
 
     default:
-    {
-        /* NOTE: this halt point can be reached in a way that has
-         * nothing to do with the actual opcode value - see the
-         * real-BIOS-testing note in docs/STATUS.md ("EE program
-         * counter escapes into the hardware register window" /
-         * out-of-range JALR target investigation). If `op` here is
-         * 0 (SPECIAL) with funct also reading as 0, that's the
-         * signature of this exact scenario: PC drifted through a
-         * long stretch of unpopulated ("reads as zero") memory,
-         * decoding every word as a harmless SLL/NOP, until it
-         * happened to reach a live hardware register address whose
-         * CURRENT value decoded as something genuinely invalid. */
-        char buf[96];
-        snprintf(buf, sizeof(buf), "unimplemented primary opcode 0x%02X (pc=0x%08X)",
-                 (unsigned int)op, (unsigned int)this_pc);
-        halt(buf);
-        return 1;
-    }
+        ee_core_raise_reserved(st);
+        break;
     }
 
     if (r1239_hit == 1u && this_pc == 0x0100ecccu) {
@@ -11129,8 +11143,17 @@ static unsigned ee_core_native_window_begin_impl(ee_state_t *st,uint32_t pc,cons
  return 0;
 #endif
  native_window_stats[2]++;
+ /* A stable masked level is observable in Cause, but cannot take an
+  * exception inside a pure integer window. Keep transient INTC latching
+  * precise, including the four-slot delay and deassertion transition. */
+ int pending_intc=ee_intc_pending_fast();
+ int pending_dmac=dma_dmac_interrupt_pending_fast();
+ uint32_t status=st->cop0[12];
+ int interrupts_enabled=(status&0x10007u)==0x10001u;
  if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending()||
-    ee_intc_pending_fast()||dma_dmac_interrupt_pending_fast()||g_ee_irq.intc_delay||g_ee_irq.intc_armed||
+    g_ee_irq.intc_delay||!!pending_intc!=!!g_ee_irq.intc_armed||
+    (interrupts_enabled&&((pending_intc&&(status&EE_STATUS_IM2))||
+                         (pending_dmac&&(status&EE_STATUS_IM3))))||
     ee_timers_batch_clock[0]<=n||g_ee_display_ticks>UINT64_MAX-n||
     g_ee_display_phase+n>=EE_CYCLES_PER_FRAME_NTSC||
     (g_ee_display_phase<EE_CYCLES_VBLANK_DURATION&&g_ee_display_phase+n>=EE_CYCLES_VBLANK_DURATION)||
@@ -11197,7 +11220,8 @@ static unsigned ee_core_native_window_begin_impl(ee_state_t *st,uint32_t pc,cons
  st->gpr[0].ud0=st->gpr[0].ud1=0;
  st->instructions_executed+=n;st->cop0[9]=after;
  if(after>=st->cop0[11])st->cop0[13]|=EE_CAUSE_IP7;
- st->cop0[13]&=~(EE_CAUSE_IP2|EE_CAUSE_IP3);
+ st->cop0[13]=(st->cop0[13]&~(EE_CAUSE_IP2|EE_CAUSE_IP3))|
+              (pending_intc?EE_CAUSE_IP2:0u)|(pending_dmac?EE_CAUSE_IP3:0u);
  g_ee_display_ticks+=n;g_ee_display_phase+=n;
  ee_timers_batch_clock[0]-=n;ee_timers_batch_clock[1]+=n;
  st->exc_this_pc=pc+4u*(n-1u);st->exc_in_delay_slot=0;st->exc_raised_this_step=0;st->mem_tlb_miss=0;

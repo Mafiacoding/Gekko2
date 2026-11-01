@@ -14,6 +14,7 @@ typedef struct {
  int32_t dc[3];
  int16_t coeff[64];
  uint32_t phase,block,index,intra,interlaced,quant,cbp;
+ uint32_t dc_precision; /* latched at IDEC/BDEC start, retained across soft reset */
 } ipu_mpeg_state_t;
 typedef struct {
  uint32_t ctrl,data,top,command,busy,bp,fp;
@@ -33,6 +34,8 @@ int ipu_mmio_read32(uint32_t addr,uint32_t *out);
 int ipu_mmio_write32(uint32_t addr,uint32_t value);
 int ipu_mmio_read64(uint32_t addr,uint64_t *out);
 int ipu_mmio_write64(uint32_t addr,uint64_t value);
+/* 1 accepted, 0 other address, -1 addressed FIFO must retry. A rejected
+ * read leaves output unchanged; a rejected write never drops its qword. */
 int ipu_fifo_read128(uint32_t addr,uint8_t out[16]);
 int ipu_fifo_write128(uint32_t addr,const uint8_t in[16]);
 uint32_t ipu_input_write(const uint8_t *data,uint32_t qwc);
@@ -40,6 +43,9 @@ uint32_t ipu_output_read(uint8_t *data,uint32_t qwc);
 /* A service pass advances only real queued data. No cycles/guest counters
  * are invented. FIFO starvation preserves BUSY and DMA STR. */
 void ipu_service(void);
+/* EE LQ/SQ must retry before retirement while the addressed FIFO is empty
+ * or full. Service queued work, then query; never consume a guest qword. */
+int ipu_cpu_fifo_ready(int writing);
 void ipu_process_quadwords(int channel,const uint8_t *data,uint32_t qwc);
 void ipu_idct(int16_t block[64]);
 void ipu_mpeg_begin(ipu_state_t *state);
