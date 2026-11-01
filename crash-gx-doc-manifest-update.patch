@@ -70,8 +70,8 @@ diff -ruN orig/PS2Recomp/docs/wii/GX-Z24-INTEGRATION.md src/PS2Recomp/docs/wii/G
 +
 diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md
 --- orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	1970-01-01 00:00:00.000000000 +0000
-+++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-11-01 14:43:33.562962765 +0000
-@@ -0,0 +1,67 @@
++++ src/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md	2026-11-01 15:31:38.870888990 +0000
+@@ -0,0 +1,73 @@
 +# Rebuilding the private Crash Wii build from the handoff archives
 +
 +The handoff archives contain no generated guest code and no VU AOT registry. They can be recreated from the owner ELF (private, never commit the outputs):
@@ -139,6 +139,12 @@ diff -ruN orig/PS2Recomp/docs/wii/REBUILD-FROM-HANDOFF.md src/PS2Recomp/docs/wii
 +With the automatic Start/A input and `-v Null` (see DOLPHIN-AUTOINPUT.md) a 900-1300 s Dolphin run reached further scenes: six distinct complete VU1 images (issue counts 913,958 / 1,795,742 / 28,138,485 / 2,178,560 / 2,465,098 / 1,802,060 pairs; execution counts 840 / 34 / 27,720 / 2,288 / 1,422 / 1,524). The capture build also counts issued pairs per 64-byte block (`PS2VuBlockHits[64][256]`): 418 (image, block) pairs were hit, 206 unique after sharing; 100 unique blocks already cover 98.65 % of issued pairs. Tools: `tools/wii/capture_vu_images.py` (reads the diagnostics from a running Dolphin) and `tools/vu/profile_from_capture.py` (writes the `generate_aot.py` profile with programs and block lists; `--top N` keeps only the N hottest unique blocks).
 +
 +Build with all 418 hit blocks: valid static check, MEM1 arena 4,608,512 B (4,194,304 B required, 414 KB spare), image 26.29 MB. Dolphin OGL with auto-input, 5 windows: VU1 observer samples per million upper pairs 206 vs 278.0 without blocks (26 % less); the frame hash sequence of the block build (3eea1d46, 2ab9b880, 217bbf31, 217bbf31 ...) is the same sequence as the no-block build with the same input, reached earlier (one additional intermediate frame 567d168b appears in the block run). Not verified: exact cycle-for-cycle equality beyond the guards of the generator (frames and pair counts agree in the earlier paired runs), any scene beyond these six images, real Wii timing.
++
++## Negative result: per-image alpha statistics in `TryLinear` (2026-11-01)
++
++`TryLinear` scanned every texel of a freshly decoded source image for uniform/maximum alpha on each draw with a new key. Computing these once per cached image and reusing them was implemented and proven identical (connected Dolphin probe, 363/363 checkpoints, all counters equal to the previous run: RGB error counters 3002 / 1,936,680 / 2,263,454 / 6, native draws 353, depth counters 334 / 50 / 25,906 / 12,686 / 87,832). Dolphin sub-phase measurement (window 160-240 s, two runs each, small samples because a capture run shared the machine) showed `TryLinear` at 6.5 % / 6.1 % with the change and 6.7 % / 5.2 % without: no measurable gain, so the change was reverted. The scan is not where `TryLinear` spends its time.
++
++`PS2X_WII_SUB_PROFILE` now defines its macro only for `ps2_wii_gx_backend.cpp`, `ps2_wii_progress.cpp` and `gs_cpu_backend.cpp`, so toggling it rebuilds 5 translation units instead of all 2,940. `profile.py`/`subsamp.py` accept `GXUSER` to run a second Dolphin on a copy of the user directory (own `sd.raw`) in parallel.
 diff -ruN orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md
 --- orig/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	1970-01-01 00:00:00.000000000 +0000
 +++ src/PS2Recomp/docs/wii/VU1-AND-IOP-INDEPENDENCE-STUDY.md	2026-10-30 11:06:42.853563281 +0000
@@ -513,8 +519,8 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/include/runtime/ps2_vu1.h src/PS2Recomp/ps2
      void finishXgkick();
 diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt
 --- orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-29 15:57:14.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-10-30 17:32:49.318277519 +0000
-@@ -243,6 +243,29 @@
++++ src/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt	2026-11-01 15:13:39.382774288 +0000
+@@ -243,6 +243,30 @@
   endforeach()
   set_property(SOURCE ${HOT_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -O2)
  endif()
@@ -535,7 +541,8 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/p
 +endif()
 +option(PS2X_WII_SUB_PROFILE "Diagnostic: sample the innermost GS/GX function id (PS2X_SUB scopes)" OFF)
 +if(PS2X_WII_SUB_PROFILE)
-+ target_compile_definitions(crash_wii PRIVATE PS2X_WII_SUB_PROFILE)
++ # Only the translation units that contain PS2X_SUB scopes or the observer, so toggling does not rebuild everything.
++ set_property(SOURCE ps2_wii_gx_backend.cpp ps2_wii_progress.cpp "${RUNTIME}/gs/gs_cpu_backend.cpp" APPEND PROPERTY COMPILE_DEFINITIONS PS2X_WII_SUB_PROFILE)
 +endif()
 +option(PS2X_WII_VU_IMAGE_CAPTURE "Diagnostic: record unique complete VU1 microcode images with execution counts" OFF)
 +if(PS2X_WII_VU_IMAGE_CAPTURE)
@@ -546,7 +553,7 @@ diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/CMakeLists.txt src/PS2Recomp/p
   set_property(SOURCE "${PS2X_VU_AOT_DIR}/vu_aot_blocks.cpp" APPEND PROPERTY COMPILE_OPTIONS -Os)
 diff -ruN orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h
 --- orig/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h	2026-10-29 15:54:12.000000000 +0000
-+++ src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h	2026-10-30 15:02:37.826484347 +0000
++++ src/PS2Recomp/ps2xRuntime/platform/wii/ps2_wii_gx_driver.h	2026-11-01 15:31:38.870888990 +0000
 @@ -9,8 +9,10 @@
  #include <stdexcept>
  #if defined(PS2X_WII)
