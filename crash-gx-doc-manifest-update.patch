@@ -1,3 +1,23 @@
+diff -ruN orig/PS2Recomp/docs/wii/DOLPHIN-AUTOINPUT.md src/PS2Recomp/docs/wii/DOLPHIN-AUTOINPUT.md
+--- orig/PS2Recomp/docs/wii/DOLPHIN-AUTOINPUT.md	1970-01-01 00:00:00.000000000 +0000
++++ src/PS2Recomp/docs/wii/DOLPHIN-AUTOINPUT.md	2026-11-01 13:06:35.226298829 +0000
+@@ -0,0 +1,16 @@
++# Automatic Start / X input for Dolphin runs (private test setup)
++
++The Wii runtime reads GameCube pad A as PS2 cross (X) and GameCube Start as PS2 Start (`ps2_wii_host.cpp`, `sample()`). To drive a game in headless Dolphin without a human, give the Dolphin user directory a pad profile whose buttons are timer expressions. File `<dolphin-user>/Config/GCPadNew.ini`:
++
++```
++[GCPad1]
++Device = XInput2/0/Virtual core pointer
++Buttons/A = timer(7) > 0.85
++Buttons/Start = timer(20) > 0.9
++```
++
++and start Dolphin with `-C Dolphin.Core.SIDevice0=6` (standard GameCube controller in port 1). `timer(n)` ramps 0..1 every n seconds, so A is pressed for about 1 s every 7 s and Start for 2 s every 20 s. The device name is the X11 XInput2 pointer; it exists under Xvfb with `-p x11`.
++
++Verification: the runtime's anonymous-namespace atomics `buttons` and `connected` (symbols `_ZN12_GLOBAL__N_1L7buttonsE`, `...9connectedE`) were polled through `/proc/<dolphin>/mem` for 75 s: bit 5 (value 32 = RIGHT_FACE_DOWN = A = PS2 cross) toggled every 7 s for about 1 s, bit 14 (value 16384 = MIDDLE_RIGHT = Start) every 20 s for 2 s, as configured. So the guest sees the keypresses.
++
++Notes: with the Mesa llvmpipe OGL backend the game sits in the long dark fade-in for the first four minutes of host time, so the presses cannot be seen in the frame hashes yet; `-v Null` skips rendering and reaches the same guest progress about 2.7x faster in GX attempts (frames are meaningless there). The profile contains no private data, but the Dolphin user directory itself (SD image, disc data) stays private.
 diff -ruN orig/PS2Recomp/docs/wii/GS-ROW-AND-DECAL-PATHS.md src/PS2Recomp/docs/wii/GS-ROW-AND-DECAL-PATHS.md
 --- orig/PS2Recomp/docs/wii/GS-ROW-AND-DECAL-PATHS.md	2026-10-29 09:26:46.000000000 +0000
 +++ src/PS2Recomp/docs/wii/GS-ROW-AND-DECAL-PATHS.md	2026-10-30 01:14:35.852581072 +0000
