@@ -58,3 +58,24 @@ if micro_path:
  mac=mask if fn<4 else mask<<4 if 8<=fn<12 else 0
  assert get_vi(17)==mac and get_vi(16)&15==status
  print('PASS actual hot native timed-AOT arithmetic, independent MAC/STATUS oracle')
+# CLIP and integer branch latency: use the actual linked timed pair entry.
+CLIP=(2<<16)|(1<<11)|(7<<6)|63
+reset_context();put_vf(1,0,0x40000000);put_vf(2,3,0x3f800000);put_vi(18,7)
+step(CLIP,(16<<25)|7);assert get_vi(1)==1 and get_vi(18)==7
+for _ in range(3):step(NOP,(28<<25)|(3<<16));assert get_vi(3)==7
+step(NOP,(28<<25)|(3<<16));assert get_vi(3)==449
+reset_context();put_vf(1,0,0x40000000);put_vf(2,3,0x3f800000)
+for _ in range(4):step(CLIP)
+for history in [1,65,4161,266305]:step(NOP);assert get_vi(18)==history
+reset_context();put_vf(1,0,0x40000000);put_vf(2,3,0x3f800000)
+step(CLIP,(17<<25)|0xffffff);step(NOP,(17<<25)|2);step(CLIP)
+for expected in [0,1,2,129]:step(NOP);assert get_vi(18)==expected
+for op,old,new in [(40,0,1),(41,1,0),(44,65535,1),(45,1,65535),(46,0,1),(47,0,65535)]:
+ reset_context();put_vi(1,old);put_vi(2,new)
+ step(NOP,(8<<25)|(1<<16)|(2<<11))
+ step(NOP,(op<<25)|(1<<11)|5)
+ assert int.from_bytes(u.mem_read(ctx+layout['bd'],4),'big')==1 and get_vi(1)==new
+ step(NOP);assert int.from_bytes(u.mem_read(ctx+layout['pc'],4),'big')==56
+reset_context();step(NOP,(8<<25)|(1<<16)|1);step(NOP);step(NOP,(40<<25)|(1<<11)|5)
+assert int.from_bytes(u.mem_read(ctx+layout['bd'],4),'big')==0
+print('PASS actual Wii ELF: delayed CLIP/history/FCSET, six VI branch conditions and bypass expiry')

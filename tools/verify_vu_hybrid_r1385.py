@@ -101,3 +101,21 @@ for unit in [0,1]:
  if unit==0:assert int.from_bytes(u.mem_read(owner+pc+26*4,4),'big')==40
  else:assert int.from_bytes(u.mem_read(owner+pc,4),'big')==40
 print('PASS linked PPC timed hybrid VU blocks: FMAC/query latency, RAW, Q, budgets, warm source invalidation, mid-block invalidation, boundaries, ABI, production VU0/VU1')
+
+# VI history must survive native block boundaries into a conditional branch.
+reset()
+pair(0,NOP,(8<<25)|(1<<16)|1)
+pair(8,NOP,(8<<25)|(1<<16)|2)
+assert block(2)==2 and get('vi',1)==2
+lower=(40<<25)|(1<<11)|5
+pair(16,NOP,lower)
+assert call('vu_jit_timed_pair',ctx+layout['jit'],NOP,lower,16)==0
+assert get('bd')==1 and get('bt')==64 and get('vi',1)==2
+# CLIP is also issued/retired through the timed block callback, not bypassed.
+reset();put('vf',4,0x40000000);put('vf',11,0x3f800000)
+clip=(2<<16)|(1<<11)|(7<<6)|63
+pair(0,clip,LNOP)
+for i in range(1,5):pair(i*8,NOP,LNOP)
+pair(40,NOP,(28<<25)|(3<<16));pair(48,NOP|0x40000000,LNOP)
+assert block(8)==6 and get('vi',3)==1 and get('vi',18)==1
+print('PASS linked PPC timed VU: VI history across native blocks and delayed CLIP callback')
