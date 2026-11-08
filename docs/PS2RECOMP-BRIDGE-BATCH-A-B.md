@@ -34,3 +34,41 @@ Run: tests/run_test.sh test_ps2recomp_bridge
 This patch has not been compiled or executed here. Do not mark the test passed
 until CI or a local run succeeds. No Wii build, Dolphin run, physical Wii test,
 FPS, graphics, or gameplay claim is included.
+
+
+## Batch C — bounded native-window admission
+
+The bridge now exposes `ee_recomp_bridge_begin_native_window()`. It is an
+admission boundary, not a code executor. It validates the bridge handle and
+clean transient EE state, checks the expected PC/pipeline shape, then delegates
+to Gekko2's existing `ee_core_native_window_begin_with_addresses()` gate.
+
+The existing gate remains the sole authority for native-window admission:
+feature toggles, live instruction/source checks, event deadlines, timer/VBLANK
+boundaries, DMA/GIF/VU/SIF/INTC state, fastmem proofs, and EE/IOP interleave
+limits remain owned by Gekko2. The bridge does not duplicate scheduler policy.
+
+Contract for a future PS2Recomp caller:
+- Pass the canonical Gekko2 EE state through the bound bridge.
+- Supply a bounded, live instruction window and the register dependency mask.
+- A return value of zero means decline; execute through the precise path.
+- A nonzero return is the exact admitted instruction count. Execute only the
+  matching native body immediately; do not retire or advance those instructions
+  a second time.
+- Do not yield, call guest helpers, or re-enter the scheduler between admission
+  and completion of that native body.
+- Memory-bearing windows remain subject to the existing Fastmem proof path.
+  This API does not authorize arbitrary guest-address-to-host-pointer casts.
+
+The host regression test verifies the detached/local EE-state case fails closed
+without advancing its PC or retirement count. It does not claim successful
+native execution: the existing scheduler gate requires Gekko2's live singleton
+EE state and runtime device state, so a standalone host fixture must be refused.
+
+## Host test workflow
+
+The PR's GitHub Actions workflow runs
+`sh tests/run_test.sh test_ps2recomp_bridge`. It supplies the vendored header
+include paths and function-section garbage collection required by the repository's
+source-glob host runner. This test is a host regression only, not a Wii build or
+hardware/gameplay validation.
