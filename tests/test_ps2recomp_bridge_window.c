@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "core/system.h"
+#include "core/iop/iop_core.h"
 #include "core/ee/ee_core.h"
 #include "core/hw/ee_timers.h"
 #include "core/hw/ee_intc.h"
