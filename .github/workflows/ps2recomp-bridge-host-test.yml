@@ -10,6 +10,7 @@ on:
       - "include/core/recompiler/**"
       - "source/core/recompiler/**"
       - "tests/test_ps2recomp_bridge.c"
+      - "tests/test_ps2recomp_bridge_window.c"
       - "tests/test_native_hybrid_compile.py"
       - "tests/test_native_hybrid_execute.c"
       - "tests/test_ee_aot.c"
@@ -45,6 +46,17 @@ jobs:
             -Ithird_party/wiidrc
             -ffunction-sections -fdata-sections -Wl,--gc-sections
         run: sh tests/run_test.sh test_ps2recomp_bridge
+      - name: Test bridge live native-window scheduler admission
+        env:
+          GEKKO2_TEST_EXTRA_CFLAGS: >-
+            -Itests
+            -Ithird_party/libchdr/include
+            -Ithird_party/libchdr/deps/lzma-25.01/src
+            -Ithird_party/libchdr/deps/miniz-3.1.1
+            -Ithird_party/libchdr/deps/zstd-1.5.7
+            -Ithird_party/wiidrc
+            -ffunction-sections -fdata-sections -Wl,--gc-sections
+        run: sh tests/run_test.sh test_ps2recomp_bridge_window
       - name: Test conservative synthetic ELF control-flow discovery
         run: python3 tests/test_native_hybrid_compile.py
       - name: Execute synthetic ELF through generated AOT and real interpreter fallback
