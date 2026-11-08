@@ -165,3 +165,8 @@ GitHub Actions [run 42487584508](https://github.com/Mafiacoding/Gekko2/actions/r
 ## Batch A4 — read-only integer-leaf EE snapshot
 
 Added a separate fixed-layout, versioned 576-byte EE snapshot for the conservative `INTEGER_LEAF` profile. It includes all 32 128-bit GPRs, HI/LO, SA and PC/next-PC, with compile-time layout assertions. Snapshot admission is fail-closed for halted/idle, delay-slot/branch, active EXL/ERL, active VU0, unaligned/nonsequential PC, nonzero GPR0 and dirty exception/TLB state. It does not serialize raw `ee_state_t`, include device/TLB/FPU/VU state, or grant execution. The API is read-only; no commit API or scheduler lease exists yet. Tests cover lane order and unsupported-state rejection.
+
+
+### Batch A4 validation
+
+GitHub Actions [run 42487839134](https://github.com/Mafiacoding/Gekko2/actions/runs/42487839134) — **SUCCESS** on code commit `61ef28fccf3e728a916c2457bcc780918ecd5b5a`. The bridge test passed with the snapshot ABI size/offset assertions and snapshot round-trip/rejection checks. The rest of the host suite passed as well, including 512/512 synthetic AOT/interpreter comparisons. Host-only evidence.
