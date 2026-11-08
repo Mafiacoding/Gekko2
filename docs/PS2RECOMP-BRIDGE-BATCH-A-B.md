@@ -90,3 +90,18 @@ interpreter/AOT comparisons, 512 AOT hits, and 5 compiler/CFG unit tests.
 Scope remains deliberately limited: generated code is emitted by Gekko2's
 existing guarded AOT generator from a synthetic ELF. This is not the external
 PS2Recomp runtime, not a Crash function, and not Wii/Dolphin/hardware evidence.
+
+
+## Live scheduler admission regression
+
+`tests/test_ps2recomp_bridge_window.c` binds the bridge to the initialized
+Gekko2 EE singleton and exercises the real scheduler gate. It checks fail-closed
+behavior for live source mismatch, VU0/VU1, DMA, timer/event/IRQ deadlines,
+pending branch state and unmapped memory; it also verifies a bounded arithmetic
+grant, exact PC/retirement advancement, and a short-budget grant.
+
+GitHub Actions run `42486351229`, commit
+`526f2993142b9e0fb9f0f95f4af1613fef26c005`: PASS for this test and all other
+focused bridge, synthetic AOT, AOT-input, residency and execution-lifecycle
+checks. The test exercises scheduler admission only; it does not execute a PPC
+native body or external PS2Recomp function.
