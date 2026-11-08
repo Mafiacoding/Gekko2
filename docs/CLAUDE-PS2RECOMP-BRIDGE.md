@@ -334,3 +334,32 @@ substitute for a captured output from running the pinned upstream binary.
 Claude should implement the strict parser and golden fixture next, following
 the A10 audit's rejection rules. Do not broaden the opcode subset before
 complete-state differential tests pass.
+
+
+## Batch A11 — strict generated-C++ parser and AOT lowering (2026-11-08)
+
+See `docs/PS2RECOMP-A11-STRICT-PARSER.md`.
+
+**Implemented and host-tested.** `tools/ps2recomp_strict_parser.py` parses one
+straight-line function of real PS2Recomp output (ADDIU, ADDU, XOR, SLL,
+canonical NOP only), reconstructs each statement from the raw MIPS word and
+rejects the whole function on any difference. Validated words (only) go to
+`tools/ee_aot_generate.py --manifest`; the entry runs through the existing
+`ee_step_budget()` / `ee_aot_try_execute_fetched()` path with unchanged
+interleave accounting. Upstream C++ is never executed; no `R5900Context`
+cast; bridge native-window API remains fail-closed.
+
+A **real golden fixture** was produced by building the pinned upstream
+generator (`e5636981…`) and running it on a synthetic ELF
+(`tests/fixtures/ps2recomp_a11/`, with `PROVENANCE.json`). Running the real
+binary corrected A10: names are `<name>_0x<start>`, negative ADDIU immediates
+print as unsigned 32-bit decimal, and an extra entry `ctx->pc` line exists.
+
+Tests: `tests/test_ps2recomp_strict_parser.py` (24, positive/negative),
+`tests/test_ps2recomp_a11_aot_diff.py` (240 interpreter/AOT comparisons incl.
+128-bit GPR upper lanes, GPR0, retirement, live-source guards). Both are in
+the host CI workflow. No Wii build (no devkitPPC in the container), no
+Dolphin/hardware result, no performance claim.
+
+Next (A12): widen one instruction class at a time with a real-generator
+fixture each; then `jr $ra` + delay slot; do not skip the differential gate.

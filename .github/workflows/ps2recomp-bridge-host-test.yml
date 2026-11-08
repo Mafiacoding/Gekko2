@@ -18,6 +18,12 @@ on:
       - "tests/test_ee_exec_lifecycle.c"
       - "experiments/ps2recomp-wii/**"
       - "tools/ee_aot_generate.py"
+      - "tools/ps2recomp_strict_parser.py"
+      - "tools/ps2recomp_fixture_elf.py"
+      - "tests/test_ps2recomp_strict_parser.py"
+      - "tests/test_ps2recomp_a11_aot_diff.py"
+      - "tests/test_ps2recomp_a11_aot_diff.c"
+      - "tests/fixtures/ps2recomp_a11/**"
       - "tools/build_host_core.py"
       - "tests/run_test.sh"
       - ".github/workflows/ps2recomp-bridge-host-test.yml"
@@ -61,6 +67,10 @@ jobs:
         run: python3 tests/test_native_hybrid_compile.py
       - name: Execute synthetic ELF through generated AOT and real interpreter fallback
         run: python3 experiments/ps2recomp-wii/run_hybrid_test.py
+      - name: Strict PS2Recomp generated-C++ parser (A11) unit tests
+        run: python3 tests/test_ps2recomp_strict_parser.py
+      - name: Parsed PS2Recomp functions through AOT vs interpreter (A11)
+        run: python3 tests/test_ps2recomp_a11_aot_diff.py
       - name: Run existing EE AOT input-generation regression suite
         run: python3 tests/test_ee_aot_inputs.py
       - name: Run existing EE residency-generation regression suite
