@@ -1,3 +1,16 @@
+# Current Claude task — PS2Recomp bridge (2026-11-08)
+
+For the active PS2Recomp ↔ Gekko2 workstream, read
+`docs/CLAUDE-PS2RECOMP-BRIDGE.md` first, then follow the repository-wide
+rules below. The public main branch has the canonical EE runtime already;
+do not create a parallel EE core or claim PS2Recomp integration before code
+and tests prove it. Work in the dedicated branch
+`codex/ps2recomp-bridge-claude-ready` unless the owner explicitly directs
+otherwise. Start with the source audit and Batch A; do not skip ahead to
+production execution integration.
+
+---
+
 # Gekko2 handoff — R1354 Beta
 
 Read docs/R1354-SIF-BARRIERS.md first. Claim SIF registers before synchronization; keep all actual shared access ordering. SYNC_REASONS counts barrier calls, not ticks. CPU_SAMPLE now tracks EE-only tails. Synthetic INTC-read cost drops6.7%; RAM-store cost unchanged. No physical Wii R1354 speed/boot claim before user logs. Same worker, Cold Boot. New IOP catch-up blocks and adaptive cache are OFF by default, stored in version8 settings. Registered sysclib RAM HLE is optional, bounded, with verified ARM-data fallback; not full BIOS HLE. Build tools/build_r1354.sh.
