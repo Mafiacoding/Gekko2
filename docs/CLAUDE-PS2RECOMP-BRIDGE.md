@@ -144,3 +144,14 @@ engineering gate is to trace all `gpr_generation` mutations and native
 resident lifetime/invalidation, then implement a separate fixed-width
 versioned snapshot/commit type with fail-closed profile validation. No CPU
 execution, graphics, scheduler, or Wii behavior was changed in this batch.
+
+
+## Batch A3 — resident GPR invalidation trace
+
+- Audited all 22 C/C++ source/header files under `source/core/` on this branch.
+- Confirmed the EE generation writer is the real EE thread `load_context()` replacement path; the similarly named IOP increments belong to the separate IOP state and are not EE epochs.
+- Confirmed `ppc_residency_internal.h` keeps r18-r29 as selected guest GPR lanes, r30 as the generation snapshot, reloads valid cached words after a generation change, and retains canonical write-through stores/fences.
+- Added `ee_core_gpr_generation_bump(ee_state_t *)` as the explicit invalidation hook for any future out-of-line EE GPR writer. `load_context()` now uses it.
+- Extended `tests/test_ee_residency_generation.c` for explicit bump, null safety and wraparound, in addition to the real context-switch and 128-bit register test.
+
+A4 can now build a versioned snapshot/commit adapter against this explicit hook, but must still define and validate a conservative architectural profile and scheduler-boundary contract. No writable state overlay or external PS2Recomp runtime execution is claimed.
