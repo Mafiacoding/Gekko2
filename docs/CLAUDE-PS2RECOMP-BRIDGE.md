@@ -170,3 +170,29 @@ Added a separate fixed-layout, versioned 576-byte EE snapshot for the conservati
 ### Batch A4 validation
 
 GitHub Actions [run 42487839134](https://github.com/Mafiacoding/Gekko2/actions/runs/42487839134) — **SUCCESS** on code commit `61ef28fccf3e728a916c2457bcc780918ecd5b5a`. The bridge test passed with the snapshot ABI size/offset assertions and snapshot round-trip/rejection checks. The rest of the host suite passed as well, including 512/512 synthetic AOT/interpreter comparisons. Host-only evidence.
+
+
+## Batch A5 — scheduler lease audit (2026-11-08)
+
+The source-level audit is recorded in
+`docs/PS2RECOMP-SCHEDULER-LEASE-AUDIT.md`.
+
+**Result: audit complete; external execution lease deferred.** The current
+`ee_recomp_bridge_begin_native_window()` is not a lease. Its scheduler gate
+performs conservative admission, then advances the full instruction count,
+COP0 Count, timer/display clocks and PC/next-PC before returning the grant.
+The caller must therefore execute the exact full body immediately and must
+not retire it again. There is no cancellation, partial-retirement report,
+typed exit, resume-PC calculation or bridge-owned scheduler epilogue.
+
+A wrapper-only token cannot repair an early exit: the state would already claim
+that the full window executed. A5 therefore deliberately adds no unsafe API.
+The next implementation gate is a scheduler-side two-phase prepare/commit
+contract, with source/state identity, fixed-profile validation, exact
+completed-prefix accounting and a centralized scheduler epilogue. The initial
+external leaf should be straight-line integer-only with no memory, branches,
+exceptions, helpers, COP/FPU/VU or MMIO.
+
+No guest execution, graphics, scheduler behavior, or Wii behavior changed in
+A5. This is a source audit only; it does not prove external PS2Recomp runtime
+execution or Wii/Dolphin/physical-hardware behavior.
