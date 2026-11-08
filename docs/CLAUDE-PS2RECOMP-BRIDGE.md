@@ -422,3 +422,11 @@ Works on `codex/ps2recomp-a17-branches` (based on `integration/crash-e3-plus-a15
 targets, delay slots and elided NOP slots, loops (resume switch, `eeCheckpointDue`), lowering as one AOT
 block per basic block. Crash files unchanged (`tools/check_crash_files_unchanged.sh`). Host + Unicorn
 evidence only.
+
+
+## Batch A18 — direct calls between functions (2026-11-08)
+
+Branch `codex/ps2recomp-a18-calls` (on the A17 branch; see `docs/BRANCH-MAP-2026-11-08.md`).
+See `docs/PS2RECOMP-A18-DIRECT-CALLS.md`. `jal` with real/elided slots, return-address labels and the
+extended resume switch; callee lowered or interpreted; real-generator negatives for `j` and `jalr`.
+Crash files unchanged. Host + Unicorn evidence only.

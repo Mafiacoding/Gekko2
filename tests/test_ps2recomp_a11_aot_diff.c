@@ -26,6 +26,11 @@ static void same(const ee_state_t *a,const ee_state_t *b)
 }
 static void load(ee_state_t *st,const a11_fixture *f,const uint32_t *words)
 {
+    /* The whole synthetic ELF image is guest memory: callees outside the lowered set
+     * still exist and run on the interpreter. */
+    for(unsigned k=0;k<a11_image_count;k++){const a11_image_t *im=&a11_image[k];
+        for(unsigned i=0;i<im->count;i++)write32(st->ram+(im->pc&0x1fffffffu)+4*i,im->words[i]);
+        ee_jit_notify_physical_write(im->pc&0x1fffffffu,4u*im->count);}
     for(unsigned i=0;i<f->count;i++)write32(st->ram+(f->pc&0x1fffffffu)+4*i,words[i]);
     ee_jit_notify_physical_write(f->pc&0x1fffffffu,4u*f->count);
 }
@@ -53,6 +58,7 @@ static void seed_memory(ee_state_t *st,const a11_fixture *f,unsigned mode)
     static const uint32_t a1[MODES]={0x80310008u,0x80310009u,0x10003000u,0x00700000u,0x00400200u};
     static const uint32_t a2[MODES]={0x80320010u,0x80320011u,0x10003000u,0x00700000u,0x00400300u};
     st->gpr[4].ud0=a0[mode];st->gpr[5].ud0=a1[mode];st->gpr[6].ud0=a2[mode];
+    st->gpr[29].ud0=(uint32_t)(a2[mode]+0x40u); /* stack for callers that spill $ra */
 }
 static int has_store(const a11_fixture *f){for(unsigned i=0;i<f->count;i++){unsigned op=f->ram[i]>>26;if(op==0x28||op==0x29||op==0x2b)return 1;}return 0;}
 /* Dynamic retirement count: single-step the interpreter until the function exits
@@ -111,9 +117,10 @@ int main(void)
              * inferred NOP slot differs (upstream-elided NOP alias), native code must
              * stop before it and the interpreter retire it. */
             assert(first>0);
-            if(ram_is_lowered(f))assert(ee_aot_retired_count()-native>=first);
+            if(ram_is_lowered(f)&&!a11_calls_external)assert(ee_aot_retired_count()-native>=first);
+            else if(a11_calls_external)assert(ee_aot_retired_count()-native>0); /* callee retires on the interpreter */
             else assert(ee_aot_retired_count()-native>0&&ee_aot_retired_count()-native<total);
-            if(budget==total&&ram_is_lowered(f))assert(ee_aot_retired_count()-native==total);
+            if(budget==total&&ram_is_lowered(f)&&!a11_calls_external)assert(ee_aot_retired_count()-native==total);
             else partial++;
             same(&scalar,st);assert(!memcmp(scalar_ram,st->ram+0x300000,sizeof scalar_ram));
             assert(st->pc==(f->jr_ra?(uint32_t)start.gpr[31].ud0:f->pc+4u*f->count));assert(!st->branch_pending);

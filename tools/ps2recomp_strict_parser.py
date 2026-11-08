@@ -204,6 +204,7 @@ def parse_function(source, name):
     terminal = None
     inferred_slots = []          # word indexes whose NOP delay slot upstream elided
     branches = []                # dict(addr, target, backward)
+    calls = []                   # dict(addr, target, ret)
     labels = []                  # addresses with a label line
     slot_addrs = set()
     address = start
@@ -233,6 +234,16 @@ def parse_function(source, name):
             terminal = 'jr_ra'
             address += 8
             break
+        if word >> 26 == 3:  # jal: direct call, return address is the next block entry
+            pos, info, slot = _parse_jal(body, pos, c, word, address)
+            words.append(word)
+            words.append(slot[0])
+            if slot[1]:
+                inferred_slots.append(len(words) - 1)
+            slot_addrs.add(address + 4)
+            calls.append(info)
+            address += 8
+            continue
         if word >> 26 in COND_BRANCH:
             pos, info, slot = _parse_branch(body, pos, c, word, address, start, end)
             words.append(word)
@@ -267,22 +278,23 @@ def parse_function(source, name):
     pos += 1
     if pos != len(body):
         _fail('unexplained extra statements in function body')
-    if branches:
+    if branches or calls:
         if terminal != 'jr_ra':
-            _fail('a function with conditional branches must end in jr $ra')
-        targets = {b['target'] for b in branches}
+            _fail('a function with branches or calls must end in jr $ra')
+        targets = {b['target'] for b in branches} | {c['ret'] for c in calls}
         if sorted(labels) != sorted(targets) or len(labels) != len(set(labels)):
-            _fail('labels do not match the branch targets exactly')
+            _fail('labels do not match the branch targets and call return addresses exactly')
         if targets & slot_addrs:
             _fail('a branch targets a delay-slot address')
-        want_resume = sorted(b['target'] for b in branches if b['backward'] and b['target'] != start)
-        if sorted(set(want_resume)) != resume_cases:
-            _fail('resume switch does not list exactly the backward-branch targets')
+        want_resume = {b['target'] for b in branches if b['backward'] and b['target'] != start} | \
+                      {c['ret'] for c in calls}
+        if sorted(want_resume) != resume_cases:
+            _fail('resume switch does not list exactly the backward-branch targets and call returns')
     elif labels or resume_cases:
-        _fail('labels or a resume switch without a branch')
+        _fail('labels or a resume switch without a branch or call')
     result = {'name': name, 'start': start, 'end': end, 'words': words, 'terminal': terminal,
               'inferred_nop_slot': bool(inferred_slots), 'inferred_slot_indexes': inferred_slots,
-              'branches': branches, 'labels': sorted(labels),
+              'branches': branches, 'calls': calls, 'labels': sorted(labels),
               'source_sha256': hashlib.sha256(source.encode()).hexdigest()}
     result['blocks'] = basic_blocks(result)
     return result
@@ -300,7 +312,7 @@ def basic_blocks(result):
     while i < len(words):
         pcs.append(address)
         w = words[i]
-        if w == JR_RA or w >> 26 in COND_BRANCH:
+        if w == JR_RA or w >> 26 in COND_BRANCH or w >> 26 == 3:
             terminals.add(address)
             cuts.add(address + 8)
             address += 8
@@ -332,6 +344,49 @@ def basic_blocks(result):
         if len(ws) > MAX_WORDS:
             _fail(f'block at {_canon(pc)} exceeds the {MAX_WORDS}-word AOT limit')
     return blocks
+
+
+def _parse_jal(body, pos, comment, word, address):
+    """Validate one upstream direct call (`jal`); return (pos, info, (slot word, inferred)).
+
+    The callee is only a call target: it may be another lowered function or code left to
+    the interpreter. Control returns to the label at address + 8."""
+    target = ((address + 4) & 0xf0000000) | ((word & 0x3ffffff) << 2)
+    ret = address + 8
+    if target == 0:
+        _fail('call target 0 is rejected')
+    disassembly = comment.group(3)
+    if disassembly is not None and disassembly.split(' ')[0] != 'jal':
+        _fail('disassembly mnemonic disagrees with jal')
+    J, S, T, R = (f'0x{address:X}', f'0x{address + 4:X}', f'0x{target:X}', f'0x{ret:X}')
+    head = [f'ctx->pc = {J}u;', f'SET_GPR_U32(ctx, 31, {R}u);']
+    if body[pos + 1:pos + 3] != head:
+        _fail('jal head differs from the pinned upstream emitter')
+    cursor = pos + 3
+    slot_word, inferred = 0, True
+    if cursor < len(body) and body[cursor] == f'ctx->pc = {S}u;':
+        if body[cursor + 1:cursor + 3] != ['ctx->in_delay_slot = true;', f'ctx->branch_pc = {J}u;']:
+            _fail('delay-slot prologue differs from the pinned upstream emitter')
+        m = SLOT_COMMENT.match(body[cursor + 3]) if cursor + 3 < len(body) else None
+        if not m or _parse_hex(m.group(1), 'slot pc') != address + 4:
+            _fail('delay-slot comment missing or at the wrong address')
+        slot_word = _parse_hex(m.group(2), 'slot word')
+        if slot_word == 0:
+            _fail('upstream elides a NOP delay slot; a decoded NOP slot is inconsistent')
+        mnemonic, statement = expected_statement(slot_word)
+        if m.group(3) is not None and m.group(3).split(' ')[0] != mnemonic:
+            _fail('delay-slot disassembly mnemonic disagrees with its raw word')
+        if body[cursor + 4:cursor + 6] != [statement, 'ctx->in_delay_slot = false;']:
+            _fail('delay-slot statement differs from the decoded instruction')
+        cursor += 6
+        inferred = False
+    tail = [f'ctx->pc = {T}u;',
+            f'if (!runtime->dispatchGuestBranch(rdram, ctx, {T}u, {J}u, {R}u, '
+            'PS2Runtime::GuestBranchKind::DirectCall, "JAL")) {',
+            'return;', '}', f'ctx->pc = {R}u;']
+    if body[cursor:cursor + len(tail)] != tail:
+        _fail('jal tail differs from the pinned upstream emitter')
+    return cursor + len(tail), {'addr': address, 'target': target, 'ret': ret}, (slot_word, inferred)
 
 
 COND_BRANCH = (4, 5, 6, 7)  # beq bne blez bgtz (no likely/link/REGIMM forms yet)
@@ -561,6 +616,7 @@ def lower(results, output, complex_output=None):
                            'terminal': r.get('terminal'),
                            'blocks': len(r.get('blocks') or [1]),
                            'branches': len(r.get('branches') or []),
+                           'calls': len(r.get('calls') or []),
                            'slot_source': r.get('slot_source', 'inferred' if r.get('inferred_nop_slot') else 'source'),
                            'elf_sha256': r.get('elf_sha256'),
                            'elf_symbol_checked': r.get('elf_symbol_checked')} for r in results],

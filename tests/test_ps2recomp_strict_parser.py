@@ -974,6 +974,117 @@ class A17Tests(unittest.TestCase):
             self.assertEqual((report['functions'][0]['blocks'], report['functions'][0]['branches']), (5, 2))
 
 
+GOLDEN18 = (ROOT / 'tests/fixtures/ps2recomp_a18/ps2_recompiled_functions.cpp').read_text()
+A18 = ['a18_callee_0x100000', 'a18_caller_0x10000c', 'a18_caller2_0x100028', 'a18_callee2_0x100040',
+       'a18_callee3_0x10004c', 'a18_caller3_0x100058']
+A18_CALLERS = {'a18_caller_0x10000c': (0x100014, 0x100000, 0x10001c), 'a18_caller2_0x100028': (0x10002c, 0x100000, 0x100034),
+               'a18_caller3_0x100058': (0x10005c, 0x10004c, 0x100064)}
+
+
+class A18Tests(unittest.TestCase):
+    def test_provenance_and_builder(self):
+        prov = json.loads((ROOT / 'tests/fixtures/ps2recomp_a18/PROVENANCE.json').read_text())
+        self.assertEqual(prov['output']['sha256'], hashlib.sha256(GOLDEN18.encode()).hexdigest())
+        self.assertEqual(prov['input_elf']['sha256'], hashlib.sha256(fx.build(fx.FUNCTIONS_A18)).hexdigest())
+
+    def test_golden_calls_and_blocks(self):
+        for key in A18:
+            r = p.parse_function(GOLDEN18, key)
+            if key in A18_CALLERS:
+                a, t, ret = A18_CALLERS[key]
+                self.assertEqual([(c['addr'], c['target'], c['ret']) for c in r['calls']], [(a, t, ret)])
+                self.assertIn(ret, r['labels'])
+                # The return address starts its own AOT block, directly after the call+slot block.
+                self.assertIn(ret, [pc for pc, _ in r['blocks']])
+                self.assertEqual(r['blocks'][0][1][-2] >> 26, 3)
+            else:
+                self.assertEqual(r['calls'], [])
+            self.assertEqual(r['terminal'], 'jr_ra')
+
+    def test_uppercase_hex_in_call_block(self):
+        self.assertIn('0x10002Cu, 0x100034u', GOLDEN18)
+        self.assertIn('ctx->pc = 0x10004Cu;', GOLDEN18)
+        fn = '\n'.join(fn_text(GOLDEN18, 'a18_caller3_0x100058'))
+        for old, new in (('0x10005Cu', '0x10005cu'), ('0x10004Cu, 0x10005Cu', '0x10004cu, 0x10005Cu')):
+            self.assertIn(old, fn)
+            with self.assertRaises(p.ParseError):
+                p.parse_function(fn.replace(old, new, 1) + '\n', 'a18_caller3_0x100058')
+
+    def test_real_negatives_tail_jump_and_indirect_call(self):
+        self.assertIn('a18_callee_0x100000(rdram, ctx, runtime); return;', GOLDEN18)
+        self.assertIn('GuestBranchKind::IndirectCall', GOLDEN18)
+        for key in ('a18_tail_0x100070', 'a18_jalr_0x100078'):
+            with self.assertRaises(p.ParseError, msg=key):
+                p.parse_function(GOLDEN18, key)
+
+    def test_every_line_edit_and_number_mutation_rejected(self):
+        import re
+        total = 0
+        for key in A18_CALLERS:
+            fn = fn_text(GOLDEN18, key)
+            for i in range(3, len(fn) - 1):
+                if not fn[i].strip():
+                    continue
+                for variant in (fn[:i] + fn[i + 1:], fn[:i] + ['    int x = 0;'] + fn[i:]):
+                    with self.assertRaises(p.ParseError, msg=f'{key}: {fn[i].strip()}'):
+                        p.parse_function('\n'.join(variant) + '\n', key)
+            lines, first, close = span(GOLDEN18, key)
+            for i in range(first, close):
+                line = lines[i]
+                if line.lstrip().startswith('// Function:'):
+                    continue
+                for m in re.finditer(r'0x[0-9A-Fa-f]+|(?<![A-Za-z_0-9])\d+(?![A-Za-z_0-9])', line):
+                    if line.lstrip().startswith('// 0x') and m.start() > line.index(':', 5) + 14 + 2:
+                        continue
+                    token = m.group()
+                    repl = token[:-1] + ('0' if token[-1] != '0' else '1') if token.startswith('0x') else str(int(token) + 1)
+                    mutated = lines[:]
+                    mutated[i] = line[:m.start()] + repl + line[m.end():]
+                    total += 1
+                    try:
+                        p.parse_function('\n'.join(mutated), key)
+                    except p.ParseError:
+                        continue
+                    self.fail(f'mutation accepted in {key}: {line.strip()} -> {mutated[i].strip()}')
+        self.assertGreater(total, 100)
+
+    def test_call_semantics_tamper_rejected(self):
+        fn = '\n'.join(fn_text(GOLDEN18, 'a18_caller_0x10000c'))
+        cases = [('GuestBranchKind::DirectCall', 'GuestBranchKind::IndirectCall'),
+                 ('"JAL"', '"JALR"'),
+                 ('if (!runtime->dispatchGuestBranch', 'if (runtime->dispatchGuestBranch'),
+                 ('        return;\n    }\n    ctx->pc = 0x10001Cu;', '        return;\n    }\n    ctx->pc = 0x10001Du;'),
+                 ('SET_GPR_U32(ctx, 31, 0x10001Cu);', 'SET_GPR_U64(ctx, 31, 0x10001Cu);'),
+                 ('        case 0x10001cu: goto label_10001c;\n', ''),
+                 ('label_10001c:\n', '')]
+        for old, new in cases:
+            self.assertIn(old, fn, old)
+            with self.assertRaises(p.ParseError, msg=old):
+                p.parse_function(fn.replace(old, new, 1) + '\n', 'a18_caller_0x10000c')
+        # A call word with the wrong disassembly mnemonic or target 0 is rejected too.
+        with self.assertRaises(p.ParseError):
+            p.parse_function(fn.replace('jal         func_100000', 'j           func_100000') + '\n', 'a18_caller_0x10000c')
+
+    def test_elf_binding_and_lowering(self):
+        gen = importlib.util.spec_from_file_location('gen18', ROOT / 'tools/ee_aot_generate.py')
+        g = importlib.util.module_from_spec(gen)
+        gen.loader.exec_module(g)
+        elf = Path(tempfile.mkdtemp()) / 'a18.elf'
+        elf.write_bytes(fx.build(fx.FUNCTIONS_A18))
+        for (name, start, words), key in zip(fx.FUNCTIONS_A18, [*A18, None, None]):
+            if key is None:
+                continue
+            b = p.bind_to_elf(p.parse_function(GOLDEN18, key), elf)
+            self.assertEqual(b['words'], words)
+        with tempfile.TemporaryDirectory() as d:
+            r = p.bind_to_elf(p.parse_function(GOLDEN18, 'a18_caller2_0x100028'), elf)
+            out = Path(d) / 'x.inc'
+            report = p.lower(r, out)
+            self.assertEqual(out.read_text(), g.generate(r['blocks']))
+            self.assertEqual((report['functions'][0]['blocks'], report['functions'][0]['calls']), (2, 1))
+            self.assertIn('ee_aot_1', out.read_text())
+
+
 class LoweringTests(unittest.TestCase):
     def test_lowering_passes_exactly_validated_words(self):
         with tempfile.TemporaryDirectory() as d:

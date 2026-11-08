@@ -13,9 +13,13 @@ import sys,json,random,hashlib
 from pathlib import Path
 # Reuse the audited linked-PPC fixture (state layout, allocator/cache mocks).
 argv=sys.argv[1:];fx_index=argv.index('--functions');functions_path=argv[fx_index+1];del argv[fx_index:fx_index+2]
+image_path=None
+if '--image' in argv:
+ image_index=argv.index('--image');image_path=argv[image_index+1];del argv[image_index:image_index+2]
 sys.argv=[sys.argv[0]]+argv
 exec(compile(Path(__file__).with_name('ee_ppc_fixture_internal.py').read_text(),'ee_ppc_fixture_internal.py','exec'))
 functions=json.loads(Path(functions_path).read_text())['blocks']
+image=json.loads(Path(image_path).read_text()) if image_path else []  # all guest code, incl. callees left to the interpreter
 assert 'ee_aot_block_count' in syms and 'retired_count' in syms
 mask_addr=syms['gekko2_optimization_mask']
 def set_mask(value):word(mask_addr,value)
@@ -35,6 +39,8 @@ def setup_function(f,words,gprs,ra):
  # Map the function's page; page 0x100000 is not used by the base fixture.
  u.mem_write(state+tlb,struct.pack('>4I',0,(start&~0x1fff)|7,((start>>12)<<6)|6,(((start>>12)+1)<<6)|6))
  u.mem_write(state+tlb+32,struct.pack('>4I',0,0x400000|7,(0x340<<6)|2,(0x341<<6)|2))  # V, not D (phys inside the fixture's 4 MiB RAM): stores raise TLB Modified
+ for im in image:
+  for i,w in enumerate(im['words']):u.mem_write(ram+im['pc']+4*i,struct.pack('<I',w))
  for i,w in enumerate(words):u.mem_write(ram+start+4*i,struct.pack('<I',w))
  u.mem_write(ram+start+4*len(words),bytes(16))
  for r in range(32):u.mem_write(state+16*r,struct.pack('>QQ',gprs[r][0],gprs[r][1]))
@@ -70,7 +76,7 @@ for f in functions:
  for trial in range(12):
   gprs=[(0,0)]+[(patterns[trial%5](r),rng.getrandbits(64)) for r in range(1,32)]
   if f.get('loop'):gprs[8]=(1+(rng.getrandbits(3)),gprs[8][1])  # bounded trip count
-  if is_memory(words):gprs[4]=(BASES[0][0],gprs[4][1]);gprs[5]=(BASES[0][1],gprs[5][1]);gprs[6]=(BASES[0][2],gprs[6][1])
+  if is_memory(words):gprs[4]=(BASES[0][0],gprs[4][1]);gprs[5]=(BASES[0][1],gprs[5][1]);gprs[6]=(BASES[0][2],gprs[6][1]);gprs[29]=(BASES[0][2]+0x40,gprs[29][1])
   if f.get('terminal')=='jr_ra':gprs[31]=(0x80000000|(rng.getrandbits(21)&~3),rng.getrandbits(64))
   total=probe_total(f,words,gprs,trial);dyn=max(dyn,total)
   for budget in sorted({total,1,2,max(1,total-1)}):
@@ -85,6 +91,7 @@ for f in functions:
   for mode in (1,2,3,4):
    g=list(gprs)
    for reg,addr in zip((4,5,6),BASES[mode]):g[reg]=(addr,g[reg][1])
+   g[29]=((BASES[mode][2]+0x40)&0xffffffff,g[29][1])
    old,_=run_mode(f,words,g,count,False,7,True);new,_=run_mode(f,words,g,count,True,7,True)
    assert old==new,('PPC fault/device mismatch',f['name'],mode);cases+=1
    code=(int.from_bytes(new[0][off['cop0']+13*4:off['cop0']+13*4+4],'big')>>2)&31

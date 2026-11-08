@@ -228,7 +228,62 @@ FUNCTIONS_A17 = [
         0x00000000,                  # nop
     ]),
 ]
-SETS = {'a17': FUNCTIONS_A17, 'a16': FUNCTIONS_A16, 'a15': FUNCTIONS_A15, 'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
+# Batch A18: direct calls (jal) between recompiled functions.
+def _j(op, target):
+    return op << 26 | (target >> 2) & 0x3ffffff
+FUNCTIONS_A18 = [
+    ('a18_callee', 0x00100000, [
+        _i(0x09, 4, 2, 1),           # addiu v0,a0,1
+        JR_RA,                       # jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a18_caller', 0x0010000c, [
+        _i(0x09, 29, 29, -16),       # addiu sp,sp,-16
+        _i(0x2b, 29, 31, 0),         # sw ra,0(sp)
+        _j(0x03, 0x00100000),        # jal a18_callee
+        _i(0x09, 0, 4, 7),           # addiu a0,zero,7 (delay slot)
+        _i(0x23, 29, 31, 0),         # lw ra,0(sp)
+        JR_RA,                       # jr ra
+        _i(0x09, 29, 29, 16),        # addiu sp,sp,16 (delay slot)
+    ]),
+    ('a18_caller2', 0x00100028, [     # jal at 0x10002c (hex letter), elided NOP slot
+        _i(0x2b, 29, 31, -4),        # sw ra,-4(sp)
+        _j(0x03, 0x00100000),        # jal a18_callee
+        0x00000000,                  # nop (delay slot)
+        _i(0x23, 29, 31, -4),        # lw ra,-4(sp)
+        JR_RA,                       # jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a18_callee2', 0x00100040, [
+        _i(0x09, 4, 3, 2),           # addiu v1,a0,2
+        JR_RA,                       # jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a18_callee3', 0x0010004c, [     # call target with a hex letter
+        _i(0x09, 4, 3, 3),           # addiu v1,a0,3
+        JR_RA,                       # jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a18_caller3', 0x00100058, [     # jal at 0x10005c to 0x10004c, real delay slot
+        _i(0x2b, 29, 31, -4),        # sw ra,-4(sp)
+        _j(0x03, 0x0010004c),        # jal a18_callee3
+        _i(0x09, 4, 4, 5),           # addiu a0,a0,5 (delay slot)
+        _i(0x23, 29, 31, -4),        # lw ra,-4(sp)
+        JR_RA,                       # jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a18_tail', 0x00100070, [        # negative: tail jump outside the function
+        _j(0x02, 0x00100000),        # j a18_callee
+        0x00000000,                  # nop
+    ]),
+    ('a18_jalr', 0x00100078, [        # negative: indirect call
+        _r(25, 0, 31, 0x09),         # jalr ra,t9
+        0x00000000,                  # nop
+        JR_RA,                       # jr ra
+        0x00000000,                  # nop
+    ]),
+]
+SETS = {'a18': FUNCTIONS_A18, 'a17': FUNCTIONS_A17, 'a16': FUNCTIONS_A16, 'a15': FUNCTIONS_A15, 'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
 
 
 def build(functions=FUNCTIONS):
