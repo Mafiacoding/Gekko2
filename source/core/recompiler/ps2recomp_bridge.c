@@ -84,17 +84,23 @@ ee_recomp_bridge_result_t ee_recomp_bridge_snapshot_integer_leaf(
  return EE_RECOMP_BRIDGE_OK;
 }
 
-/* Batch C: delegate admission and scheduler accounting to the existing
- * Gekko2 native-window gate. This is not an executor: after a nonzero
- * grant the caller must run the matching native body immediately and
- * must not retire those instructions a second time. A zero grant means
- * no guest state was advanced and the precise path must run instead. */
+/* Batch A7 safety boundary:
+ * The bridge is not called from ee_core_step_n()/ee_step_budget(), so it
+ * cannot own scheduler slots or call the native-window admission routine.
+ * That routine publishes retirement, Count, timers and PC before returning;
+ * exposing it here lets an out-of-band caller advance EE state without the
+ * scheduler's exactly-once IOP/event epilogue. Keep this compatibility entry
+ * fail-closed until a native executor is selected and accounted by the live
+ * scheduler. The internal Gekko2 gate remains available to its existing
+ * in-core callers; this bridge must never invoke it directly. */
 unsigned ee_recomp_bridge_begin_native_window(ee_recomp_bridge_t *b,
  uint32_t pc,const uint32_t *words,unsigned count,unsigned budget,uint32_t needed)
 {
  ee_state_t *s;
+ (void)pc;
+ (void)needed;
  if(!words||!count||!budget)return 0u;
  if(access_begin(b,&s)!=EE_RECOMP_BRIDGE_OK)return 0u;
- if(s->pc!=pc||s->next_pc!=pc+4u||s->halted||s->idle||s->branch_pending)return 0u;
- return ee_core_native_window_begin_with_addresses(s,pc,words,count,budget,needed);
+ (void)s;
+ return 0u;
 }

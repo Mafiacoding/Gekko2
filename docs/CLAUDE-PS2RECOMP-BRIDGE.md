@@ -24,11 +24,12 @@ Base: current `main` (the branch is intentionally not based on the divergent
   bound to the canonical Gekko2 `ee_state_t`.
 - 8/16/32/64/128-bit memory callbacks delegate to Gekko2's existing
   `ee_mem_*` helpers. Guest virtual addresses are never cast to host pointers.
-- The bounded native-window wrapper delegates to
-  `ee_core_native_window_begin_with_addresses()`. This existing gate performs
-  live-source, scheduler/event, device, Fastmem and interleave admission and
-  advances the EE retirement/PC state as part of the native-body contract.
-  The wrapper is **not** a PS2Recomp executor or a general execution lease.
+- The bridge native-window entry is currently fail-closed and returns zero.
+  Batch A7 removed its direct call to
+  `ee_core_native_window_begin_with_addresses()`: that gate advances EE
+  retirement/PC/clocks, while the bridge is not part of the live scheduler.
+  Internal Gekko2 admission tests remain separate; no external bridge caller
+  may advance guest state outside scheduler-owned accounting.
 - `experiments/ps2recomp-wii/hybrid_compile.py` conservatively discovers
   supported control-flow regions from synthetic or owner-supplied ELF32
   little-endian ET_EXEC input and emits through Gekko2's existing AOT generator.
@@ -221,3 +222,34 @@ instruction boundaries.
 
 No runtime, graphics, scheduler or Wii behavior changed in A6. No new CI
 result is claimed for this documentation-only audit.
+
+
+## Batch A7 — fail-closed bridge boundary (2026-11-08)
+
+**Implemented safety hardening; scheduler execution integration remains deferred.**
+
+The live path is `ee_core_step_n()` → `ee_step_budget()`; the scheduler
+accounts consumed slots and invokes `ee_core_interleave_account()` exactly
+once. The bridge's former native-window call instead entered the admission
+gate directly. A successful gate call immediately publishes instruction
+retirement, COP0 Count, display/timer clocks and PC/next-PC. It does not
+return a result to `ee_core_step_n()`, so the IOP/event epilogue cannot be
+guaranteed.
+
+A7 therefore makes `ee_recomp_bridge_begin_native_window()` fail-closed
+(always zero) until the native executor is selected from the live scheduler.
+The internal Gekko2 admission gate remains intact and its direct guard tests
+remain, but it is no longer reachable through this out-of-band bridge API.
+A regression now verifies a valid-looking bridge request leaves the complete
+EE state and display clock unchanged.
+
+**Not implemented:** no native PS2Recomp execution, no new scheduler result
+contract, no partial retirement/resume protocol, and no runtime performance
+change. The next safe implementation requires an executor callback/result
+contract owned by `ee_step_budget()`, with exact retired slots returned to
+`ee_core_step_n()`; only that scheduler may call
+`ee_core_interleave_account()`. First pilot must be a fixed straight-line
+integer leaf with generated-code boundary guarantees.
+
+Validation pending on GitHub Actions. Host-only tests do not prove Wii,
+Dolphin or physical-Wii behavior.

@@ -40,6 +40,18 @@ static void finish(void){ee_core_shutdown();iop_core_shutdown();}
 
 int main(void)
 {
+ /* A valid-looking bridge request must not advance EE state outside the
+  * live scheduler. The bridge remains fail-closed until scheduler integration. */
+ {
+  ee_recomp_bridge_t bridge={0};
+  ee_state_t *s=start(0x80200000u,&bridge);
+  ee_state_t before=*s;
+  uint64_t clock=ee_core_display_clock_save();
+  assert(ee_core_native_window_begin_with_addresses(s,s->pc,arithmetic,4,4,0)==0);
+  assert(!memcmp(s,&before,sizeof before));
+  assert(ee_core_display_clock_save()==clock);
+  finish();
+ }
  for(unsigned bad=0;bad<7;bad++) {
   ee_recomp_bridge_t bridge={0};
   ee_state_t *s=start(0x80200000u,&bridge);
@@ -59,7 +71,7 @@ int main(void)
  {
   ee_recomp_bridge_t bridge={0};
   ee_state_t *s=start(0x80200000u,&bridge);
-  assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,arithmetic,4,4,0)==4);
+  assert(ee_core_native_window_begin_with_addresses(s,s->pc,arithmetic,4,4,0)==4);
   assert(s->pc==0x80200010u&&s->instructions_executed==4&&s->cop0[9]==104);
   finish();
  }
@@ -67,7 +79,7 @@ int main(void)
   ee_recomp_bridge_t bridge={0};
   ee_state_t *s=start(0x80200000u,&bridge);
   s->ram[0x20000cu]^=4;
-  assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,arithmetic,4,2,0)==2);
+  assert(ee_core_native_window_begin_with_addresses(s,s->pc,arithmetic,4,2,0)==2);
   finish();
  }
  {
@@ -76,7 +88,7 @@ int main(void)
   const uint32_t memory[]={0x8c420000,0x24420001};
   memcpy(s->ram+0x200000,memory,sizeof memory);
   ee_state_t before=*s;
-  assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,memory,2,2,(1u<<2))==0);
+  assert(ee_core_native_window_begin_with_addresses(s,s->pc,memory,2,2,(1u<<2))==0);
   assert(!memcmp(s,&before,sizeof before));
   finish();
  }
@@ -88,6 +100,6 @@ int main(void)
   assert(!memcmp(s,&before,sizeof before));
   finish();
  }
- puts("PASS bridge native-window admission: live-source, device/event, budget and memory-dependency guards");
+ puts("PASS scheduler native-window admission guards plus fail-closed bridge boundary");
  return 0;
 }

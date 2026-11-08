@@ -39,10 +39,10 @@ ee_recomp_bridge_result_t ee_recomp_bridge_write16(ee_recomp_bridge_t *,uint32_t
 ee_recomp_bridge_result_t ee_recomp_bridge_write32(ee_recomp_bridge_t *,uint32_t,uint32_t);
 ee_recomp_bridge_result_t ee_recomp_bridge_write64(ee_recomp_bridge_t *,uint32_t,uint64_t);
 ee_recomp_bridge_result_t ee_recomp_bridge_write128(ee_recomp_bridge_t *,uint32_t,const ee_reg128_t *);
-/* Admit a bounded, event-free native EE window through Gekko2's existing
- * scheduler gate. Returns the admitted instruction count, or zero to fall
- * back to the precise interpreter/JIT path. The caller must execute exactly
- * the admitted body immediately after a nonzero return. */
+/* Reserved compatibility entry. Currently fail-closed (always returns 0):
+ * the bridge is not integrated into ee_step_budget()/ee_core_step_n(), and
+ * must not advance EE retirement/clocks outside scheduler-owned accounting.
+ * Use the precise interpreter/JIT path until a scheduler-owned executor exists. */
 unsigned ee_recomp_bridge_begin_native_window(ee_recomp_bridge_t *,uint32_t,
  const uint32_t *,unsigned,unsigned,uint32_t);
 #endif
