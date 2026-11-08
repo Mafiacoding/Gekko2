@@ -58,9 +58,17 @@ int main(void)
  }
  {
   ee_recomp_bridge_t bridge={0};
+  ee_state_t *s=start(0x80200000u,&bridge);
+  assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,arithmetic,4,4,0)==4);
+  assert(s->pc==0x80200010u&&s->instructions_executed==4&&s->cop0[9]==104);
+  finish();
+ }
+ {
+  ee_recomp_bridge_t bridge={0};
   ee_state_t *s=start(0x80200ff8u,&bridge);
-  assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,arithmetic,4,4,0)==2);
-  assert(s->pc==0x80201000u&&s->instructions_executed==2&&s->cop0[9]==102);
+  ee_state_t before=*s;
+  assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,arithmetic,4,4,0)==0);
+  assert(!memcmp(s,&before,sizeof before));
   finish();
  }
  {
