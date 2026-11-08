@@ -196,3 +196,28 @@ exceptions, helpers, COP/FPU/VU or MMIO.
 No guest execution, graphics, scheduler behavior, or Wii behavior changed in
 A5. This is a source audit only; it does not prove external PS2Recomp runtime
 execution or Wii/Dolphin/physical-hardware behavior.
+
+
+## Batch A6 — scheduler integration gate (2026-11-08)
+
+See `docs/PS2RECOMP-SCHEDULER-A6-INTEGRATION-AUDIT.md`.
+
+A6 is **blocked before API implementation** by a call-graph finding: the
+native-window gate is not invoked from the live `ee_core_step_n()` /
+`ee_step_budget()` execution path. It is reached by the bridge and direct
+regression tests only. The live scheduler owns slot accounting through
+`ee_core_interleave_account()`, including the eight-slot IOP boundary and
+event callback progression; native-window admission currently does not
+participate in that accounting.
+
+Do not add a bridge-side two-phase prepare/commit wrapper yet. It would create
+a parallel execution/accounting path and could either double-consume scheduler
+slots or skip IOP/event service. The correct next implementation is to
+integrate a native-block result into the existing `ee_step_budget()` /
+`ee_core_step_n()` flow, keep interleave accounting in the scheduler, and
+only then add a call-scoped prepare/execute/commit contract for a restricted
+integer leaf. Partial exits require generated-code polling at valid
+instruction boundaries.
+
+No runtime, graphics, scheduler or Wii behavior changed in A6. No new CI
+result is claimed for this documentation-only audit.
