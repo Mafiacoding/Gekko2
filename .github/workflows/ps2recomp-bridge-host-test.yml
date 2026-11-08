@@ -1,0 +1,29 @@
+name: PS2Recomp bridge host test
+
+on:
+  pull_request:
+    paths:
+      - "include/core/recompiler/ps2recomp_bridge.h"
+      - "source/core/recompiler/ps2recomp_bridge.c"
+      - "include/core/ee/**"
+      - "source/core/ee/**"
+      - "tests/test_ps2recomp_bridge.c"
+      - "tests/run_test.sh"
+      - ".github/workflows/ps2recomp-bridge-host-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge-host-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up host compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+      - name: Build and run PS2Recomp bridge regression test
+        run: sh tests/run_test.sh test_ps2recomp_bridge
