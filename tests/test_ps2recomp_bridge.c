@@ -24,6 +24,41 @@ int main(void)
  assert(ee_recomp_bridge_write128(&b,0x80000110u,&w128)==EE_RECOMP_BRIDGE_OK);
  assert(ee_recomp_bridge_read128(&b,0x80000110u,&v128)==EE_RECOMP_BRIDGE_OK);
  assert(v128.ud0==w128.ud0&&v128.ud1==w128.ud1);
+
+ /* Versioned read-only integer-leaf snapshot preserves architectural lanes. */
+ {
+  ee_recomp_ee_state_snapshot_t snap;memset(&snap,0,sizeof(snap));
+  s.pc=0x80001000u;s.next_pc=0x80001004u;s.sa_reg=0x12345678u;
+  s.gpr[0].ud0=s.gpr[0].ud1=0;
+  for(unsigned i=1;i<32;i++){
+   s.gpr[i].ud0=0x0123456789abcdefull^(uint64_t)i;
+   s.gpr[i].ud1=0xfedcba9876543210ull^(uint64_t)i;
+  }
+  s.hi.ud0=0x1122334455667788ull;s.hi.ud1=0x99aabbccddeeff00ull;
+  s.lo.ud0=0x8877665544332211ull;s.lo.ud1=0x00ffeeddccbbaa99ull;
+  assert(ee_recomp_bridge_snapshot_integer_leaf(&b,&snap)==EE_RECOMP_BRIDGE_OK);
+  assert(snap.abi_version==EE_RECOMP_EE_STATE_ABI_VERSION);
+  assert(snap.struct_size==sizeof(snap)&&snap.profile==EE_RECOMP_EE_STATE_PROFILE_INTEGER_LEAF);
+  assert(snap.pc==s.pc&&snap.next_pc==s.next_pc&&snap.sa_reg==s.sa_reg);
+  assert(!snap.flags&&!snap.gpr[0].ud0&&!snap.gpr[0].ud1);
+  for(unsigned i=1;i<32;i++)assert(snap.gpr[i].ud0==s.gpr[i].ud0&&snap.gpr[i].ud1==s.gpr[i].ud1);
+  assert(snap.hi.ud0==s.hi.ud0&&snap.hi.ud1==s.hi.ud1);
+  assert(snap.lo.ud0==s.lo.ud0&&snap.lo.ud1==s.lo.ud1);
+  ee_recomp_ee_state_snapshot_t before=snap;
+  s.branch_pending=1;
+  assert(ee_recomp_bridge_snapshot_integer_leaf(&b,&snap)==EE_RECOMP_BRIDGE_UNSUPPORTED_STATE);
+  assert(!memcmp(&snap,&before,sizeof(snap)));
+  s.branch_pending=0;s.next_pc=s.pc+8u;
+  assert(ee_recomp_bridge_snapshot_integer_leaf(&b,&snap)==EE_RECOMP_BRIDGE_UNSUPPORTED_STATE);
+  s.next_pc=s.pc+4u;s.gpr[0].ud1=1;
+  assert(ee_recomp_bridge_snapshot_integer_leaf(&b,&snap)==EE_RECOMP_BRIDGE_UNSUPPORTED_STATE);
+  s.gpr[0].ud1=0;s.exc_in_delay_slot=1;
+  assert(ee_recomp_bridge_snapshot_integer_leaf(&b,&snap)==EE_RECOMP_BRIDGE_UNSUPPORTED_STATE);
+  s.exc_in_delay_slot=0;s.cop0[12]=2;
+  assert(ee_recomp_bridge_snapshot_integer_leaf(&b,&snap)==EE_RECOMP_BRIDGE_UNSUPPORTED_STATE);
+  s.cop0[12]=0;
+ }
+
  /* A host test's detached EE state must never enter the live scheduler
   * window. Refusal is side-effect free and leaves precise execution state. */
  s.pc=0x1000u;s.next_pc=0x1004u;
