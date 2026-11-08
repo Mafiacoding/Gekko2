@@ -1,5 +1,12 @@
 #include "core/recompiler/ps2recomp_bridge.h"
+#include <stddef.h>
 #include <string.h>
+
+_Static_assert(sizeof(ee_reg128_t)==16u,"EE snapshot register lane ABI changed");
+_Static_assert(offsetof(ee_recomp_ee_state_snapshot_t,gpr)==32u,"EE snapshot header layout changed");
+_Static_assert(offsetof(ee_recomp_ee_state_snapshot_t,hi)==544u,"EE snapshot HI offset changed");
+_Static_assert(offsetof(ee_recomp_ee_state_snapshot_t,lo)==560u,"EE snapshot LO offset changed");
+_Static_assert(sizeof(ee_recomp_ee_state_snapshot_t)==576u,"EE snapshot ABI size changed");
 static ee_state_t *bridge_state(ee_recomp_bridge_t *b)
 {
  if(ee_recomp_bridge_validate(b)!=EE_RECOMP_BRIDGE_OK)return 0;
