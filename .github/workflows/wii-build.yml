@@ -1,0 +1,56 @@
+name: Wii build (devkitPPC)
+
+# Clean cross-builds with the official devkitPro toolchain image. The image is
+# pinned by digest so CI is reproducible; update the digest together with
+# docs/WII-TOOLCHAIN-2026.md. Host-native or Unicorn-modelled results are not
+# evidence of physical Wii behaviour.
+on:
+  pull_request:
+    paths:
+      - "Makefile"
+      - "source/**"
+      - "include/**"
+      - "third_party/**"
+      - "arm/**"
+      - "tools/build_*.sh"
+      - "tools/elf2dol.*"
+      - "tools/verify_wii_*.py"
+      - "tools/*_aot_generate.py"
+      - "docs/WII-TOOLCHAIN-2026.md"
+      - ".github/workflows/wii-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wii-build:
+    runs-on: ubuntu-latest
+    container:
+      # devkitpro/devkitppc: devkitPPC r51, GCC 16.2.0, binutils 2.47, libogc 3.2.1
+      image: devkitpro/devkitppc@sha256:04bab308c032848c1ca5a09c02b4aaa4d505efd7996aab05b9a4eb15231b2868
+    env:
+      DEVKITPRO: /opt/devkitpro
+      DEVKITPPC: /opt/devkitpro/devkitPPC
+      GEKKO2_EXPECT_GCC: "16.2.0"
+      GEKKO2_EXPECT_LIBOGC: "3.2.1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Record installed toolchain packages
+        run: |
+          set -e
+          ls "$DEVKITPRO/pacman/var/lib/pacman/local" | grep -E '^(devkitPPC|devkitppc-(gcc|binutils|newlib)|libogc|libfat-ogc)-' | sort
+          "$DEVKITPPC/bin/powerpc-eabi-gcc" --version | head -1
+      - name: Clean default and AOT/DSI option builds
+        run: bash tools/build_wii_toolchain.sh
+      - name: Linked-PPC verification (modelled hardware, not a Wii)
+        run: |
+          set -e
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends python3-venv python3-pip
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet unicorn
+          export PATH="$DEVKITPPC/bin:$PATH"
+          /tmp/venv/bin/python tools/verify_wii_system_r1330i.py --nm powerpc-eabi-nm Gekko2-R1389-DSI.elf
+          /tmp/venv/bin/python tools/verify_wii_perf_r1330i.py --nm powerpc-eabi-nm Gekko2-R1389-DSI.elf
