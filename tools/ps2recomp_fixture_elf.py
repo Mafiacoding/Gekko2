@@ -178,7 +178,57 @@ FUNCTIONS_A16 = [
         _i(0x25, 4, 10, 0),          # lhu t2,0(a0)  (base not constant)
     ]),
 ]
-SETS = {'a16': FUNCTIONS_A16, 'a15': FUNCTIONS_A15, 'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
+# Batch A17: conditional branches inside one function (beq/bne/blez/bgtz), delay slots, loop.
+FUNCTIONS_A17 = [
+    ('a17_loop', 0x00100000, [
+        _i(0x09, 0, 8, 5),           # addiu t0,zero,5
+        _i(0x09, 8, 8, -1),          # L: addiu t0,t0,-1
+        _i(0x09, 9, 9, 1),           # addiu t1,t1,1
+        _i(0x05, 8, 0, -3),          # bne  t0,zero,L (offset: target = pc+4-12)
+        0x00000000,                  # nop (delay slot, elided)
+        JR_RA,                       # jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a17_skip_slot', 0x0010001c, [
+        _i(0x04, 4, 5, 2),           # beq  a0,a1,end (target = pc+4+8)
+        _i(0x09, 2, 2, 1),           # addiu v0,v0,1 (delay slot, executed either way)
+        _i(0x09, 3, 3, 7),           # addiu v1,v1,7 (skipped when taken)
+        _i(0x09, 3, 3, 9),           # addiu v1,v1,9
+        JR_RA,                       # end: jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a17_blez_bgtz', 0x00100034, [
+        _i(0x06, 4, 0, 2),           # blez a0,L1
+        0x00000000,                  # nop
+        _i(0x09, 2, 2, 100),         # addiu v0,v0,100
+        _i(0x07, 5, 0, 2),           # L1: bgtz a1,L2
+        _i(0x09, 3, 3, 1),           # addiu v1,v1,1 (delay slot)
+        _i(0x09, 3, 3, 50),          # addiu v1,v1,50
+        JR_RA,                       # L2: jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a17_back_slot', 0x00100054, [
+        _i(0x09, 8, 8, -1),          # L: addiu t0,t0,-1 (branch target is the function start)
+        _i(0x05, 8, 0, -2),          # bne  t0,zero,L
+        _i(0x09, 9, 9, 1),           # addiu t1,t1,1 (delay slot, executed on every iteration)
+        JR_RA,                       # jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a17_uncond', 0x00100068, [      # negative fixtures: not accepted by the parser
+        _i(0x04, 0, 0, 2),           # beq  zero,zero,L (unconditional)
+        0x00000000,                  # nop
+        _i(0x09, 2, 2, 1),           # addiu v0,v0,1
+        JR_RA,                       # L: jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a17_external', 0x0010007c, [
+        _i(0x05, 4, 0, 0x30),        # bne a0,zero,<outside the function>
+        0x00000000,                  # nop
+        JR_RA,                       # jr ra
+        0x00000000,                  # nop
+    ]),
+]
+SETS = {'a17': FUNCTIONS_A17, 'a16': FUNCTIONS_A16, 'a15': FUNCTIONS_A15, 'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
 
 
 def build(functions=FUNCTIONS):

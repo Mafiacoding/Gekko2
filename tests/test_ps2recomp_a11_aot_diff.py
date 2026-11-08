@@ -19,6 +19,8 @@ FIXTURES = [  # (fixture dir, generated function names). One AOT table per fixtu
                               'a13_plain_hex_0x100024', 'a13_ra_slot_0x10002c', 'a13_nop_alias_slot_0x100038']),
     ('ps2recomp_a15', 'a15', ['a15_lw_sw_0x100000', 'a15_alias_0x100020', 'a15_ret_store_slot_0x10002c',
                               'a15_ret_load_slot_0x100038']),
+    ('ps2recomp_a17', 'a17', ['a17_loop_0x100000', 'a17_skip_slot_0x10001c', 'a17_blez_bgtz_0x100034',
+                              'a17_back_slot_0x100054', 'a17_uncond_0x100068']),
     ('ps2recomp_a16', 'a16', ['a16_byte_0x100000', 'a16_half_0x100020', 'a16_alias_0x100040',
                               'a16_ret_store_slot_0x100050', 'a16_ret_load_slot_0x10005c']),
 ]
@@ -34,7 +36,7 @@ def dest_mask(words):
     mask = 0
     for w in words:
         op, rt, rd = w >> 26, w >> 16 & 31, w >> 11 & 31
-        if op in (0x28, 0x29, 0x2b):  # sb/sh/sw: no register destination
+        if op in (4, 5, 6, 7, 0x28, 0x29, 0x2b):  # branches, sb/sh/sw: no register destination
             continue
         mask |= 1 << (rt if 9 <= op <= 15 or op in (0x20, 0x21, 0x23, 0x24, 0x25) else rd) if w else 0
     return mask & ~1  # $zero is never a changeable destination
@@ -62,15 +64,15 @@ for fixture, elf_set, names, bound in [(f, e, n, b) for f, e, n in FIXTURES for 
             # The parsed words are the source of truth; the ELF words are what the
             # guest really contains. They may differ only in an inferred NOP slot.
             diff = [i for i, (a, b) in enumerate(zip(ram, r['words'])) if a != b]
-            assert not diff or (r['inferred_nop_slot'] and diff == [len(ram) - 1]), (r['name'], diff)
+            assert not diff or (r['inferred_nop_slot'] and set(diff) <= set(r['inferred_slot_indexes'])), (r['name'], diff)
             assert not bound or not diff
             pad = lambda ws: ','.join(f'UINT32_C(0x{w:08x})' for w in ws) + ',' + ','.join(['0'] * (32 - len(ws)))
             rows.append(f'{{UINT32_C(0x{r["start"]:08x}),{len(r["words"])}u,UINT32_C(0x{dest_mask(r["words"]):x}),'
-                        f'{int(r["terminal"] == "jr_ra")}u,{int(any(w >> 26 in (0x20, 0x21, 0x23, 0x24, 0x25, 0x28, 0x29, 0x2b) for w in r["words"]))}u,{{{pad(r["words"])}}},{{{pad(ram)}}}}}')
+                        f'{int(r["terminal"] == "jr_ra")}u,{int(any(b["backward"] for b in r.get("branches", [])))}u,{len(r.get("blocks") or [1])}u,{int(any(w >> 26 in (0x20, 0x21, 0x23, 0x24, 0x25, 0x28, 0x29, 0x2b) for w in r["words"]))}u,{{{pad(r["words"])}}},{{{pad(ram)}}}}}')
         (gen / 'a11_fixtures.h').write_text(
-            '#include <stdint.h>\ntypedef struct{uint32_t pc;unsigned count;uint32_t dest_mask;unsigned jr_ra;unsigned memory;uint32_t words[32];uint32_t ram[32];}a11_fixture;\n'
+            '#include <stdint.h>\ntypedef struct{uint32_t pc;unsigned count;uint32_t dest_mask;unsigned jr_ra;unsigned loop;unsigned blocks;unsigned memory;uint32_t words[32];uint32_t ram[32];}a11_fixture;\n'
             'static const a11_fixture a11_fixtures[]={' + ','.join(rows) + '};\n'
-            'static const unsigned a11_fixture_count=%du;\n' % len(rows))
+            'static const unsigned a11_fixture_count=%du;\nstatic const unsigned a11_block_count=%du;\n' % (len(rows), sum(len(r.get('blocks') or [1]) for r in results)))
         saved = sys.argv
         sys.argv = ['tools/build_host_core.py']
         try:

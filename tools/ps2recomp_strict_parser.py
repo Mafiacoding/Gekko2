@@ -184,15 +184,37 @@ def parse_function(source, name):
     preamble = ['#ifdef PS2_FUNCTION_LOG_TRACKER', f'PS_LOG_ENTRY("{name}");', '#endif']
     if body[:3] == preamble:
         pos = 3
+    resume_cases = []
+    if pos < len(body) and body[pos] == 'switch (ctx->pc) {':
+        pos += 1
+        while pos < len(body) and (cm := re.match(r'^case (0x[0-9a-f]+)u: goto label_([0-9a-f]+);$', body[pos])):
+            value = _parse_hex(cm.group(1), 'resume case')
+            if int(cm.group(2), 16) != value:
+                _fail('resume case and label disagree')
+            resume_cases.append(value)
+            pos += 1
+        if body[pos:pos + 2] != ['default: break;', '}'] or not resume_cases or resume_cases != sorted(set(resume_cases)):
+            _fail('resume switch differs from the pinned upstream shape')
+        pos += 2
     if pos >= len(body) or PC_ASSIGN.match(body[pos]) is None or \
             _parse_hex(PC_ASSIGN.match(body[pos]).group(1), 'entry pc') != start:
         _fail('entry "ctx->pc = start" missing or wrong')
     pos += 1
     words = []
     terminal = None
-    inferred_slot = False
+    inferred_slots = []          # word indexes whose NOP delay slot upstream elided
+    branches = []                # dict(addr, target, backward)
+    labels = []                  # addresses with a label line
+    slot_addrs = set()
     address = start
+    pending_label = None
     while address < end and terminal is None:
+        if pos < len(body) and LABEL_LINE.match(body[pos]):
+            lab = int(LABEL_LINE.match(body[pos]).group(1), 16)
+            if lab != address or body[pos] != f'label_{address:x}:':
+                _fail(f'label does not sit at its instruction address {_canon(address)}')
+            labels.append(address)
+            pos += 1
         if pos + 3 > len(body):
             _fail('body ends before the declared address range')
         c = INSTR_COMMENT.match(body[pos])
@@ -205,10 +227,22 @@ def parse_function(source, name):
             pos, slot = _parse_jr_ra(body, pos, c, address, end)
             words.append(word)
             words.append(slot[0])
-            inferred_slot = slot[1]
+            if slot[1]:
+                inferred_slots.append(len(words) - 1)
+            slot_addrs.add(address + 4)
             terminal = 'jr_ra'
             address += 8
             break
+        if word >> 26 in COND_BRANCH:
+            pos, info, slot = _parse_branch(body, pos, c, word, address, start, end)
+            words.append(word)
+            words.append(slot[0])
+            if slot[1]:
+                inferred_slots.append(len(words) - 1)
+            slot_addrs.add(address + 4)
+            branches.append(info)
+            address += 8
+            continue
         p = PC_ASSIGN.match(body[pos + 1])
         if not p or _parse_hex(p.group(1), 'ctx->pc') != address:
             _fail(f'ctx->pc does not match instruction address {_canon(address)}')
@@ -233,9 +267,124 @@ def parse_function(source, name):
     pos += 1
     if pos != len(body):
         _fail('unexplained extra statements in function body')
-    return {'name': name, 'start': start, 'end': end, 'words': words, 'terminal': terminal,
-            'inferred_nop_slot': inferred_slot,
-            'source_sha256': hashlib.sha256(source.encode()).hexdigest()}
+    if branches:
+        if terminal != 'jr_ra':
+            _fail('a function with conditional branches must end in jr $ra')
+        targets = {b['target'] for b in branches}
+        if sorted(labels) != sorted(targets) or len(labels) != len(set(labels)):
+            _fail('labels do not match the branch targets exactly')
+        if targets & slot_addrs:
+            _fail('a branch targets a delay-slot address')
+        want_resume = sorted(b['target'] for b in branches if b['backward'] and b['target'] != start)
+        if sorted(set(want_resume)) != resume_cases:
+            _fail('resume switch does not list exactly the backward-branch targets')
+    elif labels or resume_cases:
+        _fail('labels or a resume switch without a branch')
+    result = {'name': name, 'start': start, 'end': end, 'words': words, 'terminal': terminal,
+              'inferred_nop_slot': bool(inferred_slots), 'inferred_slot_indexes': inferred_slots,
+              'branches': branches, 'labels': sorted(labels),
+              'source_sha256': hashlib.sha256(source.encode()).hexdigest()}
+    result['blocks'] = basic_blocks(result)
+    return result
+
+
+def basic_blocks(result):
+    """Split the flat word list into AOT blocks: entry at the function start, every
+    label and every fall-through after a branch+slot; each block ends after its
+    terminal (branch/jr plus slot) or before the next entry."""
+    start, words = result['start'], result['words']
+    cuts = {start} | set(result['labels'])
+    pcs, terminals = [], set()
+    address = start
+    i = 0
+    while i < len(words):
+        pcs.append(address)
+        w = words[i]
+        if w == JR_RA or w >> 26 in COND_BRANCH:
+            terminals.add(address)
+            cuts.add(address + 8)
+            address += 8
+            i += 2
+            pcs.append(address - 4)
+        else:
+            address += 4
+            i += 1
+    blocks, current, current_pc = [], [], None
+    skip = False
+    j = 0
+    address = start
+    while j < len(words):
+        if address in cuts and current:
+            blocks.append((current_pc, current))
+            current = []
+        if not current:
+            current_pc = address
+        take = 2 if address in terminals else 1
+        current.extend(words[j:j + take])
+        j += take
+        address += 4 * take
+        if take == 2:
+            blocks.append((current_pc, current))
+            current = []
+    if current:
+        blocks.append((current_pc, current))
+    for pc, ws in blocks:
+        if len(ws) > MAX_WORDS:
+            _fail(f'block at {_canon(pc)} exceeds the {MAX_WORDS}-word AOT limit')
+    return blocks
+
+
+COND_BRANCH = (4, 5, 6, 7)  # beq bne blez bgtz (no likely/link/REGIMM forms yet)
+LABEL_LINE = re.compile(r'^label_([0-9a-f]+):$')
+BRANCH_NAMES = {4: ('beq', 'beqz', 'b'), 5: ('bne', 'bnez'), 6: ('blez',), 7: ('bgtz',)}
+
+
+def _parse_branch(body, pos, comment, word, address, start, end):
+    """Validate one upstream conditional branch block; return (pos, info, (slot word, inferred))."""
+    op, rs, rt = word >> 26, word >> 21 & 31, word >> 16 & 31
+    if op in (6, 7) and rt != 0:
+        _fail('reserved rt field nonzero in blez/bgtz')
+    disassembly = comment.group(3)
+    if disassembly is not None and disassembly.split(' ')[0] not in BRANCH_NAMES[op]:
+        _fail('disassembly mnemonic disagrees with the branch word')
+    target = (address + 4 + (((word & 0xffff) ^ 0x8000) - 0x8000) * 4) & 0xffffffff
+    if target & 3 or not start <= target < end:
+        _fail('branch target is outside the function (external jumps are not supported)')
+    backward = target <= address
+    cond = {4: f'(GPR_U64(ctx, {rs}) == GPR_U64(ctx, {rt}))', 5: f'(GPR_U64(ctx, {rs}) != GPR_U64(ctx, {rt}))',
+            6: f'(GPR_S32(ctx, {rs}) <= 0)', 7: f'(GPR_S32(ctx, {rs}) > 0)'}[op]
+    J, S, T, AFTER = (f'0x{address:X}', f'0x{address + 4:X}', f'0x{target:X}', f'0x{address + 8:X}')
+    taken = f'branch_taken_0x{address:x}'
+    cursor = pos + 1
+    head = [f'ctx->pc = {J}u;', '{', f'const bool {taken} = {cond};']
+    if body[cursor:cursor + 3] != head:
+        _fail('branch block head differs from the pinned upstream emitter')
+    cursor += 3
+    slot_word, inferred = 0, True
+    if cursor < len(body) and body[cursor] == f'ctx->pc = {S}u;':
+        if body[cursor + 1:cursor + 3] != ['ctx->in_delay_slot = true;', f'ctx->branch_pc = {J}u;']:
+            _fail('delay-slot prologue differs from the pinned upstream emitter')
+        m = SLOT_COMMENT.match(body[cursor + 3]) if cursor + 3 < len(body) else None
+        if not m or _parse_hex(m.group(1), 'slot pc') != address + 4:
+            _fail('delay-slot comment missing or at the wrong address')
+        slot_word = _parse_hex(m.group(2), 'slot word')
+        if slot_word == 0:
+            _fail('upstream elides a NOP delay slot; a decoded NOP slot is inconsistent')
+        mnemonic, statement = expected_statement(slot_word)
+        if m.group(3) is not None and m.group(3).split(' ')[0] != mnemonic:
+            _fail('delay-slot disassembly mnemonic disagrees with its raw word')
+        if body[cursor + 4:cursor + 6] != [statement, 'ctx->in_delay_slot = false;']:
+            _fail('delay-slot statement differs from the decoded instruction')
+        cursor += 6
+        inferred = False
+    tail = [f'if ({taken}) {{', f'ctx->pc = {T}u;']
+    if backward:
+        tail += ['if (runtime->eeCheckpointDue()) {', 'return;', '}']
+    tail += [f'goto label_{target:x};', '}', '}', f'ctx->pc = {AFTER}u;']
+    if body[cursor:cursor + len(tail)] != tail:
+        _fail('branch block tail differs from the pinned upstream emitter')
+    info = {'addr': address, 'target': target, 'backward': backward, 'kind': ('beq', 'bne', 'blez', 'bgtz')[op - 4]}
+    return cursor + len(tail), info, (slot_word, inferred)
 
 
 JR_RA = 0x03e00008  # jr $ra (rd = 0, shamt = 0)
@@ -344,10 +493,10 @@ def bind_to_elf(result, elf_path):
     actual = list(struct.unpack_from(f'<{(end - start) // 4}I', blob, start - base))
     words = list(result['words'])
     slot_source = 'source'
-    if result['inferred_nop_slot']:
-        if not _guest_nop(actual[-1]):
-            _fail('source elides the delay slot but the ELF slot word is not a guest NOP')
-        words[-1] = actual[-1]
+    for index in result.get('inferred_slot_indexes', [len(words) - 1] if result['inferred_nop_slot'] else []):
+        if not _guest_nop(actual[index]):
+            _fail('source elides a delay slot but the ELF slot word is not a guest NOP')
+        words[index] = actual[index]
         slot_source = 'elf'
     if words != actual:
         index = next(i for i, (a, b) in enumerate(zip(words, actual)) if a != b)
@@ -356,8 +505,10 @@ def bind_to_elf(result, elf_path):
     if symbols and all(sz != end - start for _, sz, _ in symbols):
         _fail('ELF FUNC symbol size disagrees with the generated address range')
     bound = dict(result)
-    bound.update({'words': words, 'inferred_nop_slot': False, 'slot_source': slot_source,
+    bound.update({'words': words, 'inferred_nop_slot': False, 'inferred_slot_indexes': [], 'slot_source': slot_source,
                   'elf_sha256': hashlib.sha256(data).hexdigest(), 'elf_symbol_checked': bool(symbols)})
+    if 'labels' in bound:
+        bound['blocks'] = basic_blocks(bound)
     return bound
 
 
@@ -372,7 +523,9 @@ def write_private_build(results, directory):
     (directory / 'report.private.json').write_text(json.dumps(report, indent=2) + '\n')
     # Words stay in the private directory only (verifier input for linked-PPC checks).
     (directory / 'functions.private.json').write_text(json.dumps({'blocks': [
-        {'name': r['name'], 'pc': r['start'], 'words': r['words'], 'terminal': r.get('terminal')}
+        {'name': r['name'], 'pc': r['start'], 'words': r['words'], 'terminal': r.get('terminal'),
+         'loop': any(b['backward'] for b in r.get('branches', [])),
+         'blocks': [{'pc': pc, 'words': ws} for pc, ws in (r.get('blocks') or [])]}
         for r in results]}, indent=2) + '\n')
     for path in directory.rglob('*'):
         os.chmod(path, 0o700 if path.is_dir() else 0o600)
@@ -386,7 +539,8 @@ def lower(results, output, complex_output=None):
     functions become distinct AOT entries keyed by their verified start PC).
     """
     results = [results] if isinstance(results, dict) else list(results)
-    manifest = {'blocks': [{'pc': r['start'], 'words': r['words']} for r in results]}
+    manifest = {'blocks': [{'pc': pc, 'words': ws} for r in results
+                           for pc, ws in (r.get('blocks') or [(r['start'], r['words'])])]}
     manifest_path = Path(str(output) + '.manifest.json')
     manifest_path.write_text(json.dumps(manifest))
     try:
@@ -405,6 +559,8 @@ def lower(results, output, complex_output=None):
                            'instructions': len(r['words']),
                            'source_sha256': r['source_sha256'],
                            'terminal': r.get('terminal'),
+                           'blocks': len(r.get('blocks') or [1]),
+                           'branches': len(r.get('branches') or []),
                            'slot_source': r.get('slot_source', 'inferred' if r.get('inferred_nop_slot') else 'source'),
                            'elf_sha256': r.get('elf_sha256'),
                            'elf_symbol_checked': r.get('elf_symbol_checked')} for r in results],

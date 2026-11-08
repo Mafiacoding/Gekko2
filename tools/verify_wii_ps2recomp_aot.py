@@ -41,11 +41,20 @@ def setup_function(f,words,gprs,ra):
  word(state+off['pc'],start);word(state+off['next_pc'],start+4)
  u.mem_write(state+off['instructions_executed'],bytes(8))
  return start
-def run_mode(f,words,gprs,budget,aot,seed=0,tolerant=False):
+def exit_pc(f,words,gprs):return gprs[31][0]&0xffffffff if f.get('terminal')=='jr_ra' else f['pc']+4*len(words)
+def probe_total(f,words,gprs,seed=0):
+ # Interpreter single-steps until the function exits (loops make the count dynamic).
+ set_mask(0);setup_function(f,words,gprs,None)
+ if is_memory(words):fill_data(seed)
+ target=exit_pc(f,words,gprs);n=0
+ while int.from_bytes(bytes(u.mem_read(state+off['pc'],4)),'big')!=target:
+  assert call('ee_core_step_n',1)==1 and n<200000,('function did not exit',f['name']);n+=1
+ return n
+def run_mode(f,words,gprs,budget,aot,seed=0,tolerant=False,total=None):
  set_mask(9 if aot else 0)
  start=setup_function(f,words,gprs,None)
  if is_memory(words):fill_data(seed)
- before=retired_native();done=0;count=len(words);gots=[]
+ before=retired_native();done=0;count=len(words) if total is None else total;gots=[]
  while done<count:
   n=min(budget,count-done);got=call('ee_core_step_n',n);gots.append(got)
   if not tolerant:assert got==n,(f['name'],budget,n,got)
@@ -55,16 +64,18 @@ def run_mode(f,words,gprs,budget,aot,seed=0,tolerant=False):
  return snapshot,retired_native()-before
 rng=random.Random(0xa15)
 patterns=[lambda r:0,lambda r:(1<<64)-1,lambda r:0x8000000080000000,lambda r:0x7fffffff,lambda r:rng.getrandbits(64)]
-sig=hashlib.sha256();cases=0;native_total=0;mod_faults=0;align_faults=0
+sig=hashlib.sha256();cases=0;native_total=0;dyn=0;mod_faults=0;align_faults=0
 for f in functions:
  words=f['words'];count=len(words)
  for trial in range(12):
   gprs=[(0,0)]+[(patterns[trial%5](r),rng.getrandbits(64)) for r in range(1,32)]
+  if f.get('loop'):gprs[8]=(1+(rng.getrandbits(3)),gprs[8][1])  # bounded trip count
   if is_memory(words):gprs[4]=(BASES[0][0],gprs[4][1]);gprs[5]=(BASES[0][1],gprs[5][1]);gprs[6]=(BASES[0][2],gprs[6][1])
   if f.get('terminal')=='jr_ra':gprs[31]=(0x80000000|(rng.getrandbits(21)&~3),rng.getrandbits(64))
-  for budget in sorted({count,1,2,max(1,count-1)}):
-   old,_=run_mode(f,words,gprs,budget,False,trial)
-   new,native=run_mode(f,words,gprs,budget,True,trial)
+  total=probe_total(f,words,gprs,trial);dyn=max(dyn,total)
+  for budget in sorted({total,1,2,max(1,total-1)}):
+   old,_=run_mode(f,words,gprs,budget,False,trial,False,total)
+   new,native=run_mode(f,words,gprs,budget,True,trial,False,total)
    assert native>0,('AOT block did not execute natively',f['name'],budget)
    assert old==new,('PPC interpreter/AOT state mismatch',f['name'],trial,budget)
    native_total+=native;sig.update(new[0]);cases+=1
@@ -86,6 +97,7 @@ for f in functions:
  set_mask(9);setup_function(f,mutated,gprs,None);fill_data(3);call('ee_core_step_n',count)
  assert bytes(u.mem_read(state,size))+bytes(u.mem_read(ram+DATA,DATA_SIZE))==ref,('stale AOT executed',f['name']);cases+=1
 assert mod_faults or not any(has_store(f['words']) for f in functions),'no TLB Modified fault observed'
+print(f'max dynamic retirement per run: {dyn}')
 print(f'observed: {mod_faults} TLB-Modified faults, {align_faults} address-error faults on misaligned access (PPC run)')
 print('PS2RECOMP_AOT_PPC_SIGNATURE '+sig.hexdigest())
 print(f'PASS {cases} PPC interpreter/AOT comparisons over {len(functions)} ELF-bound functions ({native_total} natively retired instructions), under Unicorn PPC model')

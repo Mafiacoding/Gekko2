@@ -18,6 +18,7 @@ on:
       - "tests/test_ee_exec_lifecycle.c"
       - "experiments/ps2recomp-wii/**"
       - "tools/ee_aot_generate.py"
+      - "tools/check_crash_files_unchanged.sh"
       - "tools/ps2recomp_strict_parser.py"
       - "tools/ps2recomp_fixture_elf.py"
       - "tests/test_ps2recomp_strict_parser.py"
@@ -28,6 +29,7 @@ on:
       - "tests/fixtures/ps2recomp_a13/**"
       - "tests/fixtures/ps2recomp_a15/**"
       - "tests/fixtures/ps2recomp_a16/**"
+      - "tests/fixtures/ps2recomp_a17/**"
       - "tools/build_host_core.py"
       - "tests/run_test.sh"
       - ".github/workflows/ps2recomp-bridge-host-test.yml"
@@ -42,6 +44,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Protected Crash E3 sources must equal the preserved snapshot
+        run: |
+          git fetch --no-tags origin preserve/crash-e3-vu-runtime-20261108:refs/remotes/origin/preserve/crash-e3-vu-runtime-20261108
+          bash tools/check_crash_files_unchanged.sh
       - name: Set up host compiler
         run: |
           sudo apt-get update

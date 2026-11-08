@@ -413,3 +413,12 @@ See `docs/PS2RECOMP-A16-BYTE-HALF.md` and `docs/CRASH-FIX-PRESERVATION-AND-A15-I
 (unhinted form). Host and modelled-PPC differentials include misaligned, MMIO, unmapped-KUSEG and
 write-protected-page (TLB Modified) cases. Gekko2's core raises no address error on misaligned
 accesses (unchanged). Host + Unicorn evidence only.
+
+
+## Batch A17 — conditional branches inside a function (2026-11-08)
+
+Works on `codex/ps2recomp-a17-branches` (based on `integration/crash-e3-plus-a15`; see
+`docs/BRANCH-MAP-2026-11-08.md`). See `docs/PS2RECOMP-A17-COND-BRANCHES.md`. beq/bne/blez/bgtz to in-function
+targets, delay slots and elided NOP slots, loops (resume switch, `eeCheckpointDue`), lowering as one AOT
+block per basic block. Crash files unchanged (`tools/check_crash_files_unchanged.sh`). Host + Unicorn
+evidence only.

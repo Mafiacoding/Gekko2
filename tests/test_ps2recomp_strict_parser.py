@@ -211,7 +211,7 @@ class RejectTests(unittest.TestCase):
         # by the decoder (fragment check), not merely by a statement mismatch.
         for word in (0x40086000, 0x46020000, 0x4a000028, 0x70411028, 0x00094c02, 0x00094c03,
                      0x00494022, 0x01095020, 0x0109502d, 0x0109502c, 0x01095018, 0x01095010,
-                     0x0109000b, 0x68000000, 0x1c000000):
+                     0x0109000b, 0x68000000, 0x50000000):
             self.rejects(render('f_0x1000', 0x1000, [(word, 'x', 'SET_GPR_S32(ctx, 8, 0);')]),
                          fragment='outside the supported subset')
 
@@ -832,6 +832,146 @@ class A16Tests(unittest.TestCase):
         load_slot = p.parse_function(GOLDEN16, 'a16_ret_load_slot_0x10005c')
         self.assertEqual((store_slot['words'][-1] >> 26, load_slot['words'][-1] >> 26), (0x28, 0x25))
         self.assertFalse(store_slot['inferred_nop_slot'] or load_slot['inferred_nop_slot'])
+
+
+GOLDEN17 = (ROOT / 'tests/fixtures/ps2recomp_a17/ps2_recompiled_functions.cpp').read_text()
+A17 = ['a17_loop_0x100000', 'a17_skip_slot_0x10001c', 'a17_blez_bgtz_0x100034', 'a17_back_slot_0x100054',
+       'a17_uncond_0x100068']
+A17_NAMES = ['a17_loop_0x100000', 'a17_skip_slot_0x10001c', 'a17_blez_bgtz_0x100034', 'a17_back_slot_0x100054',
+             'a17_uncond_0x100068', 'a17_external_0x10007c']
+
+
+def fn_text(text, name):
+    lines, first, close = span(text, name)
+    return lines[first - 2:close + 1]
+
+
+class A17Tests(unittest.TestCase):
+    def test_provenance_and_builder(self):
+        prov = json.loads((ROOT / 'tests/fixtures/ps2recomp_a17/PROVENANCE.json').read_text())
+        self.assertEqual(prov['output']['sha256'], hashlib.sha256(GOLDEN17.encode()).hexdigest())
+        self.assertEqual(prov['input_elf']['sha256'], hashlib.sha256(fx.build(fx.FUNCTIONS_A17)).hexdigest())
+
+    def test_golden_branch_functions(self):
+        expect = {'a17_loop_0x100000': ([(0x10000c, 0x100004, True)], [(0x100000, 1), (0x100004, 4), (0x100014, 2)]),
+                  'a17_skip_slot_0x10001c': ([(0x10001c, 0x100028, False)], [(0x10001c, 2), (0x100024, 1), (0x100028, 3)]),
+                  'a17_blez_bgtz_0x100034': ([(0x100034, 0x100040, False), (0x100040, 0x10004c, False)],
+                                             [(0x100034, 2), (0x10003c, 1), (0x100040, 2), (0x100048, 1), (0x10004c, 2)]),
+                  'a17_back_slot_0x100054': ([(0x100058, 0x100054, True)], [(0x100054, 3), (0x100060, 2)]),
+                  'a17_uncond_0x100068': ([(0x100068, 0x100074, False)], [(0x100068, 2), (0x100070, 1), (0x100074, 2)])}
+        for (name, start, words), key in zip(fx.FUNCTIONS_A17, A17_NAMES):
+            if key not in expect:
+                continue
+            r = p.parse_function(GOLDEN17, key)
+            self.assertEqual([(b['addr'], b['target'], b['backward']) for b in r['branches']], expect[key][0])
+            self.assertEqual([(pc, len(ws)) for pc, ws in r['blocks']], expect[key][1])
+            self.assertEqual(r['terminal'], 'jr_ra')
+            # Elided NOP slots are inferred as word 0; everything else is the ELF word.
+            for i, (a, b) in enumerate(zip(words, r['words'])):
+                self.assertTrue(a == b or i in r['inferred_slot_indexes'], (key, i))
+
+    def test_external_branch_rejected_real_output(self):
+        self.assertIn('ctx->pc = 0x100140u;\n            return;', GOLDEN17)
+        with self.assertRaises(p.ParseError) as ctx:
+            p.parse_function(GOLDEN17, 'a17_external_0x10007c')
+        self.assertIn('outside the function', str(ctx.exception))
+
+    def test_elf_binding_resolves_every_elided_slot(self):
+        elf = Path(tempfile.mkdtemp()) / 'a17.elf'
+        elf.write_bytes(fx.build(fx.FUNCTIONS_A17))
+        for (name, start, words), key in zip(fx.FUNCTIONS_A17, A17_NAMES):
+            if key not in A17:
+                continue
+            b = p.bind_to_elf(p.parse_function(GOLDEN17, key), elf)
+            self.assertEqual(b['words'], words)
+            self.assertEqual(sum(len(ws) for _, ws in b['blocks']), len(words))
+        bad = bytearray(elf.read_bytes())
+        # ELF slot of the first branch in a17_loop (word 4) must be a guest NOP.
+        bad[84 + 4 * 4:84 + 4 * 4 + 4] = (0x24020001).to_bytes(4, 'little')
+        (elf.parent / 'bad.elf').write_bytes(bad)
+        with self.assertRaises(p.ParseError):
+            p.bind_to_elf(p.parse_function(GOLDEN17, 'a17_loop_0x100000'), elf.parent / 'bad.elf')
+
+    def test_every_line_edit_rejected(self):
+        for key in A17:
+            fn = fn_text(GOLDEN17, key)
+            for i in range(3, len(fn) - 1):
+                if not fn[i].strip():
+                    continue
+                for variant in (fn[:i] + fn[i + 1:], fn[:i] + ['    int x = 0;'] + fn[i:]):
+                    with self.assertRaises(p.ParseError, msg=f'{key}: {fn[i].strip()}'):
+                        p.parse_function('\n'.join(variant) + '\n', key)
+
+    def test_exhaustive_number_mutation_branches(self):
+        import re
+        total = 0
+        for key in A17:
+            lines, first, close = span(GOLDEN17, key)
+            for i in range(first, close):
+                line = lines[i]
+                if line.lstrip().startswith('// Function:'):
+                    continue
+                for m in re.finditer(r'0x[0-9A-Fa-f]+|(?<![A-Za-z_0-9])\d+(?![A-Za-z_0-9])', line):
+                    if line.lstrip().startswith('// 0x') and m.start() > line.index(':', 5) + 14 + 2:
+                        continue
+                    token = m.group()
+                    repl = token[:-1] + ('0' if token[-1] != '0' else '1') if token.startswith('0x') else str(int(token) + 1)
+                    mutated = lines[:]
+                    mutated[i] = line[:m.start()] + repl + line[m.end():]
+                    total += 1
+                    try:
+                        p.parse_function('\n'.join(mutated), key)
+                    except p.ParseError:
+                        continue
+                    self.fail(f'mutation accepted in {key}: {line.strip()} -> {mutated[i].strip()}')
+        self.assertGreater(total, 150)
+
+    def test_semantic_tamper_rejected(self):
+        loop = '\n'.join(fn_text(GOLDEN17, 'a17_loop_0x100000'))
+        skip = '\n'.join(fn_text(GOLDEN17, 'a17_skip_slot_0x10001c'))
+        blez = '\n'.join(fn_text(GOLDEN17, 'a17_blez_bgtz_0x100034'))
+        cases = [
+            (loop, 'a17_loop_0x100000', 'GPR_U64(ctx, 8) != GPR_U64(ctx, 0)', 'GPR_U64(ctx, 8) == GPR_U64(ctx, 0)'),
+            (loop, 'a17_loop_0x100000', 'if (runtime->eeCheckpointDue()) {', 'if (runtime->other()) {'),
+            (loop, 'a17_loop_0x100000', '        case 0x100004u: goto label_100004;\n', ''),
+            (loop, 'a17_loop_0x100000', 'goto label_100004;\n        }', 'goto label_100000;\n        }'),
+            (loop, 'a17_loop_0x100000', 'const bool branch_taken_0x10000c', 'const bool branch_taken_0x10000d'),
+            (skip, 'a17_skip_slot_0x10001c', 'ctx->in_delay_slot = true;', 'ctx->in_delay_slot = false;'),
+            (skip, 'a17_skip_slot_0x10001c', 'ctx->branch_pc = 0x10001Cu;', 'ctx->branch_pc = 0x10001cu;'),
+            (skip, 'a17_skip_slot_0x10001c', 'ctx->pc = 0x100028u;\n            goto', 'ctx->pc = 0x100028u;\n            if (runtime->eeCheckpointDue()) {\n                return;\n            }\n            goto'),
+            (blez, 'a17_blez_bgtz_0x100034', 'GPR_S32(ctx, 4) <= 0', 'GPR_S64(ctx, 4) <= 0'),
+            (blez, 'a17_blez_bgtz_0x100034', 'GPR_S32(ctx, 5) > 0', 'GPR_S32(ctx, 5) >= 0'),
+        ]
+        for text, key, old, new in cases:
+            self.assertIn(old, text, old)
+            with self.assertRaises(p.ParseError, msg=old):
+                p.parse_function(text.replace(old, new, 1) + '\n', key)
+
+    def test_unsupported_branch_forms_rejected(self):
+        # likely, REGIMM, link, jump words with plausible-looking text are not accepted.
+        for word in (0x50000001, 0x54000001, 0x04010001, 0x04110001, 0x08000400, 0x0c000400, 0x0100f809):
+            r = render('f_0x1000', 0x1000, [(word, 'x', 'ctx->pc = 0x1004u;')])
+            with self.assertRaises(p.ParseError, msg=hex(word)):
+                parse_text(r)
+        # rt must be zero for blez/bgtz.
+        word = 0x18a40002
+        self.assertEqual(word >> 26, 6)
+        lines = fn_text(GOLDEN17, 'a17_blez_bgtz_0x100034')
+        mutated = '\n'.join(lines).replace('0x18800002', '0x18840002')
+        with self.assertRaises(p.ParseError):
+            p.parse_function(mutated, 'a17_blez_bgtz_0x100034')
+
+    def test_lowering_emits_one_entry_per_block_and_matches_generator(self):
+        gen = importlib.util.spec_from_file_location('gen17', ROOT / 'tools/ee_aot_generate.py')
+        g = importlib.util.module_from_spec(gen)
+        gen.loader.exec_module(g)
+        with tempfile.TemporaryDirectory() as d:
+            r = p.parse_function(GOLDEN17, 'a17_blez_bgtz_0x100034')
+            out = Path(d) / 'x.inc'
+            report = p.lower(r, out)
+            self.assertEqual(out.read_text(), g.generate(r['blocks']))
+            self.assertEqual(out.read_text().count('static unsigned ee_aot_'), 5)
+            self.assertEqual((report['functions'][0]['blocks'], report['functions'][0]['branches']), (5, 2))
 
 
 class LoweringTests(unittest.TestCase):

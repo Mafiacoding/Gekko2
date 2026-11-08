@@ -37,6 +37,7 @@ static void randomise(ee_state_t *st,const ee_state_t *initial,const a11_fixture
     st->gpr[0].ud0=0;st->gpr[0].ud1=0;
     st->hi.ud0=random64();st->hi.ud1=random64();st->lo.ud0=random64();st->lo.ud1=random64();st->sa_reg=(uint32_t)random64()&31u;
     st->pc=f->pc;st->next_pc=f->pc+4;st->branch_pending=0;
+    if(f->loop)st->gpr[8].ud0=1u+(random64()&7u); /* bounded trip count for loops that read t0 */
     if(f->jr_ra)st->gpr[31].ud0=UINT64_C(0x80000000)|(random64()&0x1ffffcu);
 }
 /* Memory fixtures: a0/a1/a2 point into RAM; every word of the data area is itself a
@@ -54,6 +55,17 @@ static void seed_memory(ee_state_t *st,const a11_fixture *f,unsigned mode)
     st->gpr[4].ud0=a0[mode];st->gpr[5].ud0=a1[mode];st->gpr[6].ud0=a2[mode];
 }
 static int has_store(const a11_fixture *f){for(unsigned i=0;i<f->count;i++){unsigned op=f->ram[i]>>26;if(op==0x28||op==0x29||op==0x2b)return 1;}return 0;}
+/* Dynamic retirement count: single-step the interpreter until the function exits
+ * (pc == return address for jr $ra functions, else the end), then restore. */
+static unsigned probe_total(ee_state_t *st,const a11_fixture *f,const ee_state_t *start)
+{
+    uint32_t exit_pc=f->jr_ra?(uint32_t)start->gpr[31].ud0:f->pc+4u*f->count;
+    gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
+    unsigned n=0;
+    while(st->pc!=exit_pc&&n<200000u){unsigned got=ee_core_step_n(1);assert(got==1&&!st->halted);n++;}
+    assert(st->pc==exit_pc&&"function did not exit");
+    return n;
+}
 static int ram_is_lowered(const a11_fixture *f){return !memcmp(f->ram,f->words,4u*f->count);}
 int main(void)
 {
@@ -67,26 +79,29 @@ int main(void)
     /* Write-protected (V, not D) KUSEG mapping at 0x400000 for TLB Modified tests. */
     st->tlb[1].entry_hi=0x00400000u;st->tlb[1].entry_lo0=(0x400u<<6)|2u;st->tlb[1].entry_lo1=(0x401u<<6)|2u;
     ee_state_t initial=*st,scalar,start;
-    assert(ee_aot_block_count()==a11_fixture_count);
-    unsigned checked=0,partial=0,guarded=0,faulted=0,mod_faults=0,align_faults=0,stores=0;
+    assert(ee_aot_block_count()==a11_block_count);
+    unsigned checked=0,partial=0,guarded=0,faulted=0,mod_faults=0,align_faults=0,stores=0,maxdyn=0;
     static uint8_t ram_before[0x20000],scalar_ram[0x20000];
     for(unsigned fi=0;fi<a11_fixture_count;fi++) {
         const a11_fixture *f=&a11_fixtures[fi];
-        const unsigned budgets[]={f->count,1u,2u,3u,f->count-1u};
         for(unsigned trial=0;trial<24;trial++) for(unsigned bi=0;bi<5;bi++) {
-            unsigned budget=budgets[bi];
             *st=initial;load(st,f,f->ram);randomise(st,&initial,f,trial);seed_memory(st,f,0);start=*st;
             memcpy(ram_before,st->ram+0x300000,sizeof ram_before);
+            const unsigned total=probe_total(st,f,&start); /* dynamic retired count */
+            if(total>maxdyn)maxdyn=total;
+            const unsigned budgets[]={total,1u,2u,3u,total>1u?total-1u:1u};
+            unsigned budget=budgets[bi];
+            *st=start;memcpy(st->ram+0x300000,ram_before,sizeof ram_before);
             gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
             unsigned scalar_retired=0;
-            while(scalar_retired<f->count){unsigned n=f->count-scalar_retired<budget?f->count-scalar_retired:budget;
+            while(scalar_retired<total){unsigned n=total-scalar_retired<budget?total-scalar_retired:budget;
                 unsigned got=ee_core_step_n(n);assert(got==n&&!st->halted);scalar_retired+=got;}
             scalar=*st;memcpy(scalar_ram,st->ram+0x300000,sizeof scalar_ram);
             *st=start;memcpy(st->ram+0x300000,ram_before,sizeof ram_before);
             gekko2_optimization_mask|=GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT);
             uint64_t native=ee_aot_retired_count();
             unsigned aot_retired=0,first=0;
-            while(aot_retired<f->count){unsigned n=f->count-aot_retired<budget?f->count-aot_retired:budget;
+            while(aot_retired<total){unsigned n=total-aot_retired<budget?total-aot_retired:budget;
                 unsigned got=ee_core_step_n(n);
                 if(!aot_retired)first=got;
                 if(got!=n){fprintf(stderr,"retirement mismatch fn=%u trial=%u budget=%u want=%u got=%u\n",fi,trial,budget,n,got);return 1;}
@@ -97,12 +112,12 @@ int main(void)
              * stop before it and the interpreter retire it. */
             assert(first>0);
             if(ram_is_lowered(f))assert(ee_aot_retired_count()-native>=first);
-            else assert(ee_aot_retired_count()-native>0&&ee_aot_retired_count()-native<f->count);
-            if(budget==f->count&&ram_is_lowered(f))assert(ee_aot_retired_count()-native==f->count);
+            else assert(ee_aot_retired_count()-native>0&&ee_aot_retired_count()-native<total);
+            if(budget==total&&ram_is_lowered(f))assert(ee_aot_retired_count()-native==total);
             else partial++;
             same(&scalar,st);assert(!memcmp(scalar_ram,st->ram+0x300000,sizeof scalar_ram));
             assert(st->pc==(f->jr_ra?(uint32_t)start.gpr[31].ud0:f->pc+4u*f->count));assert(!st->branch_pending);
-            assert(st->instructions_executed==start.instructions_executed+f->count);
+            assert(st->instructions_executed==start.instructions_executed+total);
             /* GPR0 immutable; every upper 64-bit lane preserved; low lane only
              * changed in registers the function can write. */
             assert(st->gpr[0].ud0==0&&st->gpr[0].ud1==0);
@@ -151,13 +166,16 @@ int main(void)
         uint64_t native=ee_aot_retired_count();
         assert(ee_core_step_n(f->count)==f->count);
         /* Native code stops before the changed word; the interpreter finishes. */
-        if(m[0]!=f->words[0])assert(ee_aot_retired_count()==native);
-        else assert(ee_aot_retired_count()-native<=index);
+        /* A changed first word defeats the entry; with several blocks the interpreter
+         * may still reach untouched later blocks natively. */
+        if(m[0]!=f->words[0]&&f->blocks==1)assert(ee_aot_retired_count()==native);
+        else if(f->blocks==1)assert(ee_aot_retired_count()-native<=index);
         same(&scalar,st);guarded++;
     }
     /* First-word guard of the AOT entry itself. */
     {const a11_fixture *f=&a11_fixtures[0];*st=initial;load(st,f,f->ram);randomise(st,&initial,f,6);
      ee_state_t before=*st;assert(!ee_aot_try_execute_fetched(st,f->count,f->words[0]^1u));same(&before,st);}
+    fprintf(stderr,"  max dynamic retirement per run: %u\n",maxdyn);
     printf("PASS PS2Recomp parsed-function differential: %u parsed-function/interpreter comparisons (%u partial-budget), %u functions, 128-bit GPR upper lanes, GPR0, retirement, %u fault/device cases and %u live-source guard cases\n",checked,partial,a11_fixture_count,faulted,guarded);
     return 0;
 }
