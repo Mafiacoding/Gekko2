@@ -517,6 +517,147 @@ class A13Tests(unittest.TestCase):
             self.assertIn('st->next_pc=target', out.read_text())
 
 
+class A14Tests(unittest.TestCase):
+    """ELF identity binding and the private build directory (Batch A14)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='gekko-a14-')
+        self.dir = Path(self.tmp.name)
+        self.elf = self.dir / 'fixture.elf'
+        self.elf.write_bytes(fx.build(fx.FUNCTIONS_A13))
+        self.fixture = ROOT / 'tests/fixtures/ps2recomp_a13/ps2_recompiled_functions.cpp'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def bound(self, name, elf=None):
+        return p.bind_to_elf(p.parse_function(GOLDEN13, name), elf or self.elf)
+
+    def test_bind_all_a13_functions(self):
+        sets = {'a11': (GOLDEN, [LEAF, ZERO], fx.FUNCTIONS), 'a12': (GOLDEN12, A12, fx.FUNCTIONS_A12),
+                'a13': (GOLDEN13, A13, fx.FUNCTIONS_A13)}
+        for key, (text, names, functions) in sets.items():
+            elf = self.dir / f'{key}.elf'
+            elf.write_bytes(fx.build(functions))
+            for name, (_, start, words) in zip(names, functions):
+                b = p.bind_to_elf(p.parse_function(text, name), elf)
+                self.assertEqual(b['words'], words)  # the ELF words, including NOP-alias slots
+                self.assertTrue(b['elf_symbol_checked'])
+                self.assertEqual(b['elf_sha256'], hashlib.sha256(elf.read_bytes()).hexdigest())
+                self.assertFalse(b['inferred_nop_slot'])
+
+    def test_elided_slot_takes_real_elf_word(self):
+        self.assertEqual(self.bound('a13_nop_alias_slot_0x100038')['words'][-1], 0x24000000)
+        self.assertEqual(self.bound('a13_nop_alias_slot_0x100038')['slot_source'], 'elf')
+        self.assertEqual(self.bound('a13_ret_slot_0x100010')['slot_source'], 'source')
+
+    def patched(self, offset_of, new):
+        data = bytearray(self.elf.read_bytes())
+        i = offset_of(data)
+        data[i:i + len(new)] = new
+        out = self.dir / 'patched.elf'
+        out.write_bytes(data)
+        return out
+
+    def test_any_changed_text_word_rejected(self):
+        text_off = 84
+        for name, (_, start, words) in zip(A13, fx.FUNCTIONS_A13):
+            first = (start - 0x100000) // 4
+            for k in range(len(words)):
+                data = bytearray(self.elf.read_bytes())
+                o = text_off + 4 * (first + k)
+                data[o] ^= 0x04  # flip one bit of the word
+                bad = self.dir / 'bad.elf'
+                bad.write_bytes(data)
+                # An elided slot that stays a guest NOP is the only legal change.
+                if name == 'a13_ret_nop_0x100000' and k == 3 or name == 'a13_nop_alias_slot_0x100038' and k == 2:
+                    continue
+                with self.assertRaises(p.ParseError, msg=f'{name}[{k}]'):
+                    self.bound(name, bad)
+
+    def test_elided_slot_must_be_guest_nop(self):
+        for word in (0x24020001, 0x00200000 + 1, 0x24000001, 0x01090021, 0x3c000001):
+            data = bytearray(self.elf.read_bytes())
+            struct_off = 84 + 4 * 3  # a13_ret_nop slot
+            data[struct_off:struct_off + 4] = word.to_bytes(4, 'little')
+            bad = self.dir / 'bad.elf'
+            bad.write_bytes(data)
+            with self.assertRaises(p.ParseError):
+                self.bound('a13_ret_nop_0x100000', bad)
+        # Every upstream-recognised NOP form is accepted: rs bits ignored.
+        for word in (0, 0x00200000, 0x24000000):
+            data = bytearray(self.elf.read_bytes())
+            data[84 + 12:84 + 16] = word.to_bytes(4, 'little')
+            ok = self.dir / 'ok.elf'
+            ok.write_bytes(data)
+            self.assertEqual(self.bound('a13_ret_nop_0x100000', ok)['words'][-1], word)
+
+    def test_symbol_size_and_identity(self):
+        import struct as st
+        bad = self.patched(lambda d: d.index(st.pack('<II', 0x100000, 16)) + 4, st.pack('<I', 12))
+        with self.assertRaises(p.ParseError):
+            self.bound('a13_ret_nop_0x100000', bad)
+
+    def test_elf_structure_rejected(self):
+        data = self.elf.read_bytes()
+        cases = {'not elf': b'hello', 'truncated': data[:60], 'ET_DYN': data[:16] + b'\x03\x00' + data[18:],
+                 'big endian': data[:5] + b'\x02' + data[6:]}
+        for label, blob in cases.items():
+            bad = self.dir / 'bad.elf'
+            bad.write_bytes(blob)
+            with self.assertRaises(p.ParseError, msg=label):
+                self.bound('a13_ret_nop_0x100000', bad)
+        with self.assertRaises(OSError):
+            self.bound('a13_ret_nop_0x100000', self.dir / 'missing.elf')
+
+    def test_function_outside_segment_rejected(self):
+        r = p.parse_function(GOLDEN13, 'a13_ret_nop_0x100000')
+        moved = dict(r, start=0x200000, end=0x200010)
+        with self.assertRaises(p.ParseError):
+            p.bind_to_elf(moved, self.elf)
+        straddle = dict(r, end=0x100100)
+        with self.assertRaises(p.ParseError):
+            p.bind_to_elf(straddle, self.elf)
+
+    def test_private_build_directory(self):
+        results = [self.bound(n) for n in A13]
+        with self.assertRaises(p.ParseError):
+            p.write_private_build(results, ROOT / 'validation/should-not-exist')
+        self.assertFalse((ROOT / 'validation/should-not-exist').exists())
+        out = self.dir / 'private'
+        report = p.write_private_build(results, out)
+        self.assertEqual(report['functions'][0]['elf_sha256'], hashlib.sha256(self.elf.read_bytes()).hexdigest())
+        self.assertFalse(report['wii_verified'])
+        mode = lambda path: path.stat().st_mode & 0o777
+        self.assertEqual(mode(out), 0o700)
+        for f in out.rglob('*'):
+            self.assertEqual(mode(f), 0o700 if f.is_dir() else 0o600, f)
+        self.assertTrue((out / 'core/ee/ee_aot_complex_generated.inc').exists())
+        self.assertTrue((out / 'ee_aot_generated.inc').read_text().count('static unsigned ee_aot_') == len(A13))
+        with self.assertRaises(OSError):  # never overwrite an existing build directory
+            p.write_private_build(results, out)
+
+    def test_cli_private_pipeline(self):
+        cli = [sys.executable, str(ROOT / 'tools/ps2recomp_strict_parser.py'), '--source', str(self.fixture)]
+        names = sum((['--function', n] for n in A13), [])
+        r = subprocess.run(cli + names + ['--output-dir', str(self.dir / 'x')], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)  # no --elf
+        self.assertFalse((self.dir / 'x').exists())
+        r = subprocess.run(cli + names + ['--elf', str(self.elf), '--output-dir', str(self.dir / 'x')],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        summary = json.loads(r.stdout)
+        self.assertEqual(summary['functions'], 6)
+        self.assertNotIn('0x24020007', r.stdout)  # no guest opcodes on stdout for private builds
+        bad = bytearray(self.elf.read_bytes())
+        bad[84] ^= 1
+        (self.dir / 'bad.elf').write_bytes(bad)
+        r = subprocess.run(cli + names + ['--elf', str(self.dir / 'bad.elf'), '--output-dir', str(self.dir / 'y')],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertFalse((self.dir / 'y').exists())
+
+
 class LoweringTests(unittest.TestCase):
     def test_lowering_passes_exactly_validated_words(self):
         with tempfile.TemporaryDirectory() as d:

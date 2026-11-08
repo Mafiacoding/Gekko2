@@ -34,13 +34,18 @@ def dest_mask(words):
     return mask & ~1  # $zero is never a changeable destination
 
 
-for fixture, elf_set, names in FIXTURES:
+for fixture, elf_set, names, bound in [(f, e, n, b) for f, e, n in FIXTURES for b in (False, True)]:
+    print('== fixture', fixture, 'ELF-bound' if bound else 'source-only', flush=True)
     with tempfile.TemporaryDirectory(prefix='gekko-a11-') as tmp:
         d = Path(tmp)
         gen = d / 'generated'
         (gen / 'core/ee').mkdir(parents=True)
         source = (ROOT / 'tests/fixtures' / fixture / 'ps2_recompiled_functions.cpp').read_text()
         results = [p.parse_function(source, n) for n in names]
+        if bound:  # A14: words (and elided NOP slots) come from the verified ELF
+            elf = d / 'fixture.elf'
+            elf.write_bytes(fx.build(fx.SETS[elf_set]))
+            results = [p.bind_to_elf(r, elf) for r in results]
         report = p.lower(results, gen / 'ee_aot_generated.inc', gen / 'core/ee/ee_aot_complex_generated.inc')
         (gen / 'ee_aot.c').write_text((ROOT / 'source/core/recompiler/ee_aot.c').read_text())
         rows = []
@@ -52,6 +57,7 @@ for fixture, elf_set, names in FIXTURES:
             # guest really contains. They may differ only in an inferred NOP slot.
             diff = [i for i, (a, b) in enumerate(zip(ram, r['words'])) if a != b]
             assert not diff or (r['inferred_nop_slot'] and diff == [len(ram) - 1]), (r['name'], diff)
+            assert not bound or not diff
             pad = lambda ws: ','.join(f'UINT32_C(0x{w:08x})' for w in ws) + ',' + ','.join(['0'] * (32 - len(ws)))
             rows.append(f'{{UINT32_C(0x{r["start"]:08x}),{len(r["words"])}u,UINT32_C(0x{dest_mask(r["words"]):x}),'
                         f'{int(r["terminal"] == "jr_ra")}u,{{{pad(r["words"])}}},{{{pad(ram)}}}}}')

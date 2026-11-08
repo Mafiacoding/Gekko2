@@ -12,11 +12,15 @@ are handed to tools/ee_aot_generate.py (Gekko2's own AOT backend).
 """
 import argparse
 import hashlib
+import importlib.util
 import json
+import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
+import types
 
 PARSER_VERSION = 1
 UPSTREAM_COMMIT = 'e5636981a1c9de368f6b71e819c3dc188dfedbf4'
@@ -267,6 +271,93 @@ def _parse_jr_ra(body, pos, comment, address, end):
     return cursor + len(tail), (slot_word, inferred)
 
 
+def _guest_nop(word):
+    """Mirror of upstream isGuestNop(): the only slots upstream elides."""
+    op, rs, rt, rd, sa, fn = word >> 26, word >> 21 & 31, word >> 16 & 31, word >> 11 & 31, word >> 6 & 31, word & 63
+    return (op == 0 and fn == 0 and rd == 0 and rt == 0 and sa == 0) or \
+           (op == 9 and rs == 0 and rt == 0 and (word & 0xffff) == 0)
+
+
+def _elf_function_symbols(data):
+    """(value, size, name) of STT_FUNC symbols of an ELF32 LE file, or []."""
+    shoff, = struct.unpack_from('<I', data, 32)
+    shentsize, shnum = struct.unpack_from('<HH', data, 46)
+    if shoff == 0 or shentsize < 40 or shoff + shentsize * shnum > len(data):
+        return []
+    sections = [struct.unpack_from('<10I', data, shoff + i * shentsize) for i in range(shnum)]
+    symbols = []
+    for _, kind, _, _, offset, size, link, _, _, entsize in sections:
+        if kind != 2 or entsize < 16 or link >= shnum or offset + size > len(data):
+            continue
+        _, _, _, _, stroff, strsize, _, _, _, _ = sections[link]
+        for i in range(size // entsize):
+            name_off, value, sym_size, info, _, _ = struct.unpack_from('<IIIBBH', data, offset + i * entsize)
+            if info & 15 == 2:
+                end = data.find(b'\0', stroff + name_off, stroff + strsize)
+                symbols.append((value, sym_size, data[stroff + name_off:end].decode('ascii', 'replace')))
+    return symbols
+
+
+def bind_to_elf(result, elf_path):
+    """Cross-check a parsed function against the ELF it was generated from.
+
+    The words must equal the executable bytes at the function range. An
+    elided delay slot (inferred word 0) is replaced by the real ELF word,
+    which must be a guest NOP exactly as upstream defines it. A FUNC symbol at
+    the start, if present, must have size end - start.
+    """
+    elf_path = Path(elf_path)
+    data = elf_path.read_bytes()
+    spec = importlib.util.spec_from_file_location('ee_aot_generate_bind', ROOT / 'tools/ee_aot_generate.py')
+    aot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(aot)
+    try:
+        segments = aot.load_segments(types.SimpleNamespace(image=None, elf=str(elf_path)))
+    except (ValueError, struct.error) as error:
+        _fail(f'ELF rejected: {error}')
+    if data != elf_path.read_bytes():
+        _fail('ELF changed during analysis')
+    if struct.unpack_from('<H', data, 16)[0] != 2:
+        _fail('only ET_EXEC ELF input is supported (no guessed relocations)')
+    start, end = result['start'], result['end']
+    backing = [(base, blob) for base, blob in segments if base <= start and end <= base + len(blob)]
+    if len(backing) != 1:
+        _fail('function range has missing or ambiguous executable backing in the ELF')
+    base, blob = backing[0]
+    actual = list(struct.unpack_from(f'<{(end - start) // 4}I', blob, start - base))
+    words = list(result['words'])
+    slot_source = 'source'
+    if result['inferred_nop_slot']:
+        if not _guest_nop(actual[-1]):
+            _fail('source elides the delay slot but the ELF slot word is not a guest NOP')
+        words[-1] = actual[-1]
+        slot_source = 'elf'
+    if words != actual:
+        index = next(i for i, (a, b) in enumerate(zip(words, actual)) if a != b)
+        _fail(f'ELF word at {_canon(start + 4 * index)} differs from the generated source')
+    symbols = [(v, sz, n) for v, sz, n in _elf_function_symbols(data) if v == start]
+    if symbols and all(sz != end - start for _, sz, _ in symbols):
+        _fail('ELF FUNC symbol size disagrees with the generated address range')
+    bound = dict(result)
+    bound.update({'words': words, 'inferred_nop_slot': False, 'slot_source': slot_source,
+                  'elf_sha256': hashlib.sha256(data).hexdigest(), 'elf_symbol_checked': bool(symbols)})
+    return bound
+
+
+def write_private_build(results, directory):
+    """Write an include directory for a local build; refuse paths inside the checkout."""
+    directory = Path(directory).resolve()
+    if directory == ROOT or ROOT in directory.parents:
+        _fail('generated guest output must be outside the Gekko2 checkout')
+    directory.mkdir(parents=True, mode=0o700, exist_ok=False)
+    (directory / 'core/ee').mkdir(parents=True, mode=0o700)
+    report = lower(results, directory / 'ee_aot_generated.inc', directory / 'core/ee/ee_aot_complex_generated.inc')
+    (directory / 'report.private.json').write_text(json.dumps(report, indent=2) + '\n')
+    for path in directory.rglob('*'):
+        os.chmod(path, 0o700 if path.is_dir() else 0o600)
+    return report
+
+
 def lower(results, output, complex_output=None):
     """Hand only the validated words to the existing AOT generator.
 
@@ -291,7 +382,11 @@ def lower(results, output, complex_output=None):
     return {'parser_version': PARSER_VERSION, 'upstream_commit': UPSTREAM_COMMIT,
             'functions': [{'function': r['name'], 'start': r['start'], 'end': r['end'],
                            'instructions': len(r['words']),
-                           'source_sha256': r['source_sha256']} for r in results],
+                           'source_sha256': r['source_sha256'],
+                           'terminal': r.get('terminal'),
+                           'slot_source': r.get('slot_source', 'inferred' if r.get('inferred_nop_slot') else 'source'),
+                           'elf_sha256': r.get('elf_sha256'),
+                           'elf_symbol_checked': r.get('elf_symbol_checked')} for r in results],
             'aot_sha256': report['sha256'], 'wii_verified': False}
 
 
@@ -299,19 +394,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True, help='generated .cpp file')
     parser.add_argument('--function', required=True, action='append', help='exact sanitized function name (repeatable)')
-    parser.add_argument('--output', type=Path, help='AOT .inc to write (omit to parse only)')
-    parser.add_argument('--report', type=Path, help='JSON lowering report')
+    parser.add_argument('--elf', type=Path, help='ELF the source was generated from (verifies words, NOP slots, symbol)')
+    out = parser.add_mutually_exclusive_group()
+    out.add_argument('--output', type=Path, help='AOT .inc to write (development; omit to parse only)')
+    out.add_argument('--output-dir', type=Path,
+                     help='new private include directory outside the checkout; requires --elf')
     args = parser.parse_args()
     try:
         source = args.source.read_text()
         results = [parse_function(source, name) for name in args.function]
+        if args.elf:
+            results = [bind_to_elf(r, args.elf) for r in results]
+        if args.output_dir and not args.elf:
+            _fail('--output-dir requires --elf: private builds must be bound to their ELF')
         summary = {'functions': [{'name': r['name'], 'start': r['start'], 'end': r['end'],
                                   'words': [f'0x{w:08x}' for w in r['words']]} for r in results],
                    'source_sha256': results[0]['source_sha256']}
         if args.output:
             summary['lowering'] = lower(results, args.output)
-            if args.report:
-                args.report.write_text(json.dumps(summary, indent=2) + '\n')
+        elif args.output_dir:
+            # No guest addresses or opcodes on stdout for private inputs.
+            summary = {'functions': len(results), 'lowering': write_private_build(results, args.output_dir)}
         print(json.dumps(summary))
     except (ParseError, OSError, UnicodeDecodeError) as error:
         parser.exit(2, f'ps2recomp_strict_parser: {error}\n')

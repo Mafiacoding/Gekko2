@@ -380,3 +380,14 @@ See `docs/PS2RECOMP-A13-JR-RA.md`. Real-generator fixture
 block (uppercase hex in branch blocks, elided NOP slots lowered as an inferred
 word 0 guarded by the live-source check, jump target read before the slot).
 Tests: 39 parser tests, 720-case differential. Host-only evidence.
+
+
+## Batch A14 — ELF identity binding and private build (2026-11-08)
+
+See `docs/PS2RECOMP-A14-ELF-BINDING.md`. `bind_to_elf()` verifies parsed words
+against the ELF's executable bytes (and elided NOP slots against upstream's
+`isGuestNop`, replacing the A13 inferred word with the real one), checks a FUNC
+symbol size if present, and `--elf … --output-dir` writes a `0700` private include
+directory (outside the checkout) plus `report.private.json` with source/ELF/AOT
+hashes. 48 parser tests; differential now runs source-only and ELF-bound for
+all fixtures (A13: 720+720). Host-only evidence; no Wii build here (no devkitPPC).
