@@ -523,6 +523,10 @@ void ee_core_irq_checkpoint_load(const ee_irq_checkpoint_t *in);
 uint64_t ee_core_display_clock_save(void);
 void ee_core_display_clock_load(uint64_t ticks);
 
+/* Advance the native-resident EE GPR epoch after an out-of-line register write.
+ * Context switches use the same hook; uint32_t wrap is intentional. */
+void ee_core_gpr_generation_bump(ee_state_t *st);
+
 /* Precise block-JIT callbacks; mapped code is reread at every boundary. */
 int ee_core_block_peek(ee_state_t *st,uint32_t pc,uint32_t *word);
 /* Returns UINT32_MAX for immutable BIOS source, otherwise the EE RAM 4 KiB page. */

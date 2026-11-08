@@ -79,7 +79,11 @@ build_and_run() {
 
     self_incs_display=$(echo "$self_incs" | tr '\n' ' ')
     echo "[run_test.sh] compiling $name (self-include exclude: ${self_incs_display:-none})"
-    gcc -O2 -w -Iinclude -Isource "$src" $sources -o "$out" -lm
+    # Optional host-only include flags for vendored headers (kept opt-in so
+    # the normal test runner's historical behavior remains unchanged).
+    extra_cflags=${GEKKO2_TEST_EXTRA_CFLAGS:-}
+    # shellcheck disable=SC2086
+    gcc -O2 -w -Iinclude -Isource $extra_cflags "$src" $sources -o "$out" -lm
 
     if [ "$build_only" != "--build-only" ]; then
         echo "[run_test.sh] running $name"

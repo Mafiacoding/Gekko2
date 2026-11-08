@@ -138,6 +138,10 @@ bleiben unbestätigt. Volle Ausgabegröße von BETA12.24a bleibt erhalten.
 
 **Experimenteller Stand BETA12.21:** opt-in Native-to-Native-128-Bit-Ketten für geprüfte ALU/MMI-, LQ/SQ-/LD/SD- und Integer-Sprungblöcke; eigener gespeicherter Cold-Boot-Schalter, standardmäßig OFF. PSM ebenfalls OFF. Sichere GX-Abschluss-/Fehlerprüfung und CT32/24-DTHE-Zugang. [Bericht](docs/BETA12.21-EXPERIMENTAL-OPTIONS.md). Host-/PPC-Tests und Wii-Cross-Build ersetzen keinen realen Wii-Test; Crash-Schwarzbild und BIOS-Kacheln bleiben ohne Hardwarebestätigung. Die folgenden älteren Abschnitte sind historisch.
 
+## Toolchain-Update (08.11.2026)
+
+Sauberer Wii-Cross-Build (Standard- und AOT/DSI-Konfiguration) mit devkitPPC r51 / GCC 16.2.0 / binutils 2.47 / libogc 3.2.1 / libfat-ogc 2.1.0: Build und `verify_wii_memory.py` erfolgreich, Linked-PPC-Prüfungen unter dem Unicorn-Modell bestanden. Kein Lauf auf echter Wii oder Dolphin. Details: [docs/WII-TOOLCHAIN-2026.md](docs/WII-TOOLCHAIN-2026.md).
+
 ## Historischer Stand: BETA12.9
 
 **Wii compile passed; physical Wii test not yet performed.**

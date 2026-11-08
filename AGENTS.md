@@ -31,3 +31,12 @@
 
 ## Delivery for each batch
 Provide a concise German explanation, touched paths, the original failure, regression tests and their **actual** output, toolchain/flags, build status, Wii DOL + source/patch if successfully created, performance evidence where available, known remaining gaps and a request for a real Wii log when needed.
+
+
+## Active PS2Recomp bridge task
+For work on the PS2Recomp ↔ Gekko2 bridge, also read
+`docs/CLAUDE-PS2RECOMP-BRIDGE.md` and `docs/PS2RECOMP-GEKKO2-BRIDGE-DESIGN.md`.
+The task-specific handoff records verified current-main APIs, existing state
+generation semantics, safe implementation batches, test gates and strict
+evidence boundaries. Start with the source audit and state adapter; keep
+production native execution disabled until state and memory callback tests pass.

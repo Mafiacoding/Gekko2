@@ -22,6 +22,7 @@ complete PS2 emulator. The authoritative build identifier is in
 Use the **latest official devkitPro/devkitPPC and libogc**, including libfat,
 wiiuse and bte. Old bundled SDK archives are not the supported build setup.
 The recorded validation environment is **devkitPPC r50 (GCC 16.1.0), libogc 3.1.0**;
+[PS2Recomp/A15 integration branch note] The current cross-build was additionally verified with **devkitPPC r51 / GCC 16.2.0 / binutils 2.47 / libogc 3.2.1 / libfat-ogc 2.1.0** (build only; see [docs/WII-TOOLCHAIN-2026.md](docs/WII-TOOLCHAIN-2026.md)).
 this identifies the tested versions, not a guarantee that future SDK changes are compatible.
 See the [build guide](docs/BUILDING.md) for installation, flags and verification.
 

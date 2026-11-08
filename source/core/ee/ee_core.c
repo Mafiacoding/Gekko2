@@ -11148,6 +11148,11 @@ void ee_core_quiet_layout(uint32_t *out)
 #define EE_QUIET_ARM(st) ((void)0)
 #define EE_QUIET_ZERO() ((void)0)
 #endif
+void ee_core_gpr_generation_bump(ee_state_t *st)
+{
+    if(st)st->gpr_generation++;
+}
+
 int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc)
 {
     if(st!=&g_state||st->halted||st->idle||st->vu0_running||st->branch_pending||

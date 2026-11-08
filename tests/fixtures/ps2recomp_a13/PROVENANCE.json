@@ -1,0 +1,19 @@
+{
+  "kind": "real-upstream-generator-output",
+  "upstream_repository": "https://github.com/ran-j/PS2Recomp",
+  "upstream_commit": "e5636981a1c9de368f6b71e819c3dc188dfedbf4",
+  "upstream_binary": "ps2xRecomp/ps2_recomp built from the pinned commit (cmake -DPS2X_BUILD_RUNTIME=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_STUDIO=OFF -DCMAKE_BUILD_TYPE=Release)",
+  "toolchain": "g++ 13.3.0 (Ubuntu 24.04), cmake 3.28.3, ninja 1.11.1; FetchContent tags from the pinned CMakeLists: ELFIO Release_3.12, toml11 v4.4.0, fmt 12.1.0, libdwarf v2.2.0, rabbitizer 1.14.3",
+  "input_elf": {
+    "generator": "tools/ps2recomp_fixture_elf.py a13 (FUNCTIONS_A13)",
+    "sha256": "8462a7d443f4b7f6e0c6e0d2445dc7e617290eedcdb0f646899df7a3fca0067b",
+    "note": "synthetic hand-assembled public words; no game/BIOS/disc data; ELF itself is not committed, regenerate with the script"
+  },
+  "config": "tests/fixtures/ps2recomp_a13/a13.toml (patch_syscalls/cop0/cache = false)",
+  "output": {
+    "file": "ps2_recompiled_functions.cpp",
+    "sha256": "9de3d1aef33273e0449252d254c68f9d98a938b3c55a1bc77a9275d1baf84a5c",
+    "note": "unmodified single-file output of the real generator"
+  },
+  "upstream_report": "Functions discovered: 6, recompiled: 6, unhandled instructions: 0, warnings: 0, errors: 0"
+}

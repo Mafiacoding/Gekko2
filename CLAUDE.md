@@ -1,3 +1,23 @@
+# Integration branch `integration/crash-e3-plus-a15` — 2026-11-08
+
+Created from the preserved Crash E3 runtime (`preserve/crash-e3-vu-runtime-20261108`, `24b69fe`, runtime `e7aae58`) with the PS2Recomp bridge work (A11–A16, `codex/ps2recomp-a16-byte-half`) merged in. Read `docs/CRASH-FIX-PRESERVATION-AND-A15-INTEGRATION.md` first. Never overwrite or simplify the Crash VU timing, GIF SIGNAL backpressure or VIF1 DMA code. `third_party` is deliberately kept byte-identical to the Crash branch (the CRLF-only commit of PR #58 is not part of this branch). Not merged into `main`; no Wii/Dolphin result for this combination.
+
+---
+
+# Current Claude task — PS2Recomp bridge (2026-11-08)
+
+For the active PS2Recomp ↔ Gekko2 workstream, read
+`docs/CLAUDE-PS2RECOMP-BRIDGE.md` first, then follow the repository-wide
+rules below. The public main branch has the canonical EE runtime already;
+do not create a parallel EE core or claim PS2Recomp integration before code
+and tests prove it. Work in the dedicated branch
+`codex/ps2recomp-bridge-claude-ready` unless the owner explicitly directs
+otherwise. Start with the source audit and Batch A; do not skip ahead to
+production execution integration.
+
+
+---
+
 # Aktueller Crash-E3-Batch — 20. Oktober 2026
 
 Branch `codex/crash-e3-local-repro`, Runtime `e7aae58`.
