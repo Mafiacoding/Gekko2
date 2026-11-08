@@ -192,9 +192,9 @@ class RejectTests(unittest.TestCase):
         self.rejects(t.replace('    SET_GPR_S32(ctx, 8,', '    goto label_1004;\n    SET_GPR_S32(ctx, 8,'))
 
     def test_memory_macros_and_helpers(self):
-        lw = [(0x8c280000, 'lw $t0, 0($at)', 'SET_GPR_S32(ctx, 8, (int32_t)READ32(ADD32(GPR_U32(ctx, 1), 0)));')]
+        lw = [(0x8c280000, 'lw $t0, 0($at)', 'SET_GPR_S32(ctx, 8, (int32_t)READ32(GPR_U32(ctx, 1)));')]
         self.rejects(render('f_0x1000', 0x1000, lw))
-        sw = [(0xac280000, 'sw $t0, 0($at)', 'WRITE32(ADD32(GPR_U32(ctx, 1), 0), GPR_U32(ctx, 8));')]
+        sw = [(0xac280000, 'sw $t0, 0($at)', 'WRITE32(GPR_U32(ctx, 1), GPR_U32(ctx, 8));')]
         self.rejects(render('f_0x1000', 0x1000, sw))
         sq = [(0x7c280000, 'sq $t0, 0($at)', 'WRITE128(ADD32(GPR_U32(ctx, 1), 0), GPR_VEC(ctx, 8));')]
         self.rejects(render('f_0x1000', 0x1000, sq))
@@ -656,6 +656,88 @@ class A14Tests(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
         self.assertFalse((self.dir / 'y').exists())
+
+
+GOLDEN15 = (ROOT / 'tests/fixtures/ps2recomp_a15/ps2_recompiled_functions.cpp').read_text()
+A15 = ['a15_lw_sw_0x100000', 'a15_alias_0x100020', 'a15_ret_store_slot_0x10002c', 'a15_ret_load_slot_0x100038']
+
+
+class A15Tests(unittest.TestCase):
+    def test_provenance_and_builder(self):
+        prov = json.loads((ROOT / 'tests/fixtures/ps2recomp_a15/PROVENANCE.json').read_text())
+        self.assertEqual(prov['output']['sha256'], hashlib.sha256(GOLDEN15.encode()).hexdigest())
+        self.assertEqual(prov['input_elf']['sha256'], hashlib.sha256(fx.build(fx.FUNCTIONS_A15)).hexdigest())
+
+    def test_golden_word_load_store_functions(self):
+        for (name, start, words), key in zip(fx.FUNCTIONS_A15, A15):
+            r = p.parse_function(GOLDEN15, key)
+            self.assertEqual((r['start'], r['words']), (start, words))
+
+    def test_real_upstream_constant_folded_form_is_rejected(self):
+        # Real generator output for lui + lw/sw: FAST_READ32 / FAST_WRITE32 with a literal
+        # address and trace call. A different shape from the audited unhinted form.
+        self.assertIn('FAST_READ32(0x80300000u)', GOLDEN15)
+        with self.assertRaises(p.ParseError) as ctx:
+            p.parse_function(GOLDEN15, 'a15_hinted_0x100040')
+        self.assertIn('0x100044', str(ctx.exception))
+
+    def test_memory_template_variants_rejected(self):
+        name = 'a15_lw_sw_0x100000'
+        edits = [('READ32(ADD32(GPR_U32(ctx, 4), 0))', 'READ16(ADD32(GPR_U32(ctx, 4), 0))'),
+                 ('(int32_t)READ32(ADD32(GPR_U32(ctx, 4), 0))', '(uint32_t)READ32(ADD32(GPR_U32(ctx, 4), 0))'),
+                 ('READ32(ADD32(GPR_U32(ctx, 4), 0))', 'FAST_READ32(ADD32(GPR_U32(ctx, 4), 0))'),
+                 ('READ32(ADD32(GPR_U32(ctx, 4), 0))', 'runtime->Load32(rdram, ctx, ADD32(GPR_U32(ctx, 4), 0))'),
+                 ('WRITE32(ADD32(GPR_U32(ctx, 4), 8), GPR_U32(ctx, 10));', 'WRITE16(ADD32(GPR_U32(ctx, 4), 8), GPR_U32(ctx, 10));'),
+                 ('WRITE32(ADD32(GPR_U32(ctx, 4), 8), GPR_U32(ctx, 10));', 'WRITE32(ADD32(GPR_U32(ctx, 10), 8), GPR_U32(ctx, 4));'),
+                 ('WRITE32(ADD32(GPR_U32(ctx, 4), 8), GPR_U32(ctx, 10));', 'runtime->Store32(rdram, ctx, ADD32(GPR_U32(ctx, 4), 8), GPR_U32(ctx, 10));'),
+                 ('ADD32(GPR_U32(ctx, 4), 4294967292)', 'ADD32(GPR_U32(ctx, 4), -4)'),
+                 ('ADD32(GPR_U32(ctx, 4), 32764)', 'ADD32(GPR_U32(ctx, 4), 32765)'),
+                 ('WRITE32(ADD32(GPR_U32(ctx, 4), 16), GPR_U32(ctx, 0));', 'WRITE32(ADD32(GPR_U32(ctx, 4), 16), 0);')]
+        for old, new in edits:
+            self.assertIn(old, GOLDEN15, old)
+            with self.assertRaises(p.ParseError, msg=old):
+                p.parse_function(GOLDEN15.replace(old, new, 1), name)
+
+    def test_other_memory_opcodes_rejected(self):
+        # lb lh lwl lbu lhu lwr lwu sb sh swl swr ld sd lq sq lwc1 swc1 ldl ldr: no template yet.
+        for op in (0x20, 0x21, 0x22, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2e, 0x37, 0x3f, 0x1e, 0x1f,
+                   0x31, 0x39, 0x1a, 0x1b):
+            word = op << 26 | 4 << 21 | 8 << 16
+            r = render('f_0x1000', 0x1000, [(word, 'x', 'SET_GPR_S32(ctx, 8, (int32_t)READ32(ADD32(GPR_U32(ctx, 4), 0)));')])
+            with self.assertRaises(p.ParseError, msg=hex(op)):
+                parse_text(r)
+
+    def test_exhaustive_number_mutation_memory_functions(self):
+        import re
+        total = 0
+        for name in A15:
+            lines, first, close = span(GOLDEN15, name)
+            for i in range(first, close):
+                line = lines[i]
+                if line.lstrip().startswith('// Function:'):
+                    continue
+                for m in re.finditer(r'0x[0-9A-Fa-f]+|(?<![A-Za-z_0-9])\d+(?![A-Za-z_0-9])', line):
+                    if line.lstrip().startswith('// 0x') and m.start() > line.index(':', 5) + 14 + 2:
+                        continue
+                    token = m.group()
+                    repl = token[:-1] + ('0' if token[-1] != '0' else '1') if token.startswith('0x') else str(int(token) + 1)
+                    mutated = lines[:]
+                    mutated[i] = line[:m.start()] + repl + line[m.end():]
+                    total += 1
+                    try:
+                        p.parse_function('\n'.join(mutated), name)
+                    except p.ParseError:
+                        continue
+                    self.fail(f'mutation accepted in {name}: {line.strip()} -> {mutated[i].strip()}')
+        self.assertGreater(total, 60)
+
+    def test_elf_binding_and_delay_slot_memory(self):
+        elf = Path(tempfile.mkdtemp()) / 'a15.elf'
+        elf.write_bytes(fx.build(fx.FUNCTIONS_A15))
+        for (name, start, words), key in zip(fx.FUNCTIONS_A15, A15):
+            self.assertEqual(p.bind_to_elf(p.parse_function(GOLDEN15, key), elf)['words'], words)
+        slot = p.parse_function(GOLDEN15, 'a15_ret_store_slot_0x10002c')
+        self.assertEqual((slot['terminal'], slot['inferred_nop_slot'], slot['words'][-1] >> 26), ('jr_ra', False, 0x2b))
 
 
 class LoweringTests(unittest.TestCase):

@@ -101,7 +101,40 @@ FUNCTIONS_A13 = [
         0x24000000,                  # addiu zero,zero,0: upstream guest-NOP alias, elided
     ]),
 ]
-SETS = {'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
+# Batch A15: LW and SW (word loads/stores) through a register base.
+FUNCTIONS_A15 = [
+    ('a15_lw_sw', 0x00100000, [
+        _i(0x23, 4, 8, 0),           # lw  t0,0(a0)
+        _i(0x23, 4, 9, 4),           # lw  t1,4(a0)
+        _r(8, 9, 10, 0x21),          # addu t2,t0,t1
+        _i(0x2b, 4, 10, 8),          # sw  t2,8(a0)
+        _i(0x23, 4, 0, 12),          # lw  zero,12(a0) (read performed, result discarded)
+        _i(0x2b, 4, 10, -4),         # sw  t2,-4(a0)
+        _i(0x23, 4, 11, 0x7ffc),     # lw  t3,0x7ffc(a0)
+        _i(0x2b, 4, 0, 16),          # sw  zero,16(a0)
+    ]),
+    ('a15_alias', 0x00100020, [
+        _i(0x23, 4, 4, 0),           # lw  a0,0(a0) (rt == rs)
+        _i(0x2b, 4, 4, 4),           # sw  a0,4(a0)
+        _i(0x23, 5, 5, -8),          # lw  a1,-8(a1)
+    ]),
+    ('a15_ret_store_slot', 0x0010002c, [
+        _i(0x23, 4, 2, 0),           # lw v0,0(a0)
+        JR_RA,                       # jr ra
+        _i(0x2b, 5, 2, 0),           # sw v0,0(a1) (delay slot store)
+    ]),
+    ('a15_ret_load_slot', 0x00100038, [
+        JR_RA,                       # jr ra
+        _i(0x23, 4, 3, 8),           # lw v1,8(a0) (delay slot load)
+    ]),
+    ('a15_hinted', 0x00100040, [
+        _i(0x0f, 0, 8, 0x8030),      # lui t0,0x8030
+        _i(0x23, 8, 9, 0),           # lw  t1,0(t0)  (upstream folds the constant base)
+        _i(0x2b, 8, 9, 4),           # sw  t1,4(t0)
+        _i(0x23, 4, 10, 0),          # lw  t2,0(a0)  (base not constant)
+    ]),
+]
+SETS = {'a15': FUNCTIONS_A15, 'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
 
 
 def build(functions=FUNCTIONS):

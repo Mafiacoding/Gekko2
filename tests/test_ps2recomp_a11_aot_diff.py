@@ -17,6 +17,8 @@ FIXTURES = [  # (fixture dir, generated function names). One AOT table per fixtu
     ('ps2recomp_a12', 'a12', ['a12_imm_leaf_0x100000', 'a12_reg_leaf_0x100020', 'a12_zero_dest_0x100040']),
     ('ps2recomp_a13', 'a13', ['a13_ret_nop_0x100000', 'a13_ret_slot_0x100010', 'a13_ret_only_0x10001c',
                               'a13_plain_hex_0x100024', 'a13_ra_slot_0x10002c', 'a13_nop_alias_slot_0x100038']),
+    ('ps2recomp_a15', 'a15', ['a15_lw_sw_0x100000', 'a15_alias_0x100020', 'a15_ret_store_slot_0x10002c',
+                              'a15_ret_load_slot_0x100038']),
 ]
 spec = importlib.util.spec_from_file_location('fixture_elf', ROOT / 'tools/ps2recomp_fixture_elf.py')
 fx = importlib.util.module_from_spec(spec)
@@ -30,7 +32,9 @@ def dest_mask(words):
     mask = 0
     for w in words:
         op, rt, rd = w >> 26, w >> 16 & 31, w >> 11 & 31
-        mask |= 1 << (rt if 9 <= op <= 15 else rd) if w else 0
+        if op == 0x2b:  # sw: no register destination
+            continue
+        mask |= 1 << (rt if 9 <= op <= 15 or op == 0x23 else rd) if w else 0
     return mask & ~1  # $zero is never a changeable destination
 
 
@@ -60,9 +64,9 @@ for fixture, elf_set, names, bound in [(f, e, n, b) for f, e, n in FIXTURES for 
             assert not bound or not diff
             pad = lambda ws: ','.join(f'UINT32_C(0x{w:08x})' for w in ws) + ',' + ','.join(['0'] * (32 - len(ws)))
             rows.append(f'{{UINT32_C(0x{r["start"]:08x}),{len(r["words"])}u,UINT32_C(0x{dest_mask(r["words"]):x}),'
-                        f'{int(r["terminal"] == "jr_ra")}u,{{{pad(r["words"])}}},{{{pad(ram)}}}}}')
+                        f'{int(r["terminal"] == "jr_ra")}u,{int(any(w >> 26 in (0x23, 0x2b) for w in r["words"]))}u,{{{pad(r["words"])}}},{{{pad(ram)}}}}}')
         (gen / 'a11_fixtures.h').write_text(
-            '#include <stdint.h>\ntypedef struct{uint32_t pc;unsigned count;uint32_t dest_mask;unsigned jr_ra;uint32_t words[32];uint32_t ram[32];}a11_fixture;\n'
+            '#include <stdint.h>\ntypedef struct{uint32_t pc;unsigned count;uint32_t dest_mask;unsigned jr_ra;unsigned memory;uint32_t words[32];uint32_t ram[32];}a11_fixture;\n'
             'static const a11_fixture a11_fixtures[]={' + ','.join(rows) + '};\n'
             'static const unsigned a11_fixture_count=%du;\n' % len(rows))
         saved = sys.argv

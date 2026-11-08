@@ -4,7 +4,7 @@
 Batch A11. Accepts exactly one narrow shape emitted by the pinned upstream
 generator (ran-j/PS2Recomp e5636981a1c9de368f6b71e819c3dc188dfedbf4): a
 straight-line integer function made only of the instructions in I_TYPE,
-R_TYPE, ADDIU, LUI, SLL and the canonical NOP. Every statement is reconstructed from the raw MIPS word and
+R_TYPE, MEM_TYPE (LW/SW), ADDIU, LUI, SLL and the canonical NOP. Every statement is reconstructed from the raw MIPS word and
 must equal the generated text; anything else rejects the whole function.
 
 The generated C++ is never compiled or executed. Only the validated raw words
@@ -85,6 +85,14 @@ I_TYPE = {  # opcode -> (mnemonic, template). All write rt.
     0x0d: ('ori', 'SET_GPR_U64(ctx, {rt}, GPR_U64(ctx, {rs}) | (uint64_t)(uint16_t){imm});'),
     0x0e: ('xori', 'SET_GPR_U64(ctx, {rt}, GPR_U64(ctx, {rs}) ^ (uint64_t)(uint16_t){imm});'),
 }
+# Word loads/stores through a register base, in the *unhinted* form. When the
+# upstream generator folds a constant base register (lui/ori/addiu earlier in
+# the function) it emits FAST_READ32/FAST_WRITE32/runtime->Load32 with a literal
+# address instead; those forms differ and are rejected (see A15 docs).
+MEM_TYPE = {
+    0x23: ('lw', 'SET_GPR_S32(ctx, {rt}, (int32_t)READ32(ADD32(GPR_U32(ctx, {rs}), {simm})));'),
+    0x2b: ('sw', 'WRITE32(ADD32(GPR_U32(ctx, {rs}), {simm}), GPR_U32(ctx, {rt}));'),
+}
 R_TYPE = {  # SPECIAL funct -> (mnemonic, template). All write rd; shamt must be 0.
     0x21: ('addu', 'SET_GPR_S32(ctx, {rd}, (int32_t)ADD32(GPR_U32(ctx, {rs}), GPR_U32(ctx, {rt})));'),
     0x23: ('subu', 'SET_GPR_S32(ctx, {rd}, (int32_t)SUB32(GPR_U32(ctx, {rs}), GPR_U32(ctx, {rt})));'),
@@ -112,6 +120,9 @@ def expected_statement(word):
                          .format(**fields))
     if op in I_TYPE:
         mnemonic, template = I_TYPE[op]
+        return mnemonic, template.format(**fields)
+    if op in MEM_TYPE:
+        mnemonic, template = MEM_TYPE[op]
         return mnemonic, template.format(**fields)
     if op == 0x0f:  # LUI
         if rs != 0:

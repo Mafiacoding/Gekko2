@@ -391,3 +391,15 @@ symbol size if present, and `--elf … --output-dir` writes a `0700` private inc
 directory (outside the checkout) plus `report.private.json` with source/ELF/AOT
 hashes. 48 parser tests; differential now runs source-only and ELF-bound for
 all fixtures (A13: 720+720). Host-only evidence; no Wii build here (no devkitPPC).
+
+
+## Batch A15 — linked-PPC check and word loads/stores (2026-11-08)
+
+See `docs/PS2RECOMP-A15-PPC-AND-MEMORY.md`. (a) ELF-bound AOT cross-built with
+devkitPPC r51 from a private dir (tracked tree untouched) and checked
+interpreter-vs-AOT as real PPC code under Unicorn for all fixtures
+(`tools/build_wii_private_aot.sh`, `tools/verify_wii_ps2recomp_aot.py`,
+`tools/ps2recomp_wii_ppc_check.py`, wired into `wii-build.yml`). (b) Parser
+accepts LW/SW (register base, unhinted form); upstream's constant-folded
+`FAST_READ32/FAST_WRITE32` form (real fixture) is rejected. 55 parser tests;
+host differential adds fault/MMIO cases. Modelled PPC only; no Wii/Dolphin run.

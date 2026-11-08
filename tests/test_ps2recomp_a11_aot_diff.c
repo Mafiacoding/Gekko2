@@ -39,6 +39,17 @@ static void randomise(ee_state_t *st,const ee_state_t *initial,const a11_fixture
     st->pc=f->pc;st->next_pc=f->pc+4;st->branch_pending=0;
     if(f->jr_ra)st->gpr[31].ud0=UINT64_C(0x80000000)|(random64()&0x1ffffcu);
 }
+/* Memory fixtures: a0/a1 point into RAM; every word of the data area is itself a
+ * valid aligned RAM pointer so a load result may be reused as a base address.
+ * mode 0 = valid; 1 = unaligned; 2 = MMIO; 3 = unmapped KUSEG (TLB refill). */
+static void seed_memory(ee_state_t *st,const a11_fixture *f,unsigned mode)
+{
+    if(!f->memory)return;
+    for(unsigned i=0;i<0x20000u/4;i++)write32(st->ram+0x300000+4*i,0x80300200u+((uint32_t)random64()&0xfcu));
+    static const uint32_t a0[]={0x80300100u,0x80300102u,0x10003000u,0x00700000u};
+    static const uint32_t a1[]={0x80310008u,0x80310002u,0x10003000u,0x00700000u};
+    st->gpr[4].ud0=a0[mode];st->gpr[5].ud0=a1[mode];
+}
 static int ram_is_lowered(const a11_fixture *f){return !memcmp(f->ram,f->words,4u*f->count);}
 int main(void)
 {
@@ -51,19 +62,21 @@ int main(void)
     st->tlb[0].entry_lo1=(0x101u<<6)|6u;
     ee_state_t initial=*st,scalar,start;
     assert(ee_aot_block_count()==a11_fixture_count);
-    unsigned checked=0,partial=0,guarded=0;
+    unsigned checked=0,partial=0,guarded=0,faulted=0;
+    static uint8_t ram_before[0x20000],scalar_ram[0x20000];
     for(unsigned fi=0;fi<a11_fixture_count;fi++) {
         const a11_fixture *f=&a11_fixtures[fi];
         const unsigned budgets[]={f->count,1u,2u,3u,f->count-1u};
         for(unsigned trial=0;trial<24;trial++) for(unsigned bi=0;bi<5;bi++) {
             unsigned budget=budgets[bi];
-            *st=initial;load(st,f,f->ram);randomise(st,&initial,f,trial);start=*st;
+            *st=initial;load(st,f,f->ram);randomise(st,&initial,f,trial);seed_memory(st,f,0);start=*st;
+            memcpy(ram_before,st->ram+0x300000,sizeof ram_before);
             gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
             unsigned scalar_retired=0;
             while(scalar_retired<f->count){unsigned n=f->count-scalar_retired<budget?f->count-scalar_retired:budget;
                 unsigned got=ee_core_step_n(n);assert(got==n&&!st->halted);scalar_retired+=got;}
-            scalar=*st;
-            *st=start;
+            scalar=*st;memcpy(scalar_ram,st->ram+0x300000,sizeof scalar_ram);
+            *st=start;memcpy(st->ram+0x300000,ram_before,sizeof ram_before);
             gekko2_optimization_mask|=GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT);
             uint64_t native=ee_aot_retired_count();
             unsigned aot_retired=0,first=0;
@@ -81,7 +94,7 @@ int main(void)
             else assert(ee_aot_retired_count()-native>0&&ee_aot_retired_count()-native<f->count);
             if(budget==f->count&&ram_is_lowered(f))assert(ee_aot_retired_count()-native==f->count);
             else partial++;
-            same(&scalar,st);
+            same(&scalar,st);assert(!memcmp(scalar_ram,st->ram+0x300000,sizeof scalar_ram));
             assert(st->pc==(f->jr_ra?(uint32_t)start.gpr[31].ud0:f->pc+4u*f->count));assert(!st->branch_pending);
             assert(st->instructions_executed==start.instructions_executed+f->count);
             /* GPR0 immutable; every upper 64-bit lane preserved; low lane only
@@ -93,6 +106,24 @@ int main(void)
             checked++;
         }
     }
+    /* Faulting and device addresses: AOT must defer to the interpreter and leave
+     * exactly the same architectural result (exception state, BadVAddr, EPC). */
+    for(unsigned fi=0;fi<a11_fixture_count;fi++) if(a11_fixtures[fi].memory) for(unsigned mode=1;mode<4;mode++) for(unsigned trial=0;trial<6;trial++) {
+        const a11_fixture *f=&a11_fixtures[fi];
+        *st=initial;load(st,f,f->ram);randomise(st,&initial,f,trial);seed_memory(st,f,mode);start=*st;
+        memcpy(ram_before,st->ram+0x300000,sizeof ram_before);
+        gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
+        unsigned want=ee_core_step_n(f->count);scalar=*st;memcpy(scalar_ram,st->ram+0x300000,sizeof scalar_ram);
+        *st=start;memcpy(st->ram+0x300000,ram_before,sizeof ram_before);
+        gekko2_optimization_mask|=GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT);
+        unsigned got=ee_core_step_n(f->count);
+        if(got!=want){fprintf(stderr,"fault retire mismatch fn=%u mode=%u trial=%u want=%u got=%u\n",fi,mode,trial,want,got);return 1;}
+        same(&scalar,st);assert(!memcmp(scalar_ram,st->ram+0x300000,sizeof scalar_ram));faulted++;
+        /* An unmapped KUSEG access must really raise a TLB exception. (Gekko2's core
+         * raises no address error for an unaligned word access, so mode 1 only proves
+         * that AOT and interpreter agree on that behaviour.) */
+        if(mode==3)assert(((st->cop0[13]>>2)&31u)!=0u&&st->cop0[8]!=0u);
+    }
     /* Live-source guards: a changed guest word must never run stale generated
      * code. 0 = first word, 1 = last word, 2 = a middle word is rewritten. */
     for(unsigned fi=0;fi<a11_fixture_count;fi++) for(unsigned where=0;where<3;where++) {
@@ -100,7 +131,7 @@ int main(void)
         uint32_t m[32];memcpy(m,f->ram,sizeof m);
         unsigned index=where==0?0u:where==1?f->count-1u:f->count/2u;
         m[index]=0x24090007u; /* addiu t1,zero,7 */
-        *st=initial;load(st,f,m);randomise(st,&initial,f,5);start=*st;
+        *st=initial;load(st,f,m);randomise(st,&initial,f,5);seed_memory(st,f,0);start=*st;
         gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
         assert(ee_core_step_n(f->count)==f->count);scalar=*st;
         *st=start;gekko2_optimization_mask|=GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT);
@@ -114,6 +145,6 @@ int main(void)
     /* First-word guard of the AOT entry itself. */
     {const a11_fixture *f=&a11_fixtures[0];*st=initial;load(st,f,f->ram);randomise(st,&initial,f,6);
      ee_state_t before=*st;assert(!ee_aot_try_execute_fetched(st,f->count,f->words[0]^1u));same(&before,st);}
-    printf("PASS PS2Recomp parsed-function differential: %u parsed-function/interpreter comparisons (%u partial-budget), %u functions, 128-bit GPR upper lanes, GPR0, retirement and %u live-source guard cases\n",checked,partial,a11_fixture_count,guarded);
+    printf("PASS PS2Recomp parsed-function differential: %u parsed-function/interpreter comparisons (%u partial-budget), %u functions, 128-bit GPR upper lanes, GPR0, retirement, %u fault/device cases and %u live-source guard cases\n",checked,partial,a11_fixture_count,faulted,guarded);
     return 0;
 }
