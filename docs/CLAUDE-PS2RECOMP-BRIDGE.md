@@ -39,11 +39,13 @@ Base: current `main` (the branch is intentionally not based on the divergent
 
 ## Verified host CI
 
-GitHub Actions run `42485350273`, commit
-`ce33dd23e4d23c92b4703528549f83a33fef2413`:
+GitHub Actions run `42486351229`, commit
+`526f2993142b9e0fb9f0f95f4af1613fef26c005`:
 
 - Bridge regression: PASS (all five memory widths, TLB fault reporting,
   detached-state native-window refusal).
+- Live scheduler admission regression: PASS (live-source, device/event,
+  bounded-grant and memory-dependency guards).
 - CFG/compiler unit tests: 5/5 PASS.
 - Synthetic real-core AOT/interpreter test: 512/512 comparisons PASS,
   512 AOT hits; bridge memory callbacks exercised.
@@ -100,12 +102,20 @@ performance or compatibility from host CI.
 
 ```sh
 tests/run_test.sh test_ps2recomp_bridge
+tests/run_test.sh test_ps2recomp_bridge_window
 python3 tests/test_native_hybrid_compile.py
 python3 experiments/ps2recomp-wii/run_hybrid_test.py
-tests/run_test.sh test_ee_aot
+python3 tests/test_ee_aot_inputs.py
 tests/run_test.sh test_ee_residency_generation
 tests/run_test.sh test_ee_exec_lifecycle
 ```
 
 Report exact stdout/exit status and keep host, synthetic PPC, Dolphin and
 physical Wii evidence separate.
+
+
+Note: the repository's older `tests/test_ee_aot.c` currently includes
+`aot_test_fixture.h`, which is absent from the current-main tree. Do not
+report that C test as passing. The workflow instead runs the available
+`test_ee_aot_inputs.py` plus the synthetic generated-AOT/interpreter runtime
+comparison above.
