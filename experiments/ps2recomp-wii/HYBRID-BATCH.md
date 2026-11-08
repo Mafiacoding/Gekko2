@@ -129,3 +129,26 @@ Observed output:
 No Crash ELF, BIOS, ISO, CHD, memory-card image or owner-private build was used
 or committed. This does not prove PS2Recomp runtime integration, Crash gameplay,
 Wii compilation, Dolphin execution, physical Wii execution or FPS.
+
+
+## Live bridge scheduler admission regression
+
+A focused host test now binds the bridge to the live EE singleton and verifies
+that native-window admission delegates to the existing scheduler gate:
+- live source mismatch and active VU0/VU1/DMA reject without changing EE state;
+- timer/event/IRQ deadlines and pending branch state reject without changing
+  EE state;
+- a valid four-instruction arithmetic window receives an exact four-instruction
+  grant and advances the architectural PC/retirement counters once;
+- a short budget grants only the bounded prefix;
+- a memory-bearing window is tested with its base-register dependency mask,
+  and an unmapped address is declined.
+
+GitHub Actions run `42486351229`, commit
+`526f2993142b9e0fb9f0f95f4af1613fef26c005`: PASS, including this live
+admission test, the bridge regression, 5 CFG tests, 512/512 synthetic
+interpreter/AOT comparisons, AOT-input generation, EE residency-generation,
+and EE execution-lifecycle regressions.
+
+This still validates admission and host behavior only; it does not execute a
+PPC native body or an external PS2Recomp function.
