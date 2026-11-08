@@ -1,6 +1,6 @@
 # Native hybrid batch — 25 October 2026
 
-Branch `codex/native-hybrid-cfg`. Runtime remains the existing Gekko2 core;
+Originally prototyped on `codex/native-hybrid-cfg`; the isolated compiler/test subset is now ported to PR #58's current-main branch. Runtime remains the existing Gekko2 core;
 this batch adds an isolated offline compiler front end and integration tests.
 It does not replace the emulator with the earlier 32-bit miniature prototype.
 No BIOS/game input, generated owner code, snapshots or traces are included.
@@ -100,3 +100,32 @@ finished native port. That branch retains its separate build/test report.
 HLE can reduce work for a validated service, but does not eliminate PS2 graphics,
 VU computation, DMA or synchronization. Static recompilation removes translation
 work; it does not make the original game workload free or guarantee 30 FPS.
+
+
+## Current-main bridge integration (PR #58)
+
+The isolated six-file compiler/test subset was ported onto
+`codex/ps2recomp-bridge-batch-a-memory`; the original native-hybrid PR #56
+and its 106-commit foundation branch were not merged or imported. This avoids
+silently replacing the current-main GX/Crash baseline with a divergent branch.
+
+The synthetic execution test now binds the versioned bridge to the live
+Gekko2 EE singleton and uses the bridge's 32-bit memory callbacks to seed
+synthetic executable/data RAM before running the generated AOT region and
+precise interpreter fallback. It also reads back the seeded data through the
+bridge. This is a real-core host integration test, not execution of external
+PS2Recomp-generated game code.
+
+Verified GitHub Actions run for the bridge-integrated test:
+`42485350273`, commit `ce33dd23e4d23c92b4703528549f83a33fef2413`.
+
+Observed output:
+- Bridge regression: PASS (8/16/32/64/128-bit callbacks, TLB fault, fail-closed native-window refusal).
+- CFG/compiler tests: 5 tests, PASS.
+- Synthetic real-core AOT/interpreter comparison: 512/512 PASS, with 512 AOT hits.
+- The synthetic execution case covers 128-bit GPR state, MMI/RAM, HI/LO/SA,
+  multiple budgets, and changed live delay-slot source.
+
+No Crash ELF, BIOS, ISO, CHD, memory-card image or owner-private build was used
+or committed. This does not prove PS2Recomp runtime integration, Crash gameplay,
+Wii compilation, Dolphin execution, physical Wii execution or FPS.
