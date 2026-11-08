@@ -88,6 +88,6 @@ int main(void)
   assert(!memcmp(s,&before,sizeof before));
   finish();
  }
- puts("PASS bridge native-window admission: live-source, device/event, budget, page and memory guards");
+ puts("PASS bridge native-window admission: live-source, device/event, budget and memory-dependency guards");
  return 0;
 }
