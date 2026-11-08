@@ -148,3 +148,27 @@ The same run also passed the bridge memory test, live native-window admission,
 5/5 CFG/compiler tests, 512/512 synthetic AOT/interpreter comparisons,
 3/3 AOT input tests, and EE execution-lifecycle regression. This is host CI,
 not a Wii or external PS2Recomp runtime result.
+
+
+## Batch A4 — versioned read-only integer-leaf snapshot
+
+Added `ee_recomp_ee_state_snapshot_t`, a separate 576-byte, fixed-layout
+snapshot with compile-time size/offset assertions. It carries ABI/version and
+profile identifiers, PC/next-PC, SA, 32 full 128-bit GPRs, and full 128-bit
+HI/LO. The low 64-bit lane is `ud0`, followed by `ud1`. It does not expose
+or serialize `ee_state_t`, pointers, TLB, COP0, FPU, VU, device or transient
+exception scratch.
+
+The initial profile is explicitly `INTEGER_LEAF`: it is a read-only snapshot
+format for straight-line integer code, not proof that an ELF function meets
+that profile and not permission to execute it. Snapshot admission rejects
+halted/idle state, pending branch or delay-slot state, active EXL/ERL, active
+VU0, unaligned PC, non-sequential next-PC, nonzero GPR0, and dirty exception/
+TLB state. It leaves the caller's output unchanged on rejection and never
+repairs or mutates guest state. No commit function or execution lease is added
+in A4; those require a separate scheduler-boundary contract.
+
+The bridge regression now checks ABI/profile/size, all 32 128-bit GPRs,
+HI/LO/SA, PC/next-PC, low/high lane ordering, GPR0 and fail-closed rejection
+for branch, next-PC, GPR0, delay-slot and EXL states.
+
