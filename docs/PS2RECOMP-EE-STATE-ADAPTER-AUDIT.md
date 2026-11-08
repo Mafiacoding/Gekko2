@@ -172,3 +172,12 @@ The bridge regression now checks ABI/profile/size, all 32 128-bit GPRs,
 HI/LO/SA, PC/next-PC, low/high lane ordering, GPR0 and fail-closed rejection
 for branch, next-PC, GPR0, delay-slot and EXL states.
 
+
+### A4 host validation
+
+GitHub Actions [run 42487839134](https://github.com/Mafiacoding/Gekko2/actions/runs/42487839134)
+completed successfully on code commit `61ef28fccf3e728a916c2457bcc780918ecd5b5a`.
+The bridge regression compiled and ran with the snapshot ABI layout assertions
+and all snapshot round-trip/rejection assertions enabled. The remaining bridge,
+live scheduler, 512/512 synthetic AOT/interpreter, AOT input, EE residency and
+EE execution-lifecycle tests also passed. Host CI only.
