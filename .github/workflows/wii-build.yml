@@ -16,6 +16,9 @@ on:
       - "tools/elf2dol.*"
       - "tools/verify_wii_*.py"
       - "tools/*_aot_generate.py"
+      - "tools/ps2recomp_*.py"
+      - "tools/verify_wii_ps2recomp_aot.py"
+      - "tests/fixtures/ps2recomp_*/**"
       - "docs/WII-TOOLCHAIN-2026.md"
       - ".github/workflows/wii-build.yml"
   workflow_dispatch:
@@ -54,3 +57,7 @@ jobs:
           export PATH="$DEVKITPPC/bin:$PATH"
           /tmp/venv/bin/python tools/verify_wii_system_r1330i.py --nm powerpc-eabi-nm Gekko2-R1389-DSI.elf
           /tmp/venv/bin/python tools/verify_wii_perf_r1330i.py --nm powerpc-eabi-nm Gekko2-R1389-DSI.elf
+      - name: ELF-bound PS2Recomp AOT cross-build and linked-PPC differential
+        run: |
+          set -e
+          /tmp/venv/bin/python tools/ps2recomp_wii_ppc_check.py

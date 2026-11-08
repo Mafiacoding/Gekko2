@@ -353,6 +353,10 @@ def write_private_build(results, directory):
     (directory / 'core/ee').mkdir(parents=True, mode=0o700)
     report = lower(results, directory / 'ee_aot_generated.inc', directory / 'core/ee/ee_aot_complex_generated.inc')
     (directory / 'report.private.json').write_text(json.dumps(report, indent=2) + '\n')
+    # Words stay in the private directory only (verifier input for linked-PPC checks).
+    (directory / 'functions.private.json').write_text(json.dumps({'blocks': [
+        {'name': r['name'], 'pc': r['start'], 'words': r['words'], 'terminal': r.get('terminal')}
+        for r in results]}, indent=2) + '\n')
     for path in directory.rglob('*'):
         os.chmod(path, 0o700 if path.is_dir() else 0o600)
     return report
