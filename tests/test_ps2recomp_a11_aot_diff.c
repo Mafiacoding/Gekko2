@@ -107,6 +107,6 @@ int main(void)
     /* First-word guard of the AOT entry itself. */
     {const a11_fixture *f=&a11_fixtures[0];*st=initial;load(st,f,f->words);randomise(st,&initial,f,6);
      ee_state_t before=*st;assert(!ee_aot_try_execute_fetched(st,f->count,f->words[0]^1u));same(&before,st);}
-    printf("PASS PS2Recomp A11: %u parsed-function/interpreter comparisons (%u partial-budget), %u functions, 128-bit GPR upper lanes, GPR0, retirement and %u live-source guard cases\n",checked,partial,a11_fixture_count,guarded);
+    printf("PASS PS2Recomp parsed-function differential: %u parsed-function/interpreter comparisons (%u partial-budget), %u functions, 128-bit GPR upper lanes, GPR0, retirement and %u live-source guard cases\n",checked,partial,a11_fixture_count,guarded);
     return 0;
 }

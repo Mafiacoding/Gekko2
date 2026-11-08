@@ -207,10 +207,13 @@ class RejectTests(unittest.TestCase):
 
     def test_unsupported_instruction_classes(self):
         # COP0 (mfc0), FPU (add.s), VU/COP2 (vadd), MMI (padduw), shifts/ops not yet audited.
-        for word in (0x40086000, 0x46020000 | 0x0, 0x4a000000 | 0x28, 0x70411028,
-                     0x00094c02, 0x00094c03, 0x00494021, 0x01095020,
-                     0x0109502d, 0x01095024, 0x3c081234, 0x35081234, 0x29080001):
-            self.rejects(render('f_0x1000', 0x1000, [(word, 'x', 'SET_GPR_S32(ctx, 8, 0);')]), fragment=None)
+        # Even with a plausible-looking statement, unsupported words are rejected
+        # by the decoder (fragment check), not merely by a statement mismatch.
+        for word in (0x40086000, 0x46020000, 0x4a000028, 0x70411028, 0x00094c02, 0x00094c03,
+                     0x00494022, 0x01095020, 0x0109502d, 0x0109502c, 0x01095018, 0x01095010,
+                     0x0109000b, 0x68000000, 0x1c000000):
+            self.rejects(render('f_0x1000', 0x1000, [(word, 'x', 'SET_GPR_S32(ctx, 8, 0);')]),
+                         fragment='outside the supported subset')
 
     def test_special_cases_rejected(self):
         # ADDIU $zero: upstream emits a distinct NOP comment; SLL $zero: empty statement.
@@ -263,6 +266,77 @@ class RejectTests(unittest.TestCase):
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 2)
             self.assertFalse(out.exists())
+
+
+GOLDEN12 = (ROOT / 'tests/fixtures/ps2recomp_a12/ps2_recompiled_functions.cpp').read_text()
+A12 = ['a12_imm_leaf_0x100000', 'a12_reg_leaf_0x100020', 'a12_zero_dest_0x100018'.replace('0018', '0040')]
+
+
+class A12Tests(unittest.TestCase):
+    def test_provenance_and_builder(self):
+        prov = json.loads((ROOT / 'tests/fixtures/ps2recomp_a12/PROVENANCE.json').read_text())
+        self.assertEqual(prov['output']['sha256'], hashlib.sha256(GOLDEN12.encode()).hexdigest())
+        self.assertEqual(prov['input_elf']['sha256'], hashlib.sha256(fx.build(fx.FUNCTIONS_A12)).hexdigest())
+
+    def test_golden_functions_match_builder_words(self):
+        for (name, start, words), key in zip(fx.FUNCTIONS_A12, A12):
+            r = p.parse_function(GOLDEN12, key)
+            self.assertEqual((r['start'], r['words']), (start, words))
+            self.assertEqual(r['end'], start + 4 * len(words))
+
+    def test_every_number_in_every_statement_is_checked(self):
+        # Exhaustive single-number mutation of both real golden files: the raw
+        # word fixes every register/immediate, so any edit must be rejected.
+        import re
+        for text, names in ((GOLDEN, (LEAF, ZERO)), (GOLDEN12, A12)):
+            lines = text.split('\n')
+            for name in names:
+                parse_ok = p.parse_function(text, name)
+                self.assertTrue(parse_ok['words'])
+                first = [i for i, l in enumerate(lines) if l.startswith(f'void {name}(')][0]
+                last = lines.index('}', first)
+                for i in range(first, last):
+                    line = lines[i]
+                    if not line.lstrip().startswith(('SET_GPR', 'ctx->pc')) or '(' not in line and 'pc' not in line:
+                        continue
+                    for m in re.finditer(r'(?<![A-Za-z_0-9])\d+(?![A-Za-z_0-9])|(?<=ctx, )\d+', line):
+                        mutated = lines[:]
+                        mutated[i] = line[:m.start()] + str(int(m.group()) + 1) + line[m.end():]
+                        mutated = '\n'.join(mutated)
+                        if mutated == text:
+                            continue
+                        try:
+                            r = p.parse_function(mutated, name)
+                        except p.ParseError:
+                            continue
+                        self.fail(f'mutation accepted in {name}: {line.strip()}')
+
+    def test_operator_and_type_confusion_rejected(self):
+        t = GOLDEN12
+        for old, new in (('| (uint64_t)(uint16_t)65535', '& (uint64_t)(uint16_t)65535'),
+                         ('(uint64_t)(uint16_t)65280', '(uint64_t)(int16_t)65280'),
+                         ('(int64_t)GPR_S64(ctx, 10) < (int64_t)(int32_t)4294967295',
+                          '(uint64_t)GPR_U64(ctx, 10) < (uint64_t)(int64_t)(int32_t)4294967295'),
+                         ('~(GPR_U64(ctx, 8) | GPR_U64(ctx, 9))', '(GPR_U64(ctx, 8) | GPR_U64(ctx, 9))'),
+                         ('SET_GPR_S32(ctx, 15, (int32_t)SUB32', 'SET_GPR_S32(ctx, 15, (int32_t)ADD32'),
+                         ('(int32_t)((uint32_t)32769 << 16)', '(int32_t)((uint32_t)32769 << 15)')):
+            self.assertIn(old, t)
+            mutated = t.replace(old, new, 1)
+            names = [n for n in A12 if p.parse_function(t, n)]
+            with self.assertRaises(p.ParseError):
+                for n in names:
+                    p.parse_function(mutated, n)
+
+    def test_reserved_fields_and_unsupported_neighbours(self):
+        # LUI with rs != 0, ADDU-family with shamt != 0, MOVZ/MOVN/MULT/DIV/ADD/SUB
+        # (different upstream templates) and a branch-like REGIMM stay rejected.
+        for word in (0x3c288001, 0x0109 << 16 | 0x5081, 0x0109500a, 0x0109500b, 0x01090018,
+                     0x0109001a, 0x01095020, 0x01095022, 0x04010001, 0x01095018 | 1):
+            self.rejects(render('f_0x1000', 0x1000, [(word, 'x', 'SET_GPR_U64(ctx, 8, 0);')]))
+
+    def rejects(self, text):
+        with self.assertRaises(p.ParseError):
+            parse_text(text)
 
 
 class LoweringTests(unittest.TestCase):

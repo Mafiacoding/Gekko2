@@ -24,6 +24,7 @@ on:
       - "tests/test_ps2recomp_a11_aot_diff.py"
       - "tests/test_ps2recomp_a11_aot_diff.c"
       - "tests/fixtures/ps2recomp_a11/**"
+      - "tests/fixtures/ps2recomp_a12/**"
       - "tools/build_host_core.py"
       - "tests/run_test.sh"
       - ".github/workflows/ps2recomp-bridge-host-test.yml"

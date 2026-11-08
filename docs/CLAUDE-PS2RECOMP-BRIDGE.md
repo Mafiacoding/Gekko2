@@ -363,3 +363,11 @@ Dolphin/hardware result, no performance claim.
 
 Next (A12): widen one instruction class at a time with a real-generator
 fixture each; then `jr $ra` + delay slot; do not skip the differential gate.
+
+
+## Batch A12 — pure integer ALU class (2026-11-08)
+
+See `docs/PS2RECOMP-A12-INTEGER-ALU.md`. Parser extended (table driven) with
+SLTI, SLTIU, ANDI, ORI, XORI, LUI, SUBU, AND, OR, NOR, SLT, SLTU, each backed
+by a real-generator fixture (`tests/fixtures/ps2recomp_a12/`) and differential
+(360 + 9 guard cases). Host-only evidence.

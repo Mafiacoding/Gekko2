@@ -3,8 +3,8 @@
 
 Batch A11. Accepts exactly one narrow shape emitted by the pinned upstream
 generator (ran-j/PS2Recomp e5636981a1c9de368f6b71e819c3dc188dfedbf4): a
-straight-line integer function made only of ADDIU, ADDU, XOR, SLL and the
-canonical NOP. Every statement is reconstructed from the raw MIPS word and
+straight-line integer function made only of the instructions in I_TYPE,
+R_TYPE, ADDIU, LUI, SLL and the canonical NOP. Every statement is reconstructed from the raw MIPS word and
 must equal the generated text; anything else rejects the whole function.
 
 The generated C++ is never compiled or executed. Only the validated raw words
@@ -68,25 +68,54 @@ def normalize(source):
     return lines
 
 
+# Statement templates reconstructed from the pinned upstream translators
+# (instruction_translator.cpp / special_translator.cpp). `{rd}`-style fields
+# come from the raw word; `{simm}` is the sign-extended immediate printed as
+# an unsigned 32-bit decimal and `{imm}` the zero-extended 16-bit immediate.
+I_TYPE = {  # opcode -> (mnemonic, template). All write rt.
+    0x0a: ('slti', 'SET_GPR_U64(ctx, {rt}, ((int64_t)GPR_S64(ctx, {rs}) < (int64_t)(int32_t){simm}) ? 1 : 0);'),
+    0x0b: ('sltiu', 'SET_GPR_U64(ctx, {rt}, ((uint64_t)GPR_U64(ctx, {rs}) < (uint64_t)(int64_t)(int32_t){simm}) ? 1 : 0);'),
+    0x0c: ('andi', 'SET_GPR_U64(ctx, {rt}, GPR_U64(ctx, {rs}) & (uint64_t)(uint16_t){imm});'),
+    0x0d: ('ori', 'SET_GPR_U64(ctx, {rt}, GPR_U64(ctx, {rs}) | (uint64_t)(uint16_t){imm});'),
+    0x0e: ('xori', 'SET_GPR_U64(ctx, {rt}, GPR_U64(ctx, {rs}) ^ (uint64_t)(uint16_t){imm});'),
+}
+R_TYPE = {  # SPECIAL funct -> (mnemonic, template). All write rd; shamt must be 0.
+    0x21: ('addu', 'SET_GPR_S32(ctx, {rd}, (int32_t)ADD32(GPR_U32(ctx, {rs}), GPR_U32(ctx, {rt})));'),
+    0x23: ('subu', 'SET_GPR_S32(ctx, {rd}, (int32_t)SUB32(GPR_U32(ctx, {rs}), GPR_U32(ctx, {rt})));'),
+    0x24: ('and', 'SET_GPR_U64(ctx, {rd}, GPR_U64(ctx, {rs}) & GPR_U64(ctx, {rt}));'),
+    0x25: ('or', 'SET_GPR_U64(ctx, {rd}, GPR_U64(ctx, {rs}) | GPR_U64(ctx, {rt}));'),
+    0x26: ('xor', 'SET_GPR_U64(ctx, {rd}, GPR_U64(ctx, {rs}) ^ GPR_U64(ctx, {rt}));'),
+    0x27: ('nor', 'SET_GPR_U64(ctx, {rd}, ~(GPR_U64(ctx, {rs}) | GPR_U64(ctx, {rt})));'),
+    0x2a: ('slt', 'SET_GPR_U64(ctx, {rd}, ((int64_t)GPR_S64(ctx, {rs}) < (int64_t)GPR_S64(ctx, {rt})) ? 1 : 0);'),
+    0x2b: ('sltu', 'SET_GPR_U64(ctx, {rd}, ((uint64_t)GPR_U64(ctx, {rs}) < (uint64_t)GPR_U64(ctx, {rt})) ? 1 : 0);'),
+}
+
+
 def expected_statement(word):
     """Return (mnemonic, statement) the pinned upstream emits, or reject."""
     op, rs, rt, rd = word >> 26, word >> 21 & 31, word >> 16 & 31, word >> 11 & 31
     sa, fn = word >> 6 & 31, word & 63
     if word == 0:
         return 'nop', '// NOP'
+    fields = {'rs': rs, 'rt': rt, 'rd': rd, 'imm': word & 0xffff,
+              'simm': (((word & 0xffff) ^ 0x8000) - 0x8000) & 0xffffffff}
     if op == 9:  # ADDIU
         if rt == 0:
             _fail('ADDIU to $zero is rejected (upstream emits a distinct NOP comment)')
-        simm = ((word & 0xffff) ^ 0x8000) - 0x8000
-        return 'addiu', (f'SET_GPR_S32(ctx, {rt}, (int32_t)ADD32(GPR_U32(ctx, {rs}), '
-                         f'{simm & 0xffffffff}));')
-    if op == 0 and fn in (0x21, 0x26):  # ADDU / XOR
+        return 'addiu', ('SET_GPR_S32(ctx, {rt}, (int32_t)ADD32(GPR_U32(ctx, {rs}), {simm}));'
+                         .format(**fields))
+    if op in I_TYPE:
+        mnemonic, template = I_TYPE[op]
+        return mnemonic, template.format(**fields)
+    if op == 0x0f:  # LUI
+        if rs != 0:
+            _fail('reserved rs field nonzero in LUI')
+        return 'lui', 'SET_GPR_S32(ctx, {rt}, (int32_t)((uint32_t){imm} << 16));'.format(**fields)
+    if op == 0 and fn in R_TYPE:
         if sa != 0:
             _fail('reserved shamt field nonzero')
-        if fn == 0x21:
-            return 'addu', (f'SET_GPR_S32(ctx, {rd}, (int32_t)ADD32(GPR_U32(ctx, {rs}), '
-                            f'GPR_U32(ctx, {rt})));')
-        return 'xor', f'SET_GPR_U64(ctx, {rd}, GPR_U64(ctx, {rs}) ^ GPR_U64(ctx, {rt}));'
+        mnemonic, template = R_TYPE[fn]
+        return mnemonic, template.format(**fields)
     if op == 0 and fn == 0:  # SLL (non-canonical-NOP)
         if rs != 0:
             _fail('reserved rs field nonzero in SLL')

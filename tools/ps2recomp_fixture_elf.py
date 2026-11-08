@@ -22,6 +22,55 @@ FUNCTIONS = [
 ]
 
 
+def _i(op, rs, rt, imm):
+    return op << 26 | rs << 21 | rt << 16 | imm & 0xffff
+
+
+def _r(rs, rt, rd, fn):
+    return rs << 21 | rt << 16 | rd << 11 | fn
+
+
+# Batch A12: SLTI/SLTIU/ANDI/ORI/XORI/LUI and OR/AND/NOR/SLT/SLTU/SUBU.
+FUNCTIONS_A12 = [
+    ('a12_imm_leaf', 0x00100000, [
+        _i(0x0f, 0, 8, 0x8001),      # lui   t0,0x8001
+        _i(0x0d, 8, 8, 0xffff),      # ori   t0,t0,0xffff
+        _i(0x0c, 8, 9, 0xff00),      # andi  t1,t0,0xff00
+        _i(0x0e, 9, 10, 0x1234),     # xori  t2,t1,0x1234
+        _i(0x0a, 10, 11, -1),        # slti  t3,t2,-1
+        _i(0x0b, 10, 12, -1),        # sltiu t4,t2,-1
+        _i(0x0a, 8, 13, 0x7fff),     # slti  t5,t0,0x7fff
+        _i(0x0b, 0, 14, 1),          # sltiu t6,zero,1
+    ]),
+    ('a12_reg_leaf', 0x00100020, [
+        _r(8, 9, 10, 0x25),          # or   t2,t0,t1
+        _r(8, 9, 11, 0x24),          # and  t3,t0,t1
+        _r(8, 9, 12, 0x27),          # nor  t4,t0,t1
+        _r(8, 9, 13, 0x2a),          # slt  t5,t0,t1
+        _r(8, 9, 14, 0x2b),          # sltu t6,t0,t1
+        _r(8, 9, 15, 0x23),          # subu t7,t0,t1
+        _r(10, 10, 10, 0x23),        # subu t2,t2,t2
+        _r(9, 8, 9, 0x2a),           # slt  t1,t1,t0
+    ]),
+    ('a12_zero_dest', 0x00100040, [
+        _i(0x0f, 0, 0, 1),           # lui   zero,1
+        _i(0x0d, 8, 0, 5),           # ori   zero,t0,5
+        _i(0x0c, 8, 0, 0xffff),      # andi  zero,t0,0xffff
+        _i(0x0e, 8, 0, 3),           # xori  zero,t0,3
+        _i(0x0a, 8, 0, -2),          # slti  zero,t0,-2
+        _i(0x0b, 8, 0, -2),          # sltiu zero,t0,-2
+        _r(8, 9, 0, 0x25),           # or    zero,t0,t1
+        _r(8, 9, 0, 0x24),           # and   zero,t0,t1
+        _r(8, 9, 0, 0x27),           # nor   zero,t0,t1
+        _r(8, 9, 0, 0x2a),           # slt   zero,t0,t1
+        _r(8, 9, 0, 0x2b),           # sltu  zero,t0,t1
+        _r(8, 9, 0, 0x23),           # subu  zero,t0,t1
+        _i(0x0d, 8, 8, 0),           # ori   t0,t0,0 (register copy)
+    ]),
+]
+SETS = {'a11': FUNCTIONS, 'a12': FUNCTIONS_A12}
+
+
 def build(functions=FUNCTIONS):
     base = functions[0][1]
     text = b''
@@ -56,4 +105,4 @@ def build(functions=FUNCTIONS):
 
 
 if __name__ == '__main__':
-    open(sys.argv[1], 'wb').write(build())
+    open(sys.argv[1], 'wb').write(build(SETS[sys.argv[2]] if len(sys.argv) > 2 else FUNCTIONS))
