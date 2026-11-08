@@ -300,3 +300,37 @@ straight-line scalar integer leaf, then prove complete state and exact
 retirement against the interpreter. The current repo does not contain a
 production generated-output parser/IR bridge. Do not claim one exists until
 its code and differential tests are committed.
+
+
+## Batch A10 — pinned upstream generated-C++ format audit (2026-11-08)
+
+See `docs/PS2RECOMP-A10-GENERATED-CPP-FORMAT-AUDIT.md`.
+
+The exact upstream generator source at pinned commit
+`ran-j/PS2Recomp@e5636981a1c9de368f6b71e819c3dc188dfedbf4` was inspected
+directly. `FunctionEmitter` emits
+`void name(uint8_t* rdram, R5900Context* ctx, PS2Runtime *runtime)`,
+an optional known logging preamble, a function address-range comment,
+per-instruction address/raw-word comments (when enabled), a matching
+`ctx->pc` assignment, and the translator's C++ statement. Straight-line
+functions end with a fallthrough `ctx->pc = function.end`.
+
+The pinned translators' exact templates are confirmed for ADDIU, ADDU, XOR,
+SLL and canonical NOP. Gekko2's existing AOT translator already accepts the
+corresponding instruction encodings. This gives a precise first parser
+contract: require comments and exact PC progression, decode each raw word,
+reconstruct the expected upstream statement, compare it exactly after
+whitespace normalization, reject all unknown syntax, then pass only the
+validated words to the existing AOT generator.
+
+The public PR tree was also checked recursively: its 49 `.cpp` files are all
+PCSX2 reference sources under `docs/reference/pcsx2/pcsx2/`; no upstream
+generated game `.cpp` is committed. The existing generated-leaf probe output
+is documented as workspace-private.
+
+**A10 is source-format audit only.** No parser/IR/lowering code or generated
+fixture was added; no external C++ executes. The emitter source is not a
+substitute for a captured output from running the pinned upstream binary.
+Claude should implement the strict parser and golden fixture next, following
+the A10 audit's rejection rules. Do not broaden the opcode subset before
+complete-state differential tests pass.
