@@ -76,7 +76,7 @@ int main(void)
   const uint32_t memory[]={0x8c420000,0x24420001};
   memcpy(s->ram+0x200000,memory,sizeof memory);
   ee_state_t before=*s;
-  assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,memory,2,2,0)==0);
+  assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,memory,2,2,(1u<<2))==0);
   assert(!memcmp(s,&before,sizeof before));
   finish();
  }
