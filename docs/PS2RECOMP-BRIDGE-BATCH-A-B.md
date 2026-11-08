@@ -72,3 +72,21 @@ The PR's GitHub Actions workflow runs
 include paths and function-section garbage collection required by the repository's
 source-glob host runner. This test is a host regression only, not a Wii build or
 hardware/gameplay validation.
+
+
+## Synthetic ELF / real-core pilot
+
+The isolated ELF control-flow compiler and synthetic execution harness now live
+under `experiments/ps2recomp-wii/`. The integration harness binds this bridge
+to the live EE singleton, seeds synthetic code/data through bridge memory
+callbacks, and executes generated Gekko2 AOT code with the existing interpreter
+fallback. The bridge is therefore exercised in the same host process as the
+real Gekko2 EE runtime.
+
+Latest bridge-integrated host CI: run `42485350273`, commit
+`ce33dd23e4d23c92b4703528549f83a33fef2413` — PASS. It reports 512/512
+interpreter/AOT comparisons, 512 AOT hits, and 5 compiler/CFG unit tests.
+
+Scope remains deliberately limited: generated code is emitted by Gekko2's
+existing guarded AOT generator from a synthetic ELF. This is not the external
+PS2Recomp runtime, not a Crash function, and not Wii/Dolphin/hardware evidence.
