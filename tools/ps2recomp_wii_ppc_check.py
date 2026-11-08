@@ -31,6 +31,8 @@ FIXTURES = [
                               'a13_plain_hex_0x100024', 'a13_ra_slot_0x10002c', 'a13_nop_alias_slot_0x100038']),
     ('ps2recomp_a15', 'a15', ['a15_lw_sw_0x100000', 'a15_alias_0x100020', 'a15_ret_store_slot_0x10002c',
                               'a15_ret_load_slot_0x100038']),
+    ('ps2recomp_a16', 'a16', ['a16_byte_0x100000', 'a16_half_0x100020', 'a16_alias_0x100040',
+                              'a16_ret_store_slot_0x100050', 'a16_ret_load_slot_0x10005c']),
 ]
 devkitpro = Path(os.environ['DEVKITPRO'])
 nm = devkitpro / 'devkitPPC/bin/powerpc-eabi-nm'

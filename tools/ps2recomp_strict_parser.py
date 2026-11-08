@@ -85,11 +85,17 @@ I_TYPE = {  # opcode -> (mnemonic, template). All write rt.
     0x0d: ('ori', 'SET_GPR_U64(ctx, {rt}, GPR_U64(ctx, {rs}) | (uint64_t)(uint16_t){imm});'),
     0x0e: ('xori', 'SET_GPR_U64(ctx, {rt}, GPR_U64(ctx, {rs}) ^ (uint64_t)(uint16_t){imm});'),
 }
-# Word loads/stores through a register base, in the *unhinted* form. When the
+# Byte/halfword/word loads/stores through a register base, in the *unhinted* form. When the
 # upstream generator folds a constant base register (lui/ori/addiu earlier in
 # the function) it emits FAST_READ32/FAST_WRITE32/runtime->Load32 with a literal
 # address instead; those forms differ and are rejected (see A15 docs).
 MEM_TYPE = {
+    0x20: ('lb', 'SET_GPR_S32(ctx, {rt}, (int8_t)READ8(ADD32(GPR_U32(ctx, {rs}), {simm})));'),
+    0x21: ('lh', 'SET_GPR_S32(ctx, {rt}, (int16_t)READ16(ADD32(GPR_U32(ctx, {rs}), {simm})));'),
+    0x24: ('lbu', 'SET_GPR_ZE32(ctx, {rt}, (uint8_t)READ8(ADD32(GPR_U32(ctx, {rs}), {simm})));'),
+    0x25: ('lhu', 'SET_GPR_ZE32(ctx, {rt}, (uint16_t)READ16(ADD32(GPR_U32(ctx, {rs}), {simm})));'),
+    0x28: ('sb', 'WRITE8(ADD32(GPR_U32(ctx, {rs}), {simm}), (uint8_t)GPR_U32(ctx, {rt}));'),
+    0x29: ('sh', 'WRITE16(ADD32(GPR_U32(ctx, {rs}), {simm}), (uint16_t)GPR_U32(ctx, {rt}));'),
     0x23: ('lw', 'SET_GPR_S32(ctx, {rt}, (int32_t)READ32(ADD32(GPR_U32(ctx, {rs}), {simm})));'),
     0x2b: ('sw', 'WRITE32(ADD32(GPR_U32(ctx, {rs}), {simm}), GPR_U32(ctx, {rt}));'),
 }

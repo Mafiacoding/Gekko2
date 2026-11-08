@@ -403,3 +403,13 @@ interpreter-vs-AOT as real PPC code under Unicorn for all fixtures
 accepts LW/SW (register base, unhinted form); upstream's constant-folded
 `FAST_READ32/FAST_WRITE32` form (real fixture) is rejected. 55 parser tests;
 host differential adds fault/MMIO cases. Modelled PPC only; no Wii/Dolphin run.
+
+
+## Batch A16 — byte/halfword loads/stores (2026-11-08)
+
+See `docs/PS2RECOMP-A16-BYTE-HALF.md` and `docs/CRASH-FIX-PRESERVATION-AND-A15-INTEGRATION.md`
+(read the latter first: Crash E3 fixes are only on `codex/crash-e3-local-repro`, preserved at
+`preserve/crash-e3-vu-runtime-20261108`; do not overwrite them). Parser accepts LB/LBU/LH/LHU/SB/SH
+(unhinted form). Host and modelled-PPC differentials include misaligned, MMIO, unmapped-KUSEG and
+write-protected-page (TLB Modified) cases. Gekko2's core raises no address error on misaligned
+accesses (unchanged). Host + Unicorn evidence only.

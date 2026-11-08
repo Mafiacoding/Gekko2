@@ -699,8 +699,8 @@ class A15Tests(unittest.TestCase):
                 p.parse_function(GOLDEN15.replace(old, new, 1), name)
 
     def test_other_memory_opcodes_rejected(self):
-        # lb lh lwl lbu lhu lwr lwu sb sh swl swr ld sd lq sq lwc1 swc1 ldl ldr: no template yet.
-        for op in (0x20, 0x21, 0x22, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2e, 0x37, 0x3f, 0x1e, 0x1f,
+        # lwl lwr lwu swl swr ld sd lq sq lwc1 swc1 ldl ldr: no template yet (byte/half are A16).
+        for op in (0x22, 0x26, 0x27, 0x2a, 0x2e, 0x37, 0x3f, 0x1e, 0x1f,
                    0x31, 0x39, 0x1a, 0x1b):
             word = op << 26 | 4 << 21 | 8 << 16
             r = render('f_0x1000', 0x1000, [(word, 'x', 'SET_GPR_S32(ctx, 8, (int32_t)READ32(ADD32(GPR_U32(ctx, 4), 0)));')])
@@ -738,6 +738,100 @@ class A15Tests(unittest.TestCase):
             self.assertEqual(p.bind_to_elf(p.parse_function(GOLDEN15, key), elf)['words'], words)
         slot = p.parse_function(GOLDEN15, 'a15_ret_store_slot_0x10002c')
         self.assertEqual((slot['terminal'], slot['inferred_nop_slot'], slot['words'][-1] >> 26), ('jr_ra', False, 0x2b))
+
+
+GOLDEN16 = (ROOT / 'tests/fixtures/ps2recomp_a16/ps2_recompiled_functions.cpp').read_text()
+A16 = ['a16_byte_0x100000', 'a16_half_0x100020', 'a16_alias_0x100040', 'a16_ret_store_slot_0x100050',
+       'a16_ret_load_slot_0x10005c']
+
+
+class A16Tests(unittest.TestCase):
+    def test_provenance_and_builder(self):
+        prov = json.loads((ROOT / 'tests/fixtures/ps2recomp_a16/PROVENANCE.json').read_text())
+        self.assertEqual(prov['output']['sha256'], hashlib.sha256(GOLDEN16.encode()).hexdigest())
+        self.assertEqual(prov['input_elf']['sha256'], hashlib.sha256(fx.build(fx.FUNCTIONS_A16)).hexdigest())
+
+    def test_golden_byte_half_functions(self):
+        for (name, start, words), key in zip(fx.FUNCTIONS_A16, A16):
+            r = p.parse_function(GOLDEN16, key)
+            self.assertEqual((r['start'], r['words']), (start, words))
+        ops = {w >> 26 for _, _, ws in fx.FUNCTIONS_A16 for w in ws}
+        self.assertTrue({0x20, 0x21, 0x24, 0x25, 0x28, 0x29} <= ops)
+
+    def test_constant_folded_byte_half_forms_rejected(self):
+        self.assertIn('FAST_READ8(0x80300000u)', GOLDEN16)
+        self.assertIn('FAST_WRITE16(0x80300002u, _value)', GOLDEN16)
+        with self.assertRaises(p.ParseError):
+            p.parse_function(GOLDEN16, 'a16_hinted_0x100064')
+
+    def test_width_sign_and_cast_confusion_rejected(self):
+        name = 'a16_byte_0x100000'
+        edits = [('(int8_t)READ8(ADD32(GPR_U32(ctx, 4), 0))', '(uint8_t)READ8(ADD32(GPR_U32(ctx, 4), 0))'),
+                 ('SET_GPR_S32(ctx, 8, (int8_t)READ8', 'SET_GPR_ZE32(ctx, 8, (int8_t)READ8'),
+                 ('SET_GPR_ZE32(ctx, 9, (uint8_t)READ8', 'SET_GPR_S32(ctx, 9, (uint8_t)READ8'),
+                 ('(int8_t)READ8(ADD32(GPR_U32(ctx, 4), 0))', '(int8_t)READ16(ADD32(GPR_U32(ctx, 4), 0))'),
+                 ('WRITE8(ADD32(GPR_U32(ctx, 4), 2), (uint8_t)GPR_U32(ctx, 8));', 'WRITE16(ADD32(GPR_U32(ctx, 4), 2), (uint8_t)GPR_U32(ctx, 8));'),
+                 ('WRITE8(ADD32(GPR_U32(ctx, 4), 2), (uint8_t)GPR_U32(ctx, 8));', 'WRITE8(ADD32(GPR_U32(ctx, 4), 2), GPR_U32(ctx, 8));'),
+                 ('WRITE8(ADD32(GPR_U32(ctx, 4), 2), (uint8_t)GPR_U32(ctx, 8));', 'WRITE8(ADD32(GPR_U32(ctx, 4), 2), (uint16_t)GPR_U32(ctx, 8));'),
+                 ('ADD32(GPR_U32(ctx, 4), 4294967295)', 'ADD32(GPR_U32(ctx, 4), -1)')]
+        for old, new in edits:
+            self.assertIn(old, GOLDEN16, old)
+            with self.assertRaises(p.ParseError, msg=old):
+                p.parse_function(GOLDEN16.replace(old, new, 1), name)
+        name = 'a16_half_0x100020'
+        for old, new in (('(int16_t)READ16(ADD32(GPR_U32(ctx, 4), 0))', '(int16_t)READ8(ADD32(GPR_U32(ctx, 4), 0))'),
+                         ('WRITE16(ADD32(GPR_U32(ctx, 4), 4), (uint16_t)GPR_U32(ctx, 8));', 'WRITE8(ADD32(GPR_U32(ctx, 4), 4), (uint16_t)GPR_U32(ctx, 8));'),
+                         ('SET_GPR_ZE32(ctx, 9, (uint16_t)READ16', 'SET_GPR_ZE32(ctx, 9, (uint32_t)READ16')):
+            self.assertIn(old, GOLDEN16, old)
+            with self.assertRaises(p.ParseError, msg=old):
+                p.parse_function(GOLDEN16.replace(old, new, 1), name)
+
+    def test_opcode_swaps_rejected(self):
+        # The raw word decides the template: swap signedness/width in the *word* but keep the text.
+        name = 'a16_byte_0x100000'
+        for old, new in (('0x80880000', '0x84880000'), ('0x90890001', '0x94890001'), ('0xa0880002', '0xa4880002')):
+            lines, first, close = span(GOLDEN16, name)
+            text = '\n'.join(lines)
+            word = old[2:].lstrip('0')
+            if word not in text:
+                continue
+            mutated = text.replace(word, new[2:], 1)
+            with self.assertRaises(p.ParseError):
+                p.parse_function(mutated, name)
+
+    def test_exhaustive_number_mutation_byte_half(self):
+        import re
+        total = 0
+        for name in A16:
+            lines, first, close = span(GOLDEN16, name)
+            for i in range(first, close):
+                line = lines[i]
+                if line.lstrip().startswith('// Function:'):
+                    continue
+                for m in re.finditer(r'0x[0-9A-Fa-f]+|(?<![A-Za-z_0-9])\d+(?![A-Za-z_0-9])', line):
+                    if line.lstrip().startswith('// 0x') and m.start() > line.index(':', 5) + 14 + 2:
+                        continue
+                    token = m.group()
+                    repl = token[:-1] + ('0' if token[-1] != '0' else '1') if token.startswith('0x') else str(int(token) + 1)
+                    mutated = lines[:]
+                    mutated[i] = line[:m.start()] + repl + line[m.end():]
+                    total += 1
+                    try:
+                        p.parse_function('\n'.join(mutated), name)
+                    except p.ParseError:
+                        continue
+                    self.fail(f'mutation accepted in {name}: {line.strip()} -> {mutated[i].strip()}')
+        self.assertGreater(total, 90)
+
+    def test_elf_binding_and_delay_slots(self):
+        elf = Path(tempfile.mkdtemp()) / 'a16.elf'
+        elf.write_bytes(fx.build(fx.FUNCTIONS_A16))
+        for (name, start, words), key in zip(fx.FUNCTIONS_A16, A16):
+            self.assertEqual(p.bind_to_elf(p.parse_function(GOLDEN16, key), elf)['words'], words)
+        store_slot = p.parse_function(GOLDEN16, 'a16_ret_store_slot_0x100050')
+        load_slot = p.parse_function(GOLDEN16, 'a16_ret_load_slot_0x10005c')
+        self.assertEqual((store_slot['words'][-1] >> 26, load_slot['words'][-1] >> 26), (0x28, 0x25))
+        self.assertFalse(store_slot['inferred_nop_slot'] or load_slot['inferred_nop_slot'])
 
 
 class LoweringTests(unittest.TestCase):

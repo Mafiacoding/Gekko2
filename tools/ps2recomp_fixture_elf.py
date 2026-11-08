@@ -134,7 +134,51 @@ FUNCTIONS_A15 = [
         _i(0x23, 4, 10, 0),          # lw  t2,0(a0)  (base not constant)
     ]),
 ]
-SETS = {'a15': FUNCTIONS_A15, 'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
+# Batch A16: byte/halfword loads and stores (LB LBU LH LHU SB SH), register base.
+FUNCTIONS_A16 = [
+    ('a16_byte', 0x00100000, [
+        _i(0x20, 4, 8, 0),           # lb   t0,0(a0)
+        _i(0x24, 4, 9, 1),           # lbu  t1,1(a0)
+        _i(0x28, 4, 8, 2),           # sb   t0,2(a0)
+        _i(0x20, 4, 0, 3),           # lb   zero,3(a0) (read performed, result discarded)
+        _i(0x24, 4, 10, -1),         # lbu  t2,-1(a0)
+        _i(0x28, 4, 0, 5),           # sb   zero,5(a0)
+        _i(0x20, 4, 11, 0x7fff),     # lb   t3,0x7fff(a0)
+        _i(0x28, 4, 9, -2),          # sb   t1,-2(a0)
+    ]),
+    ('a16_half', 0x00100020, [
+        _i(0x21, 4, 8, 0),           # lh   t0,0(a0)
+        _i(0x25, 4, 9, 2),           # lhu  t1,2(a0)
+        _i(0x29, 4, 8, 4),           # sh   t0,4(a0)
+        _i(0x21, 4, 0, 6),           # lh   zero,6(a0)
+        _i(0x25, 4, 10, -2),         # lhu  t2,-2(a0)
+        _i(0x29, 4, 0, 8),           # sh   zero,8(a0)
+        _i(0x21, 4, 11, 0x7ffe),     # lh   t3,0x7ffe(a0)
+        _i(0x29, 4, 9, -4),          # sh   t1,-4(a0)
+    ]),
+    ('a16_alias', 0x00100040, [
+        _i(0x24, 4, 4, 0),           # lbu  a0,0(a0) (rt == rs)
+        _i(0x25, 5, 5, 0),           # lhu  a1,0(a1)
+        _i(0x28, 6, 6, 0),           # sb   a2,0(a2)
+        _i(0x29, 6, 6, 2),           # sh   a2,2(a2)
+    ]),
+    ('a16_ret_store_slot', 0x00100050, [
+        _i(0x21, 4, 2, 0),           # lh  v0,0(a0)
+        JR_RA,                       # jr  ra
+        _i(0x28, 5, 2, 0),           # sb  v0,0(a1) (delay slot store)
+    ]),
+    ('a16_ret_load_slot', 0x0010005c, [
+        JR_RA,                       # jr  ra
+        _i(0x25, 4, 3, 2),           # lhu v1,2(a0) (delay slot load)
+    ]),
+    ('a16_hinted', 0x00100064, [
+        _i(0x0f, 0, 8, 0x8030),      # lui t0,0x8030
+        _i(0x20, 8, 9, 0),           # lb  t1,0(t0)  (constant base folded by upstream)
+        _i(0x29, 8, 9, 2),           # sh  t1,2(t0)
+        _i(0x25, 4, 10, 0),          # lhu t2,0(a0)  (base not constant)
+    ]),
+]
+SETS = {'a16': FUNCTIONS_A16, 'a15': FUNCTIONS_A15, 'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
 
 
 def build(functions=FUNCTIONS):
