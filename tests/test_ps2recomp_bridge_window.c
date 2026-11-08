@@ -2,8 +2,6 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#include "core/system.h"
-#include "core/iop/iop_core.h"
 #include "core/ee/ee_core.h"
 #include "core/hw/ee_timers.h"
 #include "core/hw/ee_intc.h"
@@ -13,11 +11,13 @@
 #include "core/recompiler/ps2recomp_bridge.h"
 
 static bios_image_t bios;
+static uint8_t bios_data[BIOS_MAX_SIZE];
 static const uint32_t arithmetic[]={0x24420001,0x34630002,0x00042080,0x00a62821};
 
 static ee_state_t *start(uint32_t pc,ee_recomp_bridge_t *bridge)
 {
- assert(!system_init(&bios,&bios));
+ bios.data=bios_data;bios.size=BIOS_MAX_SIZE;bios.loaded=1;
+ assert(!ee_core_init(&bios));
  ee_state_t *s=ee_core_get_state();
  s->pc=pc;s->next_pc=pc+4;s->cop0[12]=0;s->cop0[9]=100;
  ee_core_display_clock_load(1000);
@@ -28,7 +28,7 @@ static ee_state_t *start(uint32_t pc,ee_recomp_bridge_t *bridge)
  assert(ee_recomp_bridge_bind(bridge,s)==EE_RECOMP_BRIDGE_OK);
  return s;
 }
-static void finish(void){ee_core_shutdown();iop_core_shutdown();}
+static void finish(void){ee_core_shutdown();}
 
 int main(void)
 {
