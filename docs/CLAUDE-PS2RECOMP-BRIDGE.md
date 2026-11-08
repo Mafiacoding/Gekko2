@@ -274,3 +274,29 @@ AOT generated include is empty by default. The correct next integration is
 a validated lowering/adapter into this existing AOT entry path, not a
 parallel scheduler callback. The bridge native-window API remains
 fail-closed pending that work.
+
+
+## Batch A9 — upstream generated-code ABI boundary (2026-11-08)
+
+See `docs/PS2RECOMP-A9-ABI-BOUNDARY.md`.
+
+The corrected A8 scheduler test is green in Actions run
+[42492533997](https://github.com/Mafiacoding/Gekko2/actions/runs/42492533997)
+(all ten steps). A9 documents the next hard integration boundary:
+upstream generated leaves use upstream `R5900Context*` plus RDRAM, while
+Gekko2 owns a different `ee_state_t`. The existing unchanged-leaf probe uses
+a test-only scalar adapter, not either production runtime ABI.
+
+Do not cast/reinterpret these contexts or link the probe adapter into the
+emulator. The bridge native-window compatibility API remains fail-closed.
+Gekko2's own AOT entries already run under `ee_step_budget()` and own exact
+retirement/interleave accounting. External code must be lowered into that
+existing entry contract.
+
+**A9 is an ABI audit/documentation batch, not executable integration.** The
+next implementation must consume the exact pinned upstream generated output
+through a real parser/IR stage and reject unsupported constructs. Begin with a
+straight-line scalar integer leaf, then prove complete state and exact
+retirement against the interpreter. The current repo does not contain a
+production generated-output parser/IR bridge. Do not claim one exists until
+its code and differential tests are committed.
