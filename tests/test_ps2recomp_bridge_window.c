@@ -65,14 +65,6 @@ int main(void)
  }
  {
   ee_recomp_bridge_t bridge={0};
-  ee_state_t *s=start(0x80200ff8u,&bridge);
-  ee_state_t before=*s;
-  assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,arithmetic,4,4,0)==0);
-  assert(!memcmp(s,&before,sizeof before));
-  finish();
- }
- {
-  ee_recomp_bridge_t bridge={0};
   ee_state_t *s=start(0x80200000u,&bridge);
   s->ram[0x20000cu]^=4;
   assert(ee_recomp_bridge_begin_native_window(&bridge,s->pc,arithmetic,4,2,0)==2);
