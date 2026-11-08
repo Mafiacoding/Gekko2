@@ -13,9 +13,14 @@ import sys
 import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = [  # (fixture dir, generated function names). One AOT table per fixture.
-    ('ps2recomp_a11', ['a11_int_leaf_0x100000', 'a11_zero_dest_0x100018']),
-    ('ps2recomp_a12', ['a12_imm_leaf_0x100000', 'a12_reg_leaf_0x100020', 'a12_zero_dest_0x100040']),
+    ('ps2recomp_a11', 'a11', ['a11_int_leaf_0x100000', 'a11_zero_dest_0x100018']),
+    ('ps2recomp_a12', 'a12', ['a12_imm_leaf_0x100000', 'a12_reg_leaf_0x100020', 'a12_zero_dest_0x100040']),
+    ('ps2recomp_a13', 'a13', ['a13_ret_nop_0x100000', 'a13_ret_slot_0x100010', 'a13_ret_only_0x10001c',
+                              'a13_plain_hex_0x100024', 'a13_ra_slot_0x10002c', 'a13_nop_alias_slot_0x100038']),
 ]
+spec = importlib.util.spec_from_file_location('fixture_elf', ROOT / 'tools/ps2recomp_fixture_elf.py')
+fx = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fx)
 spec = importlib.util.spec_from_file_location('strict', ROOT / 'tools/ps2recomp_strict_parser.py')
 p = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(p)
@@ -29,7 +34,7 @@ def dest_mask(words):
     return mask & ~1  # $zero is never a changeable destination
 
 
-for fixture, names in FIXTURES:
+for fixture, elf_set, names in FIXTURES:
     with tempfile.TemporaryDirectory(prefix='gekko-a11-') as tmp:
         d = Path(tmp)
         gen = d / 'generated'
@@ -39,11 +44,19 @@ for fixture, names in FIXTURES:
         report = p.lower(results, gen / 'ee_aot_generated.inc', gen / 'core/ee/ee_aot_complex_generated.inc')
         (gen / 'ee_aot.c').write_text((ROOT / 'source/core/recompiler/ee_aot.c').read_text())
         rows = []
+        ram_by_start = {start: words for _, start, words in getattr(fx, 'SETS')[elf_set]}
         for r in results:
-            words = ','.join(f'UINT32_C(0x{w:08x})' for w in r['words']) + ',' + ','.join(['0'] * (32 - len(r['words'])))
-            rows.append(f'{{UINT32_C(0x{r["start"]:08x}),{len(r["words"])}u,UINT32_C(0x{dest_mask(r["words"]):x}),{{{words}}}}}')
+            ram = ram_by_start[r['start']]
+            assert len(ram) == len(r['words'])
+            # The parsed words are the source of truth; the ELF words are what the
+            # guest really contains. They may differ only in an inferred NOP slot.
+            diff = [i for i, (a, b) in enumerate(zip(ram, r['words'])) if a != b]
+            assert not diff or (r['inferred_nop_slot'] and diff == [len(ram) - 1]), (r['name'], diff)
+            pad = lambda ws: ','.join(f'UINT32_C(0x{w:08x})' for w in ws) + ',' + ','.join(['0'] * (32 - len(ws)))
+            rows.append(f'{{UINT32_C(0x{r["start"]:08x}),{len(r["words"])}u,UINT32_C(0x{dest_mask(r["words"]):x}),'
+                        f'{int(r["terminal"] == "jr_ra")}u,{{{pad(r["words"])}}},{{{pad(ram)}}}}}')
         (gen / 'a11_fixtures.h').write_text(
-            '#include <stdint.h>\ntypedef struct{uint32_t pc;unsigned count;uint32_t dest_mask;uint32_t words[32];}a11_fixture;\n'
+            '#include <stdint.h>\ntypedef struct{uint32_t pc;unsigned count;uint32_t dest_mask;unsigned jr_ra;uint32_t words[32];uint32_t ram[32];}a11_fixture;\n'
             'static const a11_fixture a11_fixtures[]={' + ','.join(rows) + '};\n'
             'static const unsigned a11_fixture_count=%du;\n' % len(rows))
         saved = sys.argv

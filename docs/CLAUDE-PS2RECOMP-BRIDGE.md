@@ -371,3 +371,12 @@ See `docs/PS2RECOMP-A12-INTEGER-ALU.md`. Parser extended (table driven) with
 SLTI, SLTIU, ANDI, ORI, XORI, LUI, SUBU, AND, OR, NOR, SLT, SLTU, each backed
 by a real-generator fixture (`tests/fixtures/ps2recomp_a12/`) and differential
 (360 + 9 guard cases). Host-only evidence.
+
+
+## Batch A13 — `jr $ra` terminal with delay slot (2026-11-08)
+
+See `docs/PS2RECOMP-A13-JR-RA.md`. Real-generator fixture
+`tests/fixtures/ps2recomp_a13/`. Parser accepts exactly the upstream `jr $ra`
+block (uppercase hex in branch blocks, elided NOP slots lowered as an inferred
+word 0 guarded by the live-source check, jump target read before the slot).
+Tests: 39 parser tests, 720-case differential. Host-only evidence.

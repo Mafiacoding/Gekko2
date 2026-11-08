@@ -339,6 +339,184 @@ class A12Tests(unittest.TestCase):
             parse_text(text)
 
 
+GOLDEN13 = (ROOT / 'tests/fixtures/ps2recomp_a13/ps2_recompiled_functions.cpp').read_text()
+A13 = ['a13_ret_nop_0x100000', 'a13_ret_slot_0x100010', 'a13_ret_only_0x10001c',
+       'a13_plain_hex_0x100024', 'a13_ra_slot_0x10002c', 'a13_nop_alias_slot_0x100038']
+
+
+def span(text, name):
+    lines = text.split('\n')
+    first = [i for i, l in enumerate(lines) if l.startswith(f'void {name}(')][0]
+    return lines, first, lines.index('}', first)
+
+
+class A13Tests(unittest.TestCase):
+    def test_provenance_and_builder(self):
+        prov = json.loads((ROOT / 'tests/fixtures/ps2recomp_a13/PROVENANCE.json').read_text())
+        self.assertEqual(prov['output']['sha256'], hashlib.sha256(GOLDEN13.encode()).hexdigest())
+        self.assertEqual(prov['input_elf']['sha256'], hashlib.sha256(fx.build(fx.FUNCTIONS_A13)).hexdigest())
+
+    def test_golden_jr_ra_functions(self):
+        expect_inferred = {'a13_ret_nop_0x100000': True, 'a13_nop_alias_slot_0x100038': True}
+        for (name, start, words), key in zip(fx.FUNCTIONS_A13, A13):
+            r = p.parse_function(GOLDEN13, key)
+            inferred = expect_inferred.get(key, False)
+            self.assertEqual(r['inferred_nop_slot'], inferred, key)
+            self.assertEqual(r['terminal'], None if 'plain' in key else 'jr_ra')
+            self.assertEqual((r['start'], r['end']), (start, start + 4 * len(words)))
+            want = words[:-1] + [0] if inferred else words
+            self.assertEqual(r['words'], want, key)
+
+    def test_uppercase_hex_only_after_control_flow(self):
+        # `ctx->pc = 0x10002cu;` after straight-line code is lowercase; the
+        # same value uppercased is rejected, and vice versa for JR functions.
+        self.assertEqual(p.parse_function(GOLDEN13, 'a13_plain_hex_0x100024')['end'], 0x10002c)
+        lines, first, close = span(GOLDEN13, 'a13_plain_hex_0x100024')
+        bad = lines[:]
+        bad[close - 1] = bad[close - 1].replace('0x10002cu', '0x10002Cu')
+        with self.assertRaises(p.ParseError):
+            p.parse_function('\n'.join(bad), 'a13_plain_hex_0x100024')
+        lines, first, close = span(GOLDEN13, 'a13_ret_only_0x10001c')
+        bad = lines[:]
+        bad[close - 1] = bad[close - 1].replace('ctx->pc = 0x100024u', 'ctx->pc  =   0x100024u')  # whitespace only: accepted
+        p.parse_function('\n'.join(bad), 'a13_ret_only_0x10001c')
+        bad[close - 1] = 'ctx->pc = 0x100025u;'
+        with self.assertRaises(p.ParseError):
+            p.parse_function('\n'.join(bad), 'a13_ret_only_0x10001c')
+
+    def test_exhaustive_single_token_mutation(self):
+        import re
+        total = 0
+        for name in A13:
+            lines, first, close = span(GOLDEN13, name)
+            for i in range(first, close):
+                line = lines[i]
+                if line.lstrip().startswith('// Function:'):
+                    continue
+                for m in re.finditer(r'0x[0-9A-Fa-f]+|(?<![A-Za-z_0-9])\d+(?![A-Za-z_0-9])', line):
+                    if line.lstrip().startswith('// 0x') and m.start() > line.index(':', 5) + 14 + 2:
+                        continue  # free-text disassembly operands are not interpreted
+                    token = m.group()
+                    if token.startswith('0x'):
+                        digit = token[-1]
+                        repl = token[:-1] + ('0' if digit != '0' else '1')
+                    else:
+                        repl = str(int(token) + 1)
+                    mutated = lines[:]
+                    mutated[i] = line[:m.start()] + repl + line[m.end():]
+                    total += 1
+                    try:
+                        p.parse_function('\n'.join(mutated), name)
+                    except p.ParseError:
+                        continue
+                    self.fail(f'mutation accepted in {name}: {line.strip()} -> {mutated[i].strip()}')
+        self.assertGreater(total, 100)
+
+    def test_jr_block_tampering_rejected(self):
+        name = 'a13_ret_slot_0x100010'
+        lines, first, close = span(GOLDEN13, name)
+        body = lines[first:close + 1]
+        edits = [
+            ('GPR_U32(ctx, 31)', 'GPR_U32(ctx, 30)'),
+            ('const uint32_t jumpTarget', 'uint32_t jumpTarget'),
+            ('ctx->in_delay_slot = true;', 'ctx->in_delay_slot = false;'),
+            ('ctx->in_delay_slot = false;', 'ctx->in_delay_slot = true;'),
+            ('        #else', '        #elif 1'),
+            ('        return;\n        #else', '        #else'),
+            ('PS2Runtime::GuestBranchKind::Return', 'PS2Runtime::GuestBranchKind::Call'),
+            ('"JR $ra"', '"JR $t0"'),
+            ('(void)runtime->dispatchGuestBranch', 'runtime->dispatchGuestBranch'),
+            ('ctx->branch_pc = 0x100014u;', 'ctx->branch_pc = 0x100010u;'),
+            ('ctx->pc = 0x100018u;', 'ctx->pc = 0x10001Cu;'),
+            ('(Delay Slot)', ''),
+            ('    }\n    ctx->pc = 0x10001Cu;', '    }\n    ctx->pc = 0x10001Cu;\n    ctx->pc = 0x10001Cu;'),
+        ]
+        text = '\n'.join(lines[first - 2:close + 1]) + '\n'
+        p.parse_function(text, name)
+        for old, new in edits:
+            self.assertIn(old, text)
+            with self.assertRaises(p.ParseError, msg=old):
+                p.parse_function(text.replace(old, new, 1), name)
+        # Line-wise removals, insertions and swaps inside the function.
+        fn = lines[first - 2:close + 1]
+        for i in range(3, len(fn) - 1):
+            if fn[i].strip() == '':
+                continue
+            for variant in (fn[:i] + fn[i + 1:], fn[:i] + ['    int x = 0;'] + fn[i:]):
+                with self.assertRaises(p.ParseError, msg=fn[i]):
+                    p.parse_function('\n'.join(variant) + '\n', name)
+
+    def test_slot_statements(self):
+        name = 'a13_ret_slot_0x100010'
+        text = GOLDEN13
+        slot = '(int32_t)ADD32(GPR_U32(ctx, 2), 1)'
+        self.assertIn(slot, text)
+        for new in ('(int32_t)ADD32(GPR_U32(ctx, 2), 2)', '(int32_t)ADD32(GPR_U32(ctx, 3), 1)'):
+            with self.assertRaises(p.ParseError):
+                p.parse_function(text.replace(slot, new, 1), name)
+        # A decoded NOP slot can never appear (upstream elides it).
+        lines, first, close = span(text, name)
+        mutated = '\n'.join(lines).replace('// 0x100018: 0x24420001  addiu       $v0, $v0, 0x1 (Delay Slot)',
+                                          '// 0x100018: 0x0  nop (Delay Slot)')
+        with self.assertRaises(p.ParseError):
+            p.parse_function(mutated, name)
+
+    def test_other_control_flow_rejected(self):
+        # JR to another register, JALR, J, JAL, branches share the JR template shape but not the word.
+        jr_block = [l for l in span(GOLDEN13, 'a13_ret_only_0x10001c')[0][
+            span(GOLDEN13, 'a13_ret_only_0x10001c')[1]:span(GOLDEN13, 'a13_ret_only_0x10001c')[2] + 1]]
+        text = '\n'.join(jr_block)
+        for word, disasm in ((0x01000008, 'jr $t0'), (0x0100f809, 'jalr $t0'), (0x08000400, 'j 0x1000'),
+                             (0x0c000400, 'jal 0x1000'), (0x10000001, 'b 0x1008'), (0x04010001, 'bgez $zero')):
+            mutated = text.replace('0x3e00008  jr          $ra', f'0x{word:x}  {disasm}')
+            with self.assertRaises(p.ParseError, msg=disasm):
+                p.parse_function(mutated, 'a13_ret_only_0x10001c')
+
+    def test_range_constraints(self):
+        name = 'a13_ret_nop_0x100000'
+        text = GOLDEN13
+        for old, new in (('0x100000 - 0x100010', '0x100000 - 0x100014'), ('0x100000 - 0x100010', '0x100000 - 0x10000c'),
+                         ('ctx->pc = 0x100010u;\n}\n\n\n// Function: a13_ret_slot', 'ctx->pc = 0x100014u;\n}\n\n\n// Function: a13_ret_slot')):
+            if old in text:
+                with self.assertRaises(p.ParseError, msg=old):
+                    p.parse_function(text.replace(old, new, 1), name)
+
+    def test_limit_32_including_slot(self):
+        nops = [(0x24040001, 'addiu $a0, $zero, 0x1', 'SET_GPR_S32(ctx, 4, (int32_t)ADD32(GPR_U32(ctx, 0), 1));')]
+        for count, ok in ((30, True), (31, False)):
+            lines = [f'// Function: g_0x1000', f'// Address: 0x1000 - 0x{0x1000 + 4 * (count + 2):x}',
+                     'void g_0x1000(uint8_t* rdram, R5900Context* ctx, PS2Runtime *runtime) {', '    ctx->pc = 0x1000u;']
+            for i in range(count):
+                a = 0x1000 + 4 * i
+                lines += [f'    // 0x{a:x}: 0x24040001  addiu $a0, $zero, 0x1', f'    ctx->pc = 0x{a:x}u;', f'    {nops[0][2]}']
+            j = 0x1000 + 4 * count
+            J, S, E = f'0x{j:X}', f'0x{j + 4:X}', f'0x{j + 8:X}'
+            block = [f'    // 0x{j:x}: 0x3e00008  jr          $ra', f'    ctx->pc = {J}u;', '    {',
+                     '        const uint32_t jumpTarget = GPR_U32(ctx, 31);',
+                     f'        ctx->pc = {S}u;', '        ctx->in_delay_slot = true;', f'        ctx->branch_pc = {J}u;',
+                     f'        // 0x{j + 4:x}: 0x24040001  addiu $a0, $zero, 0x1 (Delay Slot)', f'        {nops[0][2]}',
+                     '        ctx->in_delay_slot = false;', '        ctx->pc = jumpTarget;',
+                     '        #if defined(PS2X_STRICT_RETURN_DIAGNOSTICS) && PS2X_STRICT_RETURN_DIAGNOSTICS',
+                     f'        (void)runtime->dispatchGuestBranch(rdram, ctx, jumpTarget, {J}u, 0u, PS2Runtime::GuestBranchKind::Return, "JR $ra");',
+                     '        return;', '        #else', '        ctx->pc = jumpTarget;', '        return;', '        #endif',
+                     '    }', f'    ctx->pc = {E}u;']
+            lines += block + ['}', '']
+            text = '\n'.join(lines)
+            if ok:
+                self.assertEqual(len(p.parse_function(text, 'g_0x1000')['words']), 32)
+            else:
+                with self.assertRaises(p.ParseError):
+                    p.parse_function(text, 'g_0x1000')
+
+    def test_lowering_jr_block_words(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / 'x.inc'
+            r = p.parse_function(GOLDEN13, 'a13_ret_slot_0x100010')
+            report = p.lower(r, out)
+            self.assertEqual(report['functions'][0]['instructions'], 3)
+            self.assertIn('st->next_pc=target', out.read_text())
+
+
 class LoweringTests(unittest.TestCase):
     def test_lowering_passes_exactly_validated_words(self):
         with tempfile.TemporaryDirectory() as d:

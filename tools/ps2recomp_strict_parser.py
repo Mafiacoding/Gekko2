@@ -60,12 +60,14 @@ def normalize(source):
         _fail('non-ASCII source rejected')
     if '\0' in source or '/*' in source or '\\\n' in source:
         _fail('NUL, block comment or line continuation rejected')
-    lines = []
+    lines, closers = [], set()
     for raw in source.splitlines():
         line = ' '.join(raw.split())
         if line:
+            if raw.rstrip() == '}':  # only a column-0 brace ends a function
+                closers.add(len(lines))
             lines.append(line)
-    return lines
+    return lines, closers
 
 
 # Statement templates reconstructed from the pinned upstream translators
@@ -129,7 +131,7 @@ def parse_function(source, name):
     """Parse the one function called `name`; return a result dict."""
     if not IDENT.match(name):
         _fail('invalid function name')
-    lines = normalize(source)
+    lines, closers = normalize(source)
     heads = [i for i, line in enumerate(lines)
              if (m := VOID_LINE.match(line)) and m.group(1) == name]
     if len(heads) != 1:
@@ -152,9 +154,8 @@ def parse_function(source, name):
     if count > MAX_WORDS:
         _fail(f'{count} instructions exceed the {MAX_WORDS}-word AOT block limit')
 
-    try:
-        close = lines.index('}', head + 1)
-    except ValueError:
+    close = next((i for i in sorted(closers) if i > head), None)
+    if close is None:
         _fail('function body is not terminated')
     body = lines[head + 1:close]
     pos = 0
@@ -167,16 +168,26 @@ def parse_function(source, name):
         _fail('entry "ctx->pc = start" missing or wrong')
     pos += 1
     words = []
-    for index in range(count):
+    terminal = None
+    inferred_slot = False
+    address = start
+    while address < end and terminal is None:
         if pos + 3 > len(body):
             _fail('body ends before the declared address range')
-        address = start + 4 * index
         c = INSTR_COMMENT.match(body[pos])
         if not c:
             _fail(f'missing instruction comment at {_canon(address)}')
         if _parse_hex(c.group(1), 'comment pc') != address:
             _fail(f'instruction comment pc is not contiguous at {_canon(address)}')
         word = _parse_hex(c.group(2), 'raw word')
+        if word == JR_RA:
+            pos, slot = _parse_jr_ra(body, pos, c, address, end)
+            words.append(word)
+            words.append(slot[0])
+            inferred_slot = slot[1]
+            terminal = 'jr_ra'
+            address += 8
+            break
         p = PC_ASSIGN.match(body[pos + 1])
         if not p or _parse_hex(p.group(1), 'ctx->pc') != address:
             _fail(f'ctx->pc does not match instruction address {_canon(address)}')
@@ -188,14 +199,72 @@ def parse_function(source, name):
             _fail(f'statement at {_canon(address)} differs from the decoded instruction')
         words.append(word)
         pos += 3
-    end_pc = PC_ASSIGN.match(body[pos]) if pos < len(body) else None
-    if not end_pc or _parse_hex(end_pc.group(1), 'fallthrough pc') != end:
+        address += 4
+    if address != end:
+        _fail('instructions do not cover the declared address range exactly')
+    if len(words) > MAX_WORDS:
+        _fail(f'{len(words)} instructions exceed the {MAX_WORDS}-word AOT block limit')
+    # Upstream prints the fallthrough PC lowercase after straight-line code and
+    # uppercase after a control-flow block (fmt {:X}).
+    expected_end = f'ctx->pc = 0x{end:X}u;' if terminal else f'ctx->pc = 0x{end:x}u;'
+    if pos >= len(body) or body[pos] != expected_end:
         _fail('fallthrough pc is missing or does not equal the function end')
     pos += 1
     if pos != len(body):
         _fail('unexplained extra statements in function body')
-    return {'name': name, 'start': start, 'end': end, 'words': words,
+    return {'name': name, 'start': start, 'end': end, 'words': words, 'terminal': terminal,
+            'inferred_nop_slot': inferred_slot,
             'source_sha256': hashlib.sha256(source.encode()).hexdigest()}
+
+
+JR_RA = 0x03e00008  # jr $ra (rd = 0, shamt = 0)
+SLOT_COMMENT = re.compile(rf'^// ({HEX}): ({HEX})(?: (.*))? \(Delay Slot\)$')
+
+
+def _parse_jr_ra(body, pos, comment, address, end):
+    """Validate the exact upstream `jr $ra` block; return (new pos, (slot word, inferred)).
+
+    The delay slot is either decoded in the source (`(Delay Slot)` comment and
+    statement) or absent. Upstream elides a guest NOP slot, so an absent slot
+    is lowered as the canonical NOP word 0; AOT execution still compares the
+    live memory word, so a different real word falls back to the interpreter.
+    """
+    if end != address + 8:
+        _fail('jr $ra must be the second-to-last word (its delay slot ends the function)')
+    disassembly = comment.group(3)
+    if disassembly is not None and disassembly.split(' ')[0] != 'jr':
+        _fail('disassembly mnemonic disagrees with jr $ra')
+    J, S = f'0x{address:X}', f'0x{address + 4:X}'
+    head = [f'ctx->pc = {J}u;', '{', 'const uint32_t jumpTarget = GPR_U32(ctx, 31);']
+    tail = ['ctx->pc = jumpTarget;',
+            '#if defined(PS2X_STRICT_RETURN_DIAGNOSTICS) && PS2X_STRICT_RETURN_DIAGNOSTICS',
+            f'(void)runtime->dispatchGuestBranch(rdram, ctx, jumpTarget, {J}u, 0u, '
+            'PS2Runtime::GuestBranchKind::Return, "JR $ra");',
+            'return;', '#else', 'ctx->pc = jumpTarget;', 'return;', '#endif', '}']
+    start = pos + 1
+    if body[start:start + 3] != head:
+        _fail('jr $ra block differs from the pinned upstream emitter')
+    cursor = start + 3
+    slot_word, inferred = 0, True
+    if cursor < len(body) and body[cursor] == f'ctx->pc = {S}u;':
+        if body[cursor + 1:cursor + 3] != ['ctx->in_delay_slot = true;', f'ctx->branch_pc = {J}u;']:
+            _fail('delay-slot prologue differs from the pinned upstream emitter')
+        m = SLOT_COMMENT.match(body[cursor + 3]) if cursor + 3 < len(body) else None
+        if not m or _parse_hex(m.group(1), 'slot pc') != address + 4:
+            _fail('delay-slot comment missing or at the wrong address')
+        slot_word = _parse_hex(m.group(2), 'slot word')
+        if slot_word == 0:
+            _fail('upstream elides a NOP delay slot; a decoded NOP slot is inconsistent')
+        mnemonic, statement = expected_statement(slot_word)
+        if m.group(3) is not None and m.group(3).split(' ')[0] != mnemonic:
+            _fail('delay-slot disassembly mnemonic disagrees with its raw word')
+        if body[cursor + 4:cursor + 6] != [statement, 'ctx->in_delay_slot = false;']:
+            _fail('delay-slot statement differs from the decoded instruction')
+        cursor += 6
+        inferred = False
+    if body[cursor:cursor + len(tail)] != tail:
+        _fail('jr $ra epilogue differs from the pinned upstream emitter')
+    return cursor + len(tail), (slot_word, inferred)
 
 
 def lower(results, output, complex_output=None):

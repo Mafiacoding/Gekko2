@@ -68,7 +68,40 @@ FUNCTIONS_A12 = [
         _i(0x0d, 8, 8, 0),           # ori   t0,t0,0 (register copy)
     ]),
 ]
-SETS = {'a11': FUNCTIONS, 'a12': FUNCTIONS_A12}
+# Batch A13: JR $ra with delay slot ends otherwise straight-line integer leaves.
+JR_RA = 0x03e00008
+FUNCTIONS_A13 = [
+    ('a13_ret_nop', 0x00100000, [
+        _i(0x09, 0, 2, 7),           # addiu v0,zero,7
+        _r(4, 5, 2, 0x21),           # addu  v0,a0,a1 (v0 = a0 + a1)
+        JR_RA,                       # jr    ra
+        0x00000000,                  # nop   (delay slot, elided by upstream)
+    ]),
+    ('a13_ret_slot', 0x00100010, [
+        _r(4, 5, 2, 0x26),           # xor   v0,a0,a1
+        JR_RA,                       # jr    ra
+        _i(0x09, 2, 2, 1),           # addiu v0,v0,1 (delay slot)
+    ]),
+    ('a13_ret_only', 0x0010001c, [
+        JR_RA,                       # jr    ra
+        _i(0x0d, 0, 3, 0xbeef),      # ori   v1,zero,0xbeef (delay slot)
+    ]),
+    ('a13_plain_hex', 0x00100024, [
+        _i(0x09, 4, 4, 1),           # addiu a0,a0,1
+        0x00000000,                  # nop (fallthrough end 0x10002c has a hex letter)
+    ]),
+    ('a13_ra_slot', 0x0010002c, [
+        _i(0x09, 31, 2, 0),          # addiu v0,ra,0
+        JR_RA,                       # jr    ra (target is read before the slot)
+        _i(0x0d, 0, 31, 0x1234),     # ori   ra,zero,0x1234 (delay slot clobbers ra)
+    ]),
+    ('a13_nop_alias_slot', 0x00100038, [
+        _r(4, 5, 3, 0x2b),           # sltu  v1,a0,a1
+        JR_RA,                       # jr    ra
+        0x24000000,                  # addiu zero,zero,0: upstream guest-NOP alias, elided
+    ]),
+]
+SETS = {'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
 
 
 def build(functions=FUNCTIONS):

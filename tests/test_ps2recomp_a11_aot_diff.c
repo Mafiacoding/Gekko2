@@ -37,7 +37,9 @@ static void randomise(ee_state_t *st,const ee_state_t *initial,const a11_fixture
     st->gpr[0].ud0=0;st->gpr[0].ud1=0;
     st->hi.ud0=random64();st->hi.ud1=random64();st->lo.ud0=random64();st->lo.ud1=random64();st->sa_reg=(uint32_t)random64()&31u;
     st->pc=f->pc;st->next_pc=f->pc+4;st->branch_pending=0;
+    if(f->jr_ra)st->gpr[31].ud0=UINT64_C(0x80000000)|(random64()&0x1ffffcu);
 }
+static int ram_is_lowered(const a11_fixture *f){return !memcmp(f->ram,f->words,4u*f->count);}
 int main(void)
 {
     bios_image_t bios={0};
@@ -55,7 +57,7 @@ int main(void)
         const unsigned budgets[]={f->count,1u,2u,3u,f->count-1u};
         for(unsigned trial=0;trial<24;trial++) for(unsigned bi=0;bi<5;bi++) {
             unsigned budget=budgets[bi];
-            *st=initial;load(st,f,f->words);randomise(st,&initial,f,trial);start=*st;
+            *st=initial;load(st,f,f->ram);randomise(st,&initial,f,trial);start=*st;
             gekko2_optimization_mask&=~GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
             unsigned scalar_retired=0;
             while(scalar_retired<f->count){unsigned n=f->count-scalar_retired<budget?f->count-scalar_retired:budget;
@@ -71,11 +73,16 @@ int main(void)
                 if(got!=n){fprintf(stderr,"retirement mismatch fn=%u trial=%u budget=%u want=%u got=%u\n",fi,trial,budget,n,got);return 1;}
                 aot_retired+=got;}
             /* Generated entry ran at the verified start PC and retired exactly once. */
-            assert(ee_aot_retired_count()-native>=first&&first>0);
-            if(budget==f->count)assert(ee_aot_retired_count()-native==f->count);
+            /* Generated entry ran at the verified start PC. When the guest word at the
+             * inferred NOP slot differs (upstream-elided NOP alias), native code must
+             * stop before it and the interpreter retire it. */
+            assert(first>0);
+            if(ram_is_lowered(f))assert(ee_aot_retired_count()-native>=first);
+            else assert(ee_aot_retired_count()-native>0&&ee_aot_retired_count()-native<f->count);
+            if(budget==f->count&&ram_is_lowered(f))assert(ee_aot_retired_count()-native==f->count);
             else partial++;
             same(&scalar,st);
-            assert(st->pc==f->pc+4u*f->count);
+            assert(st->pc==(f->jr_ra?(uint32_t)start.gpr[31].ud0:f->pc+4u*f->count));assert(!st->branch_pending);
             assert(st->instructions_executed==start.instructions_executed+f->count);
             /* GPR0 immutable; every upper 64-bit lane preserved; low lane only
              * changed in registers the function can write. */
@@ -90,7 +97,7 @@ int main(void)
      * code. 0 = first word, 1 = last word, 2 = a middle word is rewritten. */
     for(unsigned fi=0;fi<a11_fixture_count;fi++) for(unsigned where=0;where<3;where++) {
         const a11_fixture *f=&a11_fixtures[fi];
-        uint32_t m[32];memcpy(m,f->words,sizeof m);
+        uint32_t m[32];memcpy(m,f->ram,sizeof m);
         unsigned index=where==0?0u:where==1?f->count-1u:f->count/2u;
         m[index]=0x24090007u; /* addiu t1,zero,7 */
         *st=initial;load(st,f,m);randomise(st,&initial,f,5);start=*st;
@@ -105,7 +112,7 @@ int main(void)
         same(&scalar,st);guarded++;
     }
     /* First-word guard of the AOT entry itself. */
-    {const a11_fixture *f=&a11_fixtures[0];*st=initial;load(st,f,f->words);randomise(st,&initial,f,6);
+    {const a11_fixture *f=&a11_fixtures[0];*st=initial;load(st,f,f->ram);randomise(st,&initial,f,6);
      ee_state_t before=*st;assert(!ee_aot_try_execute_fetched(st,f->count,f->words[0]^1u));same(&before,st);}
     printf("PASS PS2Recomp parsed-function differential: %u parsed-function/interpreter comparisons (%u partial-budget), %u functions, 128-bit GPR upper lanes, GPR0, retirement and %u live-source guard cases\n",checked,partial,a11_fixture_count,guarded);
     return 0;
