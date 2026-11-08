@@ -49,6 +49,33 @@ ee_recomp_bridge_result_t ee_recomp_bridge_write128(ee_recomp_bridge_t *b,uint32
 {ee_state_t *s;ee_recomp_bridge_result_t r;if(!v)return EE_RECOMP_BRIDGE_INVALID_ARGUMENT;
  r=access_begin(b,&s);if(r!=EE_RECOMP_BRIDGE_OK)return r;ee_mem_write128(s,a,v);return access_end(s);}
 
+
+ee_recomp_bridge_result_t ee_recomp_bridge_snapshot_integer_leaf(
+ ee_recomp_bridge_t *b,ee_recomp_ee_state_snapshot_t *out)
+{
+ ee_state_t *s;ee_recomp_ee_state_snapshot_t snapshot;
+ ee_recomp_bridge_result_t r;
+ if(!out)return EE_RECOMP_BRIDGE_INVALID_ARGUMENT;
+ r=access_begin(b,&s);if(r!=EE_RECOMP_BRIDGE_OK)return r;
+ /* This profile is a read-only architectural snapshot for straight-line
+  * integer code. Never normalize or repair an unsupported live state. */
+ if(s->halted||s->idle||s->branch_pending||s->exc_in_delay_slot||
+    s->vu0_running||(s->cop0[12]&0x6u)||(s->pc&3u)||
+    s->next_pc!=s->pc+4u||s->gpr[0].ud0||s->gpr[0].ud1)
+  return EE_RECOMP_BRIDGE_UNSUPPORTED_STATE;
+ snapshot.abi_version=EE_RECOMP_EE_STATE_ABI_VERSION;
+ snapshot.struct_size=(uint32_t)sizeof(snapshot);
+ snapshot.profile=EE_RECOMP_EE_STATE_PROFILE_INTEGER_LEAF;
+ snapshot.flags=s->branch_pending?EE_RECOMP_EE_STATE_FLAG_BRANCH_PENDING:0u;
+ snapshot.pc=s->pc;snapshot.next_pc=s->next_pc;snapshot.sa_reg=s->sa_reg;
+ snapshot.reserved=0u;
+ memcpy(snapshot.gpr,s->gpr,sizeof(snapshot.gpr));
+ snapshot.gpr[0].ud0=0u;snapshot.gpr[0].ud1=0u;
+ snapshot.hi=s->hi;snapshot.lo=s->lo;
+ *out=snapshot;
+ return EE_RECOMP_BRIDGE_OK;
+}
+
 /* Batch C: delegate admission and scheduler accounting to the existing
  * Gekko2 native-window gate. This is not an executor: after a nonzero
  * grant the caller must run the matching native body immediately and
