@@ -196,3 +196,33 @@ untouched. No Lightrec/libchdr logic differs.
 - **Physical Wii:** none for this session. The Crash document records no Dolphin/Wii
   execution of its batch either; observed Crash progression there was from the host
   software renderer with the owner's private disc (not in any repository).
+
+## 9. Integration branch (created 2026-11-08)
+
+`integration/crash-e3-plus-a15` = merge commit `2179f6e` with first parent
+`preserve/crash-e3-vu-runtime-20261108` (`24b69fe`, Crash runtime `e7aae58`) and second
+parent `codex/ps2recomp-a16-byte-half` (`91aecb4`: A11–A16, toolchain update, §1–§8 of
+this document). Not merged into `main` or PR #58; PR #54 and all Crash branches untouched.
+
+- Hand-resolved: `CLAUDE.md` (integration header + PS2Recomp block + both Crash handoffs) and
+  `README.md` (Crash README + r51 toolchain note).
+- `third_party` is **byte-identical to the Crash branch**: the CRLF-only commit `bf5c580` is not
+  carried (§7 recommendation applied here only; PR #58 itself still contains it).
+- Runtime difference to the Crash tip: only A15's `ee_core_gpr_generation_bump` (`ee_core.c/.h`,
+  `ee_hle_thread.c`) and the fail-closed bridge files. `vu.c`, `vu_fmac_internal.h`, `vu_timing.h`,
+  `gif.c`, `vif.c`, `gs.c`, `gs_gx.c`, `checkpoint.c`, `ee_aot.c` are **identical** to the Crash tip.
+
+Gates run on this exact commit (host + Unicorn-modelled PPC, devkitPPC r51):
+
+| Gate | Result |
+|---|---|
+| `test_alpha_compat_host.py` (92 gates incl. VU VI-branch/CLIP, SIGNAL backpressure, VIF FIFO) | PASS 92 |
+| `test_vu_masks_aot.py` | PASS 1024 |
+| Strict parser tests (62), `test_ee_aot_inputs`, AOT differential A11–A16 (source-only and ELF-bound), hybrid test (512), bridge/bridge_window/residency/lifecycle | PASS |
+| Wii default build, `verify_wii_memory.py` | OK, 114 warnings / 0 errors, MEM1 remaining 3,134,176 B |
+| Linked PPC: `verify_vu_timing_r1384`, `verify_vu_add_alignment_linked`, `verify_gs_vif_accuracy_linked` | PASS |
+| `ps2recomp_wii_ppc_check.py` (98 / 147 / 210 / 164 / 229 comparisons) | PASS |
+
+Still not done: Dolphin and physical Wii for this combination; real Crash disc runs (private,
+not available here); the ~40 pre-existing non-passing host tests are unchanged. Rollback: delete only
+this branch; restore with `git branch -f` is **never** needed for the Crash branches.
