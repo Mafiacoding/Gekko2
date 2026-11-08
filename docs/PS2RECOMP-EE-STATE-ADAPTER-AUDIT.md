@@ -133,3 +133,18 @@ make a writable state adapter safe by itself: A4 must still define an
 architectural profile, commit only at an admitted scheduler boundary, and
 reject all state it cannot represent. No external PS2Recomp execution is
 claimed.
+
+
+### A3 host validation
+
+GitHub Actions [run 42487584508](https://github.com/Mafiacoding/Gekko2/actions/runs/42487584508)
+completed successfully on code commit `54a91b5c34e45e0bef916726ce2aba433faa74bb`.
+The updated `test_ee_residency_generation` printed:
+
+```text
+PASS real EE thread context replacement invalidates resident copies, including generation wrap
+```
+The same run also passed the bridge memory test, live native-window admission,
+5/5 CFG/compiler tests, 512/512 synthetic AOT/interpreter comparisons,
+3/3 AOT input tests, and EE execution-lifecycle regression. This is host CI,
+not a Wii or external PS2Recomp runtime result.
