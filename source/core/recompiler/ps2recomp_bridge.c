@@ -1,4 +1,5 @@
 #include "core/recompiler/ps2recomp_bridge.h"
+#include <string.h>
 static ee_state_t *bridge_state(ee_recomp_bridge_t *b)
 {
  if(ee_recomp_bridge_validate(b)!=EE_RECOMP_BRIDGE_OK)return 0;
