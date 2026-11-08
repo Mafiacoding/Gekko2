@@ -93,3 +93,36 @@ No external PS2Recomp code executes; no Wii/Dolphin/physical-Wii build or
 behavior is claimed. The previous A4/A5 host CI remains evidence for the
 existing bridge/synthetic tests only, not for scheduler-integrated native
 execution.
+
+
+## Batch A8 correction — generated AOT is already scheduler-integrated
+
+A follow-up audit of `tools/ee_aot_generate.py` found an important path
+missed by A6: the generated AOT executor is selected inside the live
+`ee_step_budget()` path. In a `GEKKO2_EE_AOT` build,
+`ee_aot_try_execute_fetched()` selects the entry and calls its generated
+function. For a pure integer prefix of at least two instructions, that
+generated function calls `ee_core_native_window_begin_aot()`; after a
+successful grant it executes the generated body and calls
+`ee_core_interleave_account(fast)`. Its scalar AOT fallback accounts each
+retired instruction with `ee_core_interleave_account(1u)`.
+
+`ee_core_step_n()` adds the returned `block_retired` count without a second
+interleave call; its own one-slot accounting is used only when no block
+retired. Thus the existing generated-AOT path has a scheduler-owned call
+site and exactly-once interleave accounting. A6's statement that the
+native-window gate is absent from the live scheduler path was too broad:
+the *bridge wrapper* was out-of-band, but the generated AOT path is not.
+
+This does **not** mean external PS2Recomp-generated functions are integrated.
+The checked-in generated include is empty by default; AOT source is generated
+locally from an explicit profile/ELF or by the isolated hybrid compiler.
+That compiler uses Gekko2's own AOT translator, not upstream PS2Recomp's
+generated C++ runtime. The bridge entry remains fail-closed after A7.
+
+A8 adds a source/generator regression that pins this call path and accounting
+contract. The next real integration is to lower a validated PS2Recomp integer
+leaf into the existing Gekko2 AOT entry ABI (or an equivalent scheduler-owned
+entry), with state, register-clobber, source identity and exact retirement
+proofs. Do not add a parallel bridge-side executor or a second interleave
+epilogue.

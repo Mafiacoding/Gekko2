@@ -67,3 +67,19 @@ can poll at architecturally valid instruction boundaries.
 
 GitHub Actions validation is pending. This document is an implementation
 handoff, not test evidence.
+
+
+## Batch A8 — corrected live AOT call-graph audit
+
+A6 audited the bridge call graph but did not follow the generated AOT source
+emitted by `tools/ee_aot_generate.py`. That generated code is invoked from
+`ee_step_budget()` through `ee_aot_try_execute_fetched()`; successful
+pure-window grants call `ee_core_interleave_account(fast)` inside the
+generated entry, while scalar AOT steps call it once per retired instruction.
+`ee_core_step_n()` does not account a second time when `block_retired` is
+nonzero. The existing AOT route is therefore scheduler-integrated.
+
+A8 corrects the audit and adds a regression for this source/generator
+contract. This does not open the fail-closed bridge entry and does not execute
+external PS2Recomp output. The default checked-in generated AOT include is
+empty; private/build-time generated blocks are required for that route.

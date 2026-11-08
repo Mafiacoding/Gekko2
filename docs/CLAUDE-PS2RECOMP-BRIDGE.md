@@ -253,3 +253,24 @@ integer leaf with generated-code boundary guarantees.
 
 Validation pending on GitHub Actions. Host-only tests do not prove Wii,
 Dolphin or physical-Wii behavior.
+
+
+## Batch A8 — corrected live AOT scheduler integration audit
+
+Important correction to A6: the live generated AOT path **is** integrated
+inside `ee_step_budget()`. It calls `ee_aot_try_execute_fetched()`, which
+dispatches a generated entry. The AOT generator emits
+`ee_core_native_window_begin_aot()` for eligible pure integer prefixes and
+then calls `ee_core_interleave_account(fast)` exactly once. Scalar AOT
+fallback accounts each instruction with `ee_core_interleave_account(1u)`.
+When `block_retired` is nonzero, `ee_core_step_n()` does not add another
+interleave call. See `docs/PS2RECOMP-SCHEDULER-A6-INTEGRATION-AUDIT.md`
+for the correction and A8 test.
+
+This route currently serves Gekko2's own generated AOT C, including the
+isolated ELF-to-AOT hybrid compiler. It does **not** execute upstream
+PS2Recomp-generated C++ or make the opaque bridge executable. The checked-in
+AOT generated include is empty by default. The correct next integration is
+a validated lowering/adapter into this existing AOT entry path, not a
+parallel scheduler callback. The bridge native-window API remains
+fail-closed pending that work.
