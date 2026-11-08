@@ -119,3 +119,28 @@ Note: the repository's older `tests/test_ee_aot.c` currently includes
 report that C test as passing. The workflow instead runs the available
 `test_ee_aot_inputs.py` plus the synthetic generated-AOT/interpreter runtime
 comparison above.
+
+
+## Batch A2 — EE state adapter audit (2026-11-08)
+
+The field-by-field source audit is recorded in
+`docs/PS2RECOMP-EE-STATE-ADAPTER-AUDIT.md`.
+
+Key result: do **not** add a writable state overlay yet. `ee_state_t` mixes
+128-bit architectural registers and branch state with transient exception
+scratch, TLB, COP1/COP2/VU state, device/runtime state, and process pointers.
+The PPC resident path consumes the `gpr_generation` offset, but this audit
+has not yet established every writer and every resident-register invalidation
+path end-to-end. A speculative external GPR write API could therefore leave
+stale native values live.
+
+Confirmed details include cold reset via `memset(&g_state, 0, sizeof(g_state))`,
+raw same-build `EES1` checkpoint persistence of `ee_state_t`, separate RAM
+persistence/rebinding, and explicit process-local JIT source/mapping
+invalidation after checkpoint restore. These are not an external state ABI.
+
+Batch A2 is therefore **audit-complete, writable-adapter-deferred**. The next
+engineering gate is to trace all `gpr_generation` mutations and native
+resident lifetime/invalidation, then implement a separate fixed-width
+versioned snapshot/commit type with fail-closed profile validation. No CPU
+execution, graphics, scheduler, or Wii behavior was changed in this batch.
