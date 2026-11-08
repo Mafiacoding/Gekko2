@@ -160,3 +160,8 @@ A4 can now build a versioned snapshot/commit adapter against this explicit hook,
 ### Batch A3 validation
 
 GitHub Actions [run 42487584508](https://github.com/Mafiacoding/Gekko2/actions/runs/42487584508) — **SUCCESS** on code commit `54a91b5c34e45e0bef916726ce2aba433faa74bb`. The updated EE residency-generation test passed, including actual 128-bit EE context replacement, explicit generation bump, null safety and uint32 wraparound. The bridge, live scheduler admission, synthetic AOT/interpreter, AOT input and execution-lifecycle checks also passed. Host CI only; no Wii/Dolphin/physical-hardware or external PS2Recomp runtime claim.
+
+
+## Batch A4 — read-only integer-leaf EE snapshot
+
+Added a separate fixed-layout, versioned 576-byte EE snapshot for the conservative `INTEGER_LEAF` profile. It includes all 32 128-bit GPRs, HI/LO, SA and PC/next-PC, with compile-time layout assertions. Snapshot admission is fail-closed for halted/idle, delay-slot/branch, active EXL/ERL, active VU0, unaligned/nonsequential PC, nonzero GPR0 and dirty exception/TLB state. It does not serialize raw `ee_state_t`, include device/TLB/FPU/VU state, or grant execution. The API is read-only; no commit API or scheduler lease exists yet. Tests cover lane order and unsupported-state rejection.
