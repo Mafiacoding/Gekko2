@@ -430,3 +430,10 @@ Branch `codex/ps2recomp-a18-calls` (on the A17 branch; see `docs/BRANCH-MAP-2026
 See `docs/PS2RECOMP-A18-DIRECT-CALLS.md`. `jal` with real/elided slots, return-address labels and the
 extended resume switch; callee lowered or interpreted; real-generator negatives for `j` and `jalr`.
 Crash files unchanged. Host + Unicorn evidence only.
+
+
+## Batch A19 — `j` inside a function (2026-11-08)
+
+Branch `codex/ps2recomp-a19-jumps` (on A18; the integration branch was fast-forwarded to the A18 head first).
+See `docs/PS2RECOMP-A19-JUMPS.md`. Forward/backward `j` with real or elided slots, resume table, checkpoint
+poll. Indirect `jr`/`jalr` scaffolding captured but deferred. Crash files unchanged. Host + Unicorn evidence only.

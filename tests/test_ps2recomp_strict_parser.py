@@ -1085,6 +1085,97 @@ class A18Tests(unittest.TestCase):
             self.assertIn('ee_aot_1', out.read_text())
 
 
+GOLDEN19 = (ROOT / 'tests/fixtures/ps2recomp_a19/ps2_recompiled_functions.cpp').read_text()
+A19 = ['a19_jfwd_0x100000', 'a19_jnop_0x100018', 'a19_jback_0x100030', 'a19_jback2_0x10004c']
+
+
+class A19Tests(unittest.TestCase):
+    def test_provenance_and_builder(self):
+        prov = json.loads((ROOT / 'tests/fixtures/ps2recomp_a19/PROVENANCE.json').read_text())
+        self.assertEqual(prov['output']['sha256'], hashlib.sha256(GOLDEN19.encode()).hexdigest())
+        self.assertEqual(prov['input_elf']['sha256'], hashlib.sha256(fx.build(fx.FUNCTIONS_A19)).hexdigest())
+
+    def test_golden_jumps_and_blocks(self):
+        expect = {'a19_jfwd_0x100000': [('j', 0x100004, 0x100010, False)],
+                  'a19_jnop_0x100018': [('j', 0x10001c, 0x100028, False)],
+                  'a19_jback_0x100030': [('bne', 0x100034, 0x100044, False), ('j', 0x10003c, 0x100030, True)],
+                  'a19_jback2_0x10004c': [('bne', 0x100054, 0x100064, False), ('j', 0x10005c, 0x100050, True)]}
+        for key in A19:
+            r = p.parse_function(GOLDEN19, key)
+            self.assertEqual([(b['kind'], b['addr'], b['target'], b['backward']) for b in r['branches']], expect[key])
+            self.assertEqual(r['terminal'], 'jr_ra')
+        r = p.parse_function(GOLDEN19, 'a19_jback2_0x10004c')
+        self.assertEqual(r['labels'], [0x100050, 0x100064])     # backward j target + bne target
+        self.assertIn('case 0x100050u: goto label_100050;', GOLDEN19)  # resume table lists the backward target
+        # The dead code after an unconditional jump keeps its own (unreachable) block entry.
+        r = p.parse_function(GOLDEN19, 'a19_jfwd_0x100000')
+        self.assertEqual([(pc, len(w)) for pc, w in r['blocks']], [(0x100000, 3), (0x10000c, 1), (0x100010, 2)])
+
+    def test_backward_jump_needs_checkpoint_poll_and_forward_must_not_have_it(self):
+        fn = '\n'.join(fn_text(GOLDEN19, 'a19_jback_0x100030'))
+        old = 'if (runtime->eeCheckpointDue()) {\n        return;\n    }\n'
+        self.assertIn(old, fn)
+        with self.assertRaises(p.ParseError):
+            p.parse_function(fn.replace(old, '', 1) + '\n', 'a19_jback_0x100030')
+        fwd = '\n'.join(fn_text(GOLDEN19, 'a19_jnop_0x100018'))
+        with self.assertRaises(p.ParseError):
+            p.parse_function(fwd.replace('goto label_100028;', 'if (runtime->eeCheckpointDue()) {\n        return;\n    }\n    goto label_100028;', 1) + '\n', 'a19_jnop_0x100018')
+
+    def test_tail_jump_outside_function_rejected(self):
+        # The A18 fixture holds the real upstream `j` to another function (C++ call + return).
+        with self.assertRaises(p.ParseError):
+            p.parse_function((ROOT / 'tests/fixtures/ps2recomp_a18/ps2_recompiled_functions.cpp').read_text(), 'a18_tail_0x100070')
+        fn = '\n'.join(fn_text(GOLDEN19, 'a19_jfwd_0x100000')).replace('0x8040004', '0x8040040')
+        with self.assertRaises(p.ParseError):
+            p.parse_function(fn + '\n', 'a19_jfwd_0x100000')
+
+    def test_every_line_edit_and_number_mutation_rejected(self):
+        import re
+        total = 0
+        for key in A19:
+            fn = fn_text(GOLDEN19, key)
+            for i in range(3, len(fn) - 1):
+                if not fn[i].strip():
+                    continue
+                for variant in (fn[:i] + fn[i + 1:], fn[:i] + ['    int x = 0;'] + fn[i:]):
+                    with self.assertRaises(p.ParseError, msg=f'{key}: {fn[i].strip()}'):
+                        p.parse_function('\n'.join(variant) + '\n', key)
+            lines, first, close = span(GOLDEN19, key)
+            for i in range(first, close):
+                line = lines[i]
+                if line.lstrip().startswith('// Function:'):
+                    continue
+                for m in re.finditer(r'0x[0-9A-Fa-f]+|(?<![A-Za-z_0-9])\d+(?![A-Za-z_0-9])', line):
+                    if line.lstrip().startswith('// 0x') and m.start() > line.index(':', 5) + 14 + 2:
+                        continue
+                    token = m.group()
+                    repl = token[:-1] + ('0' if token[-1] != '0' else '1') if token.startswith('0x') else str(int(token) + 1)
+                    mutated = lines[:]
+                    mutated[i] = line[:m.start()] + repl + line[m.end():]
+                    total += 1
+                    try:
+                        p.parse_function('\n'.join(mutated), key)
+                    except p.ParseError:
+                        continue
+                    self.fail(f'mutation accepted in {key}: {line.strip()} -> {mutated[i].strip()}')
+        self.assertGreater(total, 120)
+
+    def test_elf_binding_and_lowering(self):
+        gen = importlib.util.spec_from_file_location('gen19', ROOT / 'tools/ee_aot_generate.py')
+        g = importlib.util.module_from_spec(gen)
+        gen.loader.exec_module(g)
+        elf = Path(tempfile.mkdtemp()) / 'a19.elf'
+        elf.write_bytes(fx.build(fx.FUNCTIONS_A19))
+        for (name, start, words), key in zip(fx.FUNCTIONS_A19, A19):
+            self.assertEqual(p.bind_to_elf(p.parse_function(GOLDEN19, key), elf)['words'], words)
+        with tempfile.TemporaryDirectory() as d:
+            r = p.bind_to_elf(p.parse_function(GOLDEN19, 'a19_jback2_0x10004c'), elf)
+            out = Path(d) / 'x.inc'
+            report = p.lower(r, out)
+            self.assertEqual(out.read_text(), g.generate(r['blocks']))
+            self.assertEqual((report['functions'][0]['blocks'], report['functions'][0]['branches']), (4, 2))
+
+
 class LoweringTests(unittest.TestCase):
     def test_lowering_passes_exactly_validated_words(self):
         with tempfile.TemporaryDirectory() as d:

@@ -42,7 +42,8 @@ static void randomise(ee_state_t *st,const ee_state_t *initial,const a11_fixture
     st->gpr[0].ud0=0;st->gpr[0].ud1=0;
     st->hi.ud0=random64();st->hi.ud1=random64();st->lo.ud0=random64();st->lo.ud1=random64();st->sa_reg=(uint32_t)random64()&31u;
     st->pc=f->pc;st->next_pc=f->pc+4;st->branch_pending=0;
-    if(f->loop)st->gpr[8].ud0=1u+(random64()&7u); /* bounded trip count for loops that read t0 */
+    if(f->loop){st->gpr[8].ud0=1u+(random64()&7u); /* bounded trip count for loops that read t0 */
+        st->gpr[10].ud0=st->gpr[9].ud0+1u+(random64()&1u); /* t2 = t1+1 (loop once) or t1+2 (leave at once) */}
     if(f->jr_ra)st->gpr[31].ud0=UINT64_C(0x80000000)|(random64()&0x1ffffcu);
 }
 /* Memory fixtures: a0/a1/a2 point into RAM; every word of the data area is itself a

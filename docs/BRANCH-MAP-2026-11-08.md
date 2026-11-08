@@ -9,8 +9,8 @@ One purpose per branch. Arrows show the only allowed direction of change.
 | `preserve/crash-e3-vu-runtime-20261108` (`24b69fe`) | Immutable pointer to the verified Crash snapshot | **Read-only.** Starting point for the integration line. |
 | `codex/ps2recomp-bridge-batch-a-memory` (PR #58, Draft) | A1–A15 PS2Recomp bridge on top of `main` + preservation document | Frozen except fixes to A1–A15; it also carries the CRLF-only `third_party` commit `bf5c580`. |
 | `codex/ps2recomp-a16-byte-half` | A16 (byte/halfword), based on A15 | Frozen after review. |
-| `integration/crash-e3-plus-a15` (`a1a0a8b`) | Crash runtime + A11–A16, `third_party` identical to Crash | **Base for all further PS2Recomp work.** Changes arrive only by merge from an `codex/ps2recomp-aNN-*` branch that was based on it. |
-| `codex/ps2recomp-a17-branches` … | One branch per batch, created from the previous integration state | Touch only parser/tools/tests/fixtures/docs/workflows unless a runtime change is explicitly justified in the batch document. |
+| `integration/crash-e3-plus-a15` | Crash runtime + A11–A16 + later gated batches; `third_party` identical to Crash | **Base for all further PS2Recomp work.** Created as merge `2179f6e`; since then it moves only by **fast-forward** to the newest fully gated batch branch (A17 → A18 → A19 so far), never by direct commits. |
+| `codex/ps2recomp-a17-branches`, `-a18-calls`, `-a19-jumps`, … | One branch per batch, created from the previous integration state; each is an ancestor of the next | Touch only parser/tools/tests/fixtures/docs/workflows unless a runtime change is explicitly justified in the batch document. |
 
 ## Rules that keep the work clean
 

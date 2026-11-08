@@ -75,7 +75,8 @@ for f in functions:
  words=f['words'];count=len(words)
  for trial in range(12):
   gprs=[(0,0)]+[(patterns[trial%5](r),rng.getrandbits(64)) for r in range(1,32)]
-  if f.get('loop'):gprs[8]=(1+(rng.getrandbits(3)),gprs[8][1])  # bounded trip count
+  if f.get('loop'):
+   gprs[8]=(1+(rng.getrandbits(3)),gprs[8][1]);gprs[10]=((gprs[9][0]+1+rng.getrandbits(1))&((1<<64)-1),gprs[10][1])  # bounded trip counts
   if is_memory(words):gprs[4]=(BASES[0][0],gprs[4][1]);gprs[5]=(BASES[0][1],gprs[5][1]);gprs[6]=(BASES[0][2],gprs[6][1]);gprs[29]=(BASES[0][2]+0x40,gprs[29][1])
   if f.get('terminal')=='jr_ra':gprs[31]=(0x80000000|(rng.getrandbits(21)&~3),rng.getrandbits(64))
   total=probe_total(f,words,gprs,trial);dyn=max(dyn,total)

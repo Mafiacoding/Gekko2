@@ -234,6 +234,16 @@ def parse_function(source, name):
             terminal = 'jr_ra'
             address += 8
             break
+        if word >> 26 == 2:  # j: unconditional jump to a target inside the function
+            pos, info, slot = _parse_jump(body, pos, c, word, address, start, end)
+            words.append(word)
+            words.append(slot[0])
+            if slot[1]:
+                inferred_slots.append(len(words) - 1)
+            slot_addrs.add(address + 4)
+            branches.append(info)
+            address += 8
+            continue
         if word >> 26 == 3:  # jal: direct call, return address is the next block entry
             pos, info, slot = _parse_jal(body, pos, c, word, address)
             words.append(word)
@@ -312,7 +322,7 @@ def basic_blocks(result):
     while i < len(words):
         pcs.append(address)
         w = words[i]
-        if w == JR_RA or w >> 26 in COND_BRANCH or w >> 26 == 3:
+        if w == JR_RA or w >> 26 in COND_BRANCH or w >> 26 in (2, 3):
             terminals.add(address)
             cuts.add(address + 8)
             address += 8
@@ -344,6 +354,50 @@ def basic_blocks(result):
         if len(ws) > MAX_WORDS:
             _fail(f'block at {_canon(pc)} exceeds the {MAX_WORDS}-word AOT limit')
     return blocks
+
+
+def _parse_slot(body, cursor, address):
+    """Optional upstream delay-slot block at `cursor`; return (cursor, slot word, inferred)."""
+    J, S = f'0x{address:X}', f'0x{address + 4:X}'
+    if cursor < len(body) and body[cursor] == f'ctx->pc = {S}u;':
+        if body[cursor + 1:cursor + 3] != ['ctx->in_delay_slot = true;', f'ctx->branch_pc = {J}u;']:
+            _fail('delay-slot prologue differs from the pinned upstream emitter')
+        m = SLOT_COMMENT.match(body[cursor + 3]) if cursor + 3 < len(body) else None
+        if not m or _parse_hex(m.group(1), 'slot pc') != address + 4:
+            _fail('delay-slot comment missing or at the wrong address')
+        slot_word = _parse_hex(m.group(2), 'slot word')
+        if slot_word == 0:
+            _fail('upstream elides a NOP delay slot; a decoded NOP slot is inconsistent')
+        mnemonic, statement = expected_statement(slot_word)
+        if m.group(3) is not None and m.group(3).split(' ')[0] != mnemonic:
+            _fail('delay-slot disassembly mnemonic disagrees with its raw word')
+        if body[cursor + 4:cursor + 6] != [statement, 'ctx->in_delay_slot = false;']:
+            _fail('delay-slot statement differs from the decoded instruction')
+        return cursor + 6, slot_word, False
+    return cursor, 0, True
+
+
+def _parse_jump(body, pos, comment, word, address, start, end):
+    """Validate one upstream `j` to a target inside the function; return (pos, info, slot)."""
+    target = ((address + 4) & 0xf0000000) | ((word & 0x3ffffff) << 2)
+    if not start <= target < end:
+        _fail('jump target is outside the function (tail jumps are not supported)')
+    disassembly = comment.group(3)
+    if disassembly is not None and disassembly.split(' ')[0] != 'j':
+        _fail('disassembly mnemonic disagrees with j')
+    backward = target <= address
+    J, T, AFTER = f'0x{address:X}', f'0x{target:X}', f'0x{address + 8:X}'
+    if body[pos + 1:pos + 2] != [f'ctx->pc = {J}u;']:
+        _fail('j head differs from the pinned upstream emitter')
+    cursor, slot_word, inferred = _parse_slot(body, pos + 2, address)
+    tail = [f'ctx->pc = {T}u;']
+    if backward:
+        tail += ['if (runtime->eeCheckpointDue()) {', 'return;', '}']
+    tail += [f'goto label_{target:x};', f'ctx->pc = {AFTER}u;']
+    if body[cursor:cursor + len(tail)] != tail:
+        _fail('j tail differs from the pinned upstream emitter')
+    info = {'addr': address, 'target': target, 'backward': backward, 'kind': 'j'}
+    return cursor + len(tail), info, (slot_word, inferred)
 
 
 def _parse_jal(body, pos, comment, word, address):

@@ -31,6 +31,7 @@ on:
       - "tests/fixtures/ps2recomp_a16/**"
       - "tests/fixtures/ps2recomp_a17/**"
       - "tests/fixtures/ps2recomp_a18/**"
+      - "tests/fixtures/ps2recomp_a19/**"
       - "tools/build_host_core.py"
       - "tests/run_test.sh"
       - ".github/workflows/ps2recomp-bridge-host-test.yml"

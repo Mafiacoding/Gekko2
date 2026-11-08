@@ -19,6 +19,7 @@ FIXTURES = [  # (fixture dir, generated function names). One AOT table per fixtu
                               'a13_plain_hex_0x100024', 'a13_ra_slot_0x10002c', 'a13_nop_alias_slot_0x100038']),
     ('ps2recomp_a15', 'a15', ['a15_lw_sw_0x100000', 'a15_alias_0x100020', 'a15_ret_store_slot_0x10002c',
                               'a15_ret_load_slot_0x100038']),
+    ('ps2recomp_a19', 'a19', ['a19_jfwd_0x100000', 'a19_jnop_0x100018', 'a19_jback_0x100030', 'a19_jback2_0x10004c']),
     ('ps2recomp_a18', 'a18', ['a18_callee_0x100000', 'a18_caller_0x10000c', 'a18_caller2_0x100028',
                               'a18_callee2_0x100040', 'a18_callee3_0x10004c', 'a18_caller3_0x100058']),
     ('ps2recomp_a18', 'a18', ['a18_caller_0x10000c', 'a18_caller2_0x100028', 'a18_caller3_0x100058']),  # callees stay on the interpreter
@@ -42,7 +43,7 @@ def dest_mask(words):
         if op == 3:  # jal links $ra
             mask |= 1 << 31
             continue
-        if op in (4, 5, 6, 7, 0x28, 0x29, 0x2b):  # branches, sb/sh/sw: no register destination
+        if op in (2, 4, 5, 6, 7, 0x28, 0x29, 0x2b):  # j, branches, sb/sh/sw: no register destination
             continue
         mask |= 1 << (rt if 9 <= op <= 15 or op in (0x20, 0x21, 0x23, 0x24, 0x25) else rd) if w else 0
     return mask & ~1  # $zero is never a changeable destination

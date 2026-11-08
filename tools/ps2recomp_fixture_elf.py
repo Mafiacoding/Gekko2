@@ -283,7 +283,46 @@ FUNCTIONS_A18 = [
         0x00000000,                  # nop
     ]),
 ]
-SETS = {'a18': FUNCTIONS_A18, 'a17': FUNCTIONS_A17, 'a16': FUNCTIONS_A16, 'a15': FUNCTIONS_A15, 'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
+# Batch A19: unconditional jumps (j) inside a function. (Indirect jr/jalr scaffolding was
+# explored but is not accepted; see docs/PS2RECOMP-A19-JUMPS.md.)
+FUNCTIONS_A19 = [
+    ('a19_jfwd', 0x00100000, [
+        _i(0x09, 2, 2, 1),           # addiu v0,v0,1
+        _j(0x02, 0x00100010),        # j L
+        _i(0x09, 3, 3, 1),           # addiu v1,v1,1 (delay slot)
+        _i(0x09, 2, 2, 100),         # addiu v0,v0,100 (skipped)
+        JR_RA,                       # L: jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a19_jnop', 0x00100018, [
+        _i(0x09, 2, 2, 1),           # addiu v0,v0,1
+        _j(0x02, 0x00100028),        # j L
+        0x00000000,                  # nop (delay slot)
+        _i(0x09, 2, 2, 100),         # skipped
+        JR_RA,                       # L: jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a19_jback', 0x00100030, [       # backward j (loop closed by an unconditional jump)
+        _i(0x09, 9, 9, 1),           # L: addiu t1,t1,1
+        _i(0x05, 9, 10, 3),          # bne t1,t2,exit (forward conditional branch)
+        0x00000000,                  # nop
+        _j(0x02, 0x00100030),        # j L
+        0x00000000,                  # nop
+        JR_RA,                       # exit: jr ra
+        0x00000000,                  # nop
+    ]),
+    ('a19_jback2', 0x0010004c, [      # backward j to a non-start target (resume table expected)
+        _i(0x09, 9, 9, 0),           # addiu t1,t1,0 (prelude)
+        _i(0x09, 9, 9, 1),           # L: addiu t1,t1,1
+        _i(0x05, 9, 10, 3),          # bne t1,t2,exit
+        _i(0x09, 11, 11, 1),         # addiu t3,t3,1 (delay slot)
+        _j(0x02, 0x00100050),        # j L
+        _i(0x09, 12, 12, 1),         # addiu t4,t4,1 (delay slot)
+        JR_RA,                       # exit: jr ra
+        0x00000000,                  # nop
+    ]),
+]
+SETS = {'a19': FUNCTIONS_A19, 'a18': FUNCTIONS_A18, 'a17': FUNCTIONS_A17, 'a16': FUNCTIONS_A16, 'a15': FUNCTIONS_A15, 'a11': FUNCTIONS, 'a12': FUNCTIONS_A12, 'a13': FUNCTIONS_A13}
 
 
 def build(functions=FUNCTIONS):
