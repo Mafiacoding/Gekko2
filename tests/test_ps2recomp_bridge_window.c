@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include "core/system.h"
 #include "core/ee/ee_core.h"
 #include "core/iop/iop_core.h"
 #include "libchdr/chd.h"
