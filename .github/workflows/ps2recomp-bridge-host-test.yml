@@ -49,17 +49,8 @@ jobs:
         run: python3 tests/test_native_hybrid_compile.py
       - name: Execute synthetic ELF through generated AOT and real interpreter fallback
         run: python3 experiments/ps2recomp-wii/run_hybrid_test.py
-      - name: Run existing EE AOT regression suite
-        run: sh tests/run_test.sh test_ee_aot
-        env:
-          GEKKO2_TEST_EXTRA_CFLAGS: >-
-            -Itests
-            -Ithird_party/libchdr/include
-            -Ithird_party/libchdr/deps/lzma-25.01/src
-            -Ithird_party/libchdr/deps/miniz-3.1.1
-            -Ithird_party/libchdr/deps/zstd-1.5.7
-            -Ithird_party/wiidrc
-            -ffunction-sections -fdata-sections -Wl,--gc-sections
+      - name: Run existing EE AOT input-generation regression suite
+        run: python3 tests/test_ee_aot_inputs.py
       - name: Run existing EE residency-generation regression suite
         run: sh tests/run_test.sh test_ee_residency_generation
         env:
