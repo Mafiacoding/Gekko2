@@ -90,3 +90,46 @@ This is a source audit only. It has not changed CPU execution, scheduler
 behavior, graphics, DMA, or Wii code generation. No Wii build, Dolphin run,
 physical-Wii test, FPS result, Crash ELF execution, or external PS2Recomp
 runtime result is claimed.
+
+
+## Batch A3 — resident GPR invalidation trace
+
+The source trace now covers every C/C++ source/header under `source/core/` on
+this branch (22 files), plus the EE block policy and residency implementation.
+
+- The EE `gpr_generation` writer was the real EE thread `load_context()`
+  path in `source/core/ee/ee_hle_thread.c`. It increments immediately before
+  replacing the live 128-bit GPR file and associated PC/HI/LO/SA/FPU context.
+- `source/core/iop/iop_core.c` has similarly named increments, but those
+  belong to the separate `iop_state_t` and must not be conflated with EE.
+- EE block prepare/boundary callbacks do not directly write guest GPRs.
+  Their retirement path may reschedule; an actual EE thread replacement
+  reaches `load_context()` and bumps the EE generation.
+- EE HLE syscall return writes (for example V0) are in the scalar syscall
+  path. Syscall encodings are not admitted by `ee_jit_block_candidate()`,
+  so they do not run inside a resident native block.
+- `ppc_residency_internal.h` reserves PPC r18-r29 for selected EE GPR words
+  and r30 for the generation snapshot. `residency_refresh()` compares the
+  live generation and reloads all valid cached words when it changes.
+  `residency_body()` retains canonical write-through stores and rejects
+  unknown/helper/control bodies as residency fences. Resident host registers
+  are saved/restored around each callable block; they are not carried across
+  independent JIT calls.
+- The existing `tests/test_ee_residency_generation.c` invokes the real
+  `load_context()`, verifies both halves of a 128-bit GPR, and checks natural
+  uint32 wraparound.
+
+### A3 code change
+
+Added `ee_core_gpr_generation_bump(ee_state_t *)` as the single explicit
+invalidation hook for out-of-line EE GPR writers. The real thread
+`load_context()` now uses this hook. The residency regression additionally
+checks explicit bump, null safety, and wraparound. Any future PS2Recomp
+snapshot commit that writes EE GPRs must call this hook after committing the
+register values; it must not treat the counter as a global state epoch.
+
+This closes the identified invalidation integration point, but it does not
+make a writable state adapter safe by itself: A4 must still define an
+architectural profile, commit only at an admitted scheduler boundary, and
+reject all state it cannot represent. No external PS2Recomp execution is
+claimed.
