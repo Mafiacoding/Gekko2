@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+: "${DEVKITPRO:?}"; : "${DEVKITPPC:?}"
+export PATH="$DEVKITPPC/bin:$DEVKITPRO/tools/bin:$PATH"
+python3 - <<'PY'
+from pathlib import Path
+p = Path('third_party/lightning/include/lightning.h')
+if not p.exists():
+    p.write_text(p.with_suffix('.h.in').read_text().replace('@MAYBE_INCLUDE_STDINT_H@', '#include <stdint.h>'))
+PY
+variant="${CHAIN_RESIDENCY:-1}"
+case "$variant" in
+ 0) target=Gekko2-BETA12.33-GX; build=build-beta12-33-control; chain_flag='' ;;
+ 1) target=Gekko2-BETA12.33-GX-Chain; build=build-beta12-33-chain; chain_flag='-DGEKKO2_EE_CHAIN_RESIDENCY' ;;
+ *) echo 'CHAIN_RESIDENCY must be 0 or 1' >&2; exit 2 ;;
+esac
+extended="${GX_EXTENDED:-1}"
+case "$extended" in
+ 0) target="$target-Control"; build="$build-control"; gx_flag='' ;;
+ 1) gx_flag='-DGEKKO2_GX_EXTENDED_TRIANGLES' ;;
+ *) echo 'GX_EXTENDED must be 0 or 1' >&2; exit 2 ;;
+esac
+generic="${GX_GENERIC:-1}"
+case "$generic" in
+ 0) target="$target-Beta25Control"; build="$build-b25"; generic_flag='' ;;
+ 1) generic_flag='-DGEKKO2_GX_GENERIC_SHADER' ;;
+ *) echo 'GX_GENERIC must be 0 or 1' >&2; exit 2 ;;
+esac
+if [[ "$generic" == 1 && "$extended" == 0 ]]; then
+ echo 'GX_GENERIC=1 requires GX_EXTENDED=1; select GX_GENERIC=0 for the old renderer.' >&2
+ exit 2
+fi
+case "${GX_RESIDENT_FENCE:-1}" in
+ 1) fence_flag='-DGEKKO2_GX_RESIDENT_FENCE' ;;
+ 0) fence_flag=''; target="$target-AsyncControl"; build="$build-async" ;;
+ *) echo 'GX_RESIDENT_FENCE must be 0 or 1' >&2; exit 2 ;;
+esac
+commit=$(git rev-parse HEAD)
+build="$build-${commit:0:12}" # New commit identity must never reuse stale objects.
+make -j4 BUILD="$build" TARGET="$target" LIGHTREC_PILOT=1 \
+ EXTRA_CFLAGS="-DGEKKO2_TELEMETRY_COMMIT=\\\"$commit\\\" -DGEKKO2_GX_RISK_MODE $generic_flag $gx_flag -DGEKKO2_GAME_TRACE -DGEKKO2_SPEED_RETIRE -DGEKKO2_SPEED_STUB -DGEKKO2_GX_NATIVE_BIOS_TRI -ffp-contract=off -DGEKKO2_EE_AOT -DGEKKO2_VU_AOT -DGEKKO2_IOP_AOT -DGEKKO2_EE_BLOCK_FAST -DGEKKO2_GOURAUD_EARLY_DEGENERATE -DGEKKO2_ARM_BETA -DGEKKO2_DSI_FASTMEM -DGEKKO2_GX_NATIVE_ADDITIVE $fence_flag -DGEKKO2_IDLE_SKIP $chain_flag"
+python3 tools/verify_dol_r1352.py "$target.dol" "$target.elf"
+python3 tools/verify_wii_memory.py "$target.elf"

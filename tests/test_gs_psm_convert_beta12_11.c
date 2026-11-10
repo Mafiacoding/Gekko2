@@ -50,9 +50,10 @@ int main(void) {
     d=dsc(256,384,1,0);d.ssax=d.dsax=8;
     T(gs_mem_copy_local(&d));
     T(gs_mem_read_psmct32(384*64,128,8,0)==0x8000ff00u);
-    /* Cross-format aliasing cannot be silently corrupted. */
+    /* BETA12.13 added bounded snapshots for cross-format physical aliases. */
     d=dsc(0,0,0,2);d.ssax=d.dsax=8;
-    T(!gs_mem_copy_local(&d));
+    T(gs_mem_copy_local(&d));
+    T(gs_mem_read_psmct16(0,128,8,0)==0x83e0u);
     /* Index 8->4 truncates only in explicitly enabled experimental mode. */
     d=dsc(0,128,0x13,0x14);d.ssax=d.dsax=3;
     gs_mem_write_index(0,128,3,0,0x13,0xbau);

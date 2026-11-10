@@ -3,7 +3,7 @@ import ctypes as C,struct,subprocess
 from pathlib import Path
 from unicorn import Uc,UC_ARCH_PPC,UC_MODE_PPC32,UC_MODE_BIG_ENDIAN,UC_HOOK_CODE
 from unicorn.ppc_const import *
-r=Path(__file__).resolve().parents[1];out=r/'outputs/verification';out.mkdir(exist_ok=True)
+r=Path(__file__).resolve().parents[1];out=r/'outputs/verification';out.mkdir(parents=True,exist_ok=True)
 subprocess.run(['gcc','-O2','-shared','-fPIC','-I'+str(r/'include'),str(r/'source/core/recompiler/ppc_dynarec.c'),'-o',str(out/'libchain_internal.so')],check=True)
 class Context(C.Structure):_fields_=[('code',C.POINTER(C.c_uint32)),('capacity',C.c_size_t),('used',C.c_size_t)]
 lib=C.CDLL(str(out/'libchain_internal.so'))

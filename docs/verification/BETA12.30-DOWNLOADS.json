@@ -1,0 +1,24 @@
+{
+  "artifact_commit": "1e9f5925ecd649b225d0d34becab4490a3785bb4",
+  "source_commit": "82358c3c6a4f22f163b8cab002dd0e72829af3de",
+  "branch": "codex/beta12-30-downloads",
+  "emulator_build_commit": "640a761",
+  "downloads": [
+    {
+      "name": "Gekko2-BETA12.30-SD.zip",
+      "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/1e9f5925ecd649b225d0d34becab4490a3785bb4/downloads/Gekko2-BETA12.30-SD.zip",
+      "http_status": 200,
+      "bytes": 914755,
+      "sha256": "f99c67075660b13dda1cf843f86b229bfab83d00cde261f0f013a650d4f5cd96",
+      "zip_crc_passed": true
+    },
+    {
+      "name": "Gekko2-BETA12.30-review.zip",
+      "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/1e9f5925ecd649b225d0d34becab4490a3785bb4/downloads/Gekko2-BETA12.30-review.zip",
+      "http_status": 200,
+      "bytes": 17446927,
+      "sha256": "54b5f63b37e34c66cb26a14941c39d9a112910fd768a782163aa189c9f283456",
+      "zip_crc_passed": true
+    }
+  ]
+}

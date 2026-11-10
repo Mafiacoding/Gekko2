@@ -1,54 +1,55 @@
 # Gekko2
 
 Experimental PlayStation 2 emulator for the **original Nintendo Wii**.
-A custom PowerPC JIT, software GS reference renderer and experimental GX hybrid renderer.
-Independent homebrew project, previously called PCSX2-Wii.
+Custom PowerPC JIT, software GS reference renderer and experimental GX hybrid renderer.
+Previously known as PCSX2-Wii; an independent homebrew project.
 
-**Technical alpha preparation — games and full-speed operation are not verified.**
-BIOS startup has been observed on Wii. Missing BIOS tiles, game compatibility,
-performance and hardware accuracy remain active work. No playable PS2 alpha is promised.
+**Development / technical alpha preparation.** BIOS startup has been observed on real Wii.
+Games, correct BIOS tiles and full-speed operation are **not verified**. This is not a
+complete PS2 emulator. The authoritative build identifier is in
+[build_version.h](include/build_version.h); historical SD test packages are not a release guarantee.
 
-## Current development
+| Start here | |
+| --- | --- |
+| Run on Wii, controls, optional logs | [User guide](docs/USER-GUIDE.md) |
+| Compile with current devkitPro / libogc | [Build guide](docs/BUILDING.md) |
+| Alpha blockers and actual evidence | [Alpha readiness](docs/ALPHA-READINESS-2026-10-19.md) |
+| Technical documentation | [Documentation index](docs/README.md) |
+| Detailed development status | [STATUS.md](STATUS.md) |
 
-- **Main source checkpoint:** R1389-SPEED-BETA12.20-GX-ALPHA-FENCES.
-- **Current development candidate:** [consolidated draft PR #51](https://github.com/Mafiacoding/Gekko2/pull/51).
-  This includes later work and is awaiting review and Wii acceptance.
-- [Candidate user guide](https://github.com/Mafiacoding/Gekko2/blob/codex/alpha-frontend-github-cleanup/docs/USER-GUIDE.md)
-  — SD installation, controls and optional logs.
-- [Candidate build guide](https://github.com/Mafiacoding/Gekko2/blob/codex/alpha-frontend-github-cleanup/docs/BUILDING.md)
-  — exact build script, verification and flags.
-- [Candidate documentation index](https://github.com/Mafiacoding/Gekko2/blob/codex/alpha-frontend-github-cleanup/docs/README.md)
-  and [alpha blockers](https://github.com/Mafiacoding/Gekko2/blob/codex/alpha-frontend-github-cleanup/docs/ALPHA-READINESS-2026-10-19.md).
-
-The candidate adds a loading screen by default and **Settings → On-screen logs**
-for optional diagnostic display. These changes are in the draft branch, not yet
-in main. SD diagnostics and the separate, optional network logger remain available.
-Historical BETA downloads are test checkpoints and fallback builds, not a public-alpha guarantee.
-
-## Toolchain
+## Building and testing
 
 Use the **latest official devkitPro/devkitPPC and libogc**, including libfat,
-wiiuse and bte, from [devkitPro](https://devkitpro.org/wiki/Getting_Started).
-Old bundled SDK archives and archived r32/libogc 1.8 instructions are not the
-supported setup. The candidate has been built with **devkitPPC r50 / GCC 16.1.0 /
-libogc 3.1.0**. These are recorded tested versions, not a claim that every newer
-SDK or the historical main checkpoint has been retested. Follow the guide for
-the branch you actually build; host tests do not establish physical Wii FPS.
+wiiuse and bte. Old bundled SDK archives are not the supported build setup.
+The recorded validation environment is **devkitPPC r50 (GCC 16.1.0), libogc 3.1.0**;
+this identifies the tested versions, not a guarantee that future SDK changes are compatible.
+See the [build guide](docs/BUILDING.md) for installation, flags and verification.
 
-## Installation and privacy
+```sh
+# DEVKITPRO and DEVKITPPC must point to your official SDK installation.
+CHAIN_RESIDENCY=0 bash tools/build_beta12_33_windows.sh
+python3 tools/test_alpha_compat_host.py --output-json /tmp/gekko2-host.json
+```
 
-A Wii package places `boot.dol`, `meta.xml` and `icon.png` in `sd:/apps/Gekko2/`.
-Supply your own BIOS in `sd:/pcsx2/bios/` and your own disc images separately.
-No BIOS, games or SDK binaries are distributed. Back up the working DOL,
-settings and memory cards before replacing a test build. Do not attach BIOS,
-disc images, guest RAM or private memory cards to public issues.
+Build from the branch you intend to test and keep its commit ID. Development PRs
+may contain work that is not merged into `main`. Host and PPC simulation results
+are distinct from Dolphin execution and physical Wii tests. No measured Wii FPS
+improvement or playable title is promised by these checks.
 
-## History
+## Installation
 
-The previous main README, including historical implementation notes and gallery,
-is preserved in [the archive](docs/archive/README-MAIN-2026-10-19.md).
-For checkpoint-specific technical evidence use [STATUS.md](STATUS.md) and the
-versioned reports; do not combine different builds into a claim of game support.
+Put the selected build in `sd:/apps/Gekko2/boot.dol`, alongside `meta.xml`
+and `icon.png`. Supply your own BIOS as `sd:/pcsx2/bios/bios.bin`
+(or `SCPH50004.bin`); no BIOS or games are included.
+See the [user guide](docs/USER-GUIDE.md) before replacing an existing installation.
+The loading screen is the default. **Settings → On-screen logs** enables the
+saved diagnostic display; SD logs and the optional network logger are separate.
+
+## Project history
+
+Earlier implementation notes, captures and release descriptions are preserved in
+[the archived README](docs/archive/README-HISTORY.md). Use current documentation
+for supported tooling and limitations.
 
 ## Credits and license
 

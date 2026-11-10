@@ -380,8 +380,8 @@
                 }
                 break;
             default:
-                halt("unimplemented MMI0 sub-opcode");
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
             break;
 
@@ -515,8 +515,8 @@
                 }
                 break;
             default:
-                halt("unimplemented MMI1 sub-opcode");
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
             break;
 
@@ -816,8 +816,8 @@
                 }
             } break;
             default:
-                halt("unimplemented MMI2 sub-opcode");
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
             break;
 
@@ -945,13 +945,13 @@
                 }
             } break;
             default:
-                halt("unimplemented MMI3 sub-opcode");
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
             break;
 
         default:
-            halt("unimplemented MMI top-level funct");
-            return 1;
+                ee_core_raise_reserved(st);
+                break;
         }
         break;

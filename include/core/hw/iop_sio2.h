@@ -2,6 +2,14 @@
 #define PCSX2_WII_IOP_SIO2_H
 
 #include <stdint.h>
+/* Alpha continuation: native PS2 page commands live in ps2_memory_card.h.
+ * Port 0/slot 0 raw/ECC-backed images, SEND3 framing, padded input/output
+ * DMA and synchronous IRQ17 now exist. Historical PS1-only limits below
+ * describe the legacy device. Native filesystem HLE and wire latency are
+ * still separate; no generic successful card-operation stub is supplied. */
+uint32_t iop_sio2_dma_write(const uint8_t *data,uint32_t bytes,uint32_t stride);
+uint32_t iop_sio2_dma_read(uint8_t *data,uint32_t bytes);
+int iop_sio2_transport_pending(void);
 /* R1365 supersedes historical scope notes below: SIO2 commands
  * 40/41/43/44/45/46/47/4C/4D/4F and native 79h pressure replies added.
  * Pressure is derived as 0/255 from host digital buttons; rumble hardware

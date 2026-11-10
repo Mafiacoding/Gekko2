@@ -76,12 +76,40 @@ int gekko2_opt_toggle(unsigned n)
 void gekko2_opt_apply(void)
 {
  gekko2_optimization_mask=gekko2_opt_requested();
-#ifdef GEKKO2_GX_NATIVE_BIOS_TRI
- /* Explicit GPU test build: enable submission/residency for this session.
-  * Saved preferences stay intact; the normal binary still honors them. */
- gekko2_optimization_mask|=(GEKKO2_OPT_BIT(GEKKO2_OPT_GX_GOURAUD)|
-                           GEKKO2_OPT_BIT(GEKKO2_OPT_GX_RESIDENT))&gekko2_opt_available();
-#endif
+}
+void gekko2_opt_reset_requested(void){requested=GEKKO2_OPT_DEFAULT;}
+static uint32_t profile_mask(unsigned profile)
+{
+ uint32_t mask=GEKKO2_OPT_DEFAULT;
+ if(profile==GEKKO2_PROFILE_INTERPRETER)
+  mask&=~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_JIT)|
+   GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)|
+   GEKKO2_OPT_BIT(GEKKO2_OPT_NATIVE_LINKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_RESIDENCY)|
+   GEKKO2_OPT_BIT(GEKKO2_OPT_WORD_ALLOCATION)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_PREFIX));
+ return mask&gekko2_opt_available();
+}
+int gekko2_opt_request_profile(unsigned profile)
+{if(profile>GEKKO2_PROFILE_INTERPRETER)return 0;requested=profile_mask(profile);return 1;}
+const char *gekko2_opt_profile_name(void)
+{
+ uint32_t mask=gekko2_opt_requested();
+ return mask==profile_mask(GEKKO2_PROFILE_BASE)?"WII BASE":
+        mask==profile_mask(GEKKO2_PROFILE_INTERPRETER)?"INTERPRETER REFERENCE":"CUSTOM";
+}
+const char *gekko2_opt_dependency(unsigned n,uint32_t mask)
+{
+ if(n>=GEKKO2_OPT_COUNT)return "Invalid option";
+ if(!(gekko2_opt_available()&GEKKO2_OPT_BIT(n)))return "Backend not compiled";
+ if(n==GEKKO2_OPT_EE_BLOCKS && !(mask&GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)))return "Needs EE dynarec";
+ if((n==GEKKO2_OPT_NATIVE_LINKS||n==GEKKO2_OPT_EE_PREFIX||n==GEKKO2_OPT_LONG_EE_BLOCKS||n==GEKKO2_OPT_NATIVE_EVENTS||n==GEKKO2_OPT_EVENT_SCHEDULER)&&
+   (mask&(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)))!=(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)))return "Needs EE dynarec + native blocks";
+ if(n==GEKKO2_OPT_NATIVE_EVENTS&&!(mask&GEKKO2_OPT_BIT(GEKKO2_OPT_EE_SERVICES)))return "Needs CPU service guards";
+ if(n==GEKKO2_OPT_COMPACT_CACHE&&!(mask&GEKKO2_OPT_BIT(GEKKO2_OPT_CACHE_REUSE)))return "Needs block cache reuse";
+ if((n==GEKKO2_OPT_IOP_CATCHUP_BLOCKS||n==GEKKO2_OPT_IOP_BLOCK_GROWTH)&&!(mask&GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_JIT)))return "Needs IOP dynarec";
+ if(n==GEKKO2_OPT_IOP_CATCHUP_BLOCKS&&!(mask&GEKKO2_OPT_BIT(GEKKO2_OPT_EVENT_SCHEDULER)))return "Needs EE / IOP event batches";
+ if(n==GEKKO2_OPT_ARM_IOS222&&!(mask&(GEKKO2_OPT_BIT(GEKKO2_OPT_ARM_WORKER)|GEKKO2_OPT_BIT(GEKKO2_OPT_ARM_CPU_RAM))))return "Needs an ARM job option; app restart";
+ if(n==GEKKO2_OPT_ARM_WORKER||n==GEKKO2_OPT_ARM_CPU_RAM)return "Requires runtime IOS service; CPU fallback";
+ return "";
 }
 int gekko2_opt_load(const char *path)
 {

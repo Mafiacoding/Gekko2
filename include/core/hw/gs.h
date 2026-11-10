@@ -3,21 +3,9 @@
 
 #include <stdint.h>
 
-/*
- * GS (Graphics Synthesizer) privileged register block - skeleton
- * only, same spirit as core/hw/dma.h. Addresses cross-checked against
- * PCSX2's pcsx2/Hw.h. These are all genuinely 64-bit registers on
- * real hardware (accessed via SD/LD), unlike the DMA registers which
- * are 32-bit.
- *
- * This models the REGISTERS ONLY: values are latched and returned
- * faithfully so BIOS/game code that pokes PMODE/DISPFB/DISPLAY/etc.
- * during display setup doesn't halt the interpreter, but nothing is
- * actually rasterized - GS local memory (the 4MB eDRAM texture/frame-
- * buffer store) and primitive drawing don't exist yet. That's a much
- * bigger subproject - see docs/ROADMAP.md section 6, including real
- * PCSX2's GS/ line count for scale.
- */
+/* GS privileged state. Rasterization/VRAM live in gif.c/gs_mem.c and GX.
+ * Access widths and pending-event IMR transitions follow PCSX2 GS.cpp
+ * 091ab68708a555198d80a7216965481c7ddd0d98. */
 
 typedef struct {
     uint64_t pmode;
@@ -52,5 +40,7 @@ gs_state_t *gs_get_state(void);
 int gs_mmio_read64(uint32_t addr, uint64_t *out_val);
 int gs_mmio_write64(uint32_t addr, uint64_t val);
 int gs_raise_event(unsigned event);
+int gs_mmio_read(uint32_t addr,unsigned bytes,uint64_t *value);
+int gs_mmio_write(uint32_t addr,unsigned bytes,uint64_t value);
 
 #endif

@@ -1,0 +1,5707 @@
+{
+  "schema": 1,
+  "commit": "7681af281ddb814e302c1eb46cbb8db0deeaa6fb",
+  "scope": "All tracked runtime source files; scalar EE canonical representatives plus COP2 transfers/branches. VU micro and COP2 macro completeness need their separate audits.",
+  "limitations": [
+    "Compiler acceptance is not executed PPC correctness.",
+    "Memory admission needs live translation/alias guards.",
+    "Opaque-call count does not classify call semantics.",
+    "Canonical representatives do not exhaust operand aliases or reserved-bit variants.",
+    "Comment markers may describe historical fixes, legitimate fallbacks or unsupported reserved encodings."
+  ],
+  "runtime_sources": [
+    {
+      "path": "source/core/bios_loader.c",
+      "bytes": 6798,
+      "sha256": "dd9b76e916f9275607311e74ee157a984f682f9bf9d1f1ef614883df20c58bbb"
+    },
+    {
+      "path": "source/core/chd_reader.c",
+      "bytes": 3247,
+      "sha256": "a3e75e8e178b037627e01909645f42380d0f958add84c67829ea3703fcea0e13"
+    },
+    {
+      "path": "source/core/checkpoint.c",
+      "bytes": 28686,
+      "sha256": "1f1c5a484e7507b7a23c6d392db48fa8d7a55defcff3e0235e1e85cd91207d9d"
+    },
+    {
+      "path": "source/core/ee/ee_aot_complex_generated.inc",
+      "bytes": 221,
+      "sha256": "dcd528b023ca5f25067e00098af8741664bcc94b5236b58c59089a289baee5c5"
+    },
+    {
+      "path": "source/core/ee/ee_cop0_switch.inc",
+      "bytes": 13397,
+      "sha256": "a006736208a3f2bb06d76376aa5365541d5f3cdd6eb54b38514926e6c95a9e1d"
+    },
+    {
+      "path": "source/core/ee/ee_cop1_switch.inc",
+      "bytes": 13851,
+      "sha256": "e27157ad52b8266298b311e0c332b6f8d38974400b080fad246eb2b47bef8d05"
+    },
+    {
+      "path": "source/core/ee/ee_cop2_switch.inc",
+      "bytes": 59215,
+      "sha256": "7a442f59ff04990fc703a21c7197b7be946c268cf800d79561aa74831328aa34"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "bytes": 709334,
+      "sha256": "94fd53bb74c104b0377c488eac8c326a47b656d63dd0a6a4ee650ccca4245e2f"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "bytes": 101014,
+      "sha256": "4603b60e0e3224aba27bdc517795418e8d0ce71dc80e3979a029f93fe1f6fce9"
+    },
+    {
+      "path": "source/core/ee/ee_mem_switch.inc",
+      "bytes": 12594,
+      "sha256": "430c0b0e6083353fd75fd4349dd5c836dcd9d12d107ad112c8189a8dc64e9df0"
+    },
+    {
+      "path": "source/core/ee/ee_mmi_switch.inc",
+      "bytes": 60755,
+      "sha256": "fd07630af4f24eafc9c533dc303354ff7157d95dcbe1ba45ab271552e5da17b0"
+    },
+    {
+      "path": "source/core/ee_elf_loader.c",
+      "bytes": 4508,
+      "sha256": "176adc52fe035b1415d77087d3634a7d32d9e49b8ab1c37889e38fedf6522deb"
+    },
+    {
+      "path": "source/core/iop/iop_aot_generated.inc",
+      "bytes": 219,
+      "sha256": "5629631b0b530cdd9b10e59cf1e7ab35402db85ee14b202af51bfa662e5991a4"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "bytes": 100279,
+      "sha256": "4dd236258e5cdc199e08053de7315491d052a07c09d4e67ba8ccf3ce30fb8c83"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "bytes": 34529,
+      "sha256": "5b07cfba53240d12ecdc5d5a8f8f57811f8a3733c89b05f44bdd0a185b204ca8"
+    },
+    {
+      "path": "source/core/iso_loader.c",
+      "bytes": 8490,
+      "sha256": "719f5ed7a581bc92ef06dbb69d0fd1519adf448e1e2d79a0f0ea17bd9a40bc17"
+    },
+    {
+      "path": "source/core/recompiler/dsi_fastmem.c",
+      "bytes": 6933,
+      "sha256": "20a47a9df81b818d3a6938ec27153d420181739563ef121f86d93f8a5b373cf2"
+    },
+    {
+      "path": "source/core/recompiler/dsi_fastmem_entry.s",
+      "bytes": 1228,
+      "sha256": "8c2f58a7e6dc000fef9beaa30da1735dca9c9139b38db40fd03fdf19e2c2c478"
+    },
+    {
+      "path": "source/core/recompiler/ee_aot.c",
+      "bytes": 2725,
+      "sha256": "effcbd4a34e23d3c637d83a9ce31cef8e31b8f9afc3542959f03c842316c6f4b"
+    },
+    {
+      "path": "source/core/recompiler/ee_aot_generated.inc",
+      "bytes": 189,
+      "sha256": "8419209909253a82d49b0303cce81c9ad575e9ba8267baadd07606b2898ffb29"
+    },
+    {
+      "path": "source/core/recompiler/ee_jit.c",
+      "bytes": 78515,
+      "sha256": "b09d57e657d15c6267d3e9de523f17be0585bfb195e4136ed4d67471090fee19"
+    },
+    {
+      "path": "source/core/recompiler/experimental_options.c",
+      "bytes": 2365,
+      "sha256": "bf75cad623e5571bd23623c5fc0c7836692a96438cfe21439c7d8853a0beda85"
+    },
+    {
+      "path": "source/core/recompiler/iop_block_boundaries.h",
+      "bytes": 448,
+      "sha256": "22c90c687c17358ad8455be6d6b5092d27a02eaa2adb01da1a0ba34a64e03c78"
+    },
+    {
+      "path": "source/core/recompiler/iop_jit.c",
+      "bytes": 9768,
+      "sha256": "0e71cf6247c6aed77396400c58ddf33b9fc116aaa831db4e0303c6a28a4b8377"
+    },
+    {
+      "path": "source/core/recompiler/iop_lightrec.c",
+      "bytes": 4078,
+      "sha256": "e7bf31b784d0d55fae669d33e351636594de3090d086f29a368b8b5e7900b5b2"
+    },
+    {
+      "path": "source/core/recompiler/optimization.c",
+      "bytes": 9345,
+      "sha256": "1608ca07ef4168209be3a5f4d7844db281ce5dff8286d0139e503f5dcbf39e77"
+    },
+    {
+      "path": "source/core/recompiler/ppc_code_cache.c",
+      "bytes": 8032,
+      "sha256": "41ec985c63d76b99ba8852a3e578808f76fdb783a1a37bf653bb5ebb34bcb60e"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "bytes": 438730,
+      "sha256": "aa11403fd2e7f14f5085f62a68f3cd8e9777dc2c00b1d571a35d00f3e93763aa"
+    },
+    {
+      "path": "source/core/recompiler/ppc_ee_mmi.inc",
+      "bytes": 11150,
+      "sha256": "007e7245e74722e2b261b30118c3135cde20513cd031d3942cdad65a14623649"
+    },
+    {
+      "path": "source/core/recompiler/ppc_residency_internal.h",
+      "bytes": 8687,
+      "sha256": "202378415c4986ddf6a7530031521f3e9944235c3a5b3bae9648bbb5d1ebfad6"
+    },
+    {
+      "path": "source/core/recompiler/vu_jit.c",
+      "bytes": 13466,
+      "sha256": "8387e2c5fa5930cd7c1f02c48f1a690716161467d7d850ab2197653ba14e6deb"
+    },
+    {
+      "path": "source/core/runtime_profile.c",
+      "bytes": 1732,
+      "sha256": "943b9c08600cdece65483806206eb4005ccfc78507d212163cc645ec244bdf2d"
+    },
+    {
+      "path": "source/core/system.c",
+      "bytes": 15578,
+      "sha256": "9d4bd4cffbff2ec0dd51e0cb27947fe744c694cd26ccfea427890734a7560d3b"
+    },
+    {
+      "path": "source/hw/arm_loader.c",
+      "bytes": 7494,
+      "sha256": "89f503ef4a818b0a3dc48b42d77bc92e1713e80e0bfcd843ff4e7d3b50280bb3"
+    },
+    {
+      "path": "source/hw/arm_ram.c",
+      "bytes": 4610,
+      "sha256": "b170abb985a63e74041b03d9ad7b2fcfe6d5790801c824e32812a5e272f09802"
+    },
+    {
+      "path": "source/hw/arm_worker.c",
+      "bytes": 4586,
+      "sha256": "1725c43984c1e66be8d67d8bec98ab004dc1b1d9ab6d17aacb0675b3ea23f579"
+    },
+    {
+      "path": "source/hw/audio_output.c",
+      "bytes": 2984,
+      "sha256": "1990c93ea2167fab1f7af37238633e7e6d8e95200a5c45d73023f777af341ee1"
+    },
+    {
+      "path": "source/hw/cdvd_config.c",
+      "bytes": 3834,
+      "sha256": "56142ea313a3fe3653e4408fbdff5de5b149f1d808beacfc4f1c4560dfb02ca8"
+    },
+    {
+      "path": "source/hw/controller_host.c",
+      "bytes": 2712,
+      "sha256": "cc1032f32c3080758c5f8a5816cc52fa6b8ca0ebba6d276efa76bbcae1087686"
+    },
+    {
+      "path": "source/hw/controller_input.c",
+      "bytes": 7290,
+      "sha256": "6b18a89bd59297878954d8084d06e2a70a681c39dda399e7b5e1ecc0c42e238d"
+    },
+    {
+      "path": "source/hw/controller_usb.c",
+      "bytes": 2938,
+      "sha256": "463d4c41f2771ba171a71e35208a4a3509bef841f3da62cf10f67ea3ca83f86d"
+    },
+    {
+      "path": "source/hw/dma.c",
+      "bytes": 45825,
+      "sha256": "c6e68884d8cbc3a672c44b96ac875922d78092866130eb123ee79cf326b6fb2a"
+    },
+    {
+      "path": "source/hw/ee_dve.c",
+      "bytes": 3177,
+      "sha256": "fe9f23025f4bddc0107ed40fb0552cc48c6ed6c40e7166341b25c16de11cae7a"
+    },
+    {
+      "path": "source/hw/ee_intc.c",
+      "bytes": 5021,
+      "sha256": "510688351d659622397cf60f3c37b4382a189e7c3b1f0524f9f9f8c182ff098a"
+    },
+    {
+      "path": "source/hw/ee_sio.c",
+      "bytes": 3914,
+      "sha256": "402d39fd0f649044a1f9b3bbfcf840ae0ae6760b971cc1d2d7e2db9b5c7ebdf2"
+    },
+    {
+      "path": "source/hw/ee_timers.c",
+      "bytes": 13850,
+      "sha256": "1563583950dcc8538a9a5ccf0e88d144805ea7c1990497d435101ea949bad29c"
+    },
+    {
+      "path": "source/hw/frontend_browser.c",
+      "bytes": 3642,
+      "sha256": "c649550357cae3d3b736acb11647eddb25135957f0a7e4a5c3e41b1b392bc28c"
+    },
+    {
+      "path": "source/hw/frontend_log.c",
+      "bytes": 2335,
+      "sha256": "3e1bc595ef9e3fd3043614ac06859b1887079150917fe9eabd9638a8fb00ca72"
+    },
+    {
+      "path": "source/hw/frontend_logo.c",
+      "bytes": 1827,
+      "sha256": "025dad6f9194a055062e2770feac3f9dc6c395fbc56e5ea27ef1386394fd1d12"
+    },
+    {
+      "path": "source/hw/frontend_runtime.c",
+      "bytes": 2533,
+      "sha256": "2ecceb70b5207b4fd2d1ee92cc69309de43457446de1934dfdc24ce08c420f1b"
+    },
+    {
+      "path": "source/hw/frontend_settings.c",
+      "bytes": 1673,
+      "sha256": "46baf5d82867efce9fe2477ae1b8cb8f2e616fb5a7a1166ceeb09f26f078d6b0"
+    },
+    {
+      "path": "source/hw/frontend_text.c",
+      "bytes": 2109,
+      "sha256": "a9fc4890613c2c55bc2ef3e31d2eb28544f1a6ca8a929d37100935d82fc28ac0"
+    },
+    {
+      "path": "source/hw/game_trace.c",
+      "bytes": 2695,
+      "sha256": "fb2ee0412cbe45e4bace0c656b76021960238601e8ec7c1fea4ea73fa82ce0f9"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "bytes": 192827,
+      "sha256": "c3662e3d8d3b471a1172b7d1a3f12b4d6a4f18904c44b82358e5422c9aa26606"
+    },
+    {
+      "path": "source/hw/gs.c",
+      "bytes": 2952,
+      "sha256": "0ec74a86107f599d8e5c0befd22da463551c328e2a7b87c0f4619dcff45e0747"
+    },
+    {
+      "path": "source/hw/gs_gx.c",
+      "bytes": 116956,
+      "sha256": "c3366088b87ff78713a80b7b53e96da0699b603038d4bd9abd2b7f1d1160b43b"
+    },
+    {
+      "path": "source/hw/gs_gx_additive.c",
+      "bytes": 592,
+      "sha256": "8e677747ce6791e7f7281067020381eaf9654d41fb3d431d2486c07246b1c7b3"
+    },
+    {
+      "path": "source/hw/gs_gx_dump.c",
+      "bytes": 1916,
+      "sha256": "f9479a8c44629f4cb263ea946ddcdee8e2018f40dce6d1987e854dd21915e0d0"
+    },
+    {
+      "path": "source/hw/gs_gx_surface.c",
+      "bytes": 7480,
+      "sha256": "b41ea0a385ba6fb51b0d90e59c0cb00247fb5f075ac5685d752c838eb3dc2073"
+    },
+    {
+      "path": "source/hw/gs_mem.c",
+      "bytes": 28245,
+      "sha256": "9d7707a3f2e51ec0c73922a2008582a1ea030edb6aa05f4ac32a957352d9738d"
+    },
+    {
+      "path": "source/hw/gs_wii_output.c",
+      "bytes": 17447,
+      "sha256": "4098db606145bb21d1a73b22e30aca98c33ee9319a224d64156ec55da8b31a29"
+    },
+    {
+      "path": "source/hw/guest_error_probe.c",
+      "bytes": 1855,
+      "sha256": "744453aebc1943a0399a6d87508f673e1270323097f47f74122fdb360eefa2b3"
+    },
+    {
+      "path": "source/hw/iop_asyncio.c",
+      "bytes": 2759,
+      "sha256": "4704a471be7bb6907f314b8696c09ab887a55309c983b476574dc0ba1cdc8ae1"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "bytes": 23203,
+      "sha256": "a8305503aebd724f80e39be869d200b84cc32a93776bb788c594d358755e113d"
+    },
+    {
+      "path": "source/hw/iop_cdvd.c",
+      "bytes": 26995,
+      "sha256": "63749be058d658e006cdbcf909dad9c58377fde97a2ff8bfa55fe051d4162922"
+    },
+    {
+      "path": "source/hw/iop_dma.c",
+      "bytes": 22607,
+      "sha256": "86b8bcf0dd837b33d8184087179e0666beb18309970b1655c4f562db334d4afd"
+    },
+    {
+      "path": "source/hw/iop_elf.c",
+      "bytes": 13621,
+      "sha256": "3181a62724430e2c399c78e18b6fc29878f15bab64e8fc63546a9b97b708b0a4"
+    },
+    {
+      "path": "source/hw/iop_excb.c",
+      "bytes": 11743,
+      "sha256": "166f662cc6bbe0f95b99ce09249dd326faac634c1d1852fa14afb6b29f252f66"
+    },
+    {
+      "path": "source/hw/iop_heap.c",
+      "bytes": 19595,
+      "sha256": "b9614be4a55294aefb0f96c376a131b313f164f87306a15cbc74cc8dc942372b"
+    },
+    {
+      "path": "source/hw/iop_hle_bios.c",
+      "bytes": 31288,
+      "sha256": "b0c55fc54ff3c378eeec7f87f9b857fe400b9b31c1d35722282c09e35effea7e"
+    },
+    {
+      "path": "source/hw/iop_hle_events.c",
+      "bytes": 5009,
+      "sha256": "4e44bbf4814058a46f7723295b13316d5df3bfde602d7b2b8fdeabd051559a5d"
+    },
+    {
+      "path": "source/hw/iop_hle_heap.c",
+      "bytes": 4786,
+      "sha256": "5553a1004edcb081fd5de9c2ca80248369172838735a86f3a783be9336ba5705"
+    },
+    {
+      "path": "source/hw/iop_hle_intr.c",
+      "bytes": 23513,
+      "sha256": "56b93c3e7a08e8310c6513a062dc0fe121704dcad2c60bf1f4de7de91f73f72b"
+    },
+    {
+      "path": "source/hw/iop_hle_modules.c",
+      "bytes": 1568,
+      "sha256": "3d1ac06a1e82ff0060a41d383318f200626058f81ee47fdc9cb356e87ecc5fc6"
+    },
+    {
+      "path": "source/hw/iop_hle_thread.c",
+      "bytes": 69867,
+      "sha256": "1020cb1c1bbbaafef5f10cc12112ea850a0cfc4fa77e6e9c07b61a99f4839095"
+    },
+    {
+      "path": "source/hw/iop_icfg.c",
+      "bytes": 1457,
+      "sha256": "42e250f17ec3c0a0b2e9ceac518b70cd979d9b60c26909989022be2da560656e"
+    },
+    {
+      "path": "source/hw/iop_intc.c",
+      "bytes": 3846,
+      "sha256": "bac1f285911b4103b6ec62bb048187ececfb5724d1d3d2451bdd30486653bf8c"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "bytes": 92147,
+      "sha256": "251a76911c34be3dbc749a985a717b7b244873c41a154d9c396d20b0d738223f"
+    },
+    {
+      "path": "source/hw/iop_module_metadata.c",
+      "bytes": 4118,
+      "sha256": "1bb9f288064dcd08e6f78659999fd1397611dfb6586302ae5694125f04b286db"
+    },
+    {
+      "path": "source/hw/iop_service_hle.c",
+      "bytes": 8180,
+      "sha256": "a6a263de483a4ddf51e40e80aaad01def59d91ad749812e9e904d42e42fcd2c7"
+    },
+    {
+      "path": "source/hw/iop_sio2.c",
+      "bytes": 22038,
+      "sha256": "6132889afe6659993cb7b83c447b1c1c80078013e167593430d80274eb1dbccd"
+    },
+    {
+      "path": "source/hw/iop_spu2.c",
+      "bytes": 13792,
+      "sha256": "fc49c90e5638813df9ea444b0d149c5c82599e460605e99ac4f94bca6128c1df"
+    },
+    {
+      "path": "source/hw/iop_spu_legacy.c",
+      "bytes": 4771,
+      "sha256": "6da17a9650955b08e575b55e0be8d00d89ba3d16e8744fae20fbc38811638751"
+    },
+    {
+      "path": "source/hw/iop_timers.c",
+      "bytes": 10302,
+      "sha256": "afcb3a138114cced3376b97b52149f00a49eeebe9644e2308a7b1c074dd6acd6"
+    },
+    {
+      "path": "source/hw/ipu.c",
+      "bytes": 11771,
+      "sha256": "216ecaf17974b79bf17eebbd79e622255b83c4694a25dc466bf80f6eb6937f98"
+    },
+    {
+      "path": "source/hw/ipu_csc.c",
+      "bytes": 1466,
+      "sha256": "93bebcc30e95605268bd498a06102932722f8e5656de6c04ece7c8954785c14c"
+    },
+    {
+      "path": "source/hw/ipu_idct.c",
+      "bytes": 3540,
+      "sha256": "6a47cab6a2338abd58dfb1c59b5ff81354af2325ddf75f94033d7ec8f453cc93"
+    },
+    {
+      "path": "source/hw/ipu_mpeg.c",
+      "bytes": 5883,
+      "sha256": "c45f1ff51096a15ab31553c75fe879c058ee8d195de276bb529a7c4bd7cfd100"
+    },
+    {
+      "path": "source/hw/ipu_pack.c",
+      "bytes": 1358,
+      "sha256": "fa5733efa61a409fd62687498d9464a4b569682bcb59683b4e48380523851bc8"
+    },
+    {
+      "path": "source/hw/ipu_vlc.c",
+      "bytes": 1693,
+      "sha256": "c0a36fa827b7e044ac90cdbacede3b0ad7a0eeee7a11ce555e727bf1bd8069dc"
+    },
+    {
+      "path": "source/hw/mch.c",
+      "bytes": 3079,
+      "sha256": "19f8417ac27f63b993fd530f1303721622dba2cbb5655e8b6c1edfd2b656137c"
+    },
+    {
+      "path": "source/hw/ps2_mc_files.c",
+      "bytes": 19350,
+      "sha256": "561bbf043b182480f91e6f515be08b53f2529a3ef38d23e120c8dd31b113b75a"
+    },
+    {
+      "path": "source/hw/ps2_memory_card.c",
+      "bytes": 8793,
+      "sha256": "e241430fcac30823b913f24799721b0f71c618f7906a75910e35a332a5c5d573"
+    },
+    {
+      "path": "source/hw/rspu2_stream.c",
+      "bytes": 6848,
+      "sha256": "507941f63fc061905101adc9cca8da1368074b21fd06d27aa3158fe74b3bd236"
+    },
+    {
+      "path": "source/hw/sif.c",
+      "bytes": 36316,
+      "sha256": "44ba03a95f27b04bb8e0fbb4e9cc18ffe86cbef9e3717362a4334d4e4499564c"
+    },
+    {
+      "path": "source/hw/spu2_mixer.c",
+      "bytes": 20130,
+      "sha256": "92ee93481a7c4c1f79b4bca39b42bcb89f2b58565727f41a4358222703ee1cc1"
+    },
+    {
+      "path": "source/hw/vif.c",
+      "bytes": 38855,
+      "sha256": "0f1a014b189a678e86024d7b88e3f0fffba465bfc030f4432508c7ab91935a21"
+    },
+    {
+      "path": "source/hw/vu.c",
+      "bytes": 34067,
+      "sha256": "757d5c9321973630f14bfd25dcc67a29e988dd99c70ad49d88693459e540878c"
+    },
+    {
+      "path": "source/hw/vu_aot_generated.inc",
+      "bytes": 1256,
+      "sha256": "71406cfe9af7d85b4d3ea8414a424dcb50c5ed8fe88c6536ef078b49a4220f53"
+    },
+    {
+      "path": "source/hw/vu_fmac_internal.h",
+      "bytes": 5691,
+      "sha256": "56cd75ab84edbf74b916c77b6d16e68918b114c804d7950f7bbb2bce2125f503"
+    },
+    {
+      "path": "source/hw/vu_lower_body.inc",
+      "bytes": 16044,
+      "sha256": "ce8233d6ff315c4fa9ea80cc47da8963ba5eeabf94cb1ae68d40ecc3cbf74639"
+    },
+    {
+      "path": "source/hw/vu_opcodes.h",
+      "bytes": 10095,
+      "sha256": "d916dd3027fb94ae974aed5602cded6b34aeecee4ca401ab213a8f19c66288eb"
+    },
+    {
+      "path": "source/hw/vu_upper_body.inc",
+      "bytes": 15254,
+      "sha256": "3eb9041524f9c27c1620c2601246b75b43247fc79b1a62ca54a3f9b42ff43b4f"
+    },
+    {
+      "path": "source/hw/wii_arm_ios.c",
+      "bytes": 3179,
+      "sha256": "c6950bc74389745adf7c2d2c799387224515410121d3ba76796a3decfb29253b"
+    },
+    {
+      "path": "source/main.c",
+      "bytes": 116399,
+      "sha256": "52a56c1fe8f69471ba1e12d95094370218e78b69a4ae601af97aae776cb007cb"
+    }
+  ],
+  "ee_forms": [
+    {
+      "family": "Special",
+      "name": "SLL",
+      "word": "00021800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 6,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SRL",
+      "word": "00021802",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 6,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SRA",
+      "word": "00021803",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 6,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SLLV",
+      "word": "00221804",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 7,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SRLV",
+      "word": "00221806",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 7,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SRAV",
+      "word": "00221807",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 7,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "JR",
+      "word": "00200008",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "JALR",
+      "word": "00201809",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 9,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MOVZ",
+      "word": "0022180a",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 19,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MOVN",
+      "word": "0022180b",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 20,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SYSCALL",
+      "word": "0000000c",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "BREAK",
+      "word": "0000000d",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SYNC",
+      "word": "0000000f",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MFHI",
+      "word": "00001810",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MTHI",
+      "word": "00200011",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MFLO",
+      "word": "00001812",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MTLO",
+      "word": "00200013",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DSLLV",
+      "word": "00221814",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 15,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DSRLV",
+      "word": "00221816",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 15,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DSRAV",
+      "word": "00221817",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 19,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MULT",
+      "word": "00221818",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 12,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MULTU",
+      "word": "00221819",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 12,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DIV",
+      "word": "0022181a",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 31,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DIVU",
+      "word": "0022181b",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "ADD",
+      "word": "00221820",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 27,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "ADDU",
+      "word": "00221821",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 6,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SUB",
+      "word": "00221822",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 26,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "SUBU",
+      "word": "00221823",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 6,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "AND",
+      "word": "00221824",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "OR",
+      "word": "00221825",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "XOR",
+      "word": "00221826",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "NOR",
+      "word": "00221827",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MFSA",
+      "word": "00001828",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "MTSA",
+      "word": "00200029",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 2,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SLT",
+      "word": "0022182a",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 13,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "SLTU",
+      "word": "0022182b",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 11,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DADD",
+      "word": "0022182c",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 29,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "DADDU",
+      "word": "0022182d",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DSUB",
+      "word": "0022182e",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 28,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "DSUBU",
+      "word": "0022182f",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "TGE",
+      "word": "00221830",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 26,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "TGEU",
+      "word": "00221831",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 24,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "TLT",
+      "word": "00221832",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 26,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "TLTU",
+      "word": "00221833",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 24,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "TEQ",
+      "word": "00221834",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 23,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "TNE",
+      "word": "00221836",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 23,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Special",
+      "name": "DSLL",
+      "word": "00021838",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 10,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DSRL",
+      "word": "0002183a",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 10,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DSRA",
+      "word": "0002183b",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 10,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DSLL32",
+      "word": "0002183c",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 6,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DSRL32",
+      "word": "0002183e",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 7,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Special",
+      "name": "DSRA32",
+      "word": "0002183f",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 6,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "BLTZ",
+      "word": "04200010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 14,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "BGEZ",
+      "word": "04210010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 15,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "BLTZL",
+      "word": "04220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 24,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "BGEZL",
+      "word": "04230010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 25,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "TGEI",
+      "word": "04280010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 27,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "RegImm",
+      "name": "TGEIU",
+      "word": "04290010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 25,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "RegImm",
+      "name": "TLTI",
+      "word": "042a0010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 27,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "RegImm",
+      "name": "TLTIU",
+      "word": "042b0010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 25,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "RegImm",
+      "name": "TEQI",
+      "word": "042c0010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 24,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "RegImm",
+      "name": "TNEI",
+      "word": "042e0010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 24,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "RegImm",
+      "name": "BLTZAL",
+      "word": "04300010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 19,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "BGEZAL",
+      "word": "04310010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 20,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "BLTZALL",
+      "word": "04320010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 29,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "BGEZALL",
+      "word": "04330010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 30,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "MTSAB",
+      "word": "04380010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "RegImm",
+      "name": "MTSAH",
+      "word": "04390010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 5,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "J",
+      "word": "08220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 9,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "JAL",
+      "word": "0c220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 14,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "BEQ",
+      "word": "10220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 22,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "BNE",
+      "word": "14220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 23,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "BLEZ",
+      "word": "18220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 20,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "BGTZ",
+      "word": "1c220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 21,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "ADDI",
+      "word": "20220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 28,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "ADDIU",
+      "word": "24220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 5,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "SLTI",
+      "word": "28220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 13,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "SLTIU",
+      "word": "2c220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 11,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "ANDI",
+      "word": "30220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 5,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "ORI",
+      "word": "34220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 5,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "XORI",
+      "word": "38220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 5,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "LUI",
+      "word": "3c220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0",
+      "name": "MFC0",
+      "word": "40021800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0",
+      "name": "MTC0",
+      "word": "40821800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 2,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_BC0",
+      "name": "BC0F",
+      "word": "41000010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_BC0",
+      "name": "BC0T",
+      "word": "41010010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_BC0",
+      "name": "BC0FL",
+      "word": "41020010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_BC0",
+      "name": "BC0TL",
+      "word": "41030010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_C0",
+      "name": "TLBR",
+      "word": "42000001",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_C0",
+      "name": "TLBWI",
+      "word": "42000002",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_C0",
+      "name": "TLBWR",
+      "word": "42000006",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_C0",
+      "name": "TLBP",
+      "word": "42000008",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_C0",
+      "name": "ERET",
+      "word": "42000018",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_C0",
+      "name": "EI",
+      "word": "42000038",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0_C0",
+      "name": "DI",
+      "word": "42000039",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1",
+      "name": "MFC1",
+      "word": "44021800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1",
+      "name": "CFC1",
+      "word": "44421800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 3,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1",
+      "name": "MTC1",
+      "word": "44821800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 2,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1",
+      "name": "CTC1",
+      "word": "44c21800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_BC1",
+      "name": "BC1F",
+      "word": "45000010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_BC1",
+      "name": "BC1T",
+      "word": "45010010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 15,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_BC1",
+      "name": "BC1FL",
+      "word": "45020010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 26,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_BC1",
+      "name": "BC1TL",
+      "word": "45030010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 25,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "ADD_S",
+      "word": "46021900",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 61,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "SUB_S",
+      "word": "46021901",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 61,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "MUL_S",
+      "word": "46021902",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 61,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "DIV_S",
+      "word": "46021903",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 81,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "SQRT_S",
+      "word": "46021904",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 56,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "COP1_S",
+      "name": "ABS_S",
+      "word": "46021905",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 3,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "MOV_S",
+      "word": "46021906",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 2,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "NEG_S",
+      "word": "46021907",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 3,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "RSQRT_S",
+      "word": "46021916",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 97,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "COP1_S",
+      "name": "ADDA_S",
+      "word": "46021918",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 61,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "SUBA_S",
+      "word": "46021919",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 61,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "MULA_S",
+      "word": "4602191a",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 61,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "MADD_S",
+      "word": "4602191c",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 99,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "MSUB_S",
+      "word": "4602191d",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 99,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "MADDA_S",
+      "word": "4602191e",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 80,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "MSUBA_S",
+      "word": "4602191f",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 80,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "CVT_W",
+      "word": "46021924",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 21,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "MAX_S",
+      "word": "46021928",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 24,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "MIN_S",
+      "word": "46021929",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 24,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "C_F",
+      "word": "46021830",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "C_EQ",
+      "word": "46021832",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 50,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "C_LT",
+      "word": "46021834",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 50,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_S",
+      "name": "C_LE",
+      "word": "46021836",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 52,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP1_W",
+      "name": "CVT_S",
+      "word": "46821920",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "BEQL",
+      "word": "50220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 32,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "BNEL",
+      "word": "54220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 33,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "BLEZL",
+      "word": "58220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 30,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "BGTZL",
+      "word": "5c220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": true,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 31,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "DADDI",
+      "word": "60220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 30,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "DADDIU",
+      "word": "64220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "LDL",
+      "word": "68220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "LDR",
+      "word": "6c220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MADD",
+      "word": "70221800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MADDU",
+      "word": "70221801",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PLZCW",
+      "word": "70221804",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 12,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PADDW",
+      "word": "70221808",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PSUBW",
+      "word": "70221848",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PCGTW",
+      "word": "70221888",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PMAXW",
+      "word": "702218c8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PADDH",
+      "word": "70221908",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 32,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PSUBH",
+      "word": "70221948",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 32,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PCGTH",
+      "word": "70221988",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 19,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PMAXH",
+      "word": "702219c8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 19,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PADDB",
+      "word": "70221a08",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 64,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PSUBB",
+      "word": "70221a48",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 64,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PCGTB",
+      "word": "70221a88",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 19,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PADDSW",
+      "word": "70221c08",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 24,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PSUBSW",
+      "word": "70221c48",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 23,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PEXTLW",
+      "word": "70221c88",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PPACW",
+      "word": "70221cc8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PADDSH",
+      "word": "70221d08",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 22,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PSUBSH",
+      "word": "70221d48",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 22,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PEXTLH",
+      "word": "70221d88",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PPACH",
+      "word": "70221dc8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PADDSB",
+      "word": "70221e08",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 22,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PSUBSB",
+      "word": "70221e48",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 22,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PEXTLB",
+      "word": "70221e88",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 66,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PPACB",
+      "word": "70221ec8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 66,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PEXT5",
+      "word": "70221f88",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 44,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI0",
+      "name": "PPAC5",
+      "word": "70221fc8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 44,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PMADDW",
+      "word": "70221809",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 76,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PSLLVW",
+      "word": "70221889",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 14,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PSRLVW",
+      "word": "702218c9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 14,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PMSUBW",
+      "word": "70221909",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 66,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PMFHI",
+      "word": "70221a09",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PMFLO",
+      "word": "70221a49",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PINTH",
+      "word": "70221a89",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PMULTW",
+      "word": "70221b09",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 13,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "MMI2",
+      "name": "PDIVW",
+      "word": "70221b49",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 13,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "MMI2",
+      "name": "PCPYLD",
+      "word": "70221b89",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PMADDH",
+      "word": "70221c09",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 68,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PHMADH",
+      "word": "70221c49",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 56,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PAND",
+      "word": "70221c89",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PXOR",
+      "word": "70221cc9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PMSUBH",
+      "word": "70221d09",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 68,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PHMSBH",
+      "word": "70221d49",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 60,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PEXEH",
+      "word": "70221e89",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PREVH",
+      "word": "70221ec9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PMULTH",
+      "word": "70221f09",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 13,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "MMI2",
+      "name": "PDIVBW",
+      "word": "70221f49",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 13,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "MMI2",
+      "name": "PEXEW",
+      "word": "70221f89",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI2",
+      "name": "PROT3W",
+      "word": "70221fc9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MFHI1",
+      "word": "70221810",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MTHI1",
+      "word": "70221811",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MFLO1",
+      "word": "70221812",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MTLO1",
+      "word": "70221813",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MULT1",
+      "word": "70221818",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 12,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MULTU1",
+      "word": "70221819",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 12,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "DIV1",
+      "word": "7022181a",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 31,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "DIVU1",
+      "word": "7022181b",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MADD1",
+      "word": "70221820",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "MADDU1",
+      "word": "70221821",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PABSW",
+      "word": "70221868",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 23,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PCEQW",
+      "word": "702218a8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PMINW",
+      "word": "702218e8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PADSBH",
+      "word": "70221928",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 32,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PABSH",
+      "word": "70221968",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 25,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PCEQH",
+      "word": "702219a8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PMINH",
+      "word": "702219e8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 19,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PCEQB",
+      "word": "70221aa8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PADDUW",
+      "word": "70221c28",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 32,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PSUBUW",
+      "word": "70221c68",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PEXTUW",
+      "word": "70221ca8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PADDUH",
+      "word": "70221d28",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 64,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PSUBUH",
+      "word": "70221d68",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PEXTUH",
+      "word": "70221da8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PADDUB",
+      "word": "70221e28",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 128,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PSUBUB",
+      "word": "70221e68",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 17,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "PEXTUB",
+      "word": "70221ea8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 66,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI1",
+      "name": "QFSRV",
+      "word": "70221ee8",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 50,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PMADDUW",
+      "word": "70221829",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 32,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PSRAVW",
+      "word": "702218e9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 14,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PMTHI",
+      "word": "70221a29",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PMTLO",
+      "word": "70221a69",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PINTEH",
+      "word": "70221aa9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PMULTUW",
+      "word": "70221b29",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 24,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PDIVUW",
+      "word": "70221b69",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 32,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PCPYUD",
+      "word": "70221ba9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "POR",
+      "word": "70221ca9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PNOR",
+      "word": "70221ce9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PEXCH",
+      "word": "70221ea9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PCPYH",
+      "word": "70221ee9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 10,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI3",
+      "name": "PEXCW",
+      "word": "70221fa9",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PMFHL.0",
+      "word": "70221830",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PMFHL.1",
+      "word": "70221870",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PMFHL.2",
+      "word": "702218b0",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 11,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "MMI",
+      "name": "PMFHL.3",
+      "word": "702218f0",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 16,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PMFHL.4",
+      "word": "70221930",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 11,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "MMI",
+      "name": "PMTHL",
+      "word": "70221831",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PSLLH",
+      "word": "70221834",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 32,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PSRLH",
+      "word": "70221836",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 32,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PSRAH",
+      "word": "70221837",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 48,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PSLLW",
+      "word": "7022183c",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 12,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PSRLW",
+      "word": "7022183e",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 12,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "MMI",
+      "name": "PSRAW",
+      "word": "7022183f",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 12,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "LQ",
+      "word": "78220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 14,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "SQ",
+      "word": "7c220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 14,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "LB",
+      "word": "80220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 37,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "LH",
+      "word": "84220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 40,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "LWL",
+      "word": "88220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 34,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "LW",
+      "word": "8c220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 38,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "LBU",
+      "word": "90220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 36,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "LHU",
+      "word": "94220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 39,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "LWR",
+      "word": "98220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 39,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "LWU",
+      "word": "9c220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 37,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "SB",
+      "word": "a0220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 28,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "SH",
+      "word": "a4220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 31,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "SWL",
+      "word": "a8220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 39,
+      "opaque_call_sites": 2
+    },
+    {
+      "family": "Standard",
+      "name": "SW",
+      "word": "ac220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 31,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "SDL",
+      "word": "b0220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "SDR",
+      "word": "b4220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "SWR",
+      "word": "b8220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 37,
+      "opaque_call_sites": 2
+    },
+    {
+      "family": "Standard",
+      "name": "CACHE",
+      "word": "bc220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "LWC1",
+      "word": "c4220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "PREF",
+      "word": "cc220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "LQC2",
+      "word": "d8220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "LD",
+      "word": "dc220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 38,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "Standard",
+      "name": "SWC1",
+      "word": "e4220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "SQC2",
+      "word": "f8220010",
+      "single_front": false,
+      "emitter": false,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": true,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "Standard",
+      "name": "SD",
+      "word": "fc220010",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": true,
+      "terminal": false,
+      "chain_policy": true,
+      "block_emitter": true,
+      "emitted_words": 14,
+      "opaque_call_sites": 1
+    },
+    {
+      "family": "COP2",
+      "name": "MFC2",
+      "word": "48021800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP2",
+      "name": "QMFC2",
+      "word": "48221800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP2",
+      "name": "CFC2",
+      "word": "48421800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 4,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP2",
+      "name": "MTC2",
+      "word": "48821800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 2,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP2",
+      "name": "QMTC2",
+      "word": "48a21800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 8,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP2",
+      "name": "CTC2",
+      "word": "48c21800",
+      "single_front": true,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 2,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP2",
+      "name": "BC2F",
+      "word": "49000010",
+      "single_front": true,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP2",
+      "name": "BC2T",
+      "word": "49010010",
+      "single_front": true,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP2",
+      "name": "BC2FL",
+      "word": "49020010",
+      "single_front": true,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP2",
+      "name": "BC2TL",
+      "word": "49030010",
+      "single_front": true,
+      "emitter": false,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 0,
+      "opaque_call_sites": 0
+    },
+    {
+      "family": "COP0",
+      "name": "MTC0.EntryHi",
+      "word": "40825000",
+      "single_front": false,
+      "emitter": true,
+      "block_policy": false,
+      "terminal": false,
+      "chain_policy": false,
+      "block_emitter": false,
+      "emitted_words": 2,
+      "opaque_call_sites": 0
+    }
+  ],
+  "review_markers": [
+    {
+      "path": "source/core/chd_reader.c",
+      "line": 23,
+      "text": "/* Bound per-image decode memory. Unsupported parents/codecs fail in libchdr. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop0_switch.inc",
+      "line": 182,
+      "text": "* 0) - a documented simplification, not a",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop0_switch.inc",
+      "line": 227,
+      "text": "\"unimplemented COP0 CO-format funct 0x%02X (pc=0x%08X)\",",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop0_switch.inc",
+      "line": 236,
+      "text": "\"unimplemented COP0 sub-opcode (rs=0x%02X, pc=0x%08X)\",",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop1_switch.inc",
+      "line": 59,
+      "text": "* simplification, matching this file's",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop1_switch.inc",
+      "line": 64,
+      "text": "* simplification already in place for every",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop1_switch.inc",
+      "line": 79,
+      "text": "* simplification as SQRT.S above. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop1_switch.inc",
+      "line": 135,
+      "text": "* \"simplify away\" - ported as-is. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop1_switch.inc",
+      "line": 182,
+      "text": "halt(\"unimplemented COP1.S funct (SQRT/RSQRT/MADD/MAX/MIN family not implemented)\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop1_switch.inc",
+      "line": 191,
+      "text": "halt(\"unimplemented COP1.W funct\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop1_switch.inc",
+      "line": 243,
+      "text": "halt(\"unimplemented COP1 BC variant\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop1_switch.inc",
+      "line": 248,
+      "text": "halt(\"unimplemented COP1 sub-opcode\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop2_switch.inc",
+      "line": 79,
+      "text": "halt(\"unimplemented COP2 sub-opcode (VU0 vector datapath not implemented)\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop2_switch.inc",
+      "line": 296,
+      "text": "* gap, not a simplification; fixed here alongside",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop2_switch.inc",
+      "line": 792,
+      "text": "halt(\"unimplemented COP2 SPECIAL2 sub-opcode (VU0 vector datapath not implemented)\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop2_switch.inc",
+      "line": 856,
+      "text": "* 7 of them unimplemented as a \"scoped future gap,",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop2_switch.inc",
+      "line": 893,
+      "text": "* implementation, not an approximation. REG_Q=22,",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_cop2_switch.inc",
+      "line": 926,
+      "text": "halt(\"unimplemented COP2 CO-format sub-opcode (VU0 vector datapath not implemented)\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 79,
+      "text": "* Still NOT implemented (halts cleanly, does not crash):",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 101,
+      "text": "*     Still NOT implemented: BC1FL/BC1TL (\"likely\" branches - this",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 107,
+      "text": "*     simplification across every FPU op in this file.",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 502,
+      "text": "* real hardware instead of the old \"just read as zero\" placeholder. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 514,
+      "text": "/* SPEED3: positive KUSEG load table for the generated memory stub:",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 927,
+      "text": "* approximation these are four core ticks, not measured EE bus cycles.",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 932,
+      "text": "* One tick still approximates one EE instruction/parked step here. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 992,
+      "text": "* stub by adjacent-table-memory-layout coincidence - the exact",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 1091,
+      "text": "* documented simplification: 1 instruction counted as 1 EE cycle, so",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 1098,
+      "text": "* references) - approximated here as VBLANK_END firing 1/12th of a",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 1543,
+      "text": "* Start-BIOS-to-menu transition (Rounds 590/606/609) - approximated",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 2532,
+      "text": "/* Round 950 (task #447/#536/#887): DVE (\"ba0\") register stub -",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 2873,
+      "text": "* approximation of \"the IOP responds once its own SIFCMD/RPC init",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 2969,
+      "text": "* this project's own existing \"1 instruction = 1 cycle\" simplification",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 2974,
+      "text": "* approximation of IOP response timing, not a byte-exact citation",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 3656,
+      "text": "/* A valid reboot replaces the previous service configuration. Unsupported",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 3754,
+      "text": "type=1;result=-13; /* PS1 filesystem metadata is not implemented here. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 4015,
+      "text": "*                             non-NULL PLACEHOLDER value is used here,",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 4239,
+      "text": "ee_sif0_pack_le32(pkt, 0x24u, 0x00001000u);   /* sd = non-NULL PLACEHOLDER (task #194/70th finding, see comment above - NOT a real IOP address; irrelevant for a CALL reply, harmless either way) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 4556,
+      "text": "* function) writing a placeholder reply directly - real CDVDMAN code",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 4693,
+      "text": "* delivered here is still this project's own established placeholder",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 4748,
+      "text": "ee_dve_init(); /* Round 950 (task #447/#536/#887): DVE \"ba0\" stub - see core/hw/ee_dve.h */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 4966,
+      "text": "* see ee_core.h's vu0_mem comment for the simplification note. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 5888,
+      "text": "* (as if a trivial \"jr $ra\" stub existed at the target) instead",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 6805,
+      "text": "* an honest, evidenced simplification: either VIF bit",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 6821,
+      "text": "* MPEG2/DVD macroblock decoding, is unimplemented).",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 6877,
+      "text": "* stub's own crt0-style startup code (entry=0x00100008)",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 6879,
+      "text": "* - the EXACT SAME RAM address the stub later reads",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 7530,
+      "text": "* (immediately before the old, now-removed placeholder",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 7543,
+      "text": "* placeholder values, should let the real kernel run its",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 7585,
+      "text": "* placeholder return values because this project has",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 7912,
+      "text": "* instead of an unimplemented-kernel-state exception.",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8112,
+      "text": "* is an explicitly-labeled approximation, not",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8218,
+      "text": "* services is the actual \"import/stub",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8220,
+      "text": "* real client stub is a thin RPC-bind-and-",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8493,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 1u); /* result: synthetic module id (placeholder, not tracked) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8636,
+      "text": "* placeholder - see below): real",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8656,
+      "text": "* \"0x00001000 non-NULL PLACEHOLDER\"",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8730,
+      "text": "* only the VALUE is a placeholder.",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8742,
+      "text": "* a negative placeholder, keeping",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8746,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real s16 \"ret\" - non-negative success placeholder (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8774,
+      "text": "* defensible placeholder (a real,",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8779,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real s16 \"ret\" - untouched-by-this-case placeholder (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8797,
+      "text": "* (a genuinely separate, unimplemented",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8802,
+      "text": "* explicitly-labeled placeholder. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8803,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real s16 \"ret\" - SpuSetCore() result not modeled, 0 placeholder (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8854,
+      "text": "* placeholder) - so replying with 0 to",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8867,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real s16 \"ret\" - generalized SPU2 catch-all placeholder (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 8937,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 0u);  /* m_init_result - real cdvdman init result not modeled, 0 (success) placeholder */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9006,
+      "text": "* placeholder, 0=success) since INIT's own",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9076,
+      "text": "* unimplemented real CDVDFSV RPC",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9187,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real leading result int, shared across every N-command - 0 = success placeholder (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9301,
+      "text": "* genuinely separate, unimplemented",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9304,
+      "text": "* shaped placeholder (0 = success for",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9331,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real leading status/result int - CD_SCMD_FORBID_DVDP success placeholder (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9332,
+      "text": "ee_mem_write32(st, call_recvbuf + 4u, 0u); /* real secondary \"forbid\" output word - unmodeled, neutral 0 placeholder (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9411,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 1u); /* real leading result int - generalized S-command catch-all placeholder, corrected 0->1 in Round 303 (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9412,
+      "text": "ee_mem_write32(st, call_recvbuf + 4u, 0u); /* real secondary output word - unmodeled, neutral 0 placeholder, same as CD_SCMD_FORBID_DVDP's own */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9520,
+      "text": "* honestly-labeled placeholder, but -4 is",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9530,
+      "text": "int32_t open_reply = (int32_t)-2; /* -ENOENT, real ps2sdk errno.h value (was -4/-EINTR, a Round 303 placeholder) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9975,
+      "text": "/* Unimplemented operations must not claim success. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 9992,
+      "text": "* (\"success\"/\"no-op\") placeholder,",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10002,
+      "text": "ee_mem_write32(st, call_recvbuf + 0u, 0u); /* real leading result placeholder - generalized FILEIO catch-all (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10190,
+      "text": "* sema 5's handle) via this exact syscall stub",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10281,
+      "text": "GPR(2) = sext32((uint32_t)-1); /* real: count==0 (or invalid ID) - non-blocking failure, placeholder negative value (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10299,
+      "text": "* pass into other, still-unimplemented thread-",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10304,
+      "text": "* scheduler (a genuinely separate, unimplemented",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10317,
+      "text": "* is the most defensible placeholder for \"the one",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10319,
+      "text": "GPR(2) = 1u; /* real: placeholder root/main thread ID (see comment) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10344,
+      "text": "* scheduler - a genuinely separate, unimplemented",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10359,
+      "text": "* established placeholder discipline elsewhere (see",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10495,
+      "text": "* unconditional halt() - a pragmatic placeholder from",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10498,
+      "text": "* placeholder as a deliberate \"stop and check final",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10582,
+      "text": "* \"unimplemented SPECIAL funct\" at EE PC",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10624,
+      "text": "halt(\"unimplemented SPECIAL funct\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10707,
+      "text": "halt(\"unimplemented REGIMM opcode\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10723,
+      "text": "* family was found missing (halting cleanly on \"unimplemented",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10739,
+      "text": "* cleanly on \"unimplemented primary opcode 0x19\") once round 11's",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10776,
+      "text": "snprintf(buf, sizeof(buf), \"unimplemented primary opcode 0x%02X (pc=0x%08X)\",",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 10995,
+      "text": "* rules; unsupported mappings retain the existing scalar fault semantics. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_core.c",
+      "line": 11062,
+      "text": "/* SPEED2: quiet-state budget consumed by the generated retire stub",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 49,
+      "text": "/* A fixed, honestly-labeled simplification (same spirit as the IOP",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 54,
+      "text": "* simplifying this file relative to its IOP counterpart. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 372,
+      "text": "* mid-range, explicitly-uncited placeholder (see the IOP-side",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 390,
+      "text": "* because it is the closest correct approximation of what real",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 507,
+      "text": "* stub table) than WaitSema's - not a value thread 1's own code",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 789,
+      "text": "* ps2sdk stub function last set it to, and that same stub",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 861,
+      "text": "t->gpr[28].ud0 = t->gp_reg; /* $gp - real, caller-supplied per-thread value (unlike IOP's inherited-gp simplification) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 1450,
+      "text": "* syscall stub, per this round's disassembly of",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 1639,
+      "text": "* raised a real, unimplemented-kernel-state exception instead",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 1662,
+      "text": "* max_count, this approximation must be revisited (and the",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 1671,
+      "text": "ee_mem_write32(st, out_ptr + 0x08u, (uint32_t)s->max_count); /* init_count approximation - see comment above */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_hle_thread.c",
+      "line": 1829,
+      "text": "* timer-tick granularity - an intentional, honest simplification",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_mem_switch.inc",
+      "line": 95,
+      "text": "* cleanly on \"unimplemented primary opcode 0x39\" (SWC1). Standard",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_mmi_switch.inc",
+      "line": 383,
+      "text": "halt(\"unimplemented MMI0 sub-opcode\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_mmi_switch.inc",
+      "line": 518,
+      "text": "halt(\"unimplemented MMI1 sub-opcode\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_mmi_switch.inc",
+      "line": 630,
+      "text": "* anomaly, not a simplification. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_mmi_switch.inc",
+      "line": 819,
+      "text": "halt(\"unimplemented MMI2 sub-opcode\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_mmi_switch.inc",
+      "line": 948,
+      "text": "halt(\"unimplemented MMI3 sub-opcode\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/ee/ee_mmi_switch.inc",
+      "line": 954,
+      "text": "halt(\"unimplemented MMI top-level funct\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 20,
+      "text": "* one documented simplification: branch-delay-slot detection isn't",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 36,
+      "text": "* NOT implemented: IOP HLE module loading beyond the registry",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 444,
+      "text": "iop_timers_init(); /* IOP counter/timer register stub - see core/hw/iop_timers.h */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 567,
+      "text": "* code) and a brand-new IOP halt wall (unimplemented primary",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 676,
+      "text": "* honest, documented simplification, mirroring SYSCALL's own",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 677,
+      "text": "* still-unaddressed instance of the same gap. That simplification",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 687,
+      "text": "* legitimate jump-stub table entries Round 944 already decoded there)",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 751,
+      "text": "* of-frame approximation ee_check_vblank() already uses and",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 803,
+      "text": "* spurious-interrupt-return stub\" (the `pc == 0x80000080u &&",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 814,
+      "text": "* finishes servicing it. The spurious-fallback stub was the one",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 967,
+      "text": "* generic fixed-vector default stub every single pass, which",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 995,
+      "text": "* iop_step() spurious-interrupt stub to acknowledge. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 1054,
+      "text": "* soft bit) for iop_step()'s spurious-interrupt-return stub to",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 1276,
+      "text": "* default/spurious-interrupt-return stub. Real MIPS/R3000A",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 1321,
+      "text": "* through to an unclaimed BREAK trap-stub\" case above (Round",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 1328,
+      "text": "* stub, infinite-looping on the same SYSCALL forever - the",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 1340,
+      "text": "* return the same generic \"unimplemented, default value\"",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_core.c",
+      "line": 1480,
+      "text": "* confusing, unrelated-looking \"unimplemented opcode\" message",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 89,
+      "text": "* simplification, not an oversight. Unlike BREAK (below),",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 110,
+      "text": "* a default fallback stub baked into an early module's",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 126,
+      "text": "* unimplemented real kernel calls, and resume the CALLING",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 141,
+      "text": "* trap-stub-bypassed modules and found ALL of them now",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 158,
+      "text": "*                            ; exception-entry stub",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 232,
+      "text": "* iop_hle_bios.c for unimplemented A0/B0/C0 BIOS-table",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 235,
+      "text": "* it's that same \"unimplemented call returns 0\" default,",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 270,
+      "text": "st->gpr[2] = 0; /* $v0 = 0 - same default-return convention as iop_hle_bios.c's unimplemented A0/B0/C0 calls */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 290,
+      "text": "* halt() here was the same kind of pragmatic placeholder,",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 349,
+      "text": "* this opcode was first observed as an \"unimplemented",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 466,
+      "text": "* unimplemented). This was a genuine, confirmed gap",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 474,
+      "text": "* this same \"unimplemented COP0 sub-opcode\" halt below,",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 502,
+      "text": "* unimplemented SPECIAL/REGIMM funct. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/iop/iop_decoded_switch.inc",
+      "line": 561,
+      "text": "* established, honestly-scoped simplification used throughout -",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ee_jit.c",
+      "line": 147,
+      "text": "/* Deterministically unsupported encodings recur at many different PCs. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ee_jit.c",
+      "line": 212,
+      "text": "* simplification) and ANDI/ORI/XORI (op 0x0C-0x0E, zero-extended-",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ee_jit.c",
+      "line": 400,
+      "text": "* opcodes remain genuinely unimplemented by design (MADD/MADDU/",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ee_jit.c",
+      "line": 439,
+      "text": "* new compilation until the arena changes; it never marks an opcode unsupported. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ee_jit.c",
+      "line": 547,
+      "text": "/* Blanket COP2/MMI gates intentionally include unimplemented",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/iop_jit.c",
+      "line": 71,
+      "text": "/* Unsupported translation depends on instruction bits, not guest PC. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 1674,
+      "text": "* implement that trap (documented simplification, matches the",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 3298,
+      "text": "* simplification target - ported as-is, verified against",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 3428,
+      "text": "* \"don't model FPU exception control\" simplification. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 4556,
+      "text": "* ee_core.c's own comment, not implemented in the",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 4920,
+      "text": "* TGEI/TLTI/etc. traps) fall through to the Unsupported return",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 4961,
+      "text": "/* Other REGIMM sub-opcodes: fall through to Unsupported. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 5384,
+      "text": "return -1; /* Unsupported MMI1 cases fall back; earlier common-MMI dispatch handles additional cases. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 5538,
+      "text": "else return -1; /* Unsupported MMI2 cases fall back after the earlier common-MMI dispatch. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 5912,
+      "text": "/* Unsupported: remaining REGIMM sub-opcodes (BLTZAL/BGEZAL/-ALL,",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 5968,
+      "text": "* Host code-generation tests intercept distinct placeholder addresses. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 6289,
+      "text": "* ordinary branches. GIF/Q production and unsupported operations interpret. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 6963,
+      "text": "/* Transactional: allocation failure/unsupported edges keep the original",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 7353,
+      "text": "/* SPEED2: plain ALU/branch boundaries try the generated quiet-retire stub",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 7438,
+      "text": "size_t stub=ctx->used_words;",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 7439,
+      "text": "ctx->code[exits[n]]=enc_bc(12,2,(int32_t)(stub-exits[n])*4);",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 7445,
+      "text": "size_t stub=ctx->used_words;",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/recompiler/ppc_dynarec.c",
+      "line": 7446,
+      "text": "ctx->code[budget_exits[n]]=enc_bc(4,1,(int32_t)(stub-budget_exits[n])*4);",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/system.c",
+      "line": 5,
+      "text": "* rationale and current known simplifications (EE_IOP_STEP_RATIO",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/system.c",
+      "line": 7,
+      "text": "* ratio-aware, but still not cycle-accurate, approximation of real",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/core/system.c",
+      "line": 66,
+      "text": "* approximation, not a claim of real timing fidelity. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/dma.c",
+      "line": 407,
+      "text": "if(asp>=2u)goto unsupported;",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/dma.c",
+      "line": 449,
+      "text": "unsupported:",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/dma.c",
+      "line": 616,
+      "text": "* unsupported path this fix specifically closes for REF.",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/dma.c",
+      "line": 677,
+      "text": "/* Interleave on non-SPR channels and reserved mode are unsupported. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/ee_dve.c",
+      "line": 3,
+      "text": "* PCSX2's pcsx2/Memory.cpp ba0R16()/ba0W16()/memReset() DVE stub. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 356,
+      "text": "/* PSMCT32 (default) and any other unsupported PSM: sample",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 1665,
+      "text": "* approximation than rasterize_triangle()'s full per-pixel",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 1673,
+      "text": "* 2D sprite) but is a noted simplification - not silently assumed",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 1679,
+      "text": "* the existing two-stage 4-bit GS filter, not approximated by GX bilinear. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 1793,
+      "text": "* honest simplification consistent with this project's existing",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 1795,
+      "text": "* is not implemented). If a non-zero level is",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 2016,
+      "text": "* project's own simplification is using a plain float step instead of",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 2414,
+      "text": "* function except XYZ2/XYZF2's own established simplified",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 2552,
+      "text": "* load-list mode is a documented, unsupported gap; only CSM1",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gif.c",
+      "line": 3340,
+      "text": "* cover (unsupported XDIR, non-PSMCT32 destination, or a",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gs_gx.c",
+      "line": 1241,
+      "text": "/* Keep color on GX, and exact GS Z in a disjoint CPU shadow. Unsupported",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gs_gx.c",
+      "line": 1246,
+      "text": "if(!input||input->fbmask||input->fba)return 0; /* unsupported late writes remain on the software GS path */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gs_gx.c",
+      "line": 1749,
+      "text": "* readback. Never apply an unverified EFB 16-bit blend/depth approximation. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/gs_mem.c",
+      "line": 491,
+      "text": "* conversion are worse than a logged unsupported copy. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 177,
+      "text": "/* Simplified, structurally-real GetID success response",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 184,
+      "text": "* below are an honest, clearly-labeled placeholder, not",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 187,
+      "text": "result_push(0x00u); /* flags: placeholder, \"licensed\" */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 188,
+      "text": "result_push(0x00u); /* type: placeholder, \"Mode2\" */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 189,
+      "text": "result_push(0x00u); /* atip: placeholder */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 357,
+      "text": "result_push(0x00u); /* sm: submode, not modeled beyond placeholder */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 358,
+      "text": "result_push(0x00u); /* ci: coding info, not modeled beyond placeholder */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 383,
+      "text": "case 0x14: /* GetTD(track) -> INT3(stat,mm,ss) - simplified, see",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 405,
+      "text": "* placeholder content, not a claimed-verified value. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdrom_legacy.c",
+      "line": 476,
+      "text": "* simplified to repeating the last real byte read. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdvd.c",
+      "line": 405,
+      "text": "/* Any other/unimplemented S-command:",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_cdvd.c",
+      "line": 408,
+      "text": "* unimplemented commands. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_dma.c",
+      "line": 94,
+      "text": "* MMIO write, same simplification this project's EE-side",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_dma.c",
+      "line": 412,
+      "text": "iop_intc_raise_soft(irq_index); /* Round 112 soft-dispatch simplification */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_elf.c",
+      "line": 207,
+      "text": "* unsupported case rather than guessed at. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_elf.c",
+      "line": 208,
+      "text": "*err_out = \"unpaired R_MIPS_LO16 (unsupported)\";",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_elf.c",
+      "line": 211,
+      "text": "*err_out = \"unsupported relocation type\";",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_heap.c",
+      "line": 21,
+      "text": "* One deliberate, explicitly-documented simplification: real SYSMEM",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_bios.c",
+      "line": 676,
+      "text": "* simplification, see iop_hle_events.h header comment. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_events.c",
+      "line": 109,
+      "text": "/* Non-blocking simplification - see header comment. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_intr.c",
+      "line": 38,
+      "text": "* exactly what iop_module_loader.c's own ExcCode==0 trap-stub-",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_intr.c",
+      "line": 276,
+      "text": "* an explicitly-labeled simplification of INTRMAN's own",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_intr.c",
+      "line": 279,
+      "text": "* mirrors into imask_hi purely so that simplification becomes",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_intr.c",
+      "line": 296,
+      "text": "iop_intc_get_state()->imask_hi |= (1u << (irq_index - 32u)); /* Round 112 simplification mirror */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_thread.c",
+      "line": 12,
+      "text": "/* Thread-stack bump arena: a dedicated, honestly-labeled simplification",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_thread.c",
+      "line": 692,
+      "text": "* approximated here by passing a1/a2 straight through as",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_thread.c",
+      "line": 751,
+      "text": "* no-op - same documented-simplification precedent as",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_thread.c",
+      "line": 828,
+      "text": "* an honestly-labeled simplification, not a measured value. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_hle_thread.c",
+      "line": 1395,
+      "text": "* project's own established simplification, not a fabricated",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 29,
+      "text": "* note for the same honest simplification elsewhere in this",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 414,
+      "text": "* ordinal-10 (QueryBlockSize) export stub hardcodes an absolute",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 805,
+      "text": "* \"always zero\" placeholder (see BOOT_INFO_STRUCT_SIZE's own comment",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 841,
+      "text": "* see that file's citations). Preceded by two placeholder words this",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 845,
+      "text": "* labeled placeholder rather than a fabricated \"real\" value when a",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 861,
+      "text": "* The existing panic-loop/trap-stub bypasses (task #148/#152) are",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 871,
+      "text": "uint32_t total_words = (uint32_t)n + 3u; /* 2 leading placeholder words + n pointers + 1 terminator */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 1122,
+      "text": "* \"unconditional trap stub\" - see docs/STATUS.md's 29th/30th/31st",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 1147,
+      "text": "* funct=0x30/TGE, rs==rt) because the same stub template was",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 1448,
+      "text": "* the trap-stub bypass, now correctly only for the original",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 1459,
+      "text": "* from this stub's own fixed address. A host-native",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 1463,
+      "text": "* itself equals this exact trap-stub's own address (pc), the",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 1464,
+      "text": "* RFE below jumps straight back into this SAME stub, which",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 1479,
+      "text": "* context was itself already sitting at this dead-end stub",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 1502,
+      "text": "\"module boot sequence complete (via unconditional-trap-stub bypass): \"",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_module_loader.c",
+      "line": 1503,
+      "text": "\"%u/%u real modules loaded, %u run to completion, %u trap-stub bypass(es) (task #151/#152)\",",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_spu2.c",
+      "line": 224,
+      "text": "* applied immediately - documented simplification). */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_spu_legacy.c",
+      "line": 53,
+      "text": "* model, a documented simplification of a real, cited behavior).",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/iop_timers.c",
+      "line": 118,
+      "text": "* net simplified result is: keep only the real",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/ps2_memory_card.c",
+      "line": 161,
+      "text": "/* MagicGate F0/F7 and unknown operations remain explicit unsupported. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/sif.c",
+      "line": 133,
+      "text": "/* Explicit, honestly-labeled approximation (not a claim of real SIF",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/spu2_mixer.c",
+      "line": 128,
+      "text": "* (see spu2_mixer.h's documented simplification). ---- */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/spu2_mixer.c",
+      "line": 220,
+      "text": "* documented approximation of",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/spu2_mixer.c",
+      "line": 328,
+      "text": "* simplification, see spu2_mixer.h. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vif.c",
+      "line": 17,
+      "text": "* UNPACK, 0x60-0x7F) falls through to the \"unsupported\" path. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vif.c",
+      "line": 217,
+      "text": "* read whatever real DMA data follows; see vif.h's \"NOT implemented\"",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vif.c",
+      "line": 436,
+      "text": "* Returns when the stream is exhausted OR an unsupported command",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vu.c",
+      "line": 241,
+      "text": "* (caller counts the pair as unimplemented in that case).",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vu.c",
+      "line": 374,
+      "text": "lower_ok = 1; /* the lower word was consumed as data (the I-immediate), not an instruction - correctly decoded, not \"unimplemented\" */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vu_lower_body.inc",
+      "line": 261,
+      "text": "return 0; /* Any genuinely unmatched SPECIAL2 selector stays on the explicit unimplemented path. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vu_lower_body.inc",
+      "line": 287,
+      "text": "return 0; /* FC-/FS-/FM-family flag ops - still unimplemented */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vu_opcodes.h",
+      "line": 125,
+      "text": "VUS_FD_ADDA_GROUP = 0x0A, /* bc: 00=ADDA 01=MADDA (real table[10]; 10=MULA/11=unknown not implemented) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vu_opcodes.h",
+      "line": 181,
+      "text": "VULS_FD_R_GROUP     = 0x10, /* bc: 00=RNEXT 01=RGET 10=RINIT 11=RXOR - NOT implemented (needs a real LFSR model) */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vu_upper_body.inc",
+      "line": 36,
+      "text": "* treating as unimplemented no-ops. The sibling ADDAbc/",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vu_upper_body.inc",
+      "line": 170,
+      "text": "* hardware too, not a modeling gap - left unimplemented). */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/vu_upper_body.inc",
+      "line": 205,
+      "text": "return 0; /* CLIPw and the accumulator-broadcast/AI/AQ forms - not implemented, see vu_opcodes.h */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/wii_arm_ios.c",
+      "line": 12,
+      "text": "case -1:return \"IOS222 missing / stub\";",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/hw/wii_arm_ios.c",
+      "line": 60,
+      "text": "* Missing/stub IOS never causes a reload. MLOAD is verified afterwards. */",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/main.c",
+      "line": 176,
+      "text": "/* Approximate character-cell size of libogc's default console font",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/main.c",
+      "line": 290,
+      "text": "/* HBC supplies the loader return stub used by standard exit(0).",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/main.c",
+      "line": 466,
+      "text": "fprintf(f,\"IPU_STATUS scope=fifo_idec_bdec_idct_vdec_csc_pack unimplemented=%llu input_qwc=%llu accepted_qwc=%llu discarded_qwc=%llu fifo=%lu last=%08lx output_available=%lu busy=%lu output_qwc=%llu c",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/main.c",
+      "line": 501,
+      "text": "fprintf(f,\"SPU2_AUDIO enabled=%d rate=48000 frames=%lu kon=%llu dma=%lu irq=%lu adma=%lu unsupported=%lu queued=%lu submitted=%lu played=%lu dropped=%lu underrun=%lu nonzero=%lu running=%lu\\n\",",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    },
+    {
+      "path": "source/main.c",
+      "line": 602,
+      "text": "frontend_allow_gx_output(1,1,(unsigned)((scanout_fb>>15)&31u))?\"GX-or-software\":\"unsupported\");",
+      "classification": "review_candidate_not_a_confirmed_bug"
+    }
+  ]
+}

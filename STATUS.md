@@ -1,6 +1,121 @@
-# Gekko2 SPEED BETA12.20 – 15 October 2026
+# Gekko2 SPEED BETA12.33 – 19 October 2026
 
-**Aktueller Stand:** R1389-SPEED-BETA12.20-GX-ALPHA-FENCES. Quellcode und Host-Regressionen; Hardware-Gameplaytest steht noch aus. Persistente 128-Bit-PPC-Registerübergabe über unabhängige JIT-Blöcke und vollständige GS/GX-Hardwaretreue bleiben offen. Die darunter folgenden früheren Statuspunkte dokumentieren ältere Versionen.
+**Alpha frontend / GitHub cleanup:** [report](docs/ALPHA-FRONTEND-CLEANUP.md).
+Public README updated via documentation-only #52; runtime remains on draft #51.
+Loading screen by default, saved optional on-screen logs; no new gameplay/FPS
+claim. 31 included drafts superseded; branches and downloads retained.
+
+**Alpha-/Demo-Prüfung:** branch `codex/gt2000-demo-progression`, Runtime
+`ccb7d5c`. [Aktueller Alpha-Stand](docs/ALPHA-READINESS-2026-10-19.md).
+Die hochgeladene GT2000-Demo ist vollständig; der Host-Kaltstart bleibt nach
+korrigiertem CDVD-GetError im VBlank-Polling ohne Bild. 90 Hostgruppen, sechs
+aktuelle PPC-Prüfgruppen und beide Wii-Buildgates bestanden. Privater
+SD-Prüfkandidat vorbereitet, keine öffentliche Alpha/Spielbarkeit/FPS bestätigt.
+
+**General compatibility follow-up (no release):**
+[six-area report](docs/GENERAL-COMPATIBILITY-BATCH.md), branch
+`codex/general-compatibility-batch`, runtime `9d14d74`. Legal IRX relocation
+variants, textured GS lines, VU ADD/SUB alignment, isolated diagnostic masks;
+89 host gates pass. Synthetic linked PPC measures cheaper warm masked IRQ
+windows, not global Wii FPS. BIOS tiles and GT3 progression remain open; GT3
+file transfer/network access is currently blocked. Release hold remains.
+
+**BETA12.33 GX/deadlines:** branch `codex/beta12-33-gx-deadlines`;
+[report](docs/BETA12.33-GX-DEADLINES.md). Avoid unused/constant native fragment
+Z interpolation; refresh external IOP deadlines before every experimental EE
+window. Event batching remains factory OFF, normal scheduler retained. Local
+PCSX2 v2.8.2 replay of the private controlled BIOS stream also lacks the bright
+small squares: no established tile correction, matched game comparison or
+new Wii FPS claim. Priorities and limits of the scheduler proposal are in the
+report. Owner files remain private.
+
+**BETA12.32 general hotpaths:** branch `codex/beta12-32-hotpaths-gx`;
+[report](docs/BETA12.32-HOTPATHS-GX.md). Align frontend RAM code floor to guarded 1 MiB backend,
+one cache-way traversal, remove large GX per-pass descriptor copies,
+and extend submission fences to native/seed/flat paths with 64-begin chunks.
+GX stream equivalence checked; two owner BIOS runs now complete with 456,808
+ordered-token waits and no timeout/abort. Broader timeout coverage and BIOS
+tiles remain OPEN. [Wii evidence review](docs/BETA12.32-WII-REVIEW.md).
+Network receipt works; no new Wii speed claim.
+
+**BETA12.31e IOS address ABI fix:** branch `codex/network-ios-address-fix`;
+[report](docs/BETA12.31e-IOS-ADDRESS-FIX.md). Send/receive the 8-byte IOS IPv4 prefix and accept
+8-byte ACK peers; preserve endpoint/Windows compatibility. Physical receipt
+remains unverified; numeric send -22 alone has multiple possible sources.
+
+**BETA12.31d IOS UDP fix:** branch `codex/network-ios-socket-fix`;
+[report](docs/BETA12.31d-IOS-UDP-FIX.md). Correct protocol 0 and IOS nonblock bit 4.
+Older socket mocks did not validate arguments; new PPC tests cover the actual
+libogc-to-IOS boundary. Receipt on real Wii remains to be confirmed.
+
+**BETA12.31c network setup:** branch `codex/network-logger-menu`;
+[report](docs/BETA12.31c-NETWORK-SETUP.md). Wii IP/port settings, saved OFF-by-default,
+live SDK status and explicit acknowledged test without BIOS. Receiver 1.1 adds
+empty-capture diagnostics. No established network-failure cause or GX/BIOS/FPS fix.
+
+**BETA12.31b optional network telemetry:** [report](docs/BETA12.31b-NETWORK-PROFILE.md),
+[Windows instructions](tools/windows-telemetry/README-DE.md). Default OFF; bounded
+background UDP and one receiver ZIP. Host UDP tests, four menu/config suites,
+real profile-work test, 33 linked PPC checks and fresh Wii DOL/ELF/MEM1 gates pass.
+Physical Wii network and native Windows operation remain unverified. No GX/BIOS/FPS fix.
+
+**BETA12.31 – Laufzeitprofil:** [Bericht](docs/BETA12.31-RUNTIME-PROFILE.md),
+Draft-PR #40. Native EE-/VU-Zeit, Scope-Aufrufe und Arbeitsmengen; eigener
+Auswerter; Wii Limits 1.1 mit bidirektionalen MEM1/MEM2-Kopien und Ausrichtungen.
+83 Host-Suites, alle 16 gelinkten PPC-Gruppen und beide Wii-DOL-/ELF-/MEM1-Gates
+bestanden. Private BIOS-Analyse
+bis Sprachauswahl; kein bestätigter Kachel-Fix oder neuer FPS-/Wii-/Dolphin-Nachweis.
+
+**BETA12.30 – GS/VIF-Accuracy:** [Bericht](docs/BETA12.30-GS-VIF-ACCURACY.md),
+[Gesamtbatchliste](docs/COMPLETION-BATCHES.md). Schmale GS-ACKs/pending IMR,
+Q/K/L-LOD/Mips/MTBA, sichere GX-Filtergates, VIF-SQ/FIFO/FQC und ENVX umgesetzt.
+78 Host-Suites und alle 14 gelinkten PPC-Prüfgruppen bestanden;
+beide DOL-/ELF-/statischen MEM1-Gates grün. Kein vollständiger Emulator oder
+belegter Crash-/Tekken-/BIOS-Kachel-/FPS-Fix. Draft-PR #37.
+
+
+**BETA12.29 – erste Completion-Batches:** [Bericht](docs/BETA12.29-CORE-COMPLETION.md),
+[81-Punkte-Inventar](docs/COMPLETION-CATALOG.md). C.F.S/native BC2/RI,
+SPU2 Noise/PMON/Sweeps und GETENTSPACE implementiert. 70 Host-Suites grün,
+beide Wii-DOL-/ELF-/statischen MEM1-Gates grün. Kein vollständiger Emulator,
+keine bestätigten neuen Wii-FPS, BIOS-Kacheln oder Crash-/Tekken-Spielbarkeit.
+Branch `codex/beta12-29-completion-integration`, Draft-PR #31.
+
+
+**BETA12.28 – Alpha-Core-Teststand:** [Menü, CLUT, Zweikreis-Scanout, PS2-Karten/FAT/MCSERV und IPU-Retries](docs/BETA12.28-ALPHA-CORE.md). Keine neue Wii-Spielbarkeits-/FPS-/BIOS-Kachelbestätigung. Ältere Absätze beschreiben historische Versionen.
+
+Historischer Audit vor BETA12.28, 17 October: [Alpha-Arbeitsplan](docs/ALPHA-ARBEITSPLAN.md),
+[Menüentscheidungen für alle 39 Einstellungen](docs/ALPHA-MENUE-AUDIT.md) und
+[PCSX2-/Play!-Befunde](docs/ALPHA-REFERENZABGLEICH.md) auf BETA12.27 erstellt.
+55 Host-Suites, zehn Zusatzprüfungen und vier Options-Metadatenprofile erneut
+geprüft. Kein neuer Wii-Build, Gameplaynachweis oder abgeschlossener Menüumbau.
+
+BETA12.27: [GX RISK MODE – FAST TRIANGLES](docs/BETA12.27-GX-RISK.md)
+als separat gespeicherter Menüschalter. Standard OFF, Anwendung beim Cold Boot.
+Experimentelle GX-Kantenabdeckung bei geeigneten Dreiecken; keine belegte Wii-FPS.
+
+
+BETA12.26: [gemeinsame GS→GX-Funktionen](docs/BETA12.26-COMMON-GX.md)
+für alle passenden Spiele: Fog, vier TFX-Modi, geeignete variable Vertex-Alpha,
+untexturierte Dreiecke und vier Clamp-Modi einschließlich kleiner Texturen.
+Kein eigener Renderer je Spiel; keine bestätigte Wii-Spielbarkeit oder FPS.
+
+
+BETA12.25: [experimenteller GX-Dreieckspfad](docs/BETA12.25-GX-TRIANGLES.md)
+für große Texturen, variables Z und CPU-seitig geprüfte GS-Fragmentberechtigungen.
+Separater Kontrollbuild; vollständige Tekken-GX-Abdeckung und echte Wii-FPS
+bleiben unbestätigt. Volle Ausgabegröße von BETA12.24a bleibt erhalten.
+
+
+**BETA12.24a:** Automatische 4:3-Verkleinerung zurückgenommen. Die Nutzerkorrektur bezieht sich auf die Fragezeichen-Kacheln in Tekkens Charakterauswahl, nicht auf die gesamte Ausgabe. Wieder volle Ausgabegröße; BETA12.24-Diagnosen bleiben aktiv. Die Kacheln selbst sind noch nicht als korrigiert bestätigt. [Hinweis](docs/BETA12.24a-FULLSCREEN.md).
+
+**BETA12.24 – Spiele-Diagnose:** begrenzte GIF/XGKICK/SIGNAL-/VIF-/Interrupt-Ereignishistorie, getrennte GS-/INTC-Quittierungen, erste unbekannte VU-Paare und EE-Warteschleifen-Kontext. [Anleitung und Testbericht](docs/BETA12.24-GAME-DIAGNOSTICS.md). Keine neue Gameplay- oder Stall-Fixbehauptung; BETA12.23 bleibt Rückfallversion.
+
+**BETA12.23 – Crash/Tekken-Logbatch:** VU-Integer-Lanemasken, VIF-Wartebedingungen und GS-UV-Nachkommabits korrigiert. Standard-4:3-Ausgabe auf einer als 16:9 konfigurierten Wii wird mit Seitenbalken dargestellt. [Analyse, Referenzabgleich und Testbericht](docs/BETA12.23-GAME-LOG-REVIEW.md). Crash zeigt im BETA12.22-Log einen dauerhaften SIGNAL-/XGKICK-Stall; dessen vollständige Ursache und Gameplayfortschritt bleiben auf neuer Wii-Hardwareausführung zu prüfen. Kein belegter Gesamt-FPS-Gewinn.
+
+**BETA12.22 – GS/GX-Formate und Fehlerbehandlung:** alle 13 gültigen GS-Texturformate werden für GX nach RGBA8 dekodiert. CT32/24/16/16S sind für GX-Scanout verfügbar; CT16/16S verwenden bei geeigneten Zeichenoperationen einen GX-Snapshot mit präzisem GS-Readback. Dazu kommen Korrekturen für CSM2-Paletten, AFAIL-Alpha, XGKICK und IPU sowie eine Pause bei terminalem GX-Fehler. [Build- und Testbericht](docs/BETA12.22-GS-GX-FORMATS.md). Chain-Residenz und experimentelle lokale PSM-Konvertierung bleiben standardmäßig OFF. Crash-Schwarzbild, lila Ausgabe und BIOS-Kacheln sind auf echter Wii weiterhin nicht als behoben bestätigt.
+
+**Experimenteller Stand BETA12.21:** opt-in Native-to-Native-128-Bit-Ketten für geprüfte ALU/MMI-, LQ/SQ-/LD/SD- und Integer-Sprungblöcke; eigener gespeicherter Cold-Boot-Schalter, standardmäßig OFF. PSM ebenfalls OFF. Sichere GX-Abschluss-/Fehlerprüfung und CT32/24-DTHE-Zugang. [Bericht](docs/BETA12.21-EXPERIMENTAL-OPTIONS.md). Host-/PPC-Tests und Wii-Cross-Build ersetzen keinen realen Wii-Test; Crash-Schwarzbild und BIOS-Kacheln bleiben ohne Hardwarebestätigung. Die folgenden älteren Abschnitte sind historisch.
 
 ## Historischer Stand: BETA12.9
 

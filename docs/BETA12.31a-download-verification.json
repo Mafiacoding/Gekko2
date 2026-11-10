@@ -1,0 +1,18 @@
+[
+  {
+    "name": "Gekko2-BETA12.31a-SD.zip",
+    "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/5fdd551e56c66519499895edd8044c88404fe2ea/downloads/Gekko2-BETA12.31a-SD.zip",
+    "status": 200,
+    "bytes": 916872,
+    "sha256": "8902db7c6acd43f7c93da9ce60c5c276047ffa18ac373839f04ea9f7ee7365e6",
+    "zip_crc_passed": true
+  },
+  {
+    "name": "Gekko2-BETA12.31a-review.zip",
+    "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/5fdd551e56c66519499895edd8044c88404fe2ea/downloads/Gekko2-BETA12.31a-review.zip",
+    "status": 200,
+    "bytes": 13076214,
+    "sha256": "568ee0e10e09f447b2a84f210fe4db097d3bc03266416368c6c72d0b83844215",
+    "zip_crc_passed": true
+  }
+]

@@ -48,6 +48,12 @@ uint32_t gekko2_opt_requested(void);
 const char *gekko2_opt_name(unsigned n);
 const char *gekko2_opt_description(unsigned n);
 int gekko2_opt_toggle(unsigned n);
+enum {GEKKO2_PROFILE_BASE,GEKKO2_PROFILE_INTERPRETER};
+void gekko2_opt_reset_requested(void);
+int gekko2_opt_request_profile(unsigned profile);
+const char *gekko2_opt_profile_name(void);
+/* Explains route prerequisites without changing saved or active bits. */
+const char *gekko2_opt_dependency(unsigned n,uint32_t mask);
 /* Apply ONLY before a cold system_init; never to executing native caches. */
 void gekko2_opt_apply(void);
 int gekko2_opt_load(const char *path);

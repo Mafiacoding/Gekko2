@@ -8,6 +8,8 @@
 #include "core/hw/dma.h" /* Round 199: dma_channel_receive_quadwords() - the EE-side inbound-write primitive Round 198 built */
 #include "core/hw/iop_spu2.h" /* Round 712 (task #683): real TSA register read/advance for SPU2 DMA */
 #include "core/hw/spu2_mixer.h" /* Round 712 (task #683): real destination RAM for SPU2 DMA */
+#include "core/hw/iop_sio2.h"
+static uint32_t sio2_remaining[2],sio2_stride;
 
 #define DMA_PCR   0x1F8010F0u
 #define DMA_ICR   0x1F8010F4u
@@ -43,6 +45,7 @@ static uint32_t g_sif2_transfer_count; /* Round 511 diagnostic: counts real, com
 
 void iop_dma_init(void)
 {
+    sio2_remaining[0]=sio2_remaining[1]=sio2_stride=0;
     memset(&g_dma, 0, sizeof(g_dma));g_spu2_transfer_count=0;
 }
 
@@ -242,6 +245,18 @@ static void iop_dma_spu2_try_transfer(iop_dma_channel_t *ch,int channel)
 }
 uint32_t iop_dma_get_spu2_transfer_count(void){return g_spu2_transfer_count;}
 
+void iop_dma_sio2_service(void)
+{
+ for(unsigned n=0;n<2;n++){
+  iop_dma_channel_t *ch=&g_dma.ch[11u+n];
+  if(!(ch->chcr&0x01000000u)||!sio2_remaining[n]||!g_iop_ram)continue;
+  if(ch->madr>g_iop_ram_size||sio2_remaining[n]>g_iop_ram_size-ch->madr){ch->chcr&=~0x01000000u;sio2_remaining[n]=0;continue;}
+  unsigned done=n?iop_sio2_dma_read(g_iop_ram+ch->madr,sio2_remaining[n]):
+   iop_sio2_dma_write(g_iop_ram+ch->madr,sio2_remaining[n],sio2_stride);
+  ch->madr+=done;sio2_remaining[n]-=done;
+  if(!sio2_remaining[n]){ch->bcr=0;ch->chcr&=~0x01000000u;iop_dma_signal_channel_done((int)(11u+n));}
+ }
+}
 int iop_dma_channel_write_bytes(int channel, const uint8_t *data, uint32_t nbytes)
 {
     if (!g_iop_ram)
@@ -452,6 +467,17 @@ int iop_dma_mmio_write32(uint32_t addr, uint32_t value)
             if(this_channel==4||this_channel==7){
                 if(value&0x01000000u)iop_dma_spu2_try_transfer(c,this_channel);
                 else iop_spu2_adma_cancel(this_channel==7);
+            }
+            if(this_channel==11||this_channel==12){
+                unsigned index=(unsigned)this_channel-11u;sio2_remaining[index]=0;
+                if(value&0x01000000u){
+                    uint32_t bs=c->bcr&65535u,ba=c->bcr>>16;if(!bs)bs=65536u;if(!ba)ba=1u;
+                    uint64_t bytes=(uint64_t)bs*ba*4u;
+                    if(bytes<=UINT32_MAX&&((value&1u)==(index?0u:1u))){
+                        sio2_remaining[index]=(uint32_t)bytes;if(!index)sio2_stride=bs*4u;
+                        iop_dma_sio2_service();
+                    }else c->chcr&=~0x01000000u;
+                }
             }
             return 1;
         }

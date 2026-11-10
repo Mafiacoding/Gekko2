@@ -337,6 +337,11 @@ static inline unsigned ee_core_interleave_limit(unsigned budget)
 {return budget<ee_core_interleave_quantum?budget:ee_core_interleave_quantum;}
 void ee_core_interleave_account(unsigned slots);
 unsigned ee_core_step_event_n(unsigned quanta,unsigned width,int (*catch_up)(unsigned));
+/* Re-evaluate external deadlines after each catch-up, before admitting another
+ * EE window. The limiter returns EE slots and cannot enlarge the EE deadline.
+ * NULL preserves the standalone EE scheduler API above. */
+unsigned ee_core_step_event_bounded_n(unsigned quanta,unsigned width,
+    int (*catch_up)(unsigned),unsigned (*limit_window)(unsigned));
 void ee_core_event_sync(void);
 void ee_core_event_notify(void);
 unsigned ee_core_native_window_begin_cached(ee_state_t *,uint32_t,const uint32_t *,unsigned,unsigned,uint32_t);
@@ -537,6 +542,7 @@ uint32_t ee_core_block_memory_boundary(ee_state_t *,uint32_t,uint32_t);
 uint32_t ee_core_block_delay_boundary(ee_state_t *,uint32_t,uint32_t);
 uint64_t ee_core_get_fused_boundaries(void);
 void ee_core_raise_trap(ee_state_t *st);
+void ee_core_raise_reserved(ee_state_t *st);
 void ee_core_raise_overflow(ee_state_t *st);
 
 

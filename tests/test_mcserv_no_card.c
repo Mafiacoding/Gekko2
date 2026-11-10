@@ -1,5 +1,6 @@
 /* Cardless GETINFO service result and extra DMA before the guest callback. */
 #include <stdio.h>
+#include "core/system.h"
 #include "core/ee/ee_core.c"
 static unsigned fails;
 #define CHECK(x,msg) do{if(!(x)){printf("FAIL: %s\n",msg);fails++;}}while(0)

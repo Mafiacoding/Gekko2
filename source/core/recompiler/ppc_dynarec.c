@@ -3338,6 +3338,13 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
                 emit(ctx, enc_addi(1, 1, 16));
                 return 0;
             }
+            if (funct == 0x30u) { /* C.F.S does not inspect either operand. */
+                emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,FCR31_OFFSET));
+                emit_load_const32(ctx,SCRATCH_B,~0x00800000u);
+                emit(ctx,enc_and(SCRATCH_C,SCRATCH_A,SCRATCH_B));
+                emit(ctx,enc_stw(SCRATCH_C,CTX_REG,FCR31_OFFSET));
+                return 0;
+            }
             if (funct == 0x32 || funct == 0x34 || funct == 0x36) {
                 /* Round 906 (task #890): C.EQ.S/C.LT.S/C.LE.S -
                  * ee_core.c's real bodies (~lines 8110-8121) compare
@@ -3577,6 +3584,16 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * path, same "real, tested, roadmap-directed" scoping this
          * whole JIT arc has followed since Round 887. */
         uint32_t rs = (mips_instr >> 21) & 0x1Fu;
+        if (rs == 8u) { /* BC2F/T/FL/TL; scalar fetch retains VU interlocks. */
+            if(rt>3u)return -1;
+            emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,COP2_CTRL_OFF(29)));
+            emit(ctx,enc_rlwinm(SCRATCH_B,SCRATCH_A,23,0,8));
+            emit(ctx,enc_srawi(SCRATCH_E,SCRATCH_B,31));
+            if(!(rt&1u))emit(ctx,enc_nor(SCRATCH_E,SCRATCH_E,SCRATCH_E));
+            if(rt&2u)emit_branch_blend_likely(ctx,4+imm*4);
+            else emit_branch_blend(ctx,4+imm*4);
+            return 0;
+        }
         if (rs >= 0x10u) {
             uint32_t destmask = rs & 0xFu;
             uint32_t ft = (mips_instr >> 16) & 0x1Fu;
@@ -5381,7 +5398,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
             emit(ctx, enc_addi(1, 1, 16));
             return 0;
         }
-        return -1; /* other MMI1 sub-opcodes (QFSRV/PADDUW/... etc): not yet JIT-compiled */
+        return -1; /* Unsupported MMI1 cases fall back; earlier common-MMI dispatch handles additional cases. */
     }
 
     if (op == 0x1Cu && funct == 0x09u) {
@@ -5535,7 +5552,7 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
         else if (sa == 0x0Du) helper_addr = ADDR_EE_JIT_PDIVW;
         else if (sa == 0x1Cu) helper_addr = ADDR_EE_JIT_PMULTH;
         else if (sa == 0x1Du) helper_addr = ADDR_EE_JIT_PDIVBW;
-        else return -1; /* other MMI2 sub-opcodes (PMADDW/... etc): not yet JIT-compiled */
+        else return -1; /* Unsupported MMI2 cases fall back after the earlier common-MMI dispatch. */
 
         emit(ctx, enc_addi(1,1,-96));
         emit(ctx, enc_stw(14, 1, 48));
@@ -6313,15 +6330,17 @@ int ppc_dynarec_translate_vu_lower(ppc_codegen_ctx_t *ctx,uint32_t w)
             emit(ctx,enc_addi(10,10,(int16_t)off));
         }
         emit(ctx,enc_rlwinm(10,10,4,0,27));
-        unsigned elem=0;
-        if(!quad)for(unsigned l=0;l<4;l++)if(mask&(8u>>l)){elem=l;break;}
-        for(unsigned l=0;l<(quad?4u:1u);l++) {
-            if(quad && !(mask & (8u >> l)))continue;
-            emit(ctx,enc_addi(11,10,(int16_t)((quad?l:elem)*4u)));
+        /* Local-memory reads have no MMIO side effects: only the last
+         * selected scalar load is observable. Store It is loop-invariant. */
+        unsigned lanes=mask;
+        if(!quad&&!store)lanes=mask&(~mask+1u);
+        if(!quad&&store&&lanes)emit_micro_vi_read(ctx,12,rt);
+        for(unsigned l=0;l<4u;l++) {
+            if(!(lanes & (8u >> l)))continue;
+            emit(ctx,enc_addi(11,10,(int16_t)(l*4u)));
             emit(ctx,enc_and(11,11,6));emit(ctx,enc_add(11,11,5));
             if(store) {
                 if(quad)emit(ctx,enc_lwz(12,3,(int16_t)(vector*16u+l*4u)));
-                else emit_micro_vi_read(ctx,12,rt);
                 emit(ctx,(31u<<26)|(12u<<21)|(11u<<11)|(662u<<1)); /* stwbrx */
             } else {
                 emit(ctx,(31u<<26)|(12u<<21)|(11u<<11)|(534u<<1)); /* lwbrx */
@@ -7259,20 +7278,27 @@ static void ee_block_resolved_memory(ppc_codegen_ctx_t *ctx,uint32_t iw)
 /* Precise native block: every instruction crosses the existing retirement
  * machinery before continuing. Caller guards source/mapping and control flow. */
 static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
- const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared,uint32_t memory_prepare,uint32_t delay_prepare,int use_residency,const uint32_t *boundaries,int bounded)
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t commit,int allow_prepared,uint32_t memory_prepare,uint32_t delay_prepare,int use_residency,const uint32_t *boundaries,int bounded,const ppc_ee_chain_map *chain_map)
 {
  if(!ctx||!words||count<2u||count>GEKKO2_EE_MAX_BLOCK_WORDS||!prepare||!commit)return -1;
- ppc_residency resident={0};if(use_residency&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY))residency_plan(&resident,words,count,1,(unsigned)use_residency);
+ ppc_residency resident={0};
+ if(chain_map){if(!residency_chain_plan(&resident,chain_map))return -1;}
+ else if(use_residency&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY))residency_plan(&resident,words,count,1,(unsigned)use_residency);
  if(resident.count)resident_blocks++;
  int frame=resident.count?128:64;
  int seen_store=0;
+ /* Memory/control bodies write canonical lanes directly. Every exit must reload the
+  * entire shared map, including exits before a later memory instruction. */
+ int chain_barrier=0;
+ if(chain_map)for(unsigned n=0;n<count;n++)
+  if(ee_jit_block_memory_width(words[n])||ee_jit_block_terminal(words[n]))chain_barrier=1;
  /* SPEED4 ALU-run batching state: fast copy first, individual boundaries as fallback. */
  unsigned run_end=~0u;size_t run_join=0;uint16_t run_fast_valid=0;
  size_t exits[GEKKO2_EE_MAX_BLOCK_WORDS],returns[GEKKO2_EE_MAX_BLOCK_WORDS],budget_exits[GEKKO2_EE_MAX_BLOCK_WORDS];
  emit(ctx,enc_addi(1,1,(int16_t)-frame));emit(ctx,enc_stw(14,1,40));
  emit(ctx,enc_mflr(12));emit(ctx,enc_stw(12,1,48));
  if(bounded){emit(ctx,enc_stw(15,1,44));emit(ctx,enc_or(15,6,6));}
- residency_save(ctx,&resident,0);
+ if(!chain_map)residency_save(ctx,&resident,0);
  emit(ctx,enc_or(14,3,3));
  for(unsigned n=0;n<count;n++) {
   if(ee_quiet_batch_stub_addr&&boundaries&&n>0u&&run_end==~0u&&!seen_store&&!ee_jit_block_terminal(words[n-1u])) {
@@ -7402,8 +7428,17 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
    if(!((words[n]>>26)==0x36u&&((words[n]>>16)&31u)==0u))
     if(ppc_dynarec_translate_one(ctx,words[n]))return -1;
   }
-  if(!skip&&!dsi_memory)ppc_allocate_emitted_body(ctx,allocated_begin,128u);
-  residency_body(ctx,allocated_begin,&resident);
+  if(chain_map&&(memory||terminal)) {
+   /* Keep RAM/control effects canonical; no generic renaming of indexed
+    * loads/stores or link-register writes. Refresh all four lanes even if generation did not change. */
+   for(unsigned s=0;s<resident.count;s++)
+    emit(ctx,enc_lwz(18+(int)s,3,(int16_t)resident.offsets[s]));
+   emit(ctx,enc_lwz(30,3,(int16_t)resident.generation_offset));
+   resident.valid=(uint16_t)((1u<<resident.count)-1u);
+  } else {
+   if(!skip&&!dsi_memory)ppc_allocate_emitted_body(ctx,allocated_begin,128u);
+   residency_body(ctx,allocated_begin,&resident);
+  }
   if(!boundaries||n+1u==count){emit(ctx,enc_or(3,14,14));ee_block_call(ctx,commit);}
   if(run_end==n){
    ctx->code[run_join]=enc_b((int32_t)(ctx->used_words-run_join)*4);
@@ -7435,7 +7470,18 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
  for(unsigned n=0;n<count;n++)ctx->code[returns[n]]=enc_b((int32_t)(done-returns[n])*4);
  if(bounded)for(unsigned n=0;n<count;n++)ctx->code[budget_returns[n]]=enc_b((int32_t)(done-budget_returns[n])*4);
  emit(ctx,enc_lwz(12,1,48));emit(ctx,enc_mtlr(12));
- residency_save(ctx,&resident,1);
+ if(chain_map) {
+  /* Every exit, including a partial preparation/exception exit, publishes
+   * a complete clean native map. Opaque bodies invalidate cached copies;
+   * callback mutations use the existing GPR generation contract. Canonical
+   * storage is write-through, so no dirty state crosses a C boundary. */
+  emit(ctx,enc_or(4,3,3));emit(ctx,enc_or(3,14,14));
+  if(!chain_barrier)residency_refresh(ctx,&resident);
+  else emit(ctx,enc_lwz(30,3,(int16_t)resident.generation_offset));
+  for(unsigned s=0;s<resident.count;s++)if(chain_barrier||!(resident.valid&(1u<<s)))
+   emit(ctx,enc_lwz(18+(int)s,3,(int16_t)resident.offsets[s]));
+  emit(ctx,enc_or(3,4,4));
+ } else residency_save(ctx,&resident,1);
  if(bounded)emit(ctx,enc_lwz(15,1,44));
  emit(ctx,enc_lwz(14,1,40));emit(ctx,enc_addi(1,1,(int16_t)frame));
  return 0;
@@ -7443,34 +7489,160 @@ static int ee_precise_block_emit(ppc_codegen_ctx_t *ctx,uint32_t pc,
 
 int ppc_dynarec_translate_ee_precise_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,0,0u,0u,0,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,0,0u,0u,0,0u,0,0);}
 int ppc_dynarec_translate_ee_prepared_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t p,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,p,commit,1,0u,0u,0,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,p,commit,1,0u,0u,0,0u,0,0);}
 
 int ppc_dynarec_translate_ee_prepared_memory_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t prepare,uint32_t memory_prepare,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,0u,0,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,0u,0,0u,0,0);}
 
 int ppc_dynarec_translate_ee_prepared_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,
  const uint32_t *w,unsigned n,uint32_t prepare,uint32_t memory_prepare,uint32_t delay_prepare,uint32_t commit)
-{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,delay_prepare,0,0u,0);}
+{return ee_precise_block_emit(c,pc,w,n,prepare,commit,1,memory_prepare,delay_prepare,0,0u,0,0);}
 
 int ppc_dynarec_translate_ee_resident_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,const uint32_t *w,unsigned n,uint32_t p,uint32_t m,uint32_t d,uint32_t commit,uint32_t generation_offset)
 {if(!generation_offset||generation_offset>32767u||(generation_offset&3u))return -1;
- return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,0u,0);}
+ return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,0u,0,0);}
 
 int ppc_dynarec_translate_ee_fused_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,const uint32_t *w,unsigned n,uint32_t p,uint32_t m,uint32_t d,uint32_t commit,uint32_t boundary,uint32_t memory_boundary,uint32_t delay_boundary,uint32_t generation_offset)
 {if(!boundary||!memory_boundary||!delay_boundary||!generation_offset||generation_offset>32767u||(generation_offset&3u))return -1;
  uint32_t boundaries[]={boundary,memory_boundary,delay_boundary};
- return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries,0);}
+ return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries,0,0);}
 
 /* Separate lazy prefix entry: ordinary full-block bodies pay no budget tests. */
 int ppc_dynarec_translate_ee_budget_delay_block(ppc_codegen_ctx_t *c,uint32_t pc,const uint32_t *w,unsigned n,uint32_t p,uint32_t m,uint32_t d,uint32_t commit,uint32_t boundary,uint32_t memory_boundary,uint32_t delay_boundary,uint32_t generation_offset)
 {if(!generation_offset||generation_offset>32767u||(generation_offset&3u))return -1;
  uint32_t callbacks[]={boundary,memory_boundary,delay_boundary};
  const uint32_t *boundaries=boundary&&memory_boundary&&delay_boundary?callbacks:0;
- return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries,1);}
+ return ee_precise_block_emit(c,pc,w,n,p,commit,1,m,d,(int)generation_offset,boundaries,1,0);}
+
+static int ee_chain_accesses(const uint32_t *words,unsigned count,unsigned *scores)
+{
+ /* Admit audited ALU/MMI, resolved RAM and integer branch bodies only.
+  * Canonical memory/control effects force full-map reload on every exit;
+  * opaque helpers and other control forms retain the normal ABI. */
+ if(!words||count<2u||count>GEKKO2_EE_MAX_BLOCK_WORDS)return -1;
+ ppc_codegen_ctx_t body;
+ if(ppc_dynarec_init(&body,8u))return -1;
+ int safe=1;
+ for(unsigned n=0;n<count&&safe;n++) {
+  body.used_words=0;
+  int terminal=ee_jit_block_terminal(words[n]);
+  if(terminal) {
+   unsigned op=words[n]>>26,f=words[n]&63u;
+   /* Audited integer J/JAL/JR/JALR/BEQ/BNE, with at most one legal delay
+    * slot. Likely/COP1/REGIMM branches retain the ordinary ABI. */
+   if(!(op==2u||op==3u||op==4u||op==5u||(op==0u&&(f==8u||f==9u)))||
+      n+2u<count||(n+1u<count&&ee_jit_block_terminal(words[n+1u]))) {safe=0;break;}
+  } else if(!ee_jit_block_candidate(words[n])){safe=0;break;}
+  if(ee_jit_block_memory_width(words[n])) {
+   /* Audited straight-line resolved RAM emitter: LD/SD and LQ/SQ only.
+    * Translation/alignment/MMIO and write notifications remain in prepare.
+    * Merge, VU/FPU and scalar memory forms retain their ordinary ABI. */
+   unsigned op=words[n]>>26,rs=(words[n]>>21)&31u,rt=(words[n]>>16)&31u;
+   if(op!=0x1eu&&op!=0x1fu&&op!=0x37u&&op!=0x3fu){safe=0;break;}
+   if(scores){if(rs)scores[rs]+=2u;if(rt)scores[rt]+=ee_jit_block_memory_store(words[n])?2u:4u;}
+   continue;
+  }
+  if(ppc_dynarec_translate_one(&body,words[n])){safe=0;break;}
+  for(size_t k=0;k<body.used_words;k++) {
+   uint32_t w=body.code[k];unsigned op=w>>26;int dest=word_alloc_destination(w);
+   if(op==16u||op==18u||op==19u||(dest==-2&&op!=36u&&!(terminal&&op==38u))||dest==3||dest>=18){safe=0;break;}
+   int off=(int16_t)w;
+   if(scores&&(op==32u||op==36u)&&((w>>16)&31u)==3u&&off>=16&&!(off&3)){
+    unsigned group=off==552?34u:(unsigned)off/16u;
+    if((off<544||off==552)&&group<35u)scores[group]+=op==32u?2u:1u;
+   }
+  }
+ }
+ ppc_dynarec_free(&body);
+ return safe?0:-1;
+}
+int ppc_dynarec_plan_ee_chain_map(const uint32_t *words,unsigned count,
+ unsigned generation_offset,ppc_ee_chain_map *out)
+{
+ if(!out)return -1;
+ unsigned scores[35]={0};
+ if(ee_chain_accesses(words,count,scores))return -1;
+ ppc_ee_chain_map map;memset(&map,0,sizeof map);map.generation_offset=generation_offset;
+ while(map.count<12u){
+  unsigned best=0;
+  for(unsigned g=1;g<35;g++)if(scores[g]&&map.count+(g==34?1u:4u)<=12u&&
+       (!best||scores[g]>scores[best]))best=g;
+  if(!best)break;
+  scores[best]=0;
+  for(unsigned lane=0;lane<(best==34?1u:4u);lane++)
+   map.offsets[map.count++]=(uint16_t)(best==34?552:best*16u+lane*4u);
+ }
+ ppc_residency check;
+ if(!residency_chain_plan(&check,&map))return -1;
+ *out=map;return 0;
+}
+static int ee_chain_block_emit(ppc_codegen_ctx_t *c,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t memory_prepare,
+ uint32_t delay_prepare,uint32_t commit,const uint32_t *boundaries,const ppc_ee_chain_map *map)
+{
+ ppc_residency check;
+ if(!residency_chain_plan(&check,map)||ee_chain_accesses(words,count,0))return -1;
+ /* Decline atomically before emitting a prologue when no RAM-proof helper
+  * is available. A generic instruction helper is never a substitute. */
+ for(unsigned n=0;n<count;n++) {
+  if(ee_jit_block_memory_width(words[n])&&!memory_prepare)return -1;
+  if(ee_jit_block_terminal(words[n])&&n+1u<count&&!delay_prepare)return -1;
+ }
+ return ee_precise_block_emit(c,pc,words,count,prepare,commit,1,memory_prepare,delay_prepare,0,boundaries,0,map);
+}
+int ppc_dynarec_translate_ee_chain_block(ppc_codegen_ctx_t *c,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t memory_prepare,
+ uint32_t delay_prepare,uint32_t commit,const ppc_ee_chain_map *map)
+{return ee_chain_block_emit(c,pc,words,count,prepare,memory_prepare,delay_prepare,commit,0,map);}
+int ppc_dynarec_translate_ee_fused_chain_block(ppc_codegen_ctx_t *c,uint32_t pc,
+ const uint32_t *words,unsigned count,uint32_t prepare,uint32_t memory_prepare,
+ uint32_t delay_prepare,uint32_t commit,uint32_t boundary,uint32_t memory_boundary,
+ uint32_t delay_boundary,const ppc_ee_chain_map *map)
+{
+ if(!boundary||!memory_boundary||!delay_boundary)return -1;
+ uint32_t boundaries[]={boundary,memory_boundary,delay_boundary};
+ return ee_chain_block_emit(c,pc,words,count,prepare,memory_prepare,delay_prepare,commit,boundaries,map);
+}
+
+int ppc_dynarec_translate_ee_resident_chain(ppc_codegen_ctx_t *c,uint32_t resolver,
+ const ppc_ee_chain_map *map)
+{
+ ppc_residency check;
+ if(!c||!resolver||!residency_chain_plan(&check,map)||
+    c->used_words+128u>c->capacity_words)return -1;
+ /* Own all nonvolatile registers once. r18..29 are guest lanes, r30 is
+  * their generation, r31 holds expected retirement (normal chain uses r18). */
+ emit(c,enc_addi(1,1,-128));
+ for(int r=14;r<=31;r++)emit(c,enc_stw(r,1,(int16_t)(40+4*(r-14))));
+ emit(c,enc_mflr(12));emit(c,enc_stw(12,1,112));
+ emit(c,enc_or(14,3,3));emit(c,enc_addi(15,0,0));
+ emit(c,enc_or(16,6,6));emit(c,enc_or(17,7,7));emit(c,enc_or(31,8,8));
+ for(unsigned n=0;n<map->count;n++)emit(c,enc_lwz(18+(int)n,3,(int16_t)map->offsets[n]));
+ emit(c,enc_lwz(30,3,(int16_t)map->generation_offset));
+ size_t loop=c->used_words;
+ emit(c,enc_mtctr(17));emit(c,enc_bctrl());emit(c,enc_cmplw(3,31));
+ emit(c,enc_add(15,15,3));emit(c,enc_subf(16,3,16));
+ size_t partial=c->used_words;emit(c,enc_bc(4,2,0));
+ emit(c,(11u<<26)|(16u<<16)|2u);
+ size_t budget=c->used_words;emit(c,enc_bc(12,0,0));
+ emit(c,enc_or(3,14,14));emit(c,enc_or(4,16,16));ee_block_call(c,resolver);
+ emit(c,(11u<<26)|(3u<<16));
+ size_t missing=c->used_words;emit(c,enc_bc(12,2,0));
+ emit(c,enc_or(17,3,3));emit(c,enc_or(31,4,4));
+ emit(c,enc_or(3,14,14));emit(c,enc_addi(4,0,0));emit(c,enc_addi(5,0,0));
+ emit(c,enc_b(((int32_t)loop-(int32_t)c->used_words)*4));
+ size_t done=c->used_words;
+ c->code[partial]=enc_bc(4,2,(int32_t)(done-partial)*4);
+ c->code[budget]=enc_bc(12,0,(int32_t)(done-budget)*4);
+ c->code[missing]=enc_bc(12,2,(int32_t)(done-missing)*4);
+ emit(c,enc_or(3,15,15));emit(c,enc_lwz(12,1,112));emit(c,enc_mtlr(12));
+ for(int r=14;r<=31;r++)emit(c,enc_lwz(r,1,(int16_t)(40+4*(r-14))));
+ emit(c,enc_addi(1,1,128));return 0;
+}
 
 int ppc_dynarec_translate_ee_event_window(ppc_codegen_ctx_t *ctx,uint32_t pc,const uint32_t *words,unsigned count,uint32_t begin,unsigned generation_offset,uint32_t memory_proofs)
 {

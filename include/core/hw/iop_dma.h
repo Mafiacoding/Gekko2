@@ -87,6 +87,7 @@
 #define PCSX2_WII_IOP_DMA_H
 
 #include <stdint.h>
+void iop_dma_sio2_service(void);
 
 #define IOP_DMA_NUM_CHANNELS 13 /* indices 0-12; index 5 is unused/reserved */
 

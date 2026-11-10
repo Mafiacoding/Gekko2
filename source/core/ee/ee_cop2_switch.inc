@@ -63,8 +63,8 @@
                 break;
             case 0x08: { /* BC2F/T/FL/TL: condition is VPU_STAT bit 8. */
                 if(rt>3u) {
-                    halt("reserved BC2 selector");
-                    return 1;
+                ee_core_raise_reserved(st);
+                break;
                 }
                 unsigned condition=(st->cop2_ctrl[29]>>8)&1u;
                 if(condition==(rt&1u))
@@ -76,8 +76,8 @@
                 break;
             }
             default:
-                halt("unimplemented COP2 sub-opcode (VU0 vector datapath not implemented)");
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
         } else {
             /* CO-format: rs = 0x10 | destmask (destmask bit3=X,
@@ -789,8 +789,8 @@
                     clip &= 0xFFFFFFu;
                     vu0_vi_write(st, 18, clip);
                 } else {
-                    halt("unimplemented COP2 SPECIAL2 sub-opcode (VU0 vector datapath not implemented)");
-                    return 1;
+                ee_core_raise_reserved(st);
+                break;
                 }
             } else if (funct == 0x32) {
                 /* VIADDI: VI[ft] = VI[fs] + sign_extend(imm), where
@@ -923,8 +923,8 @@
                     vu0_vf_write_lane(st, fd, (uint32_t)lane, ur);
                 }
             } else {
-                halt("unimplemented COP2 CO-format sub-opcode (VU0 vector datapath not implemented)");
-                return 1;
+                ee_core_raise_reserved(st);
+                break;
             }
         }
         break;

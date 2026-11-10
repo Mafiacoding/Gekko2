@@ -1,0 +1,23 @@
+{
+  "artifact_commit": "4a21ece4f4904ccb87af259500a41fb28e00f689",
+  "build_commit": "da75aa56024081a95a7fcb4a458bd90254afde24",
+  "branch": "codex/wii-limits-1-downloads",
+  "downloads": [
+    {
+      "name": "Gekko2-Wii-Limits-1.0-SD.zip",
+      "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/4a21ece4f4904ccb87af259500a41fb28e00f689/downloads/Gekko2-Wii-Limits-1.0-SD.zip",
+      "http_status": 200,
+      "bytes": 244912,
+      "sha256": "215ed0ed448ceb9924973c0dddc0a1ce00730cc8b6a2c77b8519ccaa33f4d60c",
+      "zip_crc_passed": true
+    },
+    {
+      "name": "Gekko2-Wii-Limits-1.0-review.zip",
+      "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/4a21ece4f4904ccb87af259500a41fb28e00f689/downloads/Gekko2-Wii-Limits-1.0-review.zip",
+      "http_status": 200,
+      "bytes": 1244877,
+      "sha256": "41642a361a447ea0e0cd7728ad64be652bf6f09c964252efe707839dd7809048",
+      "zip_crc_passed": true
+    }
+  ]
+}

@@ -992,7 +992,7 @@ typedef struct {
      * texel coordinate "FST=1" mode - see gif.h's scope comment),
      * already converted to integer texels exactly like XYZ2's own
      * >>4 conversion. */
-    int32_t cur_u, cur_v;
+    double cur_u, cur_v; /* Exact 10.4 UV decoded to texel units. */
 
     /* Current ST+Q state (real hardware's "FST=0" perspective-correct
      * mode, task #88): S/T are real IEEE-754 floats (normalized
@@ -1033,7 +1033,7 @@ typedef struct {
     /* SPRITE's first-vertex texture coordinates (task #88 - SPRITE
      * texturing), captured alongside v0x/v0y so rasterize_sprite()
      * can interpolate between the two corners. */
-    int32_t v0u, v0v;
+    double v0u, v0v;
     float v0s, v0t, v0q;
     /* SPRITE's first-vertex Z (task #89) - see tri_z's comment
      * below for the same A+D-vs-PACKED scope caveat. */
@@ -1059,7 +1059,7 @@ typedef struct {
     int tri_vseq;
     int32_t tri_x[3], tri_y[3];
     uint32_t tri_rgba[3];
-    int32_t tri_u[3], tri_v[3];
+    double tri_u[3], tri_v[3];
     /* Per-vertex ST+Q (task #88) - captured alongside tri_u/tri_v at
      * every vertex kick regardless of FST (harmless when unused);
      * rasterize_triangle() picks UV (affine) or ST+Q (perspective-
@@ -1193,6 +1193,11 @@ typedef struct {
     /* GIF temporary Q: low IEEE-754 word, separate from GS RGBAQ.Q.
      * uint64 alignment appends after the complete legacy checkpoint prefix. */
     uint64_t gif_q_bits;
+    /* Shared temporary CLUT halfwords; upper room bounds offset I8 loads.
+     * clut_cache remains the legacy checkpoint/injection view. A real load
+     * makes these words authoritative across CPSM changes without reload. */
+    uint16_t clut_words[1024];
+    uint32_t clut_words_valid,clut_write_csm;
 } gif_state_t;
 
 gif_state_t *gif_get_state(void);
@@ -1229,6 +1234,8 @@ enum {
     GIF_GFB_GX_REJECTED, GIF_GFB_ALPHA_VARIES, GIF_GFB_COUNT
 };
 uint64_t gif_date_stat(unsigned index); /* tested, rejected */
+/* Production try-process backpressure calls on an uncleared second SIGNAL. */
+uint64_t gif_signal_stall_count(void);
 uint64_t gif_get_triangle_texture_cache_draws(void);
 uint64_t gif_get_gouraud_stat(unsigned index);
 uint64_t gif_get_gouraud_fallback(unsigned index);

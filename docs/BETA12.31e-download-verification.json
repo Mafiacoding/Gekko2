@@ -1,0 +1,26 @@
+[
+  {
+    "file": "Gekko2-BETA12.31e-SD.zip",
+    "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/ead734256584a41f44d17bf9ba5535c7a4bf8192/downloads/Gekko2-BETA12.31e-SD.zip",
+    "status": 200,
+    "bytes": 939932,
+    "sha256": "dd1b0783eb3c1ef4987be5e2b74fa02b2eacc84e6082782c625f7cda7ad16cde",
+    "zip_crc_ok": true
+  },
+  {
+    "file": "Gekko2-BETA12.31e-review.zip",
+    "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/ead734256584a41f44d17bf9ba5535c7a4bf8192/downloads/Gekko2-BETA12.31e-review.zip",
+    "status": 200,
+    "bytes": 13173290,
+    "sha256": "0adc7c43bc950735d49ecef3704ce5a1df29161f71d75c97300d8be79de57a96",
+    "zip_crc_ok": true
+  },
+  {
+    "file": "Gekko2-Windows-Logger-1.1.zip",
+    "url": "https://raw.githubusercontent.com/Mafiacoding/Gekko2/ead734256584a41f44d17bf9ba5535c7a4bf8192/downloads/Gekko2-Windows-Logger-1.1.zip",
+    "status": 200,
+    "bytes": 7690,
+    "sha256": "a966849edc46b62a754ef056e3d42066425c94c949cf986d50305c2648e5f127",
+    "zip_crc_ok": true
+  }
+]

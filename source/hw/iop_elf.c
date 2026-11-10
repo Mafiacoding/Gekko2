@@ -7,10 +7,14 @@
 #define EXPORT_MAGIC 0x41c00000u
 #define IMPORT_MAGIC 0x41e00000u
 
+#define R_MIPS_NONE 0u
+#define R_MIPS_16   1u
 #define R_MIPS_32   2u
 #define R_MIPS_26   4u
 #define R_MIPS_HI16 5u
 #define R_MIPS_LO16 6u
+#define R_MIPSSCE_MHI16 250u
+#define R_MIPSSCE_ADDEND 251u
 
 static inline uint32_t rd_le32(const uint8_t *p)
 {
@@ -149,6 +153,7 @@ int iop_elf_load(iop_state_t *st, const uint8_t *image, uint32_t image_size,
             }
 
             if (sh_type == 9u /* SHT_REL */) {
+                if(sh_size&7u){*err_out="partial relocation entry";return -1;}
                 uint32_t count = sh_size / 8u;
                 for (uint32_t r = 0; r < count; r++) {
                     uint32_t re = sh_offset + r * 8u;
@@ -157,12 +162,43 @@ int iop_elf_load(iop_state_t *st, const uint8_t *image, uint32_t image_size,
                     uint32_t r_info   = img_u32(image, image_size, re + 4, &rok);
                     if (!rok) { *err_out = "truncated relocation entry"; return -1; }
                     uint32_t r_type = r_info & 0xffu;
+                    if(r_type==R_MIPS_NONE)continue; /* no patch address */
                     if ((uint64_t)load_addr + r_offset + 4u > st->ram_size) {
                         *err_out = "relocation exceeds IOP RAM"; return -1;
                     }
                     uint32_t patch_addr = load_addr + r_offset;
 
-                    if (r_type == R_MIPS_32) {
+                    if (r_type == R_MIPS_16 || r_type == R_MIPS_LO16) {
+                        /* ps2sdk loadcore ApplyElfRelSection: LO16 is legal
+                         * independently of HI16; both retain opcode bits. */
+                        uint32_t w=iop_mem_read32(st,patch_addr);
+                        iop_mem_write32(st,patch_addr,(w&0xffff0000u)|((w+load_addr)&0xffffu));
+                    } else if (r_type == R_MIPSSCE_MHI16) {
+                        if(r+1u>=count){*err_out="MHI16 missing ADDEND";return -1;}
+                        uint32_t addend=img_u32(image,image_size,re+8u,&rok);
+                        uint32_t kind=img_u32(image,image_size,re+12u,&rok);
+                        if(!rok||(kind&255u)!=R_MIPSSCE_ADDEND){*err_out="MHI16 invalid ADDEND";return -1;}
+                        uint32_t value=load_addr+addend;
+                        uint32_t high=((value>>16)+!!(value&0x8000u))&0xffffu;
+                        /* Signed relative word links. Validate the complete
+                         * chain before replacing any link with the high half.
+                         * A chain longer than the loaded word count cycles. */
+                        for(unsigned pass=0;pass<2;pass++){
+                            int64_t addr=patch_addr;uint32_t visited=0;
+                            for(;;){
+                                if(addr<load_addr || (uint64_t)addr+4u>out->load_end ||
+                                   (addr&3u) || ++visited>max_extent/4u){
+                                    *err_out="MHI16 invalid/cyclic chain";return -1;
+                                }
+                                uint32_t w=iop_mem_read32(st,(uint32_t)addr);
+                                int32_t next=(int16_t)(w&0xffffu);
+                                if(pass)iop_mem_write32(st,(uint32_t)addr,(w&0xffff0000u)|high);
+                                if(!next)break;
+                                addr+=(int64_t)next*4;
+                            }
+                        }
+                        r++; /* ADDEND is data, not another RAM relocation. */
+                    } else if (r_type == R_MIPS_32) {
                         uint32_t w = iop_mem_read32(st, patch_addr);
                         iop_mem_write32(st, patch_addr, w + load_addr);
                     } else if (r_type == R_MIPS_26) {
@@ -200,13 +236,6 @@ int iop_elf_load(iop_state_t *st, const uint8_t *image, uint32_t image_size,
                         iop_mem_write32(st, hi_addr, (hi_instr & 0xFFFF0000u) | new_hi);
                         iop_mem_write32(st, lo_addr, (lo_instr & 0xFFFF0000u) | new_lo);
                         r++; /* consumed the paired LO16 too */
-                    } else if (r_type == R_MIPS_LO16) {
-                        /* A LO16 not immediately consumed by a
-                         * preceding HI16 above - not seen in any real
-                         * entry this round; treated as an honest,
-                         * unsupported case rather than guessed at. */
-                        *err_out = "unpaired R_MIPS_LO16 (unsupported)";
-                        return -1;
                     } else {
                         *err_out = "unsupported relocation type";
                         return -1;

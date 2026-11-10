@@ -328,6 +328,10 @@ int dma_ipu_service(void)
     if(done&&g_ee_write_notify&&!(ch->madr&0x80000000u))g_ee_write_notify(ch->madr,done*16);
    }
    ch->madr+=done*16;ch->qwc-=done;ch->quadwords_transferred+=done;
+   /* STS=fromIPU publishes only bytes actually drained to EE memory.
+    * A full/empty FIFO must never advance the producer watermark. */
+   if(channel==DMA_CHANNEL_FROMIPU&&done&&((g_dma.d_ctrl>>4)&3u)==3u)
+    g_dma.d_stadr=ch->madr;
    progress|=done!=0;
   }
   if(!ch->qwc) {
@@ -415,8 +419,9 @@ static int dma_graphics_service_one(int channel) {
         }
         if(ch->qwc) {
             uint32_t wanted=ch->qwc>128u?128u:ch->qwc;const uint8_t *p;
-            /* D_CTRL.STD=GIF, REFS: stop exactly at the producer STADR. */
-            if(mode==1u&&*tag_id==DMA_TAG_REFS&&((g_dma.d_ctrl>>6)&3u)==(channel==2?3u:channel==1?2u:0xffu)) {
+            /* STD=1 selects VIF1, STD=2 GIF; STD=3 selects SIF1.
+             * These selectors are not the MFD ring-drain encodings. */
+            if(mode==1u&&*tag_id==DMA_TAG_REFS&&((g_dma.d_ctrl>>6)&3u)==(channel==2?2u:channel==1?1u:0xffu)) {
                 uint32_t room=g_dma.d_stadr>ch->madr?(g_dma.d_stadr-ch->madr)/16u:0;
                 if(wanted>room)wanted=room;
                 if(!wanted){g_dma.d_stat|=1u<<13;return progress;}
@@ -472,7 +477,11 @@ void dma_channel_kick(int channel)
     if((channel==DMA_CHANNEL_GIF&&g_sinks[channel]==gif_process_quadwords)||
        (channel==DMA_CHANNEL_VIF0&&g_sinks[channel]==vif0_process_quadwords)||
        (channel==DMA_CHANNEL_VIF1&&g_sinks[channel]==vif1_process_quadwords)){dma_gif_service();return;}
-    if ((channel==DMA_CHANNEL_TOIPU||channel==DMA_CHANNEL_FROMIPU)&&ipu_service) {ipu_service();return;}
+    if ((channel==DMA_CHANNEL_TOIPU||channel==DMA_CHANNEL_FROMIPU)&&ipu_service) {
+        if(channel==DMA_CHANNEL_FROMIPU&&((g_dma.d_ctrl>>4)&3u)==3u)
+            g_dma.d_stadr=ch->madr;
+        ipu_service();return;
+    }
     uint32_t mod = (ch->chcr >> 2) & 0x3u;
 #ifdef R933_DMA_KICK_TRACE
     fprintf(stderr, "[R933DMA] kick channel=%d chcr=0x%08x madr=0x%08x qwc=%u tadr=0x%08x mod=%u sink=%p\n",
@@ -483,6 +492,8 @@ void dma_channel_kick(int channel)
         /* NORMAL mode: one shot, QWC quadwords straight from MADR. */
         if (!transfer_quadwords(channel, ch->madr, ch->qwc)) {
             ch->last_error = DMA_ERR_OUT_OF_BOUNDS;
+            ch->chcr &= ~0x100u;
+            return; /* A rejected transfer is not a completion IRQ. */
         } else {
             ch->madr += ch->qwc * 16u;
             if(channel==DMA_CHANNEL_FROMSPR && mfifo_valid())ch->madr=mfifo_wrap(ch->madr);
@@ -494,6 +505,28 @@ void dma_channel_kick(int channel)
         int drain=mfifo_channel();
         if(channel==DMA_CHANNEL_FROMSPR && ch->last_error==DMA_ERR_NONE && mfifo_valid() && drain>=0 && (g_dma.chan[drain].chcr&0x100u))dma_channel_kick(drain);
         return;
+    }
+
+    if (mod == 2u && (channel == DMA_CHANNEL_TOSPR || channel == DMA_CHANNEL_FROMSPR)) {
+        /* D_SQWC: transfer TQWC quadwords, skip SQWC in main RAM;
+         * scratchpad advances only over actual data and wraps at 16 KiB.
+         * TQWC=0 means one remaining span. MADR includes the final skip.
+         * Reference behavior: PCSX2 SPR.cpp interleave routines. */
+        if(channel==DMA_CHANNEL_FROMSPR && mfifo_valid()) {
+            ch->last_error=DMA_ERR_UNSUPPORTED_TAG;ch->chcr&=~0x100u;return;
+        }
+        uint32_t block=(g_dma.d_sqwc>>16)&255u,skip=g_dma.d_sqwc&255u;
+        if(!block)block=ch->qwc;
+        while(ch->qwc) {
+            uint32_t take=ch->qwc<block?ch->qwc:block;
+            if(!transfer_quadwords(channel,ch->madr,take)) {
+                ch->last_error=DMA_ERR_OUT_OF_BOUNDS;ch->chcr&=~0x100u;return;
+            }
+            ch->madr+=(take+skip)*16u;ch->qwc-=take;
+        }
+        if(channel==DMA_CHANNEL_FROMSPR && ((g_dma.d_ctrl>>4)&3u)==2u)
+            g_dma.d_stadr=ch->madr;
+        ch->chcr&=~0x100u;dma_channel_signal_done(channel);return;
     }
 
     if (mod == 1) {
@@ -641,7 +674,7 @@ void dma_channel_kick(int channel)
         return;
     }
 
-    /* INTERLEAVE mode (SPR only) - not implemented. */
+    /* Interleave on non-SPR channels and reserved mode are unsupported. */
     ch->last_error = DMA_ERR_UNSUPPORTED_TAG;
     ch->chcr &= ~0x100u;
 }
