@@ -1,0 +1,28 @@
+name: Dolphin cloud smoke (free Ubuntu)
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  dolphin-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Dolphin and virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dolphin-emu xvfb mesa-utils libgl1-mesa-dri
+      - name: Check Dolphin startup without private BIOS or games
+        run: |
+          xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 dolphin-emu --version > dolphin-version.txt 2>&1
+          cat dolphin-version.txt
+      - name: Save environment report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dolphin-cloud-environment
+          path: dolphin-version.txt
+          if-no-files-found: warn
+          retention-days: 14

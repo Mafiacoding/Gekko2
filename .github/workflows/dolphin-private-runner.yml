@@ -1,0 +1,35 @@
+name: Gekko2 private Dolphin runner
+on:
+  workflow_dispatch:
+    inputs:
+      test_image:
+        description: 'Path under GEKKO2_TEST_DATA (for example bios-test.dol); never commit BIOS/game media'
+        required: true
+        type: string
+      max_seconds:
+        description: 'Maximum test duration in seconds'
+        default: '180'
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  dolphin:
+    runs-on: [self-hosted, linux, x64, gekko2-dolphin]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute isolated Dolphin smoke test
+        env:
+          TEST_IMAGE: ${{ inputs.test_image }}
+          MAX_SECONDS: ${{ inputs.max_seconds }}
+          GEKKO2_TEST_DATA: ${{ vars.GEKKO2_TEST_DATA }}
+        run: python3 tools/ci/dolphin_smoke.py
+      - name: Upload public-safe diagnostic summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dolphin-smoke-summary
+          path: outputs/dolphin-ci/summary.json
+          if-no-files-found: warn
+          retention-days: 14

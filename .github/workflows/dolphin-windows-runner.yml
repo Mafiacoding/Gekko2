@@ -1,0 +1,37 @@
+name: Dolphin private Windows runner
+on:
+  workflow_dispatch:
+    inputs:
+      test_image:
+        description: 'Relative file under GEKKO2_TEST_DATA; no BIOS/game file upload'
+        required: true
+        type: string
+      max_seconds:
+        description: 'Maximum runtime in seconds (1-1200)'
+        required: true
+        default: '180'
+        type: string
+permissions:
+  contents: read
+jobs:
+  dolphin-windows:
+    runs-on: [self-hosted, Windows, X64, gekko2-windows]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute private Dolphin smoke test
+        shell: pwsh
+        env:
+          TEST_IMAGE: ${{ inputs.test_image }}
+          MAX_SECONDS: ${{ inputs.max_seconds }}
+          GEKKO2_TEST_DATA: ${{ vars.GEKKO2_TEST_DATA }}
+          DOLPHIN_BIN: ${{ vars.DOLPHIN_BIN }}
+        run: python tools/ci/dolphin_smoke.py
+      - name: Upload metadata-only summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dolphin-windows-smoke
+          path: outputs/dolphin-ci/summary.json
+          if-no-files-found: warn
+          retention-days: 14
