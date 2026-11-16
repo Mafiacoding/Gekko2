@@ -2,6 +2,10 @@
 
 **Aktueller Stand:** R1389-SPEED-BETA12.20-GX-ALPHA-FENCES. Quellcode und Host-Regressionen; Hardware-Gameplaytest steht noch aus. Persistente 128-Bit-PPC-Registerübergabe über unabhängige JIT-Blöcke und vollständige GS/GX-Hardwaretreue bleiben offen. Die darunter folgenden früheren Statuspunkte dokumentieren ältere Versionen.
 
+## Toolchain-Update (08.11.2026)
+
+Sauberer Wii-Cross-Build (Standard- und AOT/DSI-Konfiguration) mit devkitPPC r51 / GCC 16.2.0 / binutils 2.47 / libogc 3.2.1 / libfat-ogc 2.1.0: Build und `verify_wii_memory.py` erfolgreich, Linked-PPC-Prüfungen unter dem Unicorn-Modell bestanden. Kein Lauf auf echter Wii oder Dolphin. Details: [docs/WII-TOOLCHAIN-2026.md](docs/WII-TOOLCHAIN-2026.md).
+
 ## Historischer Stand: BETA12.9
 
 **Wii compile passed; physical Wii test not yet performed.**

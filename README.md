@@ -30,9 +30,12 @@ Historical BETA downloads are test checkpoints and fallback builds, not a public
 Use the **latest official devkitPro/devkitPPC and libogc**, including libfat,
 wiiuse and bte, from [devkitPro](https://devkitpro.org/wiki/Getting_Started).
 Old bundled SDK archives and archived r32/libogc 1.8 instructions are not the
-supported setup. The candidate has been built with **devkitPPC r50 / GCC 16.1.0 /
-libogc 3.1.0**. These are recorded tested versions, not a claim that every newer
-SDK or the historical main checkpoint has been retested. Follow the guide for
+supported setup. The current cross-build was verified with **devkitPPC r51 / GCC
+16.2.0 / binutils 2.47 / libogc 3.2.1 / libfat-ogc 2.1.0** (see
+[docs/WII-TOOLCHAIN-2026.md](docs/WII-TOOLCHAIN-2026.md); build only, not a
+runtime test); earlier checkpoints used devkitPPC r50 / GCC 16.1.0 / libogc 3.1.0.
+These are recorded tested versions, not a claim that every newer SDK or the
+historical main checkpoint has been retested. Follow the guide for
 the branch you actually build; host tests do not establish physical Wii FPS.
 
 ## Installation and privacy
