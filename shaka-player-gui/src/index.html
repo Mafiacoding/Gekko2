@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Shaka Player GUI</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src * blob: localfile: data:; connect-src * blob: localfile: data:; img-src * data: blob: localfile:; font-src 'self' data: https://fonts.gstatic.com https://fonts.googleapis.com;">
+<link rel="stylesheet" href="vendor/controls.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <button id="btn-open" title="Lokale Datei öffnen (Strg+O)">📂 Datei öffnen</button>
+  <input id="url" type="text" placeholder="URL zu .mpd / .m3u8 / .mp4 einfügen und Enter drücken…" spellcheck="false" list="history">
+  <datalist id="history"></datalist>
+  <button id="btn-load">▶ Laden</button>
+  <button id="btn-opts" title="Einstellungen">⚙</button>
+</header>
+
+<main>
+  <div id="video-container" data-shaka-player-container data-shaka-player-cast-receiver-id="">
+    <video id="video" data-shaka-player autoplay></video>
+    <div id="drop-hint">Datei hierher ziehen oder URL oben eingeben</div>
+  </div>
+
+  <aside id="panel" hidden>
+    <h3>ClearKey (eigener Server)</h3>
+    <label>Keys – eine Zeile pro Key, Format <code>KEY:ID</code> (hex)
+      <textarea id="ck-pairs" rows="3" placeholder="abcdef0123456789abcdef0123456789:0123456789abcdef0123456789abcdef" spellcheck="false"></textarea></label>
+    <label>Reihenfolge
+      <select id="ck-order"><option value="key-id">KEY:ID</option><option value="id-key">ID:KEY</option></select></label>
+<h3>Lizenzserver (Widevine/PlayReady)</h3>
+    <label>Widevine URL<input id="lic-wv" type="text" spellcheck="false"></label>
+    <label>PlayReady URL<input id="lic-pr" type="text" spellcheck="false"></label>
+    <h3>Eigene Header</h3>
+    <label>Eine Zeile pro Header: <code>Name: Wert</code> (oder JSON). Gilt für Manifest, Segmente und Lizenzanfragen.
+      <textarea id="headers" rows="5" placeholder="Authorization: Bearer abc123&#10;User-Agent: MeinPlayer/1.0&#10;Referer: https://example.com" spellcheck="false"></textarea></label>
+    <label class="row"><input type="checkbox" id="hdr-lic" checked> Header auch an Lizenzserver senden (sonst nur Medien)</label>
+    <h3>Optionen</h3>
+    <label class="row"><input type="checkbox" id="opt-abr" checked> Adaptive Bitrate (ABR)</label>
+    <label class="row"><input type="checkbox" id="opt-loop"> Wiederholen</label>
+    <label class="row"><input type="checkbox" id="opt-stats" checked> Statistik anzeigen</label>
+    <small>Hinweis: Electron enthält kein Widevine-CDM; ClearKey funktioniert, Widevine/PlayReady meist nicht.</small>
+  </aside>
+</main>
+
+<footer>
+  <span id="status">Bereit</span>
+  <span id="stats"></span>
+</footer>
+
+<script src="vendor/shaka-player.ui.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
