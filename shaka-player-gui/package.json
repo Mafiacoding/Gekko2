@@ -8,14 +8,14 @@
   "scripts": {
     "start": "electron .",
     "copy-shaka": "node scripts/copy-shaka.js",
-    "dist": "npm run copy-shaka && electron-builder --win portable",
+    "dist": "npm run copy-shaka && electron-builder --win portable nsis",
     "dist:dir": "npm run copy-shaka && electron-builder --win dir"
   },
   "build": {
     "appId": "local.shaka.player.gui",
     "productName": "Shaka Player GUI",
     "files": ["src/**/*", "package.json"],
-    "win": { "target": ["portable"] },
+    "win": { "target": ["portable", "nsis"] },
     "fileAssociations": [
       { "ext": "mpd", "name": "DASH Manifest" },
       { "ext": "m3u8", "name": "HLS Playlist" },
