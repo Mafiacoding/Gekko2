@@ -20,9 +20,10 @@
 #define TV_W 1280u
 #define TV_H 720u
 #define LINES 16
-#define TV_LOG_LINES 8u
-#define TV_LOG_FIRST_ROW 21u
-#define FRAME_TOP 8u
+#define TV_LOG_LINES 3u
+#define TV_LOG_FIRST_ROW 26u
+#define PIC_MAX_W 1280u
+#define PIC_MAX_H 624u /* rows 0..25 of the TV text grid; the log uses the last three rows */
 #define LINE_CHARS 100
 
 static char lines[LINES][LINE_CHARS];
@@ -39,12 +40,20 @@ static void render(void)
 {
     OSScreenClearBufferEx(SCREEN_TV, 0x101820ff);
     OSScreenClearBufferEx(SCREEN_DRC, 0x101820ff);
-    if (shown_w && shown_h && shown_w <= TV_W && shown_h <= TV_H) {
-        /* Picture at the top centre; the log lives in the rows below it. */
-        const unsigned ox = (TV_W - shown_w) / 2u;
-        for (unsigned y = 0; y < shown_h && FRAME_TOP + y < TV_H; y++)
-            for (unsigned x = 0; x < shown_w; x++)
-                OSScreenPutPixelEx(SCREEN_TV, ox + x, FRAME_TOP + y, shown[(size_t)y * shown_w + x] << 8);
+    if (shown_w && shown_h) {
+        /* Scale to the largest 4:3 picture that fits (the PS2 output is 4:3 whatever field size the GS read
+         * returns, e.g. 640x256 or 640x448), nearest neighbour, centred horizontally. */
+        unsigned dh = PIC_MAX_H, dw = dh * 4u / 3u;
+        if (dw > PIC_MAX_W) { dw = PIC_MAX_W; dh = dw * 3u / 4u; }
+        const unsigned ox = (TV_W - dw) / 2u;
+        static uint16_t xmap[PIC_MAX_W];
+        for (unsigned x = 0; x < dw; x++)
+            xmap[x] = (uint16_t)((unsigned long)x * shown_w / dw);
+        for (unsigned y = 0; y < dh; y++) {
+            const uint32_t *row = &shown[(size_t)((unsigned long)y * shown_h / dh) * shown_w];
+            for (unsigned x = 0; x < dw; x++)
+                OSScreenPutPixelEx(SCREEN_TV, ox + x, y, row[xmap[x]] << 8);
+        }
     }
     const unsigned first = line_count > LINES ? line_count - LINES : 0;
     const unsigned tv_first = line_count > TV_LOG_LINES ? line_count - TV_LOG_LINES : 0;
