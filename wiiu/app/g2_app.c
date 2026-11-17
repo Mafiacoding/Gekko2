@@ -121,8 +121,8 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 const ee_intc_state_t *ei = ee_intc_get_state();
                 const iop_intc_state_t *ii = iop_intc_get_state();
                 const sif_state_t *sf = sif_get_state();
-                say(platform, "  count=%08x cmp=%08x EEINTC st=%04x mk=%04x IOPINTC st=%08x mk=%08x",
-                    e->cop0[9], e->cop0[11], ei->stat, ei->mask, ii->istat, ii->imask);
+                say(platform, "  cnt=%08x cmp=%08x EEINTC %04x/%04x", e->cop0[9], e->cop0[11], ei->stat, ei->mask);
+                say(platform, "  IOPINTC %08x/%08x", ii->istat, ii->imask);
                 say(platform, "  SIF ms=%08x sm=%08x msflag=%08x smflag=%08x ctrl=%08x", sf->mscom, sf->smcom,
                     sf->msflag, sf->smflag, sf->ctrl);
             }
