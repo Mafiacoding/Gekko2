@@ -7,8 +7,9 @@ Not tested on a physical Wii U. The same BIOS on the Linux host shows the "Sony 
 
 **Build flags matter.** With `-O2` the app froze the EE in a `WaitSema` syscall (EE pc `0x83624`, EE
 instructions stuck for 36 minutes) while the host and a 32-bit big-endian PowerPC build (qemu-user) ran on.
-With `-O1 -fno-strict-aliasing -fwrapv` it runs on. Which flag matters is not yet known (test builds A/B/C
-below isolate it). ASan/UBSan on the host found no memory error up to 106 M EE instructions
+With `-O1 -fno-strict-aliasing -fwrapv` it runs on, and owner-observed on Cemu 2.6, plain `-O1` (test build C)
+also runs cleanly, so `-O1` is the default (it matches the Wii build). Whether `-O2` plus only
+`-fno-strict-aliasing` (A) or only `-fwrapv` (B) also works was not reported; the cause in the core is unknown. ASan/UBSan on the host found no memory error up to 106 M EE instructions
 (one left-shift-of-negative report at `ee_core.c:10685`, not investigated).
 
 The Wii build uses libogc, GX, IOS and the ARM worker, none of which exist on the Wii U, and Cemu cannot run
@@ -20,7 +21,7 @@ Wii/vWii DOLs. This directory is a separate Wii U front end around the *portable
 |---|---|---|
 | 1 Feasibility | `hello/`: minimal wut program → `.rpx`/`.wuhb` | builds; RPX is ELF32 big-endian PowerPC, ABI `EABI_CAFE` (verified) |
 | 2 Core + video | `app/g2_app.c` (platform-neutral loop: BIOS load, `system_init`, `system_run_interleaved`, GS display read-out), `app/wiiu_main.c` (wut: OSScreen TV/GamePad, SD path), `Makefile` | all 87 core sources + libchdr compile for Espresso in **host mode** (no `GEKKO`, no libogc, no AOT/JIT → **interpreter only**); full app links to `gekko2-wiiu.rpx`/`.wuhb` (verified) |
-| 3 BIOS boot | run on Cemu 2.6 | owner screenshots: runs, boot animation visible with `-O1 -fno-strict-aliasing -fwrapv`; `-O2` build hung |
+| 3 BIOS boot | run on Cemu 2.6 | owner screenshots: runs, boot animation visible with `-O1` (also with `-fno-strict-aliasing -fwrapv`); `-O2` build hung |
 | 4 GamePad input | `poll_pad` in `app/wiiu_main.c` (VPAD) | builds; **input not yet tested** |
 
 Host smoke test (`wiiu/tools/host_smoke.sh`): builds the same loop natively and runs it with a *synthetic*
@@ -48,7 +49,7 @@ cd wiiu
 make -j4          # gekko2-wiiu.rpx
 make wuhb         # gekko2-wiiu.wuhb
 make -C hello     # step-1 probe
-make OPT="-O2 -fno-strict-aliasing"   # flag experiments (default OPT: -O1 -fno-strict-aliasing -fwrapv)
+make OPT="-O2 -fno-strict-aliasing"   # flag experiments (default OPT: -O1)
 bash tools/host_smoke.sh   # optional native smoke test (Linux, gcc)
 ```
 
