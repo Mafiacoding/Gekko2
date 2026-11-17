@@ -5,6 +5,9 @@
 #include "core/ee/ee_core.h"
 #include "core/iop/iop_core.h"
 #include "core/hw/gs.h"
+#include "core/hw/ee_intc.h"
+#include "core/hw/iop_intc.h"
+#include "core/hw/sif.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/iop_cdvd.h"
@@ -114,6 +117,15 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "  EE halted=%u sr=%08x cause=%08x ra=%08x | IOP pc=%08x halted=%u",
                 (unsigned)e->halted, e->cop0[12], e->cop0[13], (unsigned)e->gpr[31].ud0, i->pc,
                 (unsigned)i->halted);
+            {
+                const ee_intc_state_t *ei = ee_intc_get_state();
+                const iop_intc_state_t *ii = iop_intc_get_state();
+                const sif_state_t *sf = sif_get_state();
+                say(platform, "  count=%08x cmp=%08x EEINTC st=%04x mk=%04x IOPINTC st=%08x mk=%08x",
+                    e->cop0[9], e->cop0[11], ei->stat, ei->mask, ii->istat, ii->imask);
+                say(platform, "  SIF ms=%08x sm=%08x msflag=%08x smflag=%08x ctrl=%08x", sf->mscom, sf->smcom,
+                    sf->msflag, sf->smflag, sf->ctrl);
+            }
             if (e->halted)
                 say(platform, "  EE halt: %.100s", e->halt_reason);
             if (i->halted)
