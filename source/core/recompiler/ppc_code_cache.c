@@ -165,6 +165,9 @@ void *ppc_code_cache_alloc(size_t bytes)
 static void ppc_code_cache_release_locked(void *code);
 void ppc_code_cache_release(void *code)
 {
+ /* Staging buffers (heap) are released very often; only arena chunks need the RW window. */
+ if(!code)return;
+ if(!ppc_code_cache_owns(code)){free(code);return;}
  gekko2_codegen_rw_begin();ppc_code_cache_release_locked(code);gekko2_codegen_rw_end();
 }
 static void ppc_code_cache_release_locked(void *code)

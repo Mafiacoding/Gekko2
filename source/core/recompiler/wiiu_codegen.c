@@ -8,9 +8,18 @@
 #include <coreinit/core.h>
 static void *area;
 static uint32_t area_size;
-static unsigned depth;
+static unsigned rw_depth, exec_depth;
+static int in_rx;
 static int acquired;
 static const char *status = "not initialised";
+static void apply(void)
+{
+    const int want_rx = exec_depth > 0 && rw_depth == 0;
+    if (want_rx != in_rx) {
+        OSSwitchSecCodeGenMode(want_rx ? CODEGEN_R_X : CODEGEN_RW_);
+        in_rx = want_rx;
+    }
+}
 const char *gekko2_codegen_status(void) { return status; }
 void *gekko2_codegen_area(uint32_t *size)
 {
@@ -24,7 +33,8 @@ void *gekko2_codegen_area(uint32_t *size)
             area = NULL;
             status = "emulator thread is not on the codegen core";
         } else {
-            OSSwitchSecCodeGenMode(CODEGEN_R_X); /* the area starts out RW */
+            OSSwitchSecCodeGenMode(CODEGEN_RW_); /* RW by default; R_X only while generated code runs */
+            in_rx = 0;
             status = "codegen area ready";
         }
     }
@@ -32,14 +42,8 @@ void *gekko2_codegen_area(uint32_t *size)
         *size = area ? area_size : 0;
     return area;
 }
-void gekko2_codegen_rw_begin(void)
-{
-    if (area && depth++ == 0)
-        OSSwitchSecCodeGenMode(CODEGEN_RW_);
-}
-void gekko2_codegen_rw_end(void)
-{
-    if (area && depth && --depth == 0)
-        OSSwitchSecCodeGenMode(CODEGEN_R_X);
-}
+void gekko2_codegen_rw_begin(void) { if (area) { rw_depth++; apply(); } }
+void gekko2_codegen_rw_end(void) { if (area && rw_depth) { rw_depth--; apply(); } }
+void gekko2_codegen_exec_begin(void) { if (area) { exec_depth++; apply(); } }
+void gekko2_codegen_exec_end(void) { if (area && exec_depth) { exec_depth--; apply(); } }
 #endif

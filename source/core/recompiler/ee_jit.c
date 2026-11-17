@@ -582,7 +582,7 @@ static int ee_jit_resolve_and_execute(ee_state_t *st, uint32_t instr, ppc_block_
      * see ppc_dynarec.h's own header comment, which explicitly names
      * this exact cast as the intended zero-copy integration path. */
     if (out_fn) *out_fn = fn;
-    fn((ppc_dynarec_gpr128_t *)&st->gpr[0]);
+    CG_EXEC_VOID(fn((ppc_dynarec_gpr128_t *)&st->gpr[0]));
     g_jit_executed++;
     return 1;
 #endif /* GEKKO */
@@ -608,7 +608,7 @@ int ee_jit_try_execute_one_at(ee_state_t *st, uint32_t pc, uint32_t instr)
      * exact-word validation, including self-modifying guest code. */
     if (e->pc == pc && e->instr == instr) {
         if (e->fn) {
-            e->fn((ppc_dynarec_gpr128_t *)&st->gpr[0]);
+            CG_EXEC_VOID(e->fn((ppc_dynarec_gpr128_t *)&st->gpr[0]));
             g_pc_l0_hits++;
             g_jit_executed++;
             return 1;
@@ -1423,7 +1423,7 @@ execute_slot:;
    int event_chain=native_chain&&precise_event_chain_fn&&budget>=event_count+2u;
    precise_chain_source=event_chain?slot:0;precise_chain_source_serial=event_chain?slot->serial:0;
    precise_active=1;precise_accounted_remaining=budget;
-   unsigned retired=event_chain?precise_event_chain_fn(st,budget,(void*)slot->event_fn,event_count):slot->event_fn(st,quantum_budget);
+   unsigned retired=CG_EXEC(event_chain?precise_event_chain_fn(st,budget,(void*)slot->event_fn,event_count):slot->event_fn(st,quantum_budget));
    if(event_chain){
     if(ee_core_interleave_quantum!=UINT32_MAX)ee_core_interleave_account(precise_accounted_remaining-(budget-retired));
     if(retired){precise_event_chain_runs++;precise_event_chain_retired+=retired;}
@@ -1460,13 +1460,13 @@ execute_slot:;
  unsigned n;
 #ifdef GEKKO2_EE_CHAIN_RESIDENCY
  if(resident_chain){
-  n=precise_resident_chain_fn(st,fetched,first_physical,budget,slot->resident_fn,slot->count);
+  n=CG_EXEC(precise_resident_chain_fn(st,fetched,first_physical,budget,slot->resident_fn,slot->count));
   precise_resident_runs++;precise_resident_retired+=n;
  } else
 #endif
- n=prefix?slot->prefix_fn(st,fetched,first_physical,quantum_budget):use_chain?
+ n=CG_EXEC(prefix?slot->prefix_fn(st,fetched,first_physical,quantum_budget):use_chain?
   precise_chain_fn(st,fetched,first_physical,budget,slot->fn,slot->count):
-  slot->fn(st,fetched,first_physical);
+  slot->fn(st,fetched,first_physical));
  if(ee_core_interleave_quantum!=UINT32_MAX)ee_core_interleave_account(precise_accounted_remaining-(budget-n));
  precise_active=0;
  precise_chain_source=0;precise_chain_source_serial=0;
