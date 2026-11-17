@@ -9,6 +9,12 @@
 #include "core/hw/iop_intc.h"
 #include "core/hw/sif.h"
 #include "core/hw/iop_sio2.h"
+#include "core/recompiler/native_ppc.h"
+#include "core/recompiler/optimization.h"
+#ifdef GEKKO2_WIIU_JIT
+#include "core/recompiler/ee_jit.h"
+#include "core/recompiler/ppc_code_cache.h"
+#endif
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/iop_cdvd.h"
@@ -82,6 +88,17 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         return result->status = G2_ERR_BIOS;
     }
     say(platform, "BIOS ok: %s (%u bytes)", bios.version_string, (unsigned)bios.size);
+#ifdef GEKKO2_WIIU_JIT
+    if (config->use_jit) {
+        /* The codegen area is only usable from the codegen core; ask now, on the emulator thread. */
+        if (gekko2_codegen_area(NULL)) {
+            gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
+            say(platform, "EE dynarec requested (Wii U codegen area)");
+        } else {
+            say(platform, "EE dynarec NOT available: %s - interpreter only", gekko2_codegen_status());
+        }
+    }
+#endif
     if (system_init(&bios, &bios) != 0) {
         say(platform, "system_init failed");
         return result->status = G2_ERR_INIT;
@@ -135,6 +152,11 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 say(platform, "  SIF ms=%08x sm=%08x msflag=%08x smflag=%08x ctrl=%08x", sf->mscom, sf->smcom,
                     sf->msflag, sf->smflag, sf->ctrl);
             }
+#ifdef GEKKO2_WIIU_JIT
+            say(platform, "  JIT %s exec=%llu compiles=%llu blocks=%llu cache=%uKiB", gekko2_codegen_status(),
+                (unsigned long long)ee_jit_get_executed_count(), (unsigned long long)ee_jit_get_compile_attempt_count(),
+                (unsigned long long)ee_jit_get_block_count(), (unsigned)(ppc_code_cache_used() / 1024u));
+#endif
             if (e->halted)
                 say(platform, "  EE halt: %.100s", e->halt_reason);
             if (i->halted)

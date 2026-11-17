@@ -2,7 +2,8 @@
 #define GEKKO2_DYNAREC_CONFIG_H
 /* CPU execution and diagnostics must be independently selectable. */
 #include "core/recompiler/optimization.h"
-#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
+#include "core/recompiler/native_ppc.h"
+#if defined(GEKKO2_NATIVE_PPC) && !defined(PCSX2WII_JIT_DISABLE)
 #define GEKKO2_EE_BLOCKS_ENABLED 1
 #else
 #define GEKKO2_EE_BLOCKS_ENABLED 0

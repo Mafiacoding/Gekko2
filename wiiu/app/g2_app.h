@@ -22,6 +22,7 @@ typedef struct {
     unsigned batch_slices;                    /* scheduler slices per system_run_interleaved() call */
     uint64_t max_batches;                     /* 0 = run until keep_running() says stop */
     unsigned present_interval_ms;             /* minimum time between frames handed to present() */
+    int use_jit;                              /* try the EE dynarec (only in GEKKO2_WIIU_JIT builds) */
 } g2_config;
 
 typedef struct {

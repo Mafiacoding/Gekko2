@@ -1,4 +1,5 @@
 #include "core/recompiler/optimization.h"
+#include "core/recompiler/native_ppc.h"
 #include <stdio.h>
 #include <string.h>
 uint32_t gekko2_optimization_mask=GEKKO2_OPT_DEFAULT;
@@ -48,7 +49,7 @@ static const char *descriptions[GEKKO2_OPT_COUNT]={
 uint32_t gekko2_opt_available(void)
 {
  uint32_t mask=GEKKO2_OPT_VALID_MASK;
-#if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
+#if !defined(GEKKO2_NATIVE_PPC) || defined(PCSX2WII_JIT_DISABLE)
  mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_NATIVE_LINKS)|GEKKO2_OPT_BIT(GEKKO2_OPT_RESIDENCY)|GEKKO2_OPT_BIT(GEKKO2_OPT_WORD_ALLOCATION)|GEKKO2_OPT_BIT(GEKKO2_OPT_EE_PREFIX));
 #endif
 #if defined(GEKKO2_LEGACY_SCHEDULER) || defined(PCSX2WII_LEGACY_FRAME_REPAIR)

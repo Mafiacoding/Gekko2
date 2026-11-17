@@ -10,12 +10,17 @@
  */
 
 #include "core/recompiler/ppc_dynarec.h"
+#include "core/recompiler/native_ppc.h"
 #include "core/iop/iop_core.h"
 #include <malloc.h>
 #include <string.h>
 #include <stdio.h>
-#ifdef GEKKO
-#include <ogc/cache.h> /* Round 887b host-safety: only needed by finalize()'s
+#ifdef GEKKO2_NATIVE_PPC
+#ifdef GEKKO2_WIIU_JIT
+#include <coreinit/cache.h>
+#else
+#include <ogc/cache.h>
+#endif /* Round 887b host-safety: only needed by finalize()'s
                          * cache-maintenance calls below, which are themselves
                          * only meaningful (and only compiled) on the real
                          * Wii/devkitPPC target - see ee_jit.c's matching gate
@@ -730,7 +735,7 @@ static inline uint32_t enc_fctiwz(int frD, int frB)
  * CTR right before a simulated bctrl) and route to its own local test-
  * double implementation - no real address of any kind is needed on
  * that path. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 extern uint32_t ee_mem_read32(void *st, uint32_t addr);
 extern void     ee_mem_write32(void *st, uint32_t addr, uint32_t val);
 #define ADDR_EE_MEM_READ32  ((uint32_t)(uintptr_t)&ee_mem_read32)
@@ -754,7 +759,7 @@ extern void     ee_mem_write32(void *st, uint32_t addr, uint32_t val);
  * and from each other; a host verify harness's simulator matches
  * these exactly against CTR right before a simulated bctrl, same
  * mechanism as Round 891. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 extern uint8_t  ee_mem_read8(void *st, uint32_t addr);
 extern uint16_t ee_mem_read16(void *st, uint32_t addr);
 extern void     ee_mem_write8(void *st, uint32_t addr, uint8_t val);
@@ -786,7 +791,7 @@ extern void     ee_mem_write16(void *st, uint32_t addr, uint16_t val);
  * words before `val`, the pair falls on r5:r6 with no padding
  * register needed (word-count 2 is already even) - r5 = val's high
  * 32 bits, r6 = val's low 32 bits. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 extern uint64_t ee_mem_read64(void *st, uint32_t addr);
 extern void     ee_mem_write64(void *st, uint32_t addr, uint64_t val);
 #define ADDR_EE_MEM_READ64  ((uint32_t)(uintptr_t)&ee_mem_read64)
@@ -796,7 +801,7 @@ extern void     ee_mem_write64(void *st, uint32_t addr, uint64_t val);
 #define ADDR_EE_MEM_WRITE64 0x00000108u
 #endif
 /* R1336: full FIFO transactions cannot be split into two 64-bit calls. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 extern void ee_mem_read128(void *st,uint32_t addr,void *out);
 extern void ee_mem_write128(void *st,uint32_t addr,const void *value);
 #define ADDR_EE_MEM_READ128 ((uint32_t)(uintptr_t)&ee_mem_read128)
@@ -828,7 +833,7 @@ volatile uint64_t g_r1175_jit_sqrt_calls = 0;
 volatile uint64_t g_r1175_jit_cvt_calls = 0;
 /* R1249: helper counters are defined beside the shared helpers in ee_core.c. */
 
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 extern float sqrtf(float x);
 static float ee_jit_sqrtf_profiled(float x)
 {
@@ -866,7 +871,7 @@ static float ee_jit_sqrtf_profiled(float x)
  * handling beyond what SQRT.S's own trampoline already established for
  * saving ctx (r15)/LR (r14) across the call. Sentinel 0x10A continues
  * the existing 0x101-0x109 numbering. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 static float ee_jit_cvt_s_w_helper(int32_t v)
 {
     g_r1175_jit_cvt_calls++;
@@ -893,7 +898,7 @@ static float ee_jit_cvt_s_w_helper(int32_t v)
  * convention ee_mem_read32/etc already use above. Sentinels 0x10B-
  * 0x10E continue the existing 0x101-0x10A numbering (next 4 free
  * values). */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 extern void ee_jit_helper_pmultw(void *st, int rs, int rt, int rd);
 extern void ee_jit_helper_pdivw(void *st, int rs, int rt, int rd);
 extern void ee_jit_helper_pmulth(void *st, int rs, int rt, int rd);
@@ -926,7 +931,7 @@ extern void ee_jit_helper_pdivbw(void *st, int rs, int rt, int rd);
  * saturating sub-modes need a helper. PMFHL takes no rs/rt (only rd),
  * so these helpers only need `rd`, unlike the 3-arg muldiv helpers
  * above. Sentinels 0x10F-0x110 continue the existing numbering. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 extern void ee_jit_helper_pmfhl_slw(void *st, int rd);
 extern void ee_jit_helper_pmfhl_sh(void *st, int rd);
 #define ADDR_EE_JIT_PMFHL_SLW ((uint32_t)(uintptr_t)&ee_jit_helper_pmfhl_slw)
@@ -1389,7 +1394,7 @@ int ppc_dynarec_init(ppc_codegen_ctx_t *ctx, size_t max_instructions)
 void ppc_dynarec_free(ppc_codegen_ctx_t *ctx)
 {
     if (ctx->code) {
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
         ppc_code_cache_release(ctx->code);
 #else
         free(ctx->code);
@@ -1432,7 +1437,7 @@ static void emit_vu_minmax(ppc_codegen_ctx_t *ctx,int minimum) {
 }
 #include "ppc_ee_mmi.inc"
 
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 extern void ee_core_raise_trap(void *st);
 extern void ee_core_raise_overflow(void *st);
 #define ADDR_EE_RAISE_TRAP ((uint32_t)(uintptr_t)&ee_core_raise_trap)
@@ -5943,10 +5948,11 @@ ppc_block_fn ppc_dynarec_finalize(ppc_codegen_ctx_t *ctx)
     emit(ctx, enc_blr());
 
     size_t bytes = ctx->used_words * sizeof(uint32_t);
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
     if(gekko2_opt_enabled(GEKKO2_OPT_CODE_ARENA)) {
         uint32_t *code=ppc_code_cache_alloc(bytes);
         if(!code)return NULL;
+        gekko2_codegen_rw_begin();
         memcpy(code,ctx->code,bytes);
         /* ee_block_call emits external relative BLs. Rebase those calls
          * while internal non-link branches retain their word-relative span.
@@ -5958,6 +5964,7 @@ ppc_block_fn ppc_dynarec_finalize(ppc_codegen_ctx_t *ctx)
                 uint32_t target=(uint32_t)(uintptr_t)(ctx->code+n)+displacement;
                 int64_t delta=(int64_t)target-(int64_t)(uint32_t)(uintptr_t)(code+n);
                 if(delta<-33554432LL||delta>33554428LL) {
+                    gekko2_codegen_rw_end();
                     ppc_code_cache_release(code);return NULL;
                 }
                 code[n]=0x48000001u|((uint32_t)delta&0x03fffffcu);
@@ -5969,6 +5976,7 @@ ppc_block_fn ppc_dynarec_finalize(ppc_codegen_ctx_t *ctx)
     ctx->capacity_words = ctx->used_words;
     DCFlushRange(ctx->code, bytes);
     ICInvalidateRange(ctx->code, bytes);
+    if(gekko2_opt_enabled(GEKKO2_OPT_CODE_ARENA))gekko2_codegen_rw_end();
 #else
     /* Host-native builds: no real PPC750 icache to maintain, and (per
      * ee_jit.c's host-safety gate) the returned function pointer will
@@ -5983,7 +5991,7 @@ ppc_block_fn ppc_dynarec_finalize(ppc_codegen_ctx_t *ctx)
 
 /* Real IOP memory helpers retain MMIO, BIOS and cache-isolation behavior.
  * Host code-generation tests intercept distinct placeholder addresses. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 #define IOP_RD8  ((uint32_t)(uintptr_t)&iop_mem_read8)
 #define IOP_RD16 ((uint32_t)(uintptr_t)&iop_mem_read16)
 #define IOP_RD32 ((uint32_t)(uintptr_t)&iop_mem_read32)

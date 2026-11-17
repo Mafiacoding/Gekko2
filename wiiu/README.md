@@ -28,6 +28,22 @@ Host smoke test (`wiiu/tools/host_smoke.sh`): builds the same loop natively and 
 ROMDIR BIOS (no Sony firmware): 5 batches, EE/IOP counters advance, a missing BIOS fails cleanly
 (`PASS g2_app host smoke`). This is x86 little-endian; it proves the loop, not big-endian behaviour.
 
+## Experimental: EE dynarec in the Wii U codegen area (`make JIT=1`)
+
+Owner-observed in Cemu 2.6 with `jitprobe/`: the app has a 16 MiB codegen area at `0x02018000`, usable only from
+core 0; code in the normal heap crashes Cemu; `OSCodegenCopy` and RW/R_X switching both run generated PowerPC.
+`make JIT=1` (output `gekko2-wiiu-jit.rpx`) builds the Wii EE dynarec for that area:
+
+- `include/core/recompiler/native_ppc.h` defines `GEKKO2_NATIVE_PPC` (true for the Wii build and `GEKKO2_WIIU_JIT`);
+  the dynarec files test that instead of `GEKKO`. The Wii DOL is byte-identical before and after this change.
+- The code cache lives in the codegen area (`ppc_code_cache.c`), R_X normally; alloc/release/trim and the copy in
+  `finalize()` switch to RW through `source/core/recompiler/wiiu_codegen.c`.
+- The emulator runs on a thread pinned to the codegen core; the main thread (core 1) keeps ProcUI, VPAD and the screen.
+- If the area is unavailable the app says so and runs the interpreter. Only the EE dynarec is enabled
+  (IOP/VU dynarec stay interpreters). Real Wii U hardware is **not** verified (needs `cos.xml` codegen permission).
+- Differential test (Linux 32-bit big-endian PowerPC under qemu-user, CPU 750, mmap/mprotect standing in for the
+  codegen area): see `docs` notes in the commit message for the result; this is not a Cemu or Wii U measurement.
+
 ## Not done / known limits
 
 - No audio, no GX2: video is a software frame copied through `OSScreen` about once a second. GamePad is

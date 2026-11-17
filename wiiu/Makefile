@@ -1,15 +1,24 @@
 # GPL-3.0-or-later. Gekko2 Wii U / Cemu test port. Run from this directory:
 #   export DEVKITPRO=/opt/devkitpro DEVKITPPC=$DEVKITPRO/devkitPPC; make
 # Produces gekko2-wiiu.rpx (Cemu: File > Load) and gekko2-wiiu.wuhb. The portable Gekko2 core is built
-# in "host" mode (no GEKKO/libogc, no AOT/JIT): interpreter only. Third-party sources are compiled
+# in "host" mode (no GEKKO/libogc, no AOT): interpreter only, or with `make JIT=1` the EE dynarec in the
+# Wii U codegen area (experimental, see app/wiiu_main.c). Third-party sources are compiled
 # unchanged from ../third_party.
 ifeq ($(strip $(DEVKITPPC)),)
 $(error Please set DEVKITPRO and DEVKITPPC in your environment)
 endif
 include $(DEVKITPRO)/wut/share/wut_rules
 
+JIT           ?= 0
+ifeq ($(JIT),1)
+TARGET        := gekko2-wiiu-jit
+BUILD         := build-jit
+JITFLAGS      := -DGEKKO2_WIIU_JIT
+else
 TARGET        := gekko2-wiiu
 BUILD         := build
+JITFLAGS      :=
+endif
 APP_NAME      := Gekko2 (Wii U test)
 APP_SHORTNAME := Gekko2
 APP_AUTHOR    := Gekko2
@@ -23,7 +32,7 @@ INCLUDES      := ../include ../source ../third_party/libchdr/include ../third_pa
 CHD_FLAGS     := -DWANT_RAW_DATA_SECTOR=1 -DWANT_SUBCODE=1 -DVERIFY_BLOCK_CRC=1 -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_DEFLATE_APIS \
                  -DMINIZ_NO_STDIO -DMINIZ_NO_TIME -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE=1
 OPT           ?= -O1
-CFLAGS        := -g $(OPT) -w $(MACHDEP) $(INCLUDE) -DGEKKO2_WIIU $(CHD_FLAGS)
+CFLAGS        := -g $(OPT) -w $(MACHDEP) $(INCLUDE) -DGEKKO2_WIIU $(JITFLAGS) $(CHD_FLAGS)
 LDFLAGS       := -g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
 LIBS          := -lwut -lm
 
@@ -31,7 +40,11 @@ ifneq ($(BUILD),$(notdir $(CURDIR)))
 export OUTPUT  := $(CURDIR)/$(TARGET)
 export VPATH   := $(foreach d,$(SOURCES),$(CURDIR)/$(d))
 export DEPSDIR := $(CURDIR)/$(BUILD)
+ifeq ($(JIT),1)
+EXCLUDE        := main.c host_main.c
+else
 EXCLUDE        := main.c ppc_dynarec.c host_main.c
+endif
 CFILES         := $(filter-out $(EXCLUDE),$(foreach d,$(SOURCES),$(notdir $(wildcard $(d)/*.c))))
 export OFILES  := $(CFILES:.c=.o)
 export INCLUDE := $(foreach d,$(INCLUDES),-I$(CURDIR)/$(d)) $(foreach d,$(PORTLIBS),-I$(d)/include) -I$(WUT_ROOT)/include

@@ -4,6 +4,9 @@
 #include "g2_app.h"
 #include "core/hw/iop_sio2.h"
 #include <coreinit/cache.h>
+#include <coreinit/codegen.h>
+#include <coreinit/core.h>
+#include <coreinit/mutex.h>
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/screen.h>
 #include <coreinit/thread.h>
@@ -33,11 +36,27 @@ static unsigned shown_w, shown_h;
 static void *screen_memory;
 static uint32_t tv_size, drc_size;
 
+#ifdef GEKKO2_WIIU_JIT
+/* JIT build: the emulator runs on its own thread on the codegen core (core 0); this thread (core 1) keeps
+ * ProcUI, VPAD and OSScreen. Shared state is guarded by one mutex. */
+static OSMutex shared_lock;
+static volatile int stop_requested;
+static volatile uint16_t shared_pressed;
+static volatile uint8_t shared_axes[4] = { 0x80, 0x80, 0x80, 0x80 };
+static volatile int shared_pad_ok;
+#define SHARED_LOCK() OSLockMutex(&shared_lock)
+#define SHARED_UNLOCK() OSUnlockMutex(&shared_lock)
+#else
+#define SHARED_LOCK() ((void)0)
+#define SHARED_UNLOCK() ((void)0)
+#endif
+
 static int dirty = 1;
 static uint64_t last_render_ms;
 
 static void render(void)
 {
+    SHARED_LOCK();
     OSScreenClearBufferEx(SCREEN_TV, 0x101820ff);
     OSScreenClearBufferEx(SCREEN_DRC, 0x101820ff);
     if (shown_w && shown_h) {
@@ -65,30 +84,40 @@ static void render(void)
     OSScreenFlipBuffersEx(SCREEN_TV);
     OSScreenFlipBuffersEx(SCREEN_DRC);
     dirty = 0;
+    SHARED_UNLOCK();
 }
 
 static void on_log(void *u, const char *s)
 {
     (void)u;
+    SHARED_LOCK();
     snprintf(lines[line_count % LINES], LINE_CHARS, "%s", s);
     line_count++;
-    WHBLogPrint(s);
     dirty = 1;
+    SHARED_UNLOCK();
+#ifndef GEKKO2_WIIU_JIT
+    WHBLogPrint(s);
+#endif
 }
 
 static int on_present(void *u, const uint32_t *p, unsigned w, unsigned h)
 {
     (void)u;
+    SHARED_LOCK();
     memcpy(shown, p, (size_t)w * h * sizeof shown[0]);
     shown_w = w;
     shown_h = h;
     dirty = 1;
+    SHARED_UNLOCK();
     return 0;
 }
 
 static int keep(void *u)
 {
     (void)u;
+#ifdef GEKKO2_WIIU_JIT
+    return !stop_requested;
+#else
     if (!WHBProcIsRunning())
         return 0;
     const uint64_t now = (uint64_t)OSTicksToMilliseconds(OSGetSystemTime());
@@ -97,15 +126,15 @@ static int keep(void *u)
         render();
     }
     return 1;
+#endif
 }
 static uint64_t now_ms(void *u) { (void)u; return (uint64_t)OSTicksToMilliseconds(OSGetSystemTime()); }
 
 
 /* Wii U GamePad to PS2 pad. Nintendo layout: B = Cross, A = Circle, Y = Square, X = Triangle,
  * L/R = L1/R1, ZL/ZR = L2/R2, + = Start, - = Select, stick clicks = L3/R3. HOME is left to the OS. */
-static int poll_pad(void *u, uint16_t *pressed, uint8_t axes[4])
+static int read_pad(uint16_t *pressed, uint8_t axes[4])
 {
-    (void)u;
     VPADStatus st;
     VPADReadError err = VPAD_READ_SUCCESS;
     if (VPADRead(VPAD_CHAN_0, &st, 1, &err) < 1 || err != VPAD_READ_SUCCESS)
@@ -137,6 +166,25 @@ static int poll_pad(void *u, uint16_t *pressed, uint8_t axes[4])
     return 0;
 }
 
+#ifdef GEKKO2_WIIU_JIT
+static int poll_pad(void *u, uint16_t *pressed, uint8_t axes[4])
+{
+    (void)u;
+    if (!shared_pad_ok)
+        return 1;
+    *pressed = shared_pressed;
+    for (unsigned i = 0; i < 4; i++)
+        axes[i] = shared_axes[i];
+    return 0;
+}
+#else
+static int poll_pad(void *u, uint16_t *pressed, uint8_t axes[4])
+{
+    (void)u;
+    return read_pad(pressed, axes);
+}
+#endif
+
 static int readable(const char *path)
 {
     FILE *f = fopen(path, "rb");
@@ -145,6 +193,20 @@ static int readable(const char *path)
     fclose(f);
     return 1;
 }
+
+#ifdef GEKKO2_WIIU_JIT
+#endif
+static g2_platform g_platform;
+static g2_config g_config;
+static g2_result g_result;
+#ifdef GEKKO2_WIIU_JIT
+static int emu_entry(int argc, void *argv)
+{
+    (void)argc; (void)argv;
+    g2_run(&g_config, &g_platform, &g_result);
+    return 0;
+}
+#endif
 
 int main(void)
 {
@@ -194,12 +256,46 @@ int main(void)
         while (WHBProcIsRunning())
             OSSleepTicks(OSMillisecondsToTicks(100));
     } else {
-        g2_platform platform = { on_log, on_present, keep, now_ms, poll_pad, NULL };
-        g2_config config = { bios, iso[0] && readable(iso) ? iso : NULL, 2000u, 0, 1000u };
-        g2_result result;
-        g2_run(&config, &platform, &result);
+        g_platform = (g2_platform){ on_log, on_present, keep, now_ms, poll_pad, NULL };
+        g_config = (g2_config){ bios, iso[0] && readable(iso) ? iso : NULL, 2000u, 0, 1000u, 1 };
+#ifdef GEKKO2_WIIU_JIT
+        /* Emulator thread on the codegen core; this thread keeps ProcUI, VPAD and the screen. */
+        OSInitMutex(&shared_lock);
+        static OSThread emu_thread;
+        const uint32_t stack_size = 1024u * 1024u;
+        void *stack = MEMAllocFromDefaultHeapEx(stack_size, 16);
+        if (!stack) {
+            on_log(NULL, "no memory for the emulator thread");
+        } else {
+            on_log(NULL, "starting emulator thread on the codegen core");
+            OSCreateThread(&emu_thread, emu_entry, 0, NULL, (uint8_t *)stack + stack_size, stack_size, 16,
+                           1u << (unsigned)OSGetCodegenCore());
+            OSSetThreadName(&emu_thread, "gekko2-emu");
+            OSResumeThread(&emu_thread);
+            while (WHBProcIsRunning()) {
+                uint16_t pressed = 0;
+                uint8_t axes[4] = { 0x80, 0x80, 0x80, 0x80 };
+                const int ok = read_pad(&pressed, axes) == 0;
+                shared_pressed = pressed;
+                for (unsigned i = 0; i < 4; i++)
+                    shared_axes[i] = axes[i];
+                shared_pad_ok = ok;
+                const uint64_t now = now_ms(NULL);
+                if (dirty && now - last_render_ms >= 500u) {
+                    last_render_ms = now;
+                    render();
+                }
+                OSSleepTicks(OSMillisecondsToTicks(16));
+            }
+            stop_requested = 1;
+            int ret = 0;
+            OSJoinThread(&emu_thread, &ret);
+        }
+#else
+        g2_run(&g_config, &g_platform, &g_result);
         while (WHBProcIsRunning())
             OSSleepTicks(OSMillisecondsToTicks(100));
+#endif
     }
     VPADShutdown();
     WHBUnmountSdCard();

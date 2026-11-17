@@ -2,6 +2,7 @@
 #include "core/recompiler/experimental_options.h"
 #include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/dynarec_config.h"
+#include "core/recompiler/native_ppc.h"
 /*
  * ee_jit.c - see include/core/recompiler/ee_jit.h for the full design
  * rationale and safety model. Short version: this compiles single
@@ -76,7 +77,7 @@ _Static_assert(offsetof(ee_state_t, pc) == 544,
                "ppc_dynarec.c's PC_OFFSET assumes pc sits at this exact byte offset");
 /* R1249: pointer-dependent offsets describe the 32-bit PPC ABI only.
  * Host interpreter builds use 64-bit pointers and never execute PPC code. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 /* R1173: direct generated-PPC KSEG0/KSEG1 RAM load fast path. */
 _Static_assert(offsetof(ee_state_t, ram) == 10480, "R1173 RAM_PTR_OFFSET layout mismatch");
 _Static_assert(offsetof(ee_state_t, ram_size) == 10484, "R1173 RAM_SIZE_OFFSET layout mismatch");
@@ -162,7 +163,7 @@ static inline uint32_t ee_jit_l1_index(uint32_t instr)
  * ee_jit_try_execute_one() below (see that function's host-safety-gate
  * comment) - wrapped in #ifdef GEKKO here too so host-native builds
  * (which never call them) don't warn about unused static functions. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 
 /* Whether `instr` is one of the MIPS opcodes ppc_dynarec_translate_one()
  * currently supports: ADDIU (op 0x09); SLTI/SLTIU (op 0x0A/0x0B); LUI
@@ -475,7 +476,7 @@ static int ee_jit_resolve_and_execute(ee_state_t *st, uint32_t instr, ppc_block_
 {
     if (out_rejected) *out_rejected = 0;
     if(!gekko2_opt_enabled(GEKKO2_OPT_EE_JIT))return 0;
-#if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
+#if !defined(GEKKO2_NATIVE_PPC) || defined(PCSX2WII_JIT_DISABLE)
     /* Round 887 host-safety gate: ppc_dynarec.c generates raw PPC750
      * machine code, and the block below CALLS it as a function
      * pointer. This project's regression/test suite builds and runs
@@ -594,7 +595,7 @@ int ee_jit_try_execute_one(ee_state_t *st, uint32_t instr)
 
 int ee_jit_try_execute_one_at(ee_state_t *st, uint32_t pc, uint32_t instr)
 {
-#if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
+#if !defined(GEKKO2_NATIVE_PPC) || defined(PCSX2WII_JIT_DISABLE)
     (void)pc;
     return ee_jit_resolve_and_execute(st, instr, NULL, NULL);
 #else
@@ -715,7 +716,7 @@ typedef struct {
  uint32_t pc,count,page,generation,mapping,serial,word;
  ee_precise_fn fn;
 } ee_precise_dispatch;
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 _Static_assert(sizeof(ee_precise_dispatch)==32u,"Broadway dispatch tag must fit one cache line");
 #endif
 static ee_precise_dispatch precise_dispatch[EE_PRECISE_CACHE_SLOTS] __attribute__((aligned(32)));
