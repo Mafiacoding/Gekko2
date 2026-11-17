@@ -111,6 +111,13 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "t=%llus batches=%llu EE pc=%08x instr=%llu IOP instr=%llu",
                 (unsigned long long)((now - start) / 1000u), (unsigned long long)result->batches, e->pc,
                 (unsigned long long)e->instructions_executed, (unsigned long long)i->instructions_executed);
+            say(platform, "  EE halted=%u sr=%08x cause=%08x ra=%08x | IOP pc=%08x halted=%u",
+                (unsigned)e->halted, e->cop0[12], e->cop0[13], (unsigned)e->gpr[31].ud0, i->pc,
+                (unsigned)i->halted);
+            if (e->halted)
+                say(platform, "  EE halt: %.100s", e->halt_reason);
+            if (i->halted)
+                say(platform, "  IOP halt: %.100s", i->halt_reason);
         }
         if (platform->present && now - last_present >= config->present_interval_ms) {
             unsigned w = 0, h = 0;
