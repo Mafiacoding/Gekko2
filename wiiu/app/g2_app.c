@@ -114,7 +114,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         say(platform, "disc mounted");
     }
 
-    uint64_t last_present = 0, last_report = 0;
+    uint64_t last_present = 0, last_report = 0, last_stat_ms = 0, last_stat_instr = 0;
     const uint64_t start = platform->now_ms ? platform->now_ms(platform->user) : 0;
     unsigned batch = config->batch_slices ? config->batch_slices : 2000u;
     while ((!config->max_batches || result->batches < config->max_batches) &&
@@ -137,9 +137,14 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         uint64_t now = platform->now_ms ? platform->now_ms(platform->user) : 0;
         if (now - last_report >= 1000u || result->batches == 1) {
             last_report = now;
-            say(platform, "t=%llus batches=%llu EE pc=%08x instr=%llu IOP instr=%llu",
+            const uint64_t dt = now - last_stat_ms;
+            const uint64_t ips = dt ? (e->instructions_executed - last_stat_instr) * 1000u / dt : 0;
+            last_stat_ms = now;
+            last_stat_instr = e->instructions_executed;
+            say(platform, "t=%llus batches=%llu EE pc=%08x instr=%llu IOP instr=%llu ips=%llu",
                 (unsigned long long)((now - start) / 1000u), (unsigned long long)result->batches, e->pc,
-                (unsigned long long)e->instructions_executed, (unsigned long long)i->instructions_executed);
+                (unsigned long long)e->instructions_executed, (unsigned long long)i->instructions_executed,
+                (unsigned long long)ips);
             say(platform, "  EE halted=%u sr=%08x cause=%08x ra=%08x | IOP pc=%08x halted=%u",
                 (unsigned)e->halted, e->cop0[12], e->cop0[13], (unsigned)e->gpr[31].ud0, i->pc,
                 (unsigned)i->halted);
@@ -153,9 +158,9 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                     sf->msflag, sf->smflag, sf->ctrl);
             }
 #ifdef GEKKO2_WIIU_JIT
-            say(platform, "  JIT %s exec=%llu compiles=%llu blocks=%llu cache=%uKiB", gekko2_codegen_status(),
+            say(platform, "  JIT %s exec=%llu comp=%llu blk=%llu cache=%uKiB sw=%llu", gekko2_codegen_status(),
                 (unsigned long long)ee_jit_get_executed_count(), (unsigned long long)ee_jit_get_compile_attempt_count(),
-                (unsigned long long)ee_jit_get_block_count(), (unsigned)(ppc_code_cache_used() / 1024u));
+                (unsigned long long)ee_jit_get_block_count(), (unsigned)(ppc_code_cache_used() / 1024u), gekko2_codegen_switch_count());
 #endif
             if (e->halted)
                 say(platform, "  EE halt: %.100s", e->halt_reason);

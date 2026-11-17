@@ -10,6 +10,7 @@ static void *area;
 static uint32_t area_size;
 static unsigned rw_depth, exec_depth;
 static int in_rx;
+static unsigned long long switch_count;
 static int acquired;
 static const char *status = "not initialised";
 /* Lazy mode switching: the area stays R_X after generated code ran and only a writer switches it back to RW.
@@ -19,6 +20,7 @@ static void to_rw(void)
     if (in_rx) {
         OSSwitchSecCodeGenMode(CODEGEN_RW_);
         in_rx = 0;
+        switch_count++;
     }
 }
 static void to_rx(void)
@@ -26,9 +28,11 @@ static void to_rx(void)
     if (!in_rx) {
         OSSwitchSecCodeGenMode(CODEGEN_R_X);
         in_rx = 1;
+        switch_count++;
     }
 }
 const char *gekko2_codegen_status(void) { return status; }
+unsigned long long gekko2_codegen_switch_count(void) { return switch_count; }
 void *gekko2_codegen_area(uint32_t *size)
 {
     if (!acquired) {

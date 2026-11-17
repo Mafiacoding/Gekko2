@@ -21,6 +21,7 @@ void gekko2_codegen_exec_end(void);
 #define CG_EXEC(expr) ({ gekko2_codegen_exec_begin(); __typeof__(expr) cg_r_ = (expr); gekko2_codegen_exec_end(); cg_r_; })
 #define CG_EXEC_VOID(expr) do { gekko2_codegen_exec_begin(); expr; gekko2_codegen_exec_end(); } while (0)
 const char *gekko2_codegen_status(void);
+unsigned long long gekko2_codegen_switch_count(void); /* RW<->R_X switches so far */
 #else
 #define gekko2_codegen_rw_begin() ((void)0)
 #define gekko2_codegen_rw_end() ((void)0)
