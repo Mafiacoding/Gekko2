@@ -8,6 +8,7 @@
 #include "core/hw/ee_intc.h"
 #include "core/hw/iop_intc.h"
 #include "core/hw/sif.h"
+#include "core/hw/iop_sio2.h"
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/iop_cdvd.h"
@@ -101,6 +102,14 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
     unsigned batch = config->batch_slices ? config->batch_slices : 2000u;
     while ((!config->max_batches || result->batches < config->max_batches) &&
            (!platform->keep_running || platform->keep_running(platform->user))) {
+        if (platform->poll_pad) {
+            uint16_t pressed = 0;
+            uint8_t axes[4] = { 0x80, 0x80, 0x80, 0x80 };
+            if (platform->poll_pad(platform->user, &pressed, axes) == 0) {
+                iop_sio2_pad_set_buttons(pressed);
+                iop_sio2_pad_set_analog_axes(axes[0], axes[1], axes[2], axes[3]);
+            }
+        }
         system_run_interleaved(batch);
         result->batches++;
         ee_state_t *e = ee_core_get_state();
@@ -117,7 +126,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "  EE halted=%u sr=%08x cause=%08x ra=%08x | IOP pc=%08x halted=%u",
                 (unsigned)e->halted, e->cop0[12], e->cop0[13], (unsigned)e->gpr[31].ud0, i->pc,
                 (unsigned)i->halted);
-            {
+            if ((now - start) / 1000u % 5u == 0u) {
                 const ee_intc_state_t *ei = ee_intc_get_state();
                 const iop_intc_state_t *ii = iop_intc_get_state();
                 const sif_state_t *sf = sif_get_state();

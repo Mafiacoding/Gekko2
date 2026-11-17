@@ -10,6 +10,9 @@ typedef struct {
     int (*present)(void *user, const uint32_t *xrgb, unsigned w, unsigned h);
     int (*keep_running)(void *user);          /* 0 = leave the loop (HOME / close) */
     uint64_t (*now_ms)(void *user);
+    /* Optional. Fills PS2 pressed-button bits (IOP_PAD_BTN_*, 1 = pressed) and the analog axes
+     * rx, ry, lx, ly (0x80 = centre). Return 0 when no pad is connected. */
+    int (*poll_pad)(void *user, uint16_t *pressed, uint8_t axes[4]);
     void *user;
 } g2_platform;
 

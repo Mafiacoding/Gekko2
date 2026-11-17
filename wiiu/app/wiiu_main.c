@@ -1,12 +1,14 @@
 /* GPL-3.0-or-later. Wii U (wut) front end for the portable Gekko2 run loop. Test port only:
- * interpreter, software framebuffer through OSScreen, no audio, no input, no GX2.
+ * interpreter, software framebuffer through OSScreen, GamePad input, no audio, no GX2.
  * Looks for the user's own BIOS at <sd>/wiiu/gekko2/bios/ps2bios.bin. Nothing is bundled. */
 #include "g2_app.h"
+#include "core/hw/iop_sio2.h"
 #include <coreinit/cache.h>
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/screen.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
+#include <vpad/input.h>
 #include <whb/log.h>
 #include <whb/log_cafe.h>
 #include <whb/proc.h>
@@ -18,6 +20,9 @@
 #define TV_W 1280u
 #define TV_H 720u
 #define LINES 16
+#define TV_LOG_LINES 8u
+#define TV_LOG_FIRST_ROW 21u
+#define FRAME_TOP 8u
 #define LINE_CHARS 100
 
 static char lines[LINES][LINE_CHARS];
@@ -27,24 +32,30 @@ static unsigned shown_w, shown_h;
 static void *screen_memory;
 static uint32_t tv_size, drc_size;
 
+static int dirty = 1;
+static uint64_t last_render_ms;
+
 static void render(void)
 {
     OSScreenClearBufferEx(SCREEN_TV, 0x101820ff);
     OSScreenClearBufferEx(SCREEN_DRC, 0x101820ff);
     if (shown_w && shown_h && shown_w <= TV_W && shown_h <= TV_H) {
-        const unsigned ox = (TV_W - shown_w) / 2u, oy = (TV_H - shown_h) / 2u;
-        for (unsigned y = 0; y < shown_h; y++)
+        /* Picture at the top centre; the log lives in the rows below it. */
+        const unsigned ox = (TV_W - shown_w) / 2u;
+        for (unsigned y = 0; y < shown_h && FRAME_TOP + y < TV_H; y++)
             for (unsigned x = 0; x < shown_w; x++)
-                OSScreenPutPixelEx(SCREEN_TV, ox + x, oy + y, shown[(size_t)y * shown_w + x] << 8);
+                OSScreenPutPixelEx(SCREEN_TV, ox + x, FRAME_TOP + y, shown[(size_t)y * shown_w + x] << 8);
     }
     const unsigned first = line_count > LINES ? line_count - LINES : 0;
-    for (unsigned i = first; i < line_count; i++) {
-        OSScreenPutFontEx(SCREEN_TV, 0, i - first, lines[i % LINES]);
+    const unsigned tv_first = line_count > TV_LOG_LINES ? line_count - TV_LOG_LINES : 0;
+    for (unsigned i = first; i < line_count; i++)
         OSScreenPutFontEx(SCREEN_DRC, 0, i - first, lines[i % LINES]);
-    }
+    for (unsigned i = tv_first; i < line_count; i++)
+        OSScreenPutFontEx(SCREEN_TV, 0, TV_LOG_FIRST_ROW + (i - tv_first), lines[i % LINES]);
     DCFlushRange(screen_memory, tv_size + drc_size);
     OSScreenFlipBuffersEx(SCREEN_TV);
     OSScreenFlipBuffersEx(SCREEN_DRC);
+    dirty = 0;
 }
 
 static void on_log(void *u, const char *s)
@@ -53,7 +64,7 @@ static void on_log(void *u, const char *s)
     snprintf(lines[line_count % LINES], LINE_CHARS, "%s", s);
     line_count++;
     WHBLogPrint(s);
-    render();
+    dirty = 1;
 }
 
 static int on_present(void *u, const uint32_t *p, unsigned w, unsigned h)
@@ -62,12 +73,60 @@ static int on_present(void *u, const uint32_t *p, unsigned w, unsigned h)
     memcpy(shown, p, (size_t)w * h * sizeof shown[0]);
     shown_w = w;
     shown_h = h;
-    render();
+    dirty = 1;
     return 0;
 }
 
-static int keep(void *u) { (void)u; return WHBProcIsRunning(); }
+static int keep(void *u)
+{
+    (void)u;
+    if (!WHBProcIsRunning())
+        return 0;
+    const uint64_t now = (uint64_t)OSTicksToMilliseconds(OSGetSystemTime());
+    if (dirty && now - last_render_ms >= 500u) {
+        last_render_ms = now;
+        render();
+    }
+    return 1;
+}
 static uint64_t now_ms(void *u) { (void)u; return (uint64_t)OSTicksToMilliseconds(OSGetSystemTime()); }
+
+
+/* Wii U GamePad to PS2 pad. Nintendo layout: B = Cross, A = Circle, Y = Square, X = Triangle,
+ * L/R = L1/R1, ZL/ZR = L2/R2, + = Start, - = Select, stick clicks = L3/R3. HOME is left to the OS. */
+static int poll_pad(void *u, uint16_t *pressed, uint8_t axes[4])
+{
+    (void)u;
+    VPADStatus st;
+    VPADReadError err = VPAD_READ_SUCCESS;
+    if (VPADRead(VPAD_CHAN_0, &st, 1, &err) < 1 || err != VPAD_READ_SUCCESS)
+        return 1;
+    const uint32_t h = st.hold;
+    uint16_t p = 0;
+    if (h & VPAD_BUTTON_B) p |= IOP_PAD_BTN_CROSS;
+    if (h & VPAD_BUTTON_A) p |= IOP_PAD_BTN_CIRCLE;
+    if (h & VPAD_BUTTON_Y) p |= IOP_PAD_BTN_SQUARE;
+    if (h & VPAD_BUTTON_X) p |= IOP_PAD_BTN_TRIANGLE;
+    if (h & VPAD_BUTTON_L) p |= IOP_PAD_BTN_L1;
+    if (h & VPAD_BUTTON_R) p |= IOP_PAD_BTN_R1;
+    if (h & VPAD_BUTTON_ZL) p |= IOP_PAD_BTN_L2;
+    if (h & VPAD_BUTTON_ZR) p |= IOP_PAD_BTN_R2;
+    if (h & VPAD_BUTTON_PLUS) p |= IOP_PAD_BTN_START;
+    if (h & VPAD_BUTTON_MINUS) p |= IOP_PAD_BTN_SELECT;
+    if (h & VPAD_BUTTON_UP) p |= IOP_PAD_BTN_UP;
+    if (h & VPAD_BUTTON_DOWN) p |= IOP_PAD_BTN_DOWN;
+    if (h & VPAD_BUTTON_LEFT) p |= IOP_PAD_BTN_LEFT;
+    if (h & VPAD_BUTTON_RIGHT) p |= IOP_PAD_BTN_RIGHT;
+    if (h & VPAD_BUTTON_STICK_L) p |= IOP_PAD_BTN_L3;
+    if (h & VPAD_BUTTON_STICK_R) p |= IOP_PAD_BTN_R3;
+    *pressed = p;
+    const float v[4] = { st.rightStick.x, -st.rightStick.y, st.leftStick.x, -st.leftStick.y };
+    for (unsigned i = 0; i < 4; i++) {
+        float f = v[i] * 127.0f + 128.0f;
+        axes[i] = (uint8_t)(f < 0.0f ? 0 : f > 255.0f ? 255 : (int)f);
+    }
+    return 0;
+}
 
 static int readable(const char *path)
 {
@@ -82,6 +141,7 @@ int main(void)
 {
     WHBProcInit();
     WHBLogCafeInit();
+    VPADInit();
     OSScreenInit();
     tv_size = OSScreenGetBufferSizeEx(SCREEN_TV);
     drc_size = OSScreenGetBufferSizeEx(SCREEN_DRC);
@@ -125,13 +185,14 @@ int main(void)
         while (WHBProcIsRunning())
             OSSleepTicks(OSMillisecondsToTicks(100));
     } else {
-        g2_platform platform = { on_log, on_present, keep, now_ms, NULL };
+        g2_platform platform = { on_log, on_present, keep, now_ms, poll_pad, NULL };
         g2_config config = { bios, iso[0] && readable(iso) ? iso : NULL, 2000u, 0, 1000u };
         g2_result result;
         g2_run(&config, &platform, &result);
         while (WHBProcIsRunning())
             OSSleepTicks(OSMillisecondsToTicks(100));
     }
+    VPADShutdown();
     WHBUnmountSdCard();
     OSScreenShutdown();
     MEMFreeToDefaultHeap(screen_memory);

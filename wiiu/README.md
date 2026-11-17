@@ -1,8 +1,15 @@
 # Gekko2 on Wii U / Cemu — test port (branch `codex/wiiu-cemu-test`)
 
-Status 2026-11-16: **experimental test, not a release, no speed claim.** Built and linked with devkitPPC r51 /
-GCC 16.2.0 / wut; **not yet run on Cemu or a Wii U by the author** (no Cemu in the build container; Cemu
-downloads were blocked). Everything marked "verified" below was checked on a Linux host only.
+Status 2026-11-17: **experimental test, not a release, no speed claim.** Built with devkitPPC r51 /
+GCC 16.2.0 / wut. Owner-observed on **Cemu 2.6 (Windows)**: the app starts, finds the SD card and a user BIOS,
+runs the interpreter and shows the BIOS boot animation (dark blue background with coloured lights).
+Not tested on a physical Wii U. The same BIOS on the Linux host shows the "Sony Computer Entertainment" logo.
+
+**Build flags matter.** With `-O2` the app froze the EE in a `WaitSema` syscall (EE pc `0x83624`, EE
+instructions stuck for 36 minutes) while the host and a 32-bit big-endian PowerPC build (qemu-user) ran on.
+With `-O1 -fno-strict-aliasing -fwrapv` it runs on. Which flag matters is not yet known (test builds A/B/C
+below isolate it). ASan/UBSan on the host found no memory error up to 106 M EE instructions
+(one left-shift-of-negative report at `ee_core.c:10685`, not investigated).
 
 The Wii build uses libogc, GX, IOS and the ARM worker, none of which exist on the Wii U, and Cemu cannot run
 Wii/vWii DOLs. This directory is a separate Wii U front end around the *portable* Gekko2 core.
@@ -13,7 +20,8 @@ Wii/vWii DOLs. This directory is a separate Wii U front end around the *portable
 |---|---|---|
 | 1 Feasibility | `hello/`: minimal wut program → `.rpx`/`.wuhb` | builds; RPX is ELF32 big-endian PowerPC, ABI `EABI_CAFE` (verified) |
 | 2 Core + video | `app/g2_app.c` (platform-neutral loop: BIOS load, `system_init`, `system_run_interleaved`, GS display read-out), `app/wiiu_main.c` (wut: OSScreen TV/GamePad, SD path), `Makefile` | all 87 core sources + libchdr compile for Espresso in **host mode** (no `GEKKO`, no libogc, no AOT/JIT → **interpreter only**); full app links to `gekko2-wiiu.rpx`/`.wuhb` (verified) |
-| 3 BIOS boot | run on Cemu | **not verified** (see "Please test") |
+| 3 BIOS boot | run on Cemu 2.6 | owner screenshots: runs, boot animation visible with `-O1 -fno-strict-aliasing -fwrapv`; `-O2` build hung |
+| 4 GamePad input | `poll_pad` in `app/wiiu_main.c` (VPAD) | builds; **input not yet tested** |
 
 Host smoke test (`wiiu/tools/host_smoke.sh`): builds the same loop natively and runs it with a *synthetic*
 ROMDIR BIOS (no Sony firmware): 5 batches, EE/IOP counters advance, a missing BIOS fails cleanly
@@ -21,7 +29,9 @@ ROMDIR BIOS (no Sony firmware): 5 batches, EE/IOP counters advance, a missing BI
 
 ## Not done / known limits
 
-- No audio, no input (pad/Wiimote), no GX2: video is a software frame copied through `OSScreen` once a second.
+- No audio, no GX2: video is a software frame copied through `OSScreen` about once a second. GamePad is
+  mapped B=Cross, A=Circle, Y=Square, X=Triangle, L/R=L1/R1, ZL/ZR=L2/R2, +=Start, -=Select, sticks=analog
+  (HOME stays with the OS). Nothing else (Pro Controller, Wiimote) is read.
 - No AOT/JIT/dynarec: the PPC dynarec would need a Wii U code-memory strategy (unverified).
 - The core is compiled without `GEKKO`; some paths differ from the Wii build and have **not** been checked on
   big-endian hardware/emulation. Expect bugs; the interpreter will be very slow.
@@ -38,6 +48,7 @@ cd wiiu
 make -j4          # gekko2-wiiu.rpx
 make wuhb         # gekko2-wiiu.wuhb
 make -C hello     # step-1 probe
+make OPT="-O2 -fno-strict-aliasing"   # flag experiments (default OPT: -O1 -fno-strict-aliasing -fwrapv)
 bash tools/host_smoke.sh   # optional native smoke test (Linux, gcc)
 ```
 
