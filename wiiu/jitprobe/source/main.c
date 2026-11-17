@@ -16,10 +16,13 @@
 #include <whb/log.h>
 #include <whb/log_console.h>
 #include <whb/proc.h>
+#include <whb/sdcard.h>
+#include <unistd.h>
 
 static const uint32_t code[2] = { 0x3860002Au /* li r3,42 */, 0x4E800020u /* blr */ };
 typedef int (*fn_t)(void);
 
+static FILE *logf;
 static void say(const char *fmt, ...)
 {
     char b[160];
@@ -29,13 +32,23 @@ static void say(const char *fmt, ...)
     __builtin_va_end(a);
     WHBLogPrint(b);
     WHBLogConsoleDraw();
+    if (logf) {
+        fprintf(logf, "%s\n", b);
+        fflush(logf);
+        fsync(fileno(logf));
+    }
 }
 
 int main(void)
 {
     WHBProcInit();
     WHBLogConsoleInit();
-    say("Gekko2 Wii U JIT probe");
+    if (WHBMountSdCard()) {
+        char path[256];
+        snprintf(path, sizeof path, "%s/wiiu/gekko2/jitprobe.log", WHBGetSdCardMountPath());
+        logf = fopen(path, "w");
+    }
+    say("Gekko2 Wii U JIT probe (log file: sd:/wiiu/gekko2/jitprobe.log, %s)", logf ? "open" : "not available");
     void *cg = NULL;
     uint32_t cgsize = 0;
     OSGetCodegenVirtAddrRange(&cg, &cgsize);
