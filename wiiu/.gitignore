@@ -3,3 +3,5 @@ build/
 *.wuhb
 *.elf
 *.map
+build-jit/
+*.lst
