@@ -8,9 +8,10 @@
 #endif
 #ifdef GEKKO2_WIIU_JIT
 #include <stdint.h>
-/* Wii U codegen area: writable (RW) by default so the code cache can allocate and release freely; switched to
- * readable+executable (R_X) only around calls into generated code (CG_EXEC). A write window (rw_begin/rw_end)
- * nested inside an execution window temporarily switches back to RW, e.g. a helper called from generated code. Only the codegen core (OSGetCodegenCore) may use it. NULL when the app has
+/* Wii U codegen area: starts RW so the code cache can allocate and release freely; switched to R_X when generated
+ * code is called (CG_EXEC) and left R_X until a writer (rw_begin) needs it again, so repeated execution costs no
+ * mode switch. A write window nested inside an execution window (a helper called from generated code) switches
+ * back to RW and returns an R_X area before the helper returns. Only the codegen core (OSGetCodegenCore) may use it. NULL when the app has
  * no codegen area or this thread runs on another core; the dynarec then declines and the interpreter runs. */
 void *gekko2_codegen_area(uint32_t *size);
 void gekko2_codegen_rw_begin(void);
