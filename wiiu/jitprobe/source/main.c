@@ -39,6 +39,36 @@ static void say(const char *fmt, ...)
     }
 }
 
+
+/* Runs on the codegen core. Method A: OSCodegenCopy. Method B: switch the area to RW, write, switch to RX. */
+static int codegen_thread(int argc, void *argv)
+{
+    (void)argc; (void)argv;
+    void *cg = NULL;
+    uint32_t cgsize = 0;
+    OSGetCodegenVirtAddrRange(&cg, &cgsize);
+    say("thread core: %u, mode: %d", (unsigned)OSGetCoreId(), (int)OSGetSecCodeGenMode());
+
+    say("method A: about to OSCodegenCopy ...");
+    OSCodegenCopy(cg, code, sizeof code);
+    say("method A: copied; about to run it ...");
+    int r = ((fn_t)cg)();
+    say("method A result: %d (%s)", r, r == 42 ? "codegen code ran" : "unexpected value");
+
+    uint32_t *p = (uint32_t *)((uint8_t *)cg + 64);
+    say("method B: about to switch to RW ...");
+    OSSwitchSecCodeGenMode(CODEGEN_RW_);
+    p[0] = 0x38600063u; /* li r3,99 */
+    p[1] = 0x4E800020u; /* blr */
+    DCFlushRange(p, 8);
+    ICInvalidateRange(p, 8);
+    OSSwitchSecCodeGenMode(CODEGEN_R_X);
+    say("method B: about to run it ...");
+    r = ((fn_t)p)();
+    say("method B result: %d (%s)", r, r == 99 ? "RW/RX switching works" : "unexpected value");
+    return 0;
+}
+
 int main(void)
 {
     WHBProcInit();
@@ -56,24 +86,26 @@ int main(void)
         (unsigned)OSGetCodegenCore());
     say("current core: %u", (unsigned)OSGetCoreId());
 
-    uint8_t *heap = MEMAllocFromDefaultHeapEx(4096, 4096);
-    say("heap buffer: %08x", (unsigned)(uintptr_t)heap);
-    if (heap) {
-        memcpy(heap, code, sizeof code);
-        DCFlushRange(heap, 64);
-        ICInvalidateRange(heap, 64);
-        say("step 2: about to run code in a heap buffer ...");
-        int r = ((fn_t)heap)();
-        say("step 2 result: %d (%s)", r, r == 42 ? "heap code ran" : "unexpected value");
-    }
+    /* Heap execution crashed Cemu (probe v2), so it is no longer tried. Codegen must be used from core
+     * OSGetCodegenCore(); run the test on a thread pinned to that core. */
     if (cg && cgsize) {
-        say("step 3: about to copy code to the codegen area ...");
-        OSCodegenCopy(cg, code, sizeof code);
-        say("step 3: about to run it ...");
-        int r = ((fn_t)cg)();
-        say("step 3 result: %d (%s)", r, r == 42 ? "codegen code ran" : "unexpected value");
+        static OSThread thread;
+        const uint32_t stack_size = 64u * 1024u;
+        void *stack = MEMAllocFromDefaultHeapEx(stack_size, 16);
+        if (!stack) {
+            say("no memory for the test thread stack");
+        } else {
+            uint32_t affinity = 1u << (unsigned)OSGetCodegenCore();
+            OSCreateThread(&thread, codegen_thread, 0, NULL, (uint8_t *)stack + stack_size, stack_size, 16, affinity);
+            OSSetThreadName(&thread, "codegen-probe");
+            say("starting test thread on core %u ...", (unsigned)OSGetCodegenCore());
+            OSResumeThread(&thread);
+            int ret = 0;
+            OSJoinThread(&thread, &ret);
+            say("test thread finished");
+        }
     } else {
-        say("step 3 skipped: no codegen area for this app");
+        say("no codegen area for this app: a dynarec is not possible here");
     }
     say("done. Press HOME to leave.");
     while (WHBProcIsRunning()) {
