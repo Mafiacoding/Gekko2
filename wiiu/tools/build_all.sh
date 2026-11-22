@@ -36,12 +36,15 @@ if make -C wiiu/gx2/probe -j4; then cp wiiu/gx2/probe/gekko2-wiiu-gx2probe.rpx "
 step "shaders (latte-assembler)"
 if command -v latte-assembler >/dev/null 2>&1; then
   latte-assembler --help 2>&1 | head -20
-  # Current form (per GaryOderNichts/wiiu-shaders): assemble --vsh=... --psh=... out.gsh. Older builds called it "compile".
-  if latte-assembler assemble --vsh=wiiu/gx2/shaders/present.vsh --psh=wiiu/gx2/shaders/present.psh "$OUT/present.gsh" ||
-     latte-assembler compile "$OUT/present.gsh" wiiu/gx2/shaders/present.vsh wiiu/gx2/shaders/present.psh; then
-    echo "present.gsh written"
+  # Form per GaryOderNichts/wiiu-shaders: assemble --vsh=... --psh=... out.gsh ("compile" is the GLSL route and
+  # needs the AMD Shader Analyzer, so there is no fallback to it).
+  latte-assembler assemble --vsh=wiiu/gx2/shaders/present.vsh --psh=wiiu/gx2/shaders/present.psh "$OUT/present.gsh" 2>&1
+  rc=$?
+  echo "latte-assembler exit code: $rc"
+  if [ -s "$OUT/present.gsh" ]; then
+    echo "present.gsh written ($(wc -c < "$OUT/present.gsh") bytes)"
   else
-    echo "latte-assembler FAILED: send the exact error text above"
+    echo "present.gsh was NOT written: send the output above"
     fail=1
   fi
 else
