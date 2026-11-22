@@ -36,8 +36,9 @@ if make -C wiiu/gx2/probe -j4; then cp wiiu/gx2/probe/gekko2-wiiu-gx2probe.rpx "
 step "shaders (latte-assembler)"
 if command -v latte-assembler >/dev/null 2>&1; then
   latte-assembler --help 2>&1 | head -20
-  # Form used by the wut samples; if your version differs, the help text above shows the right one.
-  if latte-assembler compile "$OUT/present.gsh" wiiu/gx2/shaders/present.vsh wiiu/gx2/shaders/present.psh; then
+  # Current form (per GaryOderNichts/wiiu-shaders): assemble --vsh=... --psh=... out.gsh. Older builds called it "compile".
+  if latte-assembler assemble --vsh=wiiu/gx2/shaders/present.vsh --psh=wiiu/gx2/shaders/present.psh "$OUT/present.gsh" ||
+     latte-assembler compile "$OUT/present.gsh" wiiu/gx2/shaders/present.vsh wiiu/gx2/shaders/present.psh; then
     echo "present.gsh written"
   else
     echo "latte-assembler FAILED: send the exact error text above"
@@ -45,7 +46,9 @@ if command -v latte-assembler >/dev/null 2>&1; then
   fi
 else
   skipped_shaders=1
-  echo "latte-assembler not found. Try: pacman -Ss latte   (or pacman -S wiiu-dev), then run this again."
+  echo "latte-assembler not found (devkitPro does not ship it; it is part of decaf-emu): download the Windows artifact from"
+  echo "https://github.com/decaf-emu/decaf-emu/actions (latest successful run; needs a GitHub login), put latte-assembler.exe in"
+  echo "$DEVKITPRO/tools/bin or on PATH, then run this again."
 fi
 
 step "gekko2-wiiu (interpreter + menu)"

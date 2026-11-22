@@ -1,5 +1,7 @@
 ; Gekko2 Wii U presenter - pixel shader (Latte assembly for latte-assembler).
-; Samples one 2D texture at the interpolated texture coordinate. UNVERIFIED, see present.vsh.
+; Samples one 2D texture at the interpolated texture coordinate.
+; The $NUM_SPI_PS_INPUT_CNTL lines match the shaders.md example. The $SAMPLER_VARS block and the TEX clause are
+; NOT covered by that guide and come from memory: UNVERIFIED. If latte-assembler rejects them, send the exact error.
 ; $MODE = "UniformRegister"
 
 ; $SAMPLER_VARS[0].name = "sampler_0"

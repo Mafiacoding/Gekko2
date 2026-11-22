@@ -1,24 +1,21 @@
 ; Gekko2 Wii U presenter - vertex shader (Latte assembly for latte-assembler).
-; Passes a 2D clip-space position and a texture coordinate through. UNVERIFIED: written from memory of the wut
-; samples, never assembled or run by the author. If latte-assembler rejects it, send the exact error text.
+; Passes position and texture coordinate straight through. The header and instruction layout follow the
+; position+colour example in GaryOderNichts/wiiu-shaders (shaders.md); only the attribute names differ.
+; Attribute location 0 arrives in R1, location 1 in R2.
 ; $MODE = "UniformRegister"
 
 ; $ATTRIB_VARS[0].name = "aPosition"
-; $ATTRIB_VARS[0].type = "float2"
+; $ATTRIB_VARS[0].type = "vec4"
 ; $ATTRIB_VARS[0].location = 0
 ; $ATTRIB_VARS[1].name = "aTexCoord"
-; $ATTRIB_VARS[1].type = "float2"
+; $ATTRIB_VARS[1].type = "vec4"
 ; $ATTRIB_VARS[1].location = 1
 
-; $NUM_SPI_VS_OUT = 1
+; $SPI_VS_OUT_CONFIG.VS_EXPORT_COUNT = 0
+; $NUM_SPI_VS_OUT_ID = 1
 ; $SPI_VS_OUT_ID[0].SEMANTIC_0 = 0
 
 00 CALL_FS NO_BARRIER
-01 ALU: ADDR(32) CNT(2)
-      0  x: MOV         R3.x, R1.x
-         y: MOV         R3.y, R1.y
-         z: MOV         R3.z, 0.0f
-         w: MOV         R3.w, (0x3F800000, 1.0f).x
-02 EXP_DONE: POS0, R3
-03 EXP_DONE: PARAM0, R2.xyzz NO_BARRIER
+01 EXP_DONE: POS0, R1
+02 EXP_DONE: PARAM0, R2 NO_BARRIER
 END_OF_PROGRAM

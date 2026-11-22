@@ -11,12 +11,15 @@ rasterizer for the GS (like the Wii's GX path) is a separate, large project that
 
 ## Way 1 - GPU presenter with your own shaders (needs latte-assembler)
 
-1. In your Windows Project Hub (devkitPro with the `wiiu-dev` group installed) assemble the two shader sources
-   into one GFD file. The exact command line depends on your tool version; run `latte-assembler --help`. The wut
-   samples use the form `latte-assembler compile present.gsh present.vsh present.psh`. The vertex shader must be
-   index 0 and the pixel shader index 0 in the file.
-2. If the assembler rejects a file, send me the **exact error text** and I will fix the source. The syntax was
-   written from memory and is the most likely thing to be wrong.
+1. `latte-assembler` is **not** part of devkitPro; it belongs to decaf-emu. Download the Windows artifact from the
+   latest successful workflow run at https://github.com/decaf-emu/decaf-emu/actions (a GitHub login is needed for
+   artifacts) and put `latte-assembler.exe` on your PATH or into `<devkitPro>/tools/bin`. `tools/build_all.sh`
+   then assembles the shaders with `latte-assembler assemble --vsh=present.vsh --psh=present.psh present.gsh`
+   (older builds call the subcommand `compile`; `build_all.sh` tries both). The vertex shader is index 0 and the
+   pixel shader index 0 in the file. The vertex shader follows the verified example in
+   https://github.com/GaryOderNichts/wiiu-shaders (shaders.md); the pixel shader's texture sampling is unverified.
+2. If the assembler rejects a file, send me the **exact error text** and I will fix the source. The pixel shader
+   is the most likely thing to be wrong.
 3. Copy `present.gsh` to `sdcard/wiiu/gekko2/present.gsh` (Cemu) or `sd:/wiiu/gekko2/present.gsh` (console).
 4. Run `gekko2-wiiu-gx2probe.rpx`. With the file present it runs test A: colour bars, a grey ramp, a moving
    orange box, 4:3 inside the 16:9 picture, nearest filter for 5 s then bilinear. The log
