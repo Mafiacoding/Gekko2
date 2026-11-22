@@ -5683,10 +5683,48 @@ static inline __attribute__((always_inline)) void ee_retire_instruction_inline(e
     }
  }
 
+#ifdef GEKKO2_WIIU
+/* Wii U builds: quiet-state retirement for the ordinary interpreter path. It tests the same guards the native-window
+ * admission uses for n=1 (and the existing GEKKO2_SPEED_RETIRE boundary retire) and, when nothing can happen this
+ * instruction, publishes exactly the counters the full chain would, skipping about twenty service calls. Any pending
+ * event, special PC, running VU/DMA/GIF work or interrupt condition falls back to the full chain. The two browser
+ * heuristics the full chain calls are immediate no-ops in this build. Host check: identical EE/IOP/RAM state. */
+uint64_t ee_quiet_retire_stats[2];
+static inline __attribute__((always_inline)) int ee_retire_quiet_try(ee_state_t *st)
+{
+ const uint32_t pc=st->pc,cnt=st->cop0[9],cmp=st->cop0[11],stat=st->cop0[12];
+ if(st->vu0_running||st->halted||st->idle||
+    g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||
+    g_ee_irq.intc_delay||g_ee_irq.intc_armed||
+    ee_timers_batch_clock[0]<=1u||cnt==UINT32_MAX||g_ee_display_ticks==UINT64_MAX||
+    g_ee_display_phase+1u>=EE_CYCLES_PER_FRAME_NTSC||
+    (g_ee_display_phase<EE_CYCLES_VBLANK_DURATION&&g_ee_display_phase+1u>=EE_CYCLES_VBLANK_DURATION)||
+    pc==EE_BOOT_UNBLOCK_SELFLOOP_PC||pc==EE_EELOAD_START_PC||EE_SBUS_WAIT_PC_MATCH(pc))return 0;
+ if(((stat&0x10007u)==0x10001u&&(stat&0x8000u))&&((st->cop0[13]&EE_CAUSE_IP7)||cnt+1u>=cmp))return 0;
+ if(vu1_get_state()->running||vu1_get_state()->xgkick_pending||gif_get_state()->fifo_count||
+    ((dma_get_state()->chan[0].chcr|dma_get_state()->chan[1].chcr|dma_get_state()->chan[2].chcr)&0x100u)||
+    sif_ee_tick_pending()||ee_intc_pending_fast()||dma_dmac_interrupt_pending_fast())return 0;
+ st->gpr[0].ud0=st->gpr[0].ud1=0;
+ st->instructions_executed++;st->cop0[9]=cnt+1u;
+ if(cnt+1u>=cmp)st->cop0[13]|=EE_CAUSE_IP7;
+ st->cop0[13]&=~EE_CAUSE_IP2;
+ if(!st->branch_pending)st->cop0[13]&=~EE_CAUSE_IP3;
+ g_ee_display_ticks++;g_ee_display_phase++;
+ ee_timers_batch_clock[0]--;ee_timers_batch_clock[1]++;
+ return 1;
+}
+static void ee_retire_instruction(ee_state_t *st,int sample)
+{
+ if(!sample&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)&&ee_retire_quiet_try(st)){ee_quiet_retire_stats[0]++;return;}
+ ee_quiet_retire_stats[1]++;
+ ee_retire_instruction_inline(st,sample);
+}
+#else
 /* Keep the ordinary scalar/commit path shared. Fused boundaries inline
  * just this retirement sequence, avoiding an extra saved-argument frame. */
 static void ee_retire_instruction(ee_state_t *st,int sample)
 {ee_retire_instruction_inline(st,sample);}
+#endif
 
 #include "core/ee/ee_aot_complex_generated.inc"
 
