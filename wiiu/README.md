@@ -59,6 +59,14 @@ core 0; code in the normal heap crashes Cemu; `OSCodegenCopy` and RW/R_X switchi
 - The EE dynarec build (`make JIT=1`) is slower than the interpreter in Cemu (about 1.5x longer to the same
   instruction count) because Cemu has to translate the generated code a second time.
 
+## Measuring a game: `session.log` and `vb/s`
+
+Every second the status line shows `ips=` (EE instructions/s) and `vb/s=` (guest VBlanks per second) with a percentage:
+the core counts NTSC frames, so 59.94 vb/s = 100% of a real PS2. While emulating, one line per second is appended to
+`<sd>/wiiu/gekko2/session.log` (`t_s,ee_instr,ips,vblank_total,vblank_per_s,frames_presented,pad_mask`), with a header
+naming the BIOS, the disc and the option mask. `pad_mask` is the PS2 button mask the app sent, so you can see that input
+reached the core. See `docs/WIIU-GS-GPU-FEASIBILITY.md` for why speed, not the GPU, comes first.
+
 ## Not done / known limits
 
 - No audio, no GX2: video is a software frame copied through `OSScreen` about once a second. GamePad is

@@ -24,6 +24,7 @@ typedef struct {
     unsigned present_interval_ms;             /* minimum time between frames handed to present() */
     int use_jit;                              /* try the EE dynarec (only in GEKKO2_WIIU_JIT builds) */
     int mask_preset;                          /* 1 = the caller already applied the option mask (menu); 0 = FASTMEM + use_jit */
+    const char *session_log;                  /* optional: one stats line per second is appended to this file */
 } g2_config;
 
 typedef struct {

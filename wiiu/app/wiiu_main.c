@@ -442,8 +442,10 @@ int main(void)
                 if (!bios) {
                     wiiu_menu_set_notice(menu, "BIOS not found: sd:/wiiu/gekko2/bios/ps2bios.bin");
                 } else {
+                    static char session_log[300];
+                    snprintf(session_log, sizeof session_log, "%s/wiiu/gekko2/session.log", sd_root[0] ? sd_root : "/vol/external01");
                     g_config = (g2_config){ bios, action == WM_ACTION_START_DISC ? wiiu_menu_disc(menu) : NULL,
-                                            2000u, 0, 1000u, 0, 1 };
+                                            2000u, 0, 1000u, 0, 1, session_log };
                     run_emulation();
                     wiiu_menu_set_notice(menu, "Back from emulation. Restart the app for a clean boot.");
                 }

@@ -20,6 +20,7 @@
 #include "core/hw/iop_cdvd.h"
 #include "core/hw/iop_cdrom_legacy.h"
 #include <stdio.h>
+#include <unistd.h>
 #include <string.h>
 
 static void say(const g2_platform *p, const char *format, ...) __attribute__((format(printf, 2, 3)));
@@ -129,7 +130,15 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         say(platform, "disc mounted");
     }
 
-    uint64_t last_present = 0, last_report = 0, last_stat_ms = 0, last_stat_instr = 0;
+    uint64_t last_present = 0, last_report = 0, last_stat_ms = 0, last_stat_instr = 0, last_vb = 0;
+    uint16_t last_pad_pressed = 0;
+    FILE *session = config->session_log ? fopen(config->session_log, "a") : NULL;
+    if (session) {
+        fprintf(session, "# session bios=%s disc=%s mask=%08x batch=%u\n# t_s,ee_instr,ips,vblank_total,vblank_per_s(59.94=100%%),frames_presented,pad_mask\n",
+                config->bios_path ? config->bios_path : "?", config->iso_path ? config->iso_path : "(none)",
+                (unsigned)gekko2_optimization_mask, config->batch_slices ? config->batch_slices : 2000u);
+        fflush(session);
+    }
     const uint64_t start = platform->now_ms ? platform->now_ms(platform->user) : 0;
     unsigned batch = config->batch_slices ? config->batch_slices : 2000u;
     while ((!config->max_batches || result->batches < config->max_batches) &&
@@ -138,6 +147,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             uint16_t pressed = 0;
             uint8_t axes[4] = { 0x80, 0x80, 0x80, 0x80 };
             if (platform->poll_pad(platform->user, &pressed, axes) == 0) {
+                last_pad_pressed = pressed;
                 iop_sio2_pad_set_buttons(pressed);
                 iop_sio2_pad_set_analog_axes(axes[0], axes[1], axes[2], axes[3]);
             }
@@ -156,10 +166,23 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             const uint64_t ips = dt ? (e->instructions_executed - last_stat_instr) * 1000u / dt : 0;
             last_stat_ms = now;
             last_stat_instr = e->instructions_executed;
-            say(platform, "t=%llus batches=%llu EE pc=%08x instr=%llu IOP instr=%llu ips=%llu",
+            const uint64_t vb = ee_core_get_vblank_events();
+            const uint64_t vb_rate = dt ? (vb - last_vb) * 1000000u / dt : 0; /* guest VBlanks per second x1000 (59.94 = full NTSC speed) */
+            const uint64_t speed_pct = vb_rate * 100u / 59940u;
+            last_vb = vb;
+            say(platform, "t=%llus batches=%llu EE pc=%08x instr=%llu IOP instr=%llu ips=%llu vb/s=%llu.%02llu %llu%%",
                 (unsigned long long)((now - start) / 1000u), (unsigned long long)result->batches, e->pc,
                 (unsigned long long)e->instructions_executed, (unsigned long long)i->instructions_executed,
-                (unsigned long long)ips);
+                (unsigned long long)ips, (unsigned long long)(vb_rate / 1000u), (unsigned long long)(vb_rate % 1000u / 10u),
+                (unsigned long long)speed_pct);
+            if (session) {
+                fprintf(session, "%llu,%llu,%llu,%llu,%llu.%02llu,%u,%04x\n", (unsigned long long)((now - start) / 1000u),
+                        (unsigned long long)e->instructions_executed, (unsigned long long)ips, (unsigned long long)vb,
+                        (unsigned long long)(vb_rate / 1000u), (unsigned long long)(vb_rate % 1000u / 10u),
+                        result->frames_presented, (unsigned)last_pad_pressed);
+                fflush(session);
+                fsync(fileno(session));
+            }
             say(platform, "  EE halted=%u sr=%08x cause=%08x ra=%08x | IOP pc=%08x halted=%u",
                 (unsigned)e->halted, e->cop0[12], e->cop0[13], (unsigned)e->gpr[31].ud0, i->pc,
                 (unsigned)i->halted);
@@ -199,6 +222,8 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             break;
         }
     }
+    if (session)
+        fclose(session);
     say(platform, "done: batches=%llu frames=%u EE instr=%llu", (unsigned long long)result->batches,
         result->frames_presented, (unsigned long long)result->ee_instructions);
     return result->status = G2_OK;
