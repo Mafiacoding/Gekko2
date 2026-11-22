@@ -11,6 +11,21 @@ export DEVKITPPC
 export PATH="$DEVKITPPC/bin:$DEVKITPRO/tools/bin:$PATH"
 OUT=wiiu/out
 mkdir -p "$OUT"
+
+# Preflight: the Wii U libraries (wut) are a separate devkitPro package group.
+if [ ! -f "$DEVKITPRO/wut/share/wut_rules" ]; then
+  echo "The Wii U SDK (wut) is not installed under $DEVKITPRO."
+  echo "Contents of $DEVKITPRO:"; ls "$DEVKITPRO" 2>&1 | head -20
+  if command -v pacman >/dev/null 2>&1; then
+    echo "Installing the devkitPro group wiiu-dev with pacman (needs internet) ..."
+    pacman -S --needed --noconfirm wiiu-dev || { echo "pacman could not install wiiu-dev. Run it by hand in the devkitPro shell."; exit 2; }
+  else
+    echo "pacman not found. In the devkitPro MSYS2 shell run:  pacman -S --needed wiiu-dev"
+    exit 2
+  fi
+  [ -f "$DEVKITPRO/wut/share/wut_rules" ] || { echo "wut is still missing after the install."; exit 2; }
+fi
+echo "Wii U SDK found: $(ls -d "$DEVKITPRO"/wut 2>/dev/null)"
 fail=0
 skipped_shaders=0
 step() { echo; echo "=== $*"; }
