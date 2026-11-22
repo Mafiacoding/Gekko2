@@ -3491,11 +3491,26 @@ int gif_fifo_write(const uint8_t *quadword) {
 }
 
 
+#ifdef GEKKO2_WIIU
+/* Wii U port only: optional wall-time accounting of GIF/GS work so a session log can show the GS share. */
+#include <time.h>
+int gekko2_prof_gs_enabled;
+uint64_t gekko2_prof_gs_ns,gekko2_prof_gs_calls;
+static inline uint64_t gs_prof_now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec;}
+#define GS_PROF_BEGIN uint64_t gs_p0=gekko2_prof_gs_enabled?gs_prof_now():0
+#define GS_PROF_END do{if(gs_p0){gekko2_prof_gs_ns+=gs_prof_now()-gs_p0;gekko2_prof_gs_calls++;}}while(0)
+#else
+#define GS_PROF_BEGIN
+#define GS_PROF_END
+#endif
+
 void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
 {
+    GS_PROF_BEGIN;
     uint32_t saved=s_gif_active_path;
     gif_process_quadwords_impl(channel,data,qwc,1);
     s_gif_active_path=saved;
+    GS_PROF_END;
 }
 
 /* A synchronous XGKICK submits at most one complete VU1 ring traversal.
@@ -3528,9 +3543,11 @@ void gif_begin_xgkick(void)
 
 void gif_process_xgkick_fragment(const uint8_t *data,uint32_t qwc)
 {
+    GS_PROF_BEGIN;
     uint32_t saved=s_gif_active_path;
     gif_process_quadwords_impl(GIF_PATH_1,data,qwc,0);
     s_gif_active_path=saved;
+    GS_PROF_END;
 }
 
 /* Round 542: real GIF MMIO register block (0x10003000-0x100030A0).

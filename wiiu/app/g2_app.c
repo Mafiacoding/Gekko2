@@ -22,6 +22,17 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
+
+extern int gekko2_prof_gs_enabled;
+extern uint64_t gekko2_prof_gs_ns, gekko2_prof_gs_calls;
+static uint64_t prof_run_ns;
+static uint64_t prof_now(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
 
 static void say(const g2_platform *p, const char *format, ...) __attribute__((format(printf, 2, 3)));
 #include <stdarg.h>
@@ -74,6 +85,7 @@ int g2_read_display(uint32_t *xrgb, unsigned w_max, unsigned h_max, unsigned *w_
 
 int g2_run(const g2_config *config, const g2_platform *platform, g2_result *result)
 {
+    gekko2_prof_gs_enabled = 1;
     static uint32_t frame[1024u * 1024u];            /* largest frame accepted by g2_read_display() */
     g2_result local;
     memset(&local, 0, sizeof local);
@@ -152,7 +164,11 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 iop_sio2_pad_set_analog_axes(axes[0], axes[1], axes[2], axes[3]);
             }
         }
-        system_run_interleaved(batch);
+        {
+            const uint64_t r0 = prof_now();
+            system_run_interleaved(batch);
+            prof_run_ns += prof_now() - r0;
+        }
         result->batches++;
         ee_state_t *e = ee_core_get_state();
         iop_state_t *i = iop_core_get_state();
@@ -175,6 +191,15 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 (unsigned long long)e->instructions_executed, (unsigned long long)i->instructions_executed,
                 (unsigned long long)ips, (unsigned long long)(vb_rate / 1000u), (unsigned long long)(vb_rate % 1000u / 10u),
                 (unsigned long long)speed_pct);
+            {
+                /* Share of emulation wall time spent in GIF/GS work (cumulative). Upper bound for what a GS thread could save. */
+                const uint64_t gs_pm = prof_run_ns ? gekko2_prof_gs_ns * 1000u / prof_run_ns : 0;
+                say(platform, "PROF gs=%llu.%llu%% of emulation time, gif calls=%llu", (unsigned long long)(gs_pm / 10u),
+                    (unsigned long long)(gs_pm % 10u), (unsigned long long)gekko2_prof_gs_calls);
+                if (session)
+                    fprintf(session, "# prof t=%llus gs_permille=%llu gif_calls=%llu\n", (unsigned long long)((now - start) / 1000u),
+                            (unsigned long long)gs_pm, (unsigned long long)gekko2_prof_gs_calls);
+            }
             if (session) {
                 fprintf(session, "%llu,%llu,%llu,%llu,%llu.%02llu,%u,%04x\n", (unsigned long long)((now - start) / 1000u),
                         (unsigned long long)e->instructions_executed, (unsigned long long)ips, (unsigned long long)vb,
