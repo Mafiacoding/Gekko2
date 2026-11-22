@@ -40,3 +40,20 @@ because Cemu translates the generated code a second time; its value on real hard
 2. CPU first: EE/IOP execution speed, using the Wii U's three cores where the architecture allows it (for example
    IOP on its own core), measured on hardware, not only in Cemu.
 3. Then the GS on the GPU, in the stages above, once the CPU side stops being the bottleneck.
+
+## Measured cost per emulated instruction (x86 host, callgrind, owner's BIOS, 2026-11-23)
+
+`-O1`, interpreter, Fastmem on, BIOS start (1.92 M EE instructions incl. the 1/8 IOP share), start-up cost subtracted:
+
+| Part | Host instructions per EE instruction |
+|---|---|
+| Whole emulator | about 535 (2.14 G for 4.0 M EE instructions) |
+| `ee_step_budget` (self) | about 227 |
+| `ee_retire_instruction` (self) | about 87 |
+| IOP (`iop_step`, `iop_prepare`, ...), per IOP instruction | about 640 (the IOP runs 1/8 as many instructions, about 16% of the run) |
+
+A tuned interpreter needs roughly 20 to 40 host instructions per guest instruction and a recompiler roughly 5 to 10 (typical
+figures, not measured here). Part of the 227 is old per-game investigation code (R1236, R1239, R1245, R1249 ...) that runs
+for every instruction; `GEKKO2_FAST_DIAGNOSTICS` removes only about 3% of the total, so the cost is spread over many
+small per-instruction checks (option lookups, timer and interrupt polling). This headroom is in the software, not in the
+hardware. It is a measurement on a cloud x86 CPU, not on a Wii U.
