@@ -3433,7 +3433,7 @@ static void gif_process_quadwords_impl(int channel, const uint8_t *data,
 /* Ownership persists across producer fragments until EOP. PATH3 IMAGE
  * permits interruption only with IMT; M3R/M3P apply at packet boundaries.
  * No unbounded queue or borrowed producer pointer survives a call. */
-uint32_t gif_try_process_quadwords(int path,const uint8_t *data,uint32_t qwc) {
+static uint32_t gif_try_process_quadwords_impl(int path,const uint8_t *data,uint32_t qwc) {
     if(path<0||path>2||!data)return 0;
     uint32_t done=0;
     for(;done<qwc;done++) {
@@ -3497,12 +3497,21 @@ int gif_fifo_write(const uint8_t *quadword) {
 int gekko2_prof_gs_enabled;
 uint64_t gekko2_prof_gs_ns,gekko2_prof_gs_calls;
 static inline uint64_t gs_prof_now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec;}
-#define GS_PROF_BEGIN uint64_t gs_p0=gekko2_prof_gs_enabled?gs_prof_now():0
-#define GS_PROF_END do{if(gs_p0){gekko2_prof_gs_ns+=gs_prof_now()-gs_p0;gekko2_prof_gs_calls++;}}while(0)
+static int gs_prof_depth;
+#define GS_PROF_BEGIN uint64_t gs_p0=(gekko2_prof_gs_enabled&&!gs_prof_depth)?gs_prof_now():0; gs_prof_depth++
+#define GS_PROF_END do{gs_prof_depth--;if(gs_p0){gekko2_prof_gs_ns+=gs_prof_now()-gs_p0;gekko2_prof_gs_calls++;}}while(0)
 #else
 #define GS_PROF_BEGIN
 #define GS_PROF_END
 #endif
+
+uint32_t gif_try_process_quadwords(int path,const uint8_t *data,uint32_t qwc)
+{
+    GS_PROF_BEGIN;
+    uint32_t r=gif_try_process_quadwords_impl(path,data,qwc);
+    GS_PROF_END;
+    return r;
+}
 
 void gif_process_quadwords(int channel, const uint8_t *data, uint32_t qwc)
 {
