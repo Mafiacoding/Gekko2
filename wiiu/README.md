@@ -102,3 +102,16 @@ bash tools/host_smoke.sh   # optional native smoke test (Linux, gcc)
    line per second `t=…s batches=… EE pc=… instr=… IOP instr=…`. A frame appears once the guest enables the GS display.
 4. Send me: whether Cemu starts it at all, the last screen text (screenshot), the Cemu log lines starting with
    `Gekko2`/`t=`, the `.rpx` SHA-256, Cemu version and your OS. Mention freezes, crashes or an unresponsive HOME menu.
+
+## GS worker thread (experimental)
+
+`g2_config.gs_async` (on by default in the Wii U app; create `<sd>/wiiu/gekko2/gs_async_off.txt` to turn it off) runs the
+GIF/GS work on a second Espresso core (core 2, or 1 if the emulation thread is on 2). The emulation thread copies GIF
+quadwords into one ring per path and returns; the worker executes the unchanged synchronous GIF code on the oldest entry
+that can make progress (`source/hw/gif_async.inc`). GS status reads (CSR, GIF_STAT) do not wait and may lag, like polling
+real hardware; VRAM readback, GIF control writes, checkpoints and the presenter drain first. Wii code is not touched.
+
+Host measurement (real BIOS to the same reference frame, two runs each, 4 cores, BIOS boot only):
+sync 348-354 s, worker 324-327 s (about 8 % faster). Worker busy ~103 s, emulation thread waited ~17 s in drains.
+The final frame hash matched the synchronous run every time. This is a host result for the BIOS boot; Cemu and real Wii U
+timing, and games, are not measured. The session log prints `GS worker: ...` counters at exit.
