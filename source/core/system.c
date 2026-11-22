@@ -98,6 +98,7 @@ static uint64_t g_event_stats[5];
 static uint64_t g_sync_reasons[19];
 
 #include "core/hw/ps2_mc_files.h"
+#include "core/hw/gs_async.h"
 int system_init(const bios_image_t *ee_bios, const bios_image_t *iop_bios)
 {
     ps2_mc_fs_reset();
@@ -309,6 +310,7 @@ int system_run_interleaved(uint64_t max_slices)
             system_before_iop_tick();done=1;
         }
         system_finish_iop_sample();
+        gs_async_pump();
         iop_spu2_sync(iop->sched_ticks);
 
         if (ee->halted && iop->halted) {

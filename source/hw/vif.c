@@ -5,6 +5,7 @@
 
 #include "core/hw/vif.h"
 #include "core/hw/gif.h"
+#include "core/hw/gs_async.h"
 #include "core/hw/vu.h"
 #include "core/ee/ee_core.h"
 #include "core/hw/ee_intc.h"
@@ -455,7 +456,11 @@ static int vif_direct_drain(vif_state_t *vif) {
     if(!(vif->direct_hl&&gif_get_state()->arb_owner==3u))
         done=gif_try_process_quadwords(GIF_PATH_2,vif->direct_buffer+vif->direct_sent_words*4u,left);
     vif->direct_sent_words+=done*4u;vif->direct_qwords_forwarded+=done;
-    if(done<left){gif_get_state()->arb_pending|=2u;vif->stat|=1u<<3;return 0;}
+    if(done<left){
+#ifdef GEKKO2_WIIU
+        if(!gs_async_on)
+#endif
+        gif_get_state()->arb_pending|=2u;vif->stat|=1u<<3;return 0;}
     vif->stat&=~(1u<<3);
     if(vif->direct_sent_words<vif->direct_needed_words)return 1;
     vif->direct_needed_words=vif->direct_have_words=vif->direct_sent_words=0;

@@ -16,6 +16,38 @@
 #include "core/ee/ee_core.h"
 #endif
 #include <string.h>
+#ifdef GEKKO2_WIIU
+#include "core/hw/gs_async.h"
+/* Wii U GS worker: the original synchronous entry points keep their code under *_sync names (see gif_async.inc). */
+#define gif_try_process_quadwords gif_try_process_quadwords_sync
+#define gif_process_quadwords gif_process_quadwords_sync
+#define gif_process_xgkick gif_process_xgkick_sync
+#define gif_begin_xgkick gif_begin_xgkick_sync
+#define gif_end_xgkick gif_end_xgkick_sync
+#define gif_process_xgkick_fragment gif_process_xgkick_fragment_sync
+#define gif_set_path3_mask gif_set_path3_mask_sync
+#define gif_fifo_service gif_fifo_service_sync
+#define gif_fifo_write gif_fifo_write_sync
+#define gif_mmio_read32 gif_mmio_read32_sync
+#define gif_mmio_write32 gif_mmio_write32_sync
+#define gif_read_local_fifo gif_read_local_fifo_sync
+static void gif_raise_gs_intc(void);
+uint32_t gif_try_process_quadwords_sync(int path,const uint8_t *data,uint32_t qwc);
+void gif_process_quadwords_sync(int channel,const uint8_t *data,uint32_t qwc);
+void gif_process_xgkick_sync(const uint8_t *data,uint32_t qwc);
+void gif_begin_xgkick_sync(void);
+void gif_end_xgkick_sync(void);
+void gif_process_xgkick_fragment_sync(const uint8_t *data,uint32_t qwc);
+void gif_set_path3_mask_sync(int masked);
+void gif_fifo_service_sync(void);
+int gif_fifo_write_sync(const uint8_t *quadword);
+int gif_mmio_read32_sync(uint32_t addr,uint32_t *out_val);
+int gif_mmio_write32_sync(uint32_t addr,uint32_t val);
+uint32_t gif_read_local_fifo_sync(uint8_t *out,uint32_t qwc);
+#else
+#define gif_raise_gs_intc() ee_intc_raise(0)
+#define gs_get_state_raw gs_get_state
+#endif
 #include <math.h> /* Round 28: log2() for mipmap LOD selection - see rasterize_sprite()'s mip-level logic */
 
 static gif_state_t g_gif;
@@ -2684,11 +2716,11 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * GS_REG_SIGNAL/FINISH/LABEL comment for the full citation
          * and honest scope (SIGLBLID storage only, no EE/IOP
          * interrupt-controller wiring). */
-        game_trace_record(GT_SIGNAL,s_gif_active_path,data_lo,data_hi,(uint32_t)gs_get_state()->csr);
+        game_trace_record(GT_SIGNAL,s_gif_active_path,data_lo,data_hi,(uint32_t)gs_get_state_raw()->csr);
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_sigid = (g_gif.siglblid_sigid & ~idmsk) | (id & idmsk);
-        gs_get_state()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
-        if (gs_raise_event(0u)) ee_intc_raise(0); /* INTC_GS */
+        gs_get_state_raw()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
+        if (gs_raise_event(0u)) gif_raise_gs_intc(); /* INTC_GS */
     } break;
     case GS_REG_FINISH:
         /* Round 108 (149th finding, task #254 - FINAL): FINISH -
@@ -2700,16 +2732,16 @@ static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
          * as a real, distinct register (not falling through to an
          * unknown-register path). */
         g_gif.finish_pending++;
-        if (gs_raise_event(1u)) ee_intc_raise(0); /* INTC_GS */
+        if (gs_raise_event(1u)) gif_raise_gs_intc(); /* INTC_GS */
         break;
     case GS_REG_LABEL: {
         /* Round 108 (149th finding, task #254 - FINAL): LABEL -
          * identical masked-update formula to SIGNAL, but targets
          * SIGLBLID.LBLID instead of SIGID. */
-        game_trace_record(GT_SIGNAL,s_gif_active_path,data_lo,data_hi,(uint32_t)gs_get_state()->csr);
+        game_trace_record(GT_SIGNAL,s_gif_active_path,data_lo,data_hi,(uint32_t)gs_get_state_raw()->csr);
         uint32_t id = data_lo, idmsk = data_hi;
         g_gif.siglblid_lblid = (g_gif.siglblid_lblid & ~idmsk) | (id & idmsk);
-        gs_get_state()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
+        gs_get_state_raw()->siglblid=((uint64_t)g_gif.siglblid_lblid<<32)|g_gif.siglblid_sigid;
     } break;
     case GS_REG_TEX2_1:
     case GS_REG_TEX2_2: {
@@ -3456,11 +3488,11 @@ static uint32_t gif_try_process_quadwords_impl(int path,const uint8_t *data,uint
         if(c->remaining&&c->mode==0u&&
            regs_nibble(c->regs_lo,c->regs_hi,c->index)==GIF_REG_AD&&
            (rd_le32(data+done*16u+8u)&255u)==GS_REG_SIGNAL&&
-           (gs_get_state()->csr&1u)) {
+           (gs_get_state_raw()->csr&1u)) {
             if(!signal_wait[path]){signal_wait[path]=1;game_trace_record(GT_SIGNAL_WAIT,path,c->remaining,rd_le32(data+done*16u),rd_le32(data+done*16u+4u));}
             g_signal_stalls++;break;
         }
-        if(signal_wait[path]){signal_wait[path]=0;game_trace_record(GT_SIGNAL_RESUME,path,c->remaining,(uint32_t)gs_get_state()->csr,0);}
+        if(signal_wait[path]){signal_wait[path]=0;game_trace_record(GT_SIGNAL_RESUME,path,c->remaining,(uint32_t)gs_get_state_raw()->csr,0);}
         if(!owner||slice)g_gif.arb_owner=(uint8_t)(path+1);
         int tag=!g_gif.register_carry_path[path].remaining&&!g_gif.image_carry_path[path];
         if(tag)g_gif.arb_eop[path]=!!(data[done*16u+1u]&0x80u);
@@ -3498,7 +3530,7 @@ int gekko2_prof_gs_enabled;
 uint64_t gekko2_prof_gs_ns,gekko2_prof_gs_calls;
 static inline uint64_t gs_prof_now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec;}
 static int gs_prof_depth;
-#define GS_PROF_BEGIN uint64_t gs_p0=(gekko2_prof_gs_enabled&&!gs_prof_depth)?gs_prof_now():0; gs_prof_depth++
+#define GS_PROF_BEGIN uint64_t gs_p0=(gekko2_prof_gs_enabled&&!gs_async_on&&!gs_prof_depth)?gs_prof_now():0; gs_prof_depth++
 #define GS_PROF_END do{gs_prof_depth--;if(gs_p0){gekko2_prof_gs_ns+=gs_prof_now()-gs_p0;gekko2_prof_gs_calls++;}}while(0)
 #else
 #define GS_PROF_BEGIN
@@ -3636,3 +3668,7 @@ int gif_mmio_write32(uint32_t addr, uint32_t val)
     default: return 0;
     }
 }
+
+#ifdef GEKKO2_WIIU
+#include "gif_async.inc"
+#endif

@@ -34,6 +34,14 @@ typedef struct {
 
 void gs_init(void);
 gs_state_t *gs_get_state(void);
+/* Wii U GS worker: gs_get_state() first waits for submitted GIF work; the raw/peek variants never wait.
+ * raw = worker/internal use, peek = emulation-thread read of fields only the emulation thread writes. */
+#ifdef GEKKO2_WIIU
+gs_state_t *gs_get_state_raw(void);
+gs_state_t *gs_peek_state(void);
+#else
+#define gs_peek_state gs_get_state
+#endif
 
 /* Returns 1 if addr is one of the known GS privileged registers and
  * handles the read/write; 0 otherwise. */

@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <time.h>
+#include "core/hw/gs_async.h"
 
 extern int gekko2_prof_gs_enabled;
 extern uint64_t gekko2_prof_gs_ns, gekko2_prof_gs_calls;
@@ -152,6 +153,17 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         fflush(session);
     }
     const uint64_t start = platform->now_ms ? platform->now_ms(platform->user) : 0;
+    int gs_async_active = 0;
+    if (config->gs_async && platform->start_worker) {
+        gs_async_attach(platform->worker_idle);
+        if (platform->start_worker(gs_async_worker_main, platform->user) == 0 && gs_async_enable() == 0) {
+            gs_async_active = 1;
+            say(platform, "GS worker thread active (GIF/GS work runs on a second core)");
+        } else {
+            gs_async_detach();
+            say(platform, "GS worker thread could not be started; GIF/GS stays on the emulation thread");
+        }
+    }
     unsigned batch = config->batch_slices ? config->batch_slices : 2000u;
     while ((!config->max_batches || result->batches < config->max_batches) &&
            (!platform->keep_running || platform->keep_running(platform->user))) {
@@ -246,6 +258,15 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "HALT %s | %s", e->halt_reason, i->halt_reason);
             break;
         }
+    }
+    if (gs_async_active) {
+        uint64_t st[8];
+        gs_async_stats(st);
+        say(platform, "GS worker: entries=%llu qwords=%llu drains=%llu fallbacks=%llu ring-full waits=%llu", (unsigned long long)st[0],
+            (unsigned long long)st[1], (unsigned long long)st[2], (unsigned long long)st[3], (unsigned long long)st[4]);
+        say(platform, "GS worker: busy=%llu ms, emulation thread waited %llu ms in drains", (unsigned long long)(st[6] / 1000000u),
+            (unsigned long long)(st[5] / 1000000u));
+        gs_async_detach();
     }
     if (session)
         fclose(session);

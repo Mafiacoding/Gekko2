@@ -360,7 +360,7 @@ static int dma_graphics_service_one(int channel) {
     /* GS reverse bus: VIF1 receives quadwords from GS into EE RAM.
      * Never feed these bytes into the VIF command parser.  CHCR.DIR=0,
      * BUSDIR=1 and normal DMA mode must all agree. */
-    if(channel==DMA_CHANNEL_VIF1 && (gs_get_state()->busdir&1u) && !(ch->chcr&1u)){
+    if(channel==DMA_CHANNEL_VIF1 && (gs_peek_state()->busdir&1u) && !(ch->chcr&1u)){
         /* VIF1_STAT.FDR must select the GS reverse data path too. */
         if(!(vif1_get_state()->stat & (1u<<23)))return 0;
         if(mode!=0u){ch->last_error=DMA_ERR_UNSUPPORTED_TAG;return 0;}

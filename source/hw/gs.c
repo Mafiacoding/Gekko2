@@ -7,6 +7,7 @@
 
 #include "core/hw/gs.h"
 #include "core/hw/ee_intc.h"
+#include "core/hw/gs_async.h"
 #include <string.h>
 #include <stddef.h>
 
@@ -17,7 +18,13 @@ void gs_init(void)
     memset(&g_gs, 0, sizeof(g_gs));
     g_gs.imr = GS_IMR_RESET_ALL_MASKED;
 }
+#ifdef GEKKO2_WIIU
+gs_state_t *gs_get_state_raw(void) { return &g_gs; }
+gs_state_t *gs_peek_state(void) { return &g_gs; }
+gs_state_t *gs_get_state(void) { gs_async_drain(); return &g_gs; }
+#else
 gs_state_t *gs_get_state(void) { return &g_gs; }
+#endif
 
 /* CSR event bits 0..4 map directly to IMR mask bits 8..12. */
 int gs_raise_event(unsigned event)
@@ -59,7 +66,11 @@ static uint64_t *reg_for_addr(uint32_t addr)
     return NULL;
 }
 
+#ifdef GEKKO2_WIIU
+static int gs_mmio_read64_impl(uint32_t addr, uint64_t *out_val)
+#else
 int gs_mmio_read64(uint32_t addr, uint64_t *out_val)
+#endif
 {
     if (addr < 0x12000000u || addr > 0x12001FFFu)
         return 0;
@@ -68,7 +79,11 @@ int gs_mmio_read64(uint32_t addr, uint64_t *out_val)
     return 1;
 }
 
+#ifdef GEKKO2_WIIU
+static int gs_mmio_write64_impl(uint32_t addr, uint64_t val)
+#else
 int gs_mmio_write64(uint32_t addr, uint64_t val)
+#endif
 {
     if (addr < 0x12000000u || addr > 0x12001FFFu)
         return 0;
@@ -92,6 +107,24 @@ int gs_mmio_write64(uint32_t addr, uint64_t val)
     }
     return 1;
 }
+
+#ifdef GEKKO2_WIIU
+int gs_mmio_read64(uint32_t addr, uint64_t *out_val)
+{
+    if (!gs_async_on) return gs_mmio_read64_impl(addr, out_val);
+    /* Like the real GS, CSR/SIGLBLID may lag behind what was just submitted: polling loops see the event
+     * once the worker has processed it. No drain and no lock for reads. */
+    return gs_mmio_read64_impl(addr, out_val);
+}
+int gs_mmio_write64(uint32_t addr, uint64_t val)
+{
+    if (!gs_async_on) return gs_mmio_write64_impl(addr, val);
+    gs_async_lock();
+    const int r = gs_mmio_write64_impl(addr, val);
+    gs_async_unlock(); gs_async_touch();
+    return r;
+}
+#endif
 
 /* Lane-aware narrow accesses. CSR writes are actions: never read/merge
  * unwritten CSR bits, which would incorrectly acknowledge other events. */

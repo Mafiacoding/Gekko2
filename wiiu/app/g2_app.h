@@ -13,6 +13,10 @@ typedef struct {
     /* Optional. Fills PS2 pressed-button bits (IOP_PAD_BTN_*, 1 = pressed) and the analog axes
      * rx, ry, lx, ly (0x80 = centre). Return 0 when no pad is connected. */
     int (*poll_pad)(void *user, uint16_t *pressed, uint8_t axes[4]);
+    /* Optional GS worker thread. start_worker runs fn on another core and returns 0 on success;
+     * worker_idle is called while either side waits (short sleep or yield). */
+    int (*start_worker)(void (*fn)(void), void *user);
+    void (*worker_idle)(void);
     void *user;
 } g2_platform;
 
@@ -25,6 +29,7 @@ typedef struct {
     int use_jit;                              /* try the EE dynarec (only in GEKKO2_WIIU_JIT builds) */
     int mask_preset;                          /* 1 = the caller already applied the option mask (menu); 0 = FASTMEM + use_jit */
     const char *session_log;                  /* optional: one stats line per second is appended to this file */
+    int gs_async;                             /* run GIF/GS work on a second core (needs platform->start_worker) */
 } g2_config;
 
 typedef struct {

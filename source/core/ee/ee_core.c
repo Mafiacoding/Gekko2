@@ -135,6 +135,7 @@
 #include "core/hw/ipu.h" /* Round 521/522 (task #487) */
 #include "core/hw/ee_dve.h" /* Round 950 (task #447/#536/#887) */
 #include "core/hw/gs.h"
+#include "core/hw/gs_async.h"
 #include "core/hw/gif.h"
 #include "core/hw/vif.h"
 #include "core/hw/vu.h"
@@ -1442,9 +1443,11 @@ static void ee_check_vblank(ee_state_t *st)
         /* GS CSR.FIELD reports alternating interlaced fields (GSRegs.h,
          * bit13). Retail games poll it after VBLANK to select a buffer.
          * Progressive scan has no alternating interlace parity. */
-        gs_state_t *gs_field = gs_get_state();
+        gs_state_t *gs_field = gs_peek_state();
+        gs_async_lock(); /* the GS worker also sets CSR event bits */
         if (gs_field->smode2 & 1u) gs_field->csr ^= 1ull << 13;
         else gs_field->csr &= ~(1ull << 13);
+        gs_async_unlock();
         ee_intc_raise(EE_INTC_IRQ_VBLANK_START);
     } else if (phase == EE_CYCLES_VBLANK_DURATION)
         ee_intc_raise(EE_INTC_IRQ_VBLANK_END);
@@ -2319,8 +2322,10 @@ static void ee_check_gs_vsync(ee_state_t *st)
     uint32_t phase = g_ee_display_phase;
     if (phase != 0)
         return;
-    gs_state_t *gs = gs_get_state();
+    gs_state_t *gs = gs_peek_state();
+    gs_async_lock();
     gs->csr |= (1ull << GS_CSR_VSYNC_BIT);
+    gs_async_unlock();
     if (!(gs->imr & (1ull << GS_IMR_VSMSK_BIT)))
         ee_intc_raise(EE_INTC_IRQ_GS);
 }
