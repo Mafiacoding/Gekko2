@@ -24,10 +24,15 @@
 #include <string.h>
 #include <time.h>
 #include "core/hw/gs_async.h"
+#include "core/hw/vu.h"
 
+extern int gekko2_prof_vu_enabled;
+extern uint64_t gekko2_prof_vu1_ns, gekko2_prof_vu1_calls;
 extern int gekko2_prof_gs_enabled;
 extern uint64_t gekko2_prof_gs_ns, gekko2_prof_gs_calls;
 static uint64_t prof_run_ns;
+static uint64_t gekko2_vu0_pairs(void) { return ee_core_get_state()->vu0_instructions_executed; }
+static uint64_t gekko2_vu1_pairs(void) { return vu1_get_state()->instructions_executed; }
 static uint64_t prof_now(void)
 {
     struct timespec t;
@@ -87,6 +92,7 @@ int g2_read_display(uint32_t *xrgb, unsigned w_max, unsigned h_max, unsigned *w_
 int g2_run(const g2_config *config, const g2_platform *platform, g2_result *result)
 {
     gekko2_prof_gs_enabled = 1;
+    gekko2_prof_vu_enabled = 1;
     static uint32_t frame[1024u * 1024u];            /* largest frame accepted by g2_read_display() */
     g2_result local;
     memset(&local, 0, sizeof local);
@@ -206,11 +212,16 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             {
                 /* Share of emulation wall time spent in GIF/GS work (cumulative). Upper bound for what a GS thread could save. */
                 const uint64_t gs_pm = prof_run_ns ? gekko2_prof_gs_ns * 1000u / prof_run_ns : 0;
-                say(platform, "PROF gs=%llu.%llu%% of emulation time, gif calls=%llu", (unsigned long long)(gs_pm / 10u),
-                    (unsigned long long)(gs_pm % 10u), (unsigned long long)gekko2_prof_gs_calls);
+                const uint64_t vu_pm = prof_run_ns ? gekko2_prof_vu1_ns * 1000u / prof_run_ns : 0;
+                say(platform, "PROF gs=%llu.%llu%% vu1=%llu.%llu%% of emulation time (gif calls=%llu, vu1 runs=%llu); VU pairs so far: vu0=%llu vu1=%llu",
+                    (unsigned long long)(gs_pm / 10u), (unsigned long long)(gs_pm % 10u), (unsigned long long)(vu_pm / 10u),
+                    (unsigned long long)(vu_pm % 10u), (unsigned long long)gekko2_prof_gs_calls, (unsigned long long)gekko2_prof_vu1_calls,
+                    (unsigned long long)gekko2_vu0_pairs(), (unsigned long long)gekko2_vu1_pairs());
                 if (session)
-                    fprintf(session, "# prof t=%llus gs_permille=%llu gif_calls=%llu\n", (unsigned long long)((now - start) / 1000u),
-                            (unsigned long long)gs_pm, (unsigned long long)gekko2_prof_gs_calls);
+                    fprintf(session, "# prof t=%llus gs_permille=%llu vu1_permille=%llu gif_calls=%llu vu1_runs=%llu vu0_pairs=%llu vu1_pairs=%llu\n",
+                            (unsigned long long)((now - start) / 1000u), (unsigned long long)gs_pm, (unsigned long long)vu_pm,
+                            (unsigned long long)gekko2_prof_gs_calls, (unsigned long long)gekko2_prof_vu1_calls,
+                            (unsigned long long)gekko2_vu0_pairs(), (unsigned long long)gekko2_vu1_pairs());
             }
             if (session) {
                 fprintf(session, "%llu,%llu,%llu,%llu,%llu.%02llu,%u,%04x\n", (unsigned long long)((now - start) / 1000u),

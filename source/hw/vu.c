@@ -711,8 +711,23 @@ static void vu1_run_blocks(void)
 
 }
 
+#ifdef GEKKO2_WIIU
+/* Wii U port only: wall time of whole VU1 microprogram runs (MSCAL/MSCNT), minus GS work done inside them. */
+#include <time.h>
+int gekko2_prof_vu_enabled;
+uint64_t gekko2_prof_vu1_ns,gekko2_prof_vu1_calls;
+extern uint64_t gekko2_prof_gs_ns;
+static inline uint64_t vu_prof_now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec;}
+#define VU_PROF_BEGIN uint64_t vu_p0=gekko2_prof_vu_enabled?vu_prof_now():0,vu_g0=gekko2_prof_gs_ns
+#define VU_PROF_END do{if(vu_p0){uint64_t d=vu_prof_now()-vu_p0,g=gekko2_prof_gs_ns-vu_g0;gekko2_prof_vu1_ns+=d>g?d-g:0;gekko2_prof_vu1_calls++;}}while(0)
+#else
+#define VU_PROF_BEGIN
+#define VU_PROF_END
+#endif
+
 void vu1_exec_micro(uint32_t start_addr)
 {
+    VU_PROF_BEGIN;
     unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
     g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
@@ -723,6 +738,7 @@ void vu1_exec_micro(uint32_t start_addr)
     else if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
     gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
+    VU_PROF_END;
 }
 
 /* Round 576 (task #551): real MSCNT semantics. Ground-truthed against
@@ -745,6 +761,7 @@ void vu1_exec_micro(uint32_t start_addr)
  * vu1_exec_micro() but without the reset line. */
 void vu1_exec_micro_continue(void)
 {
+    VU_PROF_BEGIN;
     unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
 
@@ -754,6 +771,7 @@ void vu1_exec_micro_continue(void)
     else if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
     gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
+    VU_PROF_END;
 }
 
 /* Called by the common EE scheduler for a yielded microprogram or a
