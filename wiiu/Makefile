@@ -23,11 +23,11 @@ APP_NAME      := Gekko2 (Wii U test)
 APP_SHORTNAME := Gekko2
 APP_AUTHOR    := Gekko2
 ROOT          := $(abspath $(CURDIR)/..)
-SOURCES       := app ../source ../source/core ../source/core/ee ../source/core/iop ../source/core/vu \
+SOURCES       := app gx2/src ../source ../source/core ../source/core/ee ../source/core/iop ../source/core/vu \
                  ../source/core/gs ../source/core/recompiler ../source/hw \
                  ../third_party/libchdr/src ../third_party/libchdr/deps/lzma-25.01/src \
                  ../third_party/libchdr/deps/miniz-3.1.1 ../third_party/libchdr/deps/zstd-1.5.7
-INCLUDES      := ../include ../source ../third_party/libchdr/include ../third_party/libchdr/deps/lzma-25.01/include \
+INCLUDES      := gx2/src ../include ../source ../third_party/libchdr/include ../third_party/libchdr/deps/lzma-25.01/include \
                  ../third_party/libchdr/deps/miniz-3.1.1 ../third_party/libchdr/deps/zstd-1.5.7 app
 CHD_FLAGS     := -DWANT_RAW_DATA_SECTOR=1 -DWANT_SUBCODE=1 -DVERIFY_BLOCK_CRC=1 -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_DEFLATE_APIS \
                  -DMINIZ_NO_STDIO -DMINIZ_NO_TIME -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE=1

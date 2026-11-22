@@ -3,6 +3,8 @@
  * Looks for the user's own BIOS at <sd>/wiiu/gekko2/bios/ps2bios.bin. Nothing is bundled. */
 #include "g2_app.h"
 #include "wiiu_menu.h"
+#include "wiiu_text.h"
+#include "gx2_present.h"
 #include "core/hw/iop_sio2.h"
 #include <coreinit/cache.h>
 #include <coreinit/codegen.h>
@@ -56,8 +58,36 @@ static int dirty = 1;
 static uint64_t last_render_ms;
 static volatile int return_to_menu; /* hold L+R+ZL+ZR and press + while emulating */
 
+static int use_gx2;
+static uint32_t compose[640u * 480u];
+
+/* GPU path: compose the current picture (menu or emulator frame) and the last log lines into 640x480 on the CPU,
+ * then let the GPU scale it to the TV and the GamePad. */
+static void render_gx2(void)
+{
+    SHARED_LOCK();
+    if (shown_w && shown_h)
+        wiiu_scale_nearest(compose, 640u, 480u, shown, shown_w, shown_h);
+    else
+        memset(compose, 0, sizeof compose);
+    wiiu_text_dim_rows(compose, 640u, 480u - 3u * 15u - 4u, 480u);
+    const unsigned first = line_count > 3u ? line_count - 3u : 0;
+    for (unsigned i = first; i < line_count; i++) {
+        char t[81];
+        snprintf(t, sizeof t, "%.80s", lines[i % LINES]);
+        wiiu_text_draw(compose, 640u, 480u, 0, (int)(480u - 3u * 15u + (i - first) * 15u), t, 255, 255, 255);
+    }
+    dirty = 0;
+    SHARED_UNLOCK();
+    gx2_present_frame(compose, 640u, 480u, 1);
+}
+
 static void render(void)
 {
+    if (use_gx2) {
+        render_gx2();
+        return;
+    }
     SHARED_LOCK();
     OSScreenClearBufferEx(SCREEN_TV, 0x101820ff);
     OSScreenClearBufferEx(SCREEN_DRC, 0x101820ff);
@@ -294,21 +324,45 @@ static void run_emulation(void)
 #endif
 }
 
-int main(void)
+static void *read_whole_file(const char *path, uint32_t *size)
 {
-    WHBProcInit();
-    WHBLogCafeInit();
-    VPADInit();
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    void *buf = n > 0 ? MEMAllocFromDefaultHeapEx((uint32_t)n, 64) : NULL;
+    if (buf && fread(buf, 1, (size_t)n, f) != (size_t)n) {
+        MEMFreeToDefaultHeap(buf);
+        buf = NULL;
+    }
+    fclose(f);
+    *size = buf ? (uint32_t)n : 0;
+    return buf;
+}
+
+/* OSScreen path: software drawing, the fallback when there is no usable present.gsh. */
+static int init_osscreen(void)
+{
     OSScreenInit();
     tv_size = OSScreenGetBufferSizeEx(SCREEN_TV);
     drc_size = OSScreenGetBufferSizeEx(SCREEN_DRC);
     screen_memory = MEMAllocFromDefaultHeapEx(tv_size + drc_size, 0x100);
     if (!screen_memory)
-        return 1;
+        return 0;
     OSScreenSetBufferEx(SCREEN_TV, screen_memory);
     OSScreenSetBufferEx(SCREEN_DRC, (char *)screen_memory + tv_size);
     OSScreenEnableEx(SCREEN_TV, 1);
     OSScreenEnableEx(SCREEN_DRC, 1);
+    return 1;
+}
+
+int main(void)
+{
+    WHBProcInit();
+    WHBLogCafeInit();
+    VPADInit();
 #ifdef GEKKO2_WIIU_JIT
     OSInitMutex(&shared_lock);
 #endif
@@ -342,6 +396,25 @@ int main(void)
     }
     if (!bios)
         on_log(NULL, "Put your own PS2 BIOS at sd:/wiiu/gekko2/bios/ps2bios.bin (4 MiB dump).");
+
+    /* Display: GX2 (GPU scaling) when <sd>/wiiu/gekko2/present.gsh loads, otherwise OSScreen. They exclude each other. */
+    {
+        char gsh_path[300];
+        uint32_t gsh_size = 0;
+        void *gsh = NULL;
+        if (sd_root[0]) {
+            snprintf(gsh_path, sizeof gsh_path, "%s/wiiu/gekko2/present.gsh", sd_root);
+            gsh = read_whole_file(gsh_path, &gsh_size);
+        }
+        if (gsh && gx2_present_init(gsh, gsh_size, 640u, 480u)) {
+            use_gx2 = 1;
+            on_log(NULL, "GX2 presenter active (GPU scaling, present.gsh)");
+        } else {
+            on_log(NULL, gsh ? "present.gsh was rejected: using OSScreen" : "no present.gsh on the SD card: OSScreen (software)");
+            if (!init_osscreen())
+                return 1;
+        }
+    }
 
     menu = wiiu_menu_create(sd_root[0] ? sd_root : "/vol/external01", "ps2bios.bin");
     if (menu) {
@@ -386,8 +459,12 @@ int main(void)
     wiiu_menu_destroy(menu);
     VPADShutdown();
     WHBUnmountSdCard();
-    OSScreenShutdown();
-    MEMFreeToDefaultHeap(screen_memory);
+    if (use_gx2) {
+        gx2_present_shutdown();
+    } else {
+        OSScreenShutdown();
+        MEMFreeToDefaultHeap(screen_memory);
+    }
     WHBLogCafeDeinit();
     WHBProcShutdown();
     return 0;

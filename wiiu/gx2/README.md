@@ -1,6 +1,8 @@
 # GX2 for the Wii U test port (code, not verified)
 
-Status 2026-11-22: **written and compiled, never run.** The presenter and the probe build with devkitPPC r51 /
+Status 2026-11-23: **Test A (GPU presenter) was run by the owner in Cemu 2.6 (Vulkan): colour bars in the right order,
+moving box, a steady 61 frames/s in the probe log.** Test B (shader-free scan buffer) has not been run. Not tested on a Wii U.
+Earlier status: written and compiled, never run. The presenter and the probe build with devkitPPC r51 /
 wut; the shaders were written from memory of the wut samples and were **never assembled**. This container has no
 `latte-assembler`, no Cemu and no Wii U. Everything below tells you how to find out what works.
 
@@ -43,3 +45,10 @@ black picture is a useful result, send me a screenshot and the log.
 
 The presenter replaces the OSScreen drawing in `app/wiiu_main.c` (frames and the 640x480 menu go through
 `gx2_present_frame`; the three log lines need a small text overlay, which GX2 does not give for free).
+
+## In the app (since this commit)
+
+`gekko2-wiiu.rpx` / `gekko2-wiiu-jit.rpx` look for `<sd>/wiiu/gekko2/present.gsh` at start. If it loads, the launcher menu and the
+emulator picture go through `gx2_present_frame` (the CPU composes 640x480 with the last three log lines burned in, the GPU
+scales it with bilinear filtering to the TV and the GamePad). If the file is missing or rejected, the app uses OSScreen as
+before and says so in the log. The two display paths exclude each other. Not yet run in Cemu with the full app.
