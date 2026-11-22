@@ -59,6 +59,10 @@ wuhb: $(BUILD)
 clean:
 	@rm -rf $(BUILD) $(TARGET).rpx $(TARGET).elf $(TARGET).wuhb
 else
+# O2_FILES: source file names (e.g. ee_core.c) built with -O2 while everything else keeps $(OPT); used to
+# bisect the -O2 hang seen with devkitPPC GCC 16.2 (see README).
+O2_FILES ?=
+$(foreach f,$(O2_FILES),$(eval $(basename $(f)).o: CFLAGS += -O2))
 DEPENDS := $(OFILES:.o=.d)
 $(OUTPUT).rpx: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES)
