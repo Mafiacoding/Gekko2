@@ -62,7 +62,11 @@ else
 # O2_FILES: source file names (e.g. ee_core.c) built with -O2 while everything else keeps $(OPT); used to
 # bisect the -O2 hang seen with devkitPPC GCC 16.2 (see README).
 O2_FILES ?=
-$(foreach f,$(O2_FILES),$(eval $(basename $(f)).o: CFLAGS += -O2))
+$(foreach f,$(O2_FILES),$(eval $(basename $(f)).o: CFLAGS += -O2 $(O2_EXTRA)))
+# O1_FILES: built with -O1 even when OPT=-O2; O2_EXTRA: extra flags for the O2_FILES (flag bisecting).
+O1_FILES ?=
+O2_EXTRA ?=
+$(foreach f,$(O1_FILES),$(eval $(basename $(f)).o: CFLAGS += -O1))
 DEPENDS := $(OFILES:.o=.d)
 $(OUTPUT).rpx: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES)
