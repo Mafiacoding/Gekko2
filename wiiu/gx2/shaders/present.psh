@@ -1,7 +1,9 @@
 ; Gekko2 Wii U presenter - pixel shader (Latte assembly for latte-assembler).
 ; Samples one 2D texture at the interpolated texture coordinate.
-; The $NUM_SPI_PS_INPUT_CNTL lines match the shaders.md example. The $SAMPLER_VARS block and the TEX clause are
-; NOT covered by that guide and come from memory: UNVERIFIED. If latte-assembler rejects them, send the exact error.
+; The $NUM_SPI_PS_INPUT_CNTL lines match the shaders.md example. The TEX clause line and the SAMPLE line follow the
+; latte-assembler grammar (grammar.txt): "NN TEX: ADDR(n) CNT(n) VALID_PIX", then "0 SAMPLE dst, src, tN, sN".
+; ADDR is checked by the assembler: with 3 control-flow slots and no ALU clause the first TEX clause is at 32.
+; The $SAMPLER_VARS block is NOT covered by any source I could read: UNVERIFIED. Send the exact error if it fails.
 ; $MODE = "UniformRegister"
 
 ; $SAMPLER_VARS[0].name = "sampler_0"
@@ -12,7 +14,7 @@
 ; $SPI_PS_INPUT_CNTL[0].SEMANTIC = 0
 ; $SPI_PS_INPUT_CNTL[0].DEFAULT_VAL = 1
 
-00 TEX: ADDR(48) CNT(1) VALID_PIX
+00 TEX: ADDR(32) CNT(1) VALID_PIX
       0  SAMPLE R0, R0.xy0x, t0, s0
 01 EXP_DONE: PIX0, R0
 END_OF_PROGRAM
