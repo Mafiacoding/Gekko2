@@ -88,20 +88,32 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         return result->status = G2_ERR_BIOS;
     }
     say(platform, "BIOS ok: %s (%u bytes)", bios.version_string, (unsigned)bios.size);
+    if (!config->mask_preset) {
 #ifdef GEKKO2_WIIU_JIT
-    if (config->use_jit) {
-        /* The codegen area is only usable from the codegen core; ask now, on the emulator thread. */
+        if (config->use_jit) {
+            /* The codegen area is only usable from the codegen core; ask now, on the emulator thread. */
+            if (gekko2_codegen_area(NULL)) {
+                gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
+                say(platform, "EE dynarec requested (Wii U codegen area)");
+            } else {
+                say(platform, "EE dynarec NOT available: %s - interpreter only", gekko2_codegen_status());
+            }
+        }
+#endif
+        /* Software TLB translation cache ("Fastmem RAM page cache"): host-measured 25% less time to the first
+         * BIOS menu with an identical picture; it replaces a 48-entry TLB scan done for every fetch and access. */
+        gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_FASTMEM);
+    }
+#ifdef GEKKO2_WIIU_JIT
+    else if (gekko2_optimization_mask & GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)) {
         if (gekko2_codegen_area(NULL)) {
-            gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
-            say(platform, "EE dynarec requested (Wii U codegen area)");
+            say(platform, "EE dynarec on (Wii U codegen area)");
         } else {
+            gekko2_optimization_mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS));
             say(platform, "EE dynarec NOT available: %s - interpreter only", gekko2_codegen_status());
         }
     }
 #endif
-    /* Software TLB translation cache ("Fastmem RAM page cache"): host-measured 25% less time to the first BIOS
-     * menu with an identical picture; it replaces a 48-entry TLB scan done for every fetch and access. */
-    gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_FASTMEM);
     if (system_init(&bios, &bios) != 0) {
         say(platform, "system_init failed");
         return result->status = G2_ERR_INIT;

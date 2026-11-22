@@ -23,6 +23,7 @@ typedef struct {
     uint64_t max_batches;                     /* 0 = run until keep_running() says stop */
     unsigned present_interval_ms;             /* minimum time between frames handed to present() */
     int use_jit;                              /* try the EE dynarec (only in GEKKO2_WIIU_JIT builds) */
+    int mask_preset;                          /* 1 = the caller already applied the option mask (menu); 0 = FASTMEM + use_jit */
 } g2_config;
 
 typedef struct {

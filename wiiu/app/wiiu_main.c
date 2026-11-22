@@ -2,6 +2,7 @@
  * interpreter, software framebuffer through OSScreen, GamePad input, no audio, no GX2.
  * Looks for the user's own BIOS at <sd>/wiiu/gekko2/bios/ps2bios.bin. Nothing is bundled. */
 #include "g2_app.h"
+#include "wiiu_menu.h"
 #include "core/hw/iop_sio2.h"
 #include <coreinit/cache.h>
 #include <coreinit/codegen.h>
@@ -53,6 +54,7 @@ static volatile int shared_pad_ok;
 
 static int dirty = 1;
 static uint64_t last_render_ms;
+static volatile int return_to_menu; /* hold L+R+ZL+ZR and press + while emulating */
 
 static void render(void)
 {
@@ -118,7 +120,7 @@ static int keep(void *u)
 #ifdef GEKKO2_WIIU_JIT
     return !stop_requested;
 #else
-    if (!WHBProcIsRunning())
+    if (!WHBProcIsRunning() || return_to_menu)
         return 0;
     const uint64_t now = (uint64_t)OSTicksToMilliseconds(OSGetSystemTime());
     if (dirty && now - last_render_ms >= 500u) {
@@ -140,6 +142,11 @@ static int read_pad(uint16_t *pressed, uint8_t axes[4])
     if (VPADRead(VPAD_CHAN_0, &st, 1, &err) < 1 || err != VPAD_READ_SUCCESS)
         return 1;
     const uint32_t h = st.hold;
+    {
+        const uint32_t combo = VPAD_BUTTON_L | VPAD_BUTTON_R | VPAD_BUTTON_ZL | VPAD_BUTTON_ZR;
+        if ((h & combo) == combo && (st.trigger & VPAD_BUTTON_PLUS))
+            return_to_menu = 1;
+    }
     uint16_t p = 0;
     if (h & VPAD_BUTTON_B) p |= IOP_PAD_BTN_CROSS;
     if (h & VPAD_BUTTON_A) p |= IOP_PAD_BTN_CIRCLE;
@@ -208,6 +215,85 @@ static int emu_entry(int argc, void *argv)
 }
 #endif
 
+static wiiu_menu *menu;
+static uint32_t menu_fb[WM_W * WM_H];
+
+static void show_menu(void)
+{
+    wiiu_menu_render(menu, menu_fb);
+    SHARED_LOCK();
+    memcpy(shown, menu_fb, sizeof menu_fb);
+    shown_w = WM_W;
+    shown_h = WM_H;
+    dirty = 1;
+    SHARED_UNLOCK();
+}
+
+/* D-pad / buttons to menu edges, with a simple key repeat on UP/DOWN. */
+static unsigned menu_edges(uint32_t trigger, uint32_t hold, uint64_t now)
+{
+    static uint64_t next_repeat;
+    unsigned e = 0;
+    if (trigger & VPAD_BUTTON_UP) e |= WM_UP;
+    if (trigger & VPAD_BUTTON_DOWN) e |= WM_DOWN;
+    if (trigger & VPAD_BUTTON_LEFT) e |= WM_LEFT;
+    if (trigger & VPAD_BUTTON_RIGHT) e |= WM_RIGHT;
+    if (trigger & VPAD_BUTTON_A) e |= WM_A;
+    if (trigger & VPAD_BUTTON_B) e |= WM_B;
+    if (trigger & VPAD_BUTTON_PLUS) e |= WM_START;
+    if (trigger & VPAD_BUTTON_L) e |= WM_PAGE_UP;
+    if (trigger & VPAD_BUTTON_R) e |= WM_PAGE_DOWN;
+    if (trigger & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN))
+        next_repeat = now + 400u;
+    else if ((hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN)) && now >= next_repeat) {
+        e |= (hold & VPAD_BUTTON_UP) ? WM_UP : WM_DOWN;
+        next_repeat = now + 80u;
+    }
+    return e;
+}
+
+static void run_emulation(void)
+{
+    return_to_menu = 0;
+#ifdef GEKKO2_WIIU_JIT
+    /* Emulator thread on the codegen core; this thread keeps ProcUI, VPAD and the screen. */
+    static OSThread emu_thread;
+    static void *stack;
+    const uint32_t stack_size = 1024u * 1024u;
+    if (!stack)
+        stack = MEMAllocFromDefaultHeapEx(stack_size, 16);
+    if (!stack) {
+        on_log(NULL, "no memory for the emulator thread");
+        return;
+    }
+    stop_requested = 0;
+    OSCreateThread(&emu_thread, emu_entry, 0, NULL, (uint8_t *)stack + stack_size, stack_size, 16,
+                   1u << (unsigned)OSGetCodegenCore());
+    OSSetThreadName(&emu_thread, "gekko2-emu");
+    OSResumeThread(&emu_thread);
+    while (WHBProcIsRunning() && !return_to_menu) {
+        uint16_t pressed = 0;
+        uint8_t axes[4] = { 0x80, 0x80, 0x80, 0x80 };
+        const int ok = read_pad(&pressed, axes) == 0;
+        shared_pressed = pressed;
+        for (unsigned i = 0; i < 4; i++)
+            shared_axes[i] = axes[i];
+        shared_pad_ok = ok;
+        const uint64_t now = now_ms(NULL);
+        if (dirty && now - last_render_ms >= 500u) {
+            last_render_ms = now;
+            render();
+        }
+        OSSleepTicks(OSMillisecondsToTicks(16));
+    }
+    stop_requested = 1;
+    int ret = 0;
+    OSJoinThread(&emu_thread, &ret);
+#else
+    g2_run(&g_config, &g_platform, &g_result);
+#endif
+}
+
 int main(void)
 {
     WHBProcInit();
@@ -223,16 +309,19 @@ int main(void)
     OSScreenSetBufferEx(SCREEN_DRC, (char *)screen_memory + tv_size);
     OSScreenEnableEx(SCREEN_TV, 1);
     OSScreenEnableEx(SCREEN_DRC, 1);
+#ifdef GEKKO2_WIIU_JIT
+    OSInitMutex(&shared_lock);
+#endif
 
     on_log(NULL, "Gekko2 Wii U / Cemu test port (interpreter, software video)");
     on_log(NULL, "Test build: not a release, no speed claim.");
     char mount_bios[256] = "", fallback_bios[256] = "fs:/vol/external01/wiiu/gekko2/bios/ps2bios.bin";
-    char plain_bios[256] = "/vol/external01/wiiu/gekko2/bios/ps2bios.bin", iso[256] = "";
+    char plain_bios[256] = "/vol/external01/wiiu/gekko2/bios/ps2bios.bin", sd_root[256] = "";
     if (WHBMountSdCard()) {
         const char *root = WHBGetSdCardMountPath();
         if (root) {
+            snprintf(sd_root, sizeof sd_root, "%s", root);
             snprintf(mount_bios, sizeof mount_bios, "%s/wiiu/gekko2/bios/ps2bios.bin", root);
-            snprintf(iso, sizeof iso, "%s/wiiu/gekko2/game.iso", root);
             on_log(NULL, "SD card mounted");
         }
     } else {
@@ -251,52 +340,50 @@ int main(void)
         snprintf(tried, sizeof tried, "not found: %.80s", candidates[i]);
         on_log(NULL, tried);
     }
-    if (!bios) {
+    if (!bios)
         on_log(NULL, "Put your own PS2 BIOS at sd:/wiiu/gekko2/bios/ps2bios.bin (4 MiB dump).");
-        while (WHBProcIsRunning())
-            OSSleepTicks(OSMillisecondsToTicks(100));
-    } else {
-        g_platform = (g2_platform){ on_log, on_present, keep, now_ms, poll_pad, NULL };
-        g_config = (g2_config){ bios, iso[0] && readable(iso) ? iso : NULL, 2000u, 0, 1000u, 1 };
-#ifdef GEKKO2_WIIU_JIT
-        /* Emulator thread on the codegen core; this thread keeps ProcUI, VPAD and the screen. */
-        OSInitMutex(&shared_lock);
-        static OSThread emu_thread;
-        const uint32_t stack_size = 1024u * 1024u;
-        void *stack = MEMAllocFromDefaultHeapEx(stack_size, 16);
-        if (!stack) {
-            on_log(NULL, "no memory for the emulator thread");
-        } else {
-            on_log(NULL, "starting emulator thread on the codegen core");
-            OSCreateThread(&emu_thread, emu_entry, 0, NULL, (uint8_t *)stack + stack_size, stack_size, 16,
-                           1u << (unsigned)OSGetCodegenCore());
-            OSSetThreadName(&emu_thread, "gekko2-emu");
-            OSResumeThread(&emu_thread);
-            while (WHBProcIsRunning()) {
-                uint16_t pressed = 0;
-                uint8_t axes[4] = { 0x80, 0x80, 0x80, 0x80 };
-                const int ok = read_pad(&pressed, axes) == 0;
-                shared_pressed = pressed;
-                for (unsigned i = 0; i < 4; i++)
-                    shared_axes[i] = axes[i];
-                shared_pad_ok = ok;
-                const uint64_t now = now_ms(NULL);
-                if (dirty && now - last_render_ms >= 500u) {
-                    last_render_ms = now;
-                    render();
-                }
-                OSSleepTicks(OSMillisecondsToTicks(16));
-            }
-            stop_requested = 1;
-            int ret = 0;
-            OSJoinThread(&emu_thread, &ret);
-        }
-#else
-        g2_run(&g_config, &g_platform, &g_result);
-        while (WHBProcIsRunning())
-            OSSleepTicks(OSMillisecondsToTicks(100));
-#endif
+
+    menu = wiiu_menu_create(sd_root[0] ? sd_root : "/vol/external01", "ps2bios.bin");
+    if (menu) {
+        if (!bios)
+            wiiu_menu_set_notice(menu, "BIOS not found: sd:/wiiu/gekko2/bios/ps2bios.bin");
+        show_menu();
     }
+    g_platform = (g2_platform){ on_log, on_present, keep, now_ms, poll_pad, NULL };
+    while (menu && WHBProcIsRunning()) {
+        VPADStatus st;
+        VPADReadError err = VPAD_READ_SUCCESS;
+        uint32_t hold = 0, trigger = 0;
+        if (VPADRead(VPAD_CHAN_0, &st, 1, &err) >= 1 && err == VPAD_READ_SUCCESS) {
+            hold = st.hold;
+            trigger = st.trigger;
+        }
+        const uint64_t now = now_ms(NULL);
+        const unsigned edges = menu_edges(trigger, hold, now);
+        if (edges) {
+            const int action = wiiu_menu_input(menu, edges);
+            show_menu();
+            if (action == WM_ACTION_EXIT)
+                break;
+            if (action == WM_ACTION_START_BIOS || action == WM_ACTION_START_DISC) {
+                if (!bios) {
+                    wiiu_menu_set_notice(menu, "BIOS not found: sd:/wiiu/gekko2/bios/ps2bios.bin");
+                } else {
+                    g_config = (g2_config){ bios, action == WM_ACTION_START_DISC ? wiiu_menu_disc(menu) : NULL,
+                                            2000u, 0, 1000u, 0, 1 };
+                    run_emulation();
+                    wiiu_menu_set_notice(menu, "Back from emulation. Restart the app for a clean boot.");
+                }
+                show_menu();
+            }
+        }
+        if (dirty && now - last_render_ms >= 100u) {
+            last_render_ms = now;
+            render();
+        }
+        OSSleepTicks(OSMillisecondsToTicks(16));
+    }
+    wiiu_menu_destroy(menu);
     VPADShutdown();
     WHBUnmountSdCard();
     OSScreenShutdown();
