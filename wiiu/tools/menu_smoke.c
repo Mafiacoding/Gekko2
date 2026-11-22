@@ -27,25 +27,31 @@ int main(int argc, char **argv)
     snprintf(d, sizeof d, "%s/wiiu/gekko2/games/Second Game.chd", root); touch(d);
     snprintf(d, sizeof d, "%s/wiiu/gekko2/games/readme.txt", root); touch(d);
     wiiu_menu *m = wiiu_menu_create(root, "ps2bios.bin");
-    int ok = m != NULL, a;
+    int ok = m != NULL, act;
     dump(m, out, "01_main");
-    a = wiiu_menu_input(m, WM_A | WM_DOWN); /* DOWN moves; A with the edge set runs on the new item */
-    (void)a;
-    wiiu_menu_input(m, WM_DOWN);            /* SELECT DISC */
+    for (int i = 0; i < 3; i++) wiiu_menu_input(m, WM_DOWN);          /* SELECT DISC */
     ok = ok && wiiu_menu_input(m, WM_A) == WM_ACTION_NONE;
     dump(m, out, "02_browser");
-    wiiu_menu_input(m, WM_DOWN);            /* skip the ".." row */
-    ok = ok && wiiu_menu_input(m, WM_A) == WM_ACTION_NONE; /* selects the first image */
+    wiiu_menu_input(m, WM_DOWN);                                      /* skip the ".." row */
+    ok = ok && wiiu_menu_input(m, WM_A) == WM_ACTION_NONE;            /* picks the first image */
     ok = ok && wiiu_menu_disc(m) && strstr(wiiu_menu_disc(m), "Demo Disc A.iso");
     dump(m, out, "03_main_after_select");
-    wiiu_menu_input(m, WM_DOWN);            /* OPTIONS */
-    wiiu_menu_input(m, WM_DOWN);
+    act = wiiu_menu_input(m, WM_A);                                   /* START DISC */
+    ok = ok && act == WM_ACTION_START_DISC;
+    for (int i = 0; i < 3; i++) wiiu_menu_input(m, WM_DOWN);          /* SETTINGS */
     wiiu_menu_input(m, WM_A);
-    dump(m, out, "04_options");
+    dump(m, out, "04_settings");
+    for (int i = 0; i < 7; i++) wiiu_menu_input(m, WM_DOWN);          /* DEVELOPER SWITCHES */
+    wiiu_menu_input(m, WM_A);
+    dump(m, out, "05_developer");
     wiiu_menu_input(m, WM_B);
-    int start = wiiu_menu_input(m, WM_START);
-    ok = ok && start == WM_ACTION_START_BIOS;
-    printf("disc=%s start=%d\n", wiiu_menu_disc(m) ? wiiu_menu_disc(m) : "(none)", start);
+    wiiu_menu_input(m, WM_B);                                         /* back on the main page */
+    wiiu_menu_input(m, WM_DOWN);                                      /* ABOUT */
+    wiiu_menu_input(m, WM_A);
+    dump(m, out, "06_about");
+    wiiu_menu_input(m, WM_B);
+    ok = ok && wiiu_menu_input(m, WM_START) == WM_ACTION_NONE;        /* START only resumes: no action */
+    printf("disc=%s\n", wiiu_menu_disc(m) ? wiiu_menu_disc(m) : "(none)");
     wiiu_menu_destroy(m);
     puts(ok ? "PASS wiiu_menu host smoke" : "FAIL wiiu_menu host smoke");
     return ok ? 0 : 1;

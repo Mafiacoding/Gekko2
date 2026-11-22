@@ -2,19 +2,22 @@
 #include "wiiu_menu.h"
 #include "frontend.h" /* static ui_* page drawing shared with the Wii launcher */
 #include "core/hw/frontend_font_data.h"
+#include "core/hw/frontend_logo_data.h"
+#include "core/hw/frontend_settings.h"
 #include "core/recompiler/optimization.h"
 #include <stdlib.h>
 #include <string.h>
 
-typedef enum { PG_MAIN, PG_BROWSER, PG_OPTIONS, PG_ABOUT } page_t;
-enum { MI_BIOS, MI_DISC, MI_SELECT, MI_OPTIONS, MI_ABOUT, MI_EXIT, MI_COUNT };
+/* Page numbers follow the Wii launcher (source/main.c): 0 main, 1 settings, 2 about, 3 disc browser,
+ * 4 developer switches, 5 experiments, 6 network logger (not available here). */
+enum { PG_MAIN = 0, PG_SETTINGS = 1, PG_ABOUT = 2, PG_BROWSER = 3, PG_DEV = 4, PG_EXP = 5 };
 
 struct wiiu_menu {
-    page_t page;
-    int selected, opt_selected;
+    int page, selected, settings_selected, opt_selected, experiment_selected;
     frontend_browser browser;
-    int browser_ready;
-    char root[256], disc[512], bios_name[64], notice[96];
+    int browser_ready, last_disc;
+    unsigned hud, throughput, fps, gx;
+    char root[256], disc[512], disc_notice[80], notice[96], opt_path[300], settings_path[300], bios_name[64];
 };
 
 static uint32_t *g_fb;
@@ -68,6 +71,24 @@ static void menu_text(int x, int y, int scale, const char *s, int r, int g, int 
     }
 }
 
+/* The launcher logo (256x96 RGBA, alpha in the low byte) blended into the RGB buffer. */
+static void menu_logo(int x, int y)
+{
+    for (unsigned j = 0; j < FRONTEND_LOGO_HEIGHT; j++)
+        for (unsigned i = 0; i < FRONTEND_LOGO_WIDTH; i++) {
+            const uint32_t p = frontend_logo_pixels[j * FRONTEND_LOGO_WIDTH + i];
+            const unsigned a = p & 255u;
+            if (!a) continue;
+            const int px = x + (int)i, py = y + (int)j;
+            if (px < 0 || py < 0 || px >= (int)WM_W || py >= (int)WM_H) continue;
+            uint32_t *d = &g_fb[(size_t)py * WM_W + (size_t)px], o = *d;
+            const unsigned r = (((o >> 16) & 255u) * (255u - a) + ((p >> 24) & 255u) * a + 127u) / 255u;
+            const unsigned g = (((o >> 8) & 255u) * (255u - a) + ((p >> 16) & 255u) * a + 127u) / 255u;
+            const unsigned b = ((o & 255u) * (255u - a) + ((p >> 8) & 255u) * a + 127u) / 255u;
+            *d = (r << 16) | (g << 8) | b;
+        }
+}
+
 /* Developer switches that mean something on the Wii U test port. The rest are shown as UNAVAILABLE. */
 static uint32_t wiiu_available(void)
 {
@@ -79,16 +100,37 @@ static uint32_t wiiu_available(void)
     return gekko2_opt_available() & ~not_here; /* Wii hardware features and the IOP/VU dynarecs are not wired up here */
 }
 
+static int save_all(wiiu_menu *m)
+{
+    frontend_settings st = { m->hud, m->throughput, m->fps, m->gx };
+    int rc = 0;
+    if (m->opt_path[0] && gekko2_opt_save(m->opt_path)) rc = -1;
+    if (m->settings_path[0] && frontend_settings_save(&st, m->settings_path)) rc = -1;
+    return rc;
+}
+
+static void options_defaults(void)
+{
+    gekko2_opt_reset_requested();
+    /* Software TLB translation cache: measured faster with an identical picture. On by default, switchable. */
+    if (!(gekko2_opt_requested() & GEKKO2_OPT_BIT(GEKKO2_OPT_FASTMEM))) gekko2_opt_toggle(GEKKO2_OPT_FASTMEM);
+}
+
 wiiu_menu *wiiu_menu_create(const char *sd_root, const char *bios_name)
 {
     wiiu_menu *m = calloc(1, sizeof *m);
     if (!m) return NULL;
     snprintf(m->root, sizeof m->root, "%s", sd_root ? sd_root : "");
     snprintf(m->bios_name, sizeof m->bios_name, "%s", bios_name ? bios_name : "ps2bios.bin");
-    gekko2_opt_reset_requested();
-    /* Software TLB translation cache: measured faster, identical picture. On by default, switchable. */
-    if (!(gekko2_opt_requested() & GEKKO2_OPT_BIT(GEKKO2_OPT_FASTMEM)))
-        gekko2_opt_toggle(GEKKO2_OPT_FASTMEM);
+    snprintf(m->opt_path, sizeof m->opt_path, "%s/wiiu/gekko2/optimization.cfg", m->root);
+    snprintf(m->settings_path, sizeof m->settings_path, "%s/wiiu/gekko2/settings.cfg", m->root);
+    frontend_settings st;
+    frontend_settings_defaults(&st);
+    frontend_settings_load(&st, m->settings_path);
+    m->hud = st.hud; m->throughput = st.throughput; m->fps = st.fps; m->gx = 0; /* no GX on the Wii U */
+    options_defaults();
+    gekko2_opt_load(m->opt_path); /* keeps the defaults when there is no saved file */
+    snprintf(m->notice, sizeof m->notice, "SD: wiiu/gekko2/bios/ and games/");
     return m;
 }
 
@@ -113,144 +155,132 @@ static int open_browser(wiiu_menu *m)
     return 0;
 }
 
-static const char *base_name(const char *p)
-{
-    const char *s = strrchr(p, '/');
-    return s ? s + 1 : p;
-}
-
-static void draw_main(wiiu_menu *m)
-{
-    for (int y = 0; y < 480; y++) menu_rect(0, y, 640, 1, 4 + y / 120, 9 + y / 80, 22 + y / 25);
-    for (int i = 0; i < 7; i++) { int x = 408 + i * 28; menu_rect(x, 76 + i * 11, 2, 240 - i * 17, 12, 35 + i * 5, 66 + i * 9); }
-    menu_rect(36, 35, 4, 51, 67, 182, 255);
-    ui_text(menu_rect, 54, 32, 3, "GEKKO2", 204, 232, 255);
-    ui_text(menu_rect, 56, 84, 1, "WII U TEST PORT  /  " GEKKO2_RELEASE, 78, 163, 229);
-    menu_rect(36, 110, 568, 2, 24, 61, 99);
-    ui_text(menu_rect, 38, 129, 1, "PLAYSTATION 2 EMULATION", 100, 166, 215);
-    const char *labels[MI_COUNT] = { "START BIOS", "START DISC", "SELECT DISC", "DEVELOPER SWITCHES", "ABOUT", "EXIT" };
-    const char *desc[MI_COUNT] = { "Boot the PS2 BIOS (OSDSYS menu)", "Boot the selected ISO / BIN / CHD", "Browse the SD card for a disc image",
-                                   "CPU options; apply at the next start", "Build and controls", "Back to the Wii U menu" };
-    for (int i = 0; i < MI_COUNT; i++) {
-        int y = 152 + i * 32, on = i == m->selected;
-        const int dim = (i == MI_DISC && !m->disc[0]);
-        menu_rect(36, y, 370, 31, on ? 16 : 9, on ? 43 : 22, on ? 76 : 41);
-        menu_rect(36, y, 3, 31, on ? 65 : 20, on ? 183 : 49, on ? 255 : 76);
-        ui_text(menu_rect, 51, y + 3, 1, labels[i], dim ? 90 : on ? 228 : 148, dim ? 100 : on ? 242 : 176, dim ? 120 : on ? 255 : 207);
-        ui_text(menu_rect, 51, y + 17, 1, desc[i], on ? 115 : 75, on ? 188 : 116, on ? 235 : 157);
-    }
-    char line[100];
-    ui_text(menu_rect, 433, 173, 1, "CPU NEXT START", 91, 144, 188);
-    const uint32_t req = gekko2_opt_requested() & gekko2_opt_available();
-    const uint32_t jit = GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
-    ui_text(menu_rect, 433, 194, 1, (req & jit) == jit ? "EE DYNAREC" : "INTERPRETER", 185, 221, 250);
-    ui_text(menu_rect, 433, 240, 1, "BIOS", 91, 144, 188);
-    snprintf(line, sizeof line, "%.24s", m->bios_name);
-    ui_text(menu_rect, 433, 261, 1, line, 185, 221, 250);
-    ui_text(menu_rect, 433, 297, 1, "DISC", 91, 144, 188);
-    snprintf(line, sizeof line, "%.24s", m->disc[0] ? base_name(m->disc) : "(none)");
-    ui_text(menu_rect, 433, 318, 1, line, 185, 221, 250);
-    menu_rect(36, 381, 568, 1, 24, 61, 99);
-    ui_text(menu_rect, 38, 397, 1, m->notice, 117, 186, 237);
-    ui_text(menu_rect, 38, 437, 1, "UP/DOWN SELECT  A OPEN  + START BIOS  HOME EXIT", 209, 227, 246);
-}
-
-static void draw_about(void)
-{
-    for (int y = 0; y < 480; y++) menu_rect(0, y, 640, 1, 4 + y / 120, 9 + y / 80, 22 + y / 25);
-    ui_text(menu_rect, 36, 28, 2, "ABOUT", 204, 232, 255);
-    ui_text(menu_rect, 48, 90, 1, "Experimental PS2 emulator, Wii U test port.", 221, 237, 255);
-    ui_text(menu_rect, 48, 126, 1, "Interpreter, software video through OSScreen.", 106, 171, 223);
-    ui_text(menu_rect, 48, 150, 1, "BIOS: sd:/wiiu/gekko2/bios/ps2bios.bin (your dump).", 106, 171, 223);
-    ui_text(menu_rect, 48, 174, 1, "Discs: sd:/wiiu/gekko2/games/  (.iso .bin .chd)", 106, 171, 223);
-    ui_text(menu_rect, 48, 216, 1, "Pad: B Cross, A Circle, Y Square, X Triangle,", 106, 171, 223);
-    ui_text(menu_rect, 48, 240, 1, "L/R = L1/R1, ZL/ZR = L2/R2, + Start, - Select.", 106, 171, 223);
-    ui_text(menu_rect, 48, 282, 1, "Back to this menu: hold L+R+ZL+ZR and press +.", 106, 171, 223);
-    ui_text(menu_rect, 48, 320, 1, "Not a release. No speed or compatibility claim.", 117, 186, 237);
-    ui_text(menu_rect, 36, 437, 1, "B BACK", 209, 227, 246);
-}
-
 void wiiu_menu_render(wiiu_menu *m, uint32_t *xrgb)
 {
     g_fb = xrgb;
     ui_text_renderer = menu_text;
-    ui_logo_renderer = NULL;
+    ui_logo_renderer = menu_logo;
     switch (m->page) {
-    case PG_MAIN: draw_main(m); break;
+    case PG_DEV: ui_optimization_draw(menu_rect, m->opt_selected, gekko2_opt_requested(), wiiu_available(), m->notice); break;
+    case PG_EXP: ui_experiments_draw(menu_rect, m->experiment_selected, m->notice); break;
+    case PG_SETTINGS: ui_settings_draw(menu_rect, m->settings_selected, (int)m->hud, (int)m->throughput, (int)m->fps, (int)m->gx, m->notice); break;
     case PG_BROWSER: ui_browser_draw(menu_rect, &m->browser, m->notice); break;
-    case PG_OPTIONS: ui_optimization_draw(menu_rect, m->opt_selected, gekko2_opt_requested(), wiiu_available(), m->notice); break;
-    case PG_ABOUT: draw_about(); break;
+    default: ui_draw(menu_rect, m->selected, m->page, 0, (int)m->hud, (int)m->throughput, (int)m->fps, (int)m->gx, gekko2_opt_requested(), m->notice); break;
     }
     g_fb = NULL;
 }
 
-static int step(int v, unsigned edges, int count)
+static int wrap(int v, int delta, int count) { return (v + delta + count) % count; }
+
+static void experiment_toggle(wiiu_menu *m, unsigned n)
 {
-    if (edges & WM_UP) v = v > 0 ? v - 1 : count - 1;
-    if (edges & WM_DOWN) v = v + 1 < count ? v + 1 : 0;
-    return v;
+    if (!(gekko2_experimental_available() & (1u << n))) { wiiu_menu_set_notice(m, "Not available in this build."); return; }
+    gekko2_experimental_request(n, !gekko2_experimental_requested(n));
+    wiiu_menu_set_notice(m, "Applied at the next cold boot.");
+}
+
+static int settings_change(wiiu_menu *m)
+{
+    int rc = 0;
+    switch (m->settings_selected) {
+    case UI_SET_RENDERER: wiiu_menu_set_notice(m, "GX is not available on the Wii U port (software video only)."); return 0;
+    case UI_SET_SOUND: wiiu_menu_set_notice(m, "Sound output is not available on the Wii U port yet."); return 0;
+    case UI_SET_HUD: m->hud = !m->hud; break;
+    case UI_SET_UPDATE: m->throughput = !m->throughput; break;
+    case UI_SET_FPS: m->fps = !m->fps; break;
+    case UI_SET_PROFILE:
+        gekko2_opt_request_profile(!strcmp(gekko2_opt_profile_name(), "WII BASE") ? GEKKO2_PROFILE_INTERPRETER : GEKKO2_PROFILE_BASE);
+        break;
+    case UI_SET_EXPERIMENTS: m->page = PG_EXP; return 0;
+    case UI_SET_DEVELOPER: m->page = PG_DEV; return 0;
+    case UI_SET_NETWORK: wiiu_menu_set_notice(m, "The network logger is not available on the Wii U port."); return 0;
+    case UI_SET_DEFAULTS: {
+        frontend_settings d;
+        frontend_settings_defaults(&d);
+        m->hud = d.hud; m->throughput = d.throughput; m->fps = d.fps; m->gx = 0;
+        options_defaults();
+        for (unsigned n = 0; n < GEKKO2_EXP_COUNT; n++) gekko2_experimental_request(n, 0);
+        break;
+    }
+    }
+    rc = save_all(m);
+    wiiu_menu_set_notice(m, rc ? "Some settings were not saved. Check the SD card." : "Saved. Applies at the next start.");
+    return 0;
 }
 
 int wiiu_menu_input(wiiu_menu *m, unsigned edges)
 {
     if (!m || !edges) return WM_ACTION_NONE;
+    if (edges & WM_START) { /* the Wii launcher resumes a paused session here; this port has none */
+        wiiu_menu_set_notice(m, "No paused session. Choose BIOS or DISC.");
+        return WM_ACTION_NONE;
+    }
     switch (m->page) {
-    case PG_MAIN:
-        if (edges & WM_START) { gekko2_opt_apply(); return WM_ACTION_START_BIOS; }
-        m->selected = step(m->selected, edges, MI_COUNT);
-        if (edges & WM_A) {
-            m->notice[0] = 0;
-            switch (m->selected) {
-            case MI_BIOS: gekko2_opt_apply(); return WM_ACTION_START_BIOS;
-            case MI_DISC:
-                if (!m->disc[0]) { wiiu_menu_set_notice(m, "No disc selected: use SELECT DISC first."); break; }
-                gekko2_opt_apply();
-                return WM_ACTION_START_DISC;
-            case MI_SELECT:
-                if (open_browser(m) < 0) wiiu_menu_set_notice(m, "Could not open the SD card folder.");
-                else m->page = PG_BROWSER;
-                break;
-            case MI_OPTIONS: m->page = PG_OPTIONS; break;
-            case MI_ABOUT: m->page = PG_ABOUT; break;
-            case MI_EXIT: return WM_ACTION_EXIT;
-            }
-        }
-        break;
     case PG_BROWSER:
         if (edges & WM_B) {
-            if (!strcmp(m->browser.path, m->browser.root)) { m->page = PG_MAIN; m->notice[0] = 0; }
-            else if (frontend_browser_up(&m->browser) < 0) wiiu_menu_set_notice(m, "Could not open the parent folder.");
-            break;
-        }
-        if (m->browser.count) {
-            if (edges & WM_UP) m->browser.selected = m->browser.selected > 0 ? m->browser.selected - 1 : m->browser.count - 1;
-            if (edges & WM_DOWN) m->browser.selected = m->browser.selected + 1 < m->browser.count ? m->browser.selected + 1 : 0;
-            if (edges & WM_PAGE_UP) m->browser.selected = m->browser.selected > 8 ? m->browser.selected - 8 : 0;
-            if (edges & WM_PAGE_DOWN) m->browser.selected = m->browser.selected + 8 < m->browser.count ? m->browser.selected + 8 : m->browser.count - 1;
-        }
-        if (edges & WM_A) {
+            if (!strcmp(m->browser.path, m->browser.root)) { m->page = PG_MAIN; wiiu_menu_set_notice(m, m->disc[0] ? m->disc_notice : "No disc selected."); }
+            else if (frontend_browser_up(&m->browser) < 0) wiiu_menu_set_notice(m, "Could not open parent folder.");
+        } else if ((edges & WM_PAGE_UP) && m->browser.count) m->browser.selected = m->browser.selected >= 8 ? m->browser.selected - 8 : 0;
+        else if ((edges & WM_PAGE_DOWN) && m->browser.count) m->browser.selected = m->browser.selected + 8 < m->browser.count ? m->browser.selected + 8 : m->browser.count - 1;
+        else if ((edges & WM_UP) && m->browser.count) m->browser.selected = (m->browser.selected + m->browser.count - 1) % m->browser.count;
+        else if ((edges & WM_DOWN) && m->browser.count) m->browser.selected = (m->browser.selected + 1) % m->browser.count;
+        else if (edges & WM_A) {
             char path[512];
             int rc = frontend_browser_activate(&m->browser, path, sizeof path);
             if (rc == 1) {
+                const char *name = strrchr(path, '/');
                 snprintf(m->disc, sizeof m->disc, "%s", path);
+                snprintf(m->disc_notice, sizeof m->disc_notice, "DISC: %.62s", name ? name + 1 : path);
+                wiiu_menu_set_notice(m, m->disc_notice);
                 m->page = PG_MAIN;
-                m->selected = MI_DISC;
-                wiiu_menu_set_notice(m, "Disc selected. START DISC to boot it.");
-            } else if (rc < 0) wiiu_menu_set_notice(m, "Could not open that entry.");
+                m->selected = UI_DISC;
+            } else wiiu_menu_set_notice(m, rc < 0 ? "Could not open selection." : "Choose an ISO / BIN / CHD file.");
         }
-        break;
-    case PG_OPTIONS: {
-        if (edges & WM_B) { m->page = PG_MAIN; m->notice[0] = 0; break; }
-        m->opt_selected = step(m->opt_selected, edges, GEKKO2_OPT_COUNT);
-        if (edges & (WM_A | WM_LEFT | WM_RIGHT)) {
+        return WM_ACTION_NONE;
+    case PG_DEV:
+        if (edges & WM_B) m->page = PG_SETTINGS;
+        else if (edges & WM_UP) m->opt_selected = wrap(m->opt_selected, -1, GEKKO2_OPT_COUNT);
+        else if (edges & WM_DOWN) m->opt_selected = wrap(m->opt_selected, 1, GEKKO2_OPT_COUNT);
+        else if (edges & (WM_A | WM_LEFT | WM_RIGHT)) {
             if (!(wiiu_available() & GEKKO2_OPT_BIT((unsigned)m->opt_selected))) wiiu_menu_set_notice(m, "Not available on this build.");
-            else { gekko2_opt_toggle((unsigned)m->opt_selected); m->notice[0] = 0; }
+            else {
+                gekko2_opt_toggle((unsigned)m->opt_selected);
+                wiiu_menu_set_notice(m, save_all(m) ? "Not saved. Check the SD card." : "Saved. Applies at the next start.");
+            }
         }
-        break;
-    }
+        return WM_ACTION_NONE;
+    case PG_EXP:
+        if (edges & WM_B) m->page = PG_SETTINGS;
+        else if (edges & WM_UP) m->experiment_selected = wrap(m->experiment_selected, -1, GEKKO2_EXP_COUNT);
+        else if (edges & WM_DOWN) m->experiment_selected = wrap(m->experiment_selected, 1, GEKKO2_EXP_COUNT);
+        else if (edges & (WM_A | WM_LEFT | WM_RIGHT)) experiment_toggle(m, (unsigned)m->experiment_selected);
+        return WM_ACTION_NONE;
+    case PG_SETTINGS:
+        if (edges & WM_B) m->page = PG_MAIN;
+        else if (edges & WM_UP) m->settings_selected = wrap(m->settings_selected, -1, UI_SET_COUNT);
+        else if (edges & WM_DOWN) m->settings_selected = wrap(m->settings_selected, 1, UI_SET_COUNT);
+        else if (edges & (WM_A | WM_LEFT | WM_RIGHT)) settings_change(m);
+        return WM_ACTION_NONE;
     case PG_ABOUT:
         if (edges & (WM_B | WM_A)) m->page = PG_MAIN;
-        break;
+        return WM_ACTION_NONE;
+    default: break;
+    }
+    /* main page */
+    if (edges & (WM_UP | WM_LEFT)) m->selected = wrap(m->selected, -1, UI_MENU_COUNT);
+    else if (edges & (WM_DOWN | WM_RIGHT)) m->selected = wrap(m->selected, 1, UI_MENU_COUNT);
+    else if (edges & WM_A) {
+        if (m->selected == UI_EXIT) return WM_ACTION_EXIT;
+        if (m->selected == UI_SETTINGS || m->selected == UI_ABOUT) { m->page = m->selected == UI_SETTINGS ? PG_SETTINGS : PG_ABOUT; return WM_ACTION_NONE; }
+        const int disc = m->selected == UI_COLD_BOOT ? m->last_disc : m->selected == UI_DISC;
+        if (m->selected == UI_SELECT_DISC || (disc && !m->disc[0])) {
+            if (open_browser(m) < 0) wiiu_menu_set_notice(m, "Could not open SD card.");
+            else { m->page = PG_BROWSER; wiiu_menu_set_notice(m, "Choose an ISO / BIN / CHD file."); }
+            return WM_ACTION_NONE;
+        }
+        m->last_disc = disc;
+        gekko2_opt_apply();
+        return disc ? WM_ACTION_START_DISC : WM_ACTION_START_BIOS;
     }
     return WM_ACTION_NONE;
 }
