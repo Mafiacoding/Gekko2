@@ -44,6 +44,21 @@ core 0; code in the normal heap crashes Cemu; `OSCodegenCopy` and RW/R_X switchi
 - Differential test (Linux 32-bit big-endian PowerPC under qemu-user, CPU 750, mmap/mprotect standing in for the
   codegen area): see `docs` notes in the commit message for the result; this is not a Cemu or Wii U measurement.
 
+## Build flags and speed (measured)
+
+- **Default: `-O1` plus the software TLB translation cache** (`GEKKO2_OPT_FASTMEM`, enabled in `app/g2_app.c`).
+  Host x86, same BIOS, two runs in parallel: 371.6 s -> 278.9 s to the first BIOS menu with an identical picture.
+  gprof: `ee_tlb_translate_selected` 18.6% -> 7.7% of the time. Cemu (owner screenshots, rough): about 15-20% less
+  time to the same EE instruction count; digits in the screenshots were partly cut off.
+- **`-O2` is shelved.** On the host `-O2` is ~20% faster than `-O1` (267 s vs 336 s), but with devkitPPC GCC 16.2 in
+  Cemu: (1) with `-O2` only for `ee_hle_thread.c` the EE hangs in `WaitSema` (EE pc `0x83624`); `-O2` only for
+  `ee_core.c` runs on; everything `-O2` except `ee_hle_thread.c` runs on; (2) `-O2` builds show thin vertical streaks in
+  the BIOS picture even with `-ffp-contract=off` (so it is not fused multiply-add); (3) no measurable speed-up in
+  Cemu (`ips` about 1.2 M/s either way). Root causes are unknown. `make O2_FILES=... O1_FILES=... O2_EXTRA=...`
+  reproduces the test builds.
+- The EE dynarec build (`make JIT=1`) is slower than the interpreter in Cemu (about 1.5x longer to the same
+  instruction count) because Cemu has to translate the generated code a second time.
+
 ## Not done / known limits
 
 - No audio, no GX2: video is a software frame copied through `OSScreen` about once a second. GamePad is
