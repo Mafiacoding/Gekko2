@@ -3,6 +3,7 @@
  * MCDevInfo/McDataChecksum (public protocol and parity equations).
  * No authentication keys, upstream filesystem or CPU backend copied. */
 #include "core/hw/ps2_memory_card.h"
+#include "core/iop_async.h"
 #include "core/hw/ps2_mc_files.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -31,7 +32,8 @@ static void page_ecc(unsigned page)
  uint8_t *p=image()+page*PS2_MC_PAGE_BYTES;
  for(unsigned i=0;i<4;i++)ps2_mc_ecc128(p+i*128u,p+512u+i*3u);
 }
-int ps2_mc_present(void){return state!=NULL;}
+int ps2_mc_present(void){
+    G2_IOP_CALLS_EE();return state!=NULL;}
 int ps2_mc_writable(void){return state&&!readonly;}
 int ps2_mc_logical_read(uint32_t offset,void *data,uint32_t bytes)
 {
@@ -52,7 +54,8 @@ int ps2_mc_logical_write(uint32_t offset,const void *data,uint32_t bytes)
 }
 int ps2_mc_erase_all(void)
 {if(!ps2_mc_writable())return -1;memset(image(),0xff,PS2_MC_IMAGE_BYTES);dirty=1;return 0;}
-void ps2_mc_reset_protocol(void){cursor=sector=mode=0;terminator=0x55;}
+void ps2_mc_reset_protocol(void){
+    G2_IOP_CALLS_EE();cursor=sector=mode=0;terminator=0x55;}
 int ps2_mc_flush(void)
 {
  if(!state||!dirty)return 0;
@@ -125,6 +128,7 @@ static void ack(uint8_t *out,unsigned n)
 {memset(out,0,n);out[n-2]=0x2b;out[n-1]=terminator;}
 void ps2_mc_transfer(const uint8_t *in,uint8_t *out,unsigned n)
 {
+    G2_IOP_CALLS_EE();
  if(!out)return;memset(out,0xff,n);
  if(!state||!in||n<4u||in[0]!=0x81)return;
  unsigned cmd=in[1];

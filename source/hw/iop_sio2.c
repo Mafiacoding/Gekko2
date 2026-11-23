@@ -4,6 +4,7 @@
  * real memory-card command/response protocol, task #299).
  */
 #include "core/hw/iop_sio2.h"
+#include "core/iop_async.h"
 #include "core/hw/ps2_memory_card.h"
 #include "core/hw/iop_intc.h"
 #include <string.h>
@@ -65,7 +66,8 @@ void iop_sio2_pad_protocol_load(const uint8_t in[IOP_PAD_PROTOCOL_BYTES])
 }
 static uint32_t g_pad_samples;
 uint32_t iop_sio2_pad_sample_count(void){return g_pad_samples;}
-uint16_t iop_sio2_pad_sample_buttons(void){g_pad_samples++;return g_pad.buttons;}
+uint16_t iop_sio2_pad_sample_buttons(void){
+    G2_EE_CALLS_IOP();g_pad_samples++;return g_pad.buttons;}
 static uint32_t g_pad_command_count = 0; /* Round 510 diagnostic */
 
 /* Command/reply staging buffers for the batched FIFOIN -> CTRL-start
@@ -140,6 +142,7 @@ void iop_sio2_mc_eject(void)
 
 int iop_sio2_mc_is_inserted(void)
 {
+    G2_EE_CALLS_IOP();
     return g_mc.inserted||ps2_mc_present();
 }
 
@@ -155,11 +158,13 @@ void iop_sio2_pad_disconnect(void)
 
 int iop_sio2_pad_is_connected(void)
 {
+    G2_EE_CALLS_IOP();
     return g_pad.connected;
 }
 
 void iop_sio2_pad_set_buttons(uint16_t pressed_mask)
 {
+    G2_EE_CALLS_IOP();
     g_pad.buttons = pressed_mask;
 }
 
@@ -185,18 +190,21 @@ uint32_t iop_sio2_get_pad_command_count(void)
 
 void iop_sio2_pad_set_analog_mode(int enabled)
 {
+    G2_EE_CALLS_IOP();
     g_pad.analog_mode = enabled ? 1 : 0;
     g_pad.native_mode=0;
 }
 
 int iop_sio2_pad_is_analog_mode(void)
 {
+    G2_EE_CALLS_IOP();
     return g_pad.analog_mode;
 }
 
 void iop_sio2_pad_set_analog_axes(uint8_t right_x, uint8_t right_y,
                                    uint8_t left_x, uint8_t left_y)
 {
+    G2_EE_CALLS_IOP();
     g_pad.axis_rx = right_x;
     g_pad.axis_ry = right_y;
     g_pad.axis_lx = left_x;
@@ -206,6 +214,7 @@ void iop_sio2_pad_set_analog_axes(uint8_t right_x, uint8_t right_y,
 void iop_sio2_pad_get_analog_axes(uint8_t *right_x, uint8_t *right_y,
                                    uint8_t *left_x, uint8_t *left_y)
 {
+    G2_EE_CALLS_IOP();
     if (right_x) *right_x = g_pad.axis_rx;
     if (right_y) *right_y = g_pad.axis_ry;
     if (left_x)  *left_x  = g_pad.axis_lx;

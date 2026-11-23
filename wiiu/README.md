@@ -131,3 +131,18 @@ and 501M EE instructions, in both the 8-slot scheduler and the event scheduler. 
 runs. Speed on the host for that BIOS animation phase: 68.3 s -> 61.5 s (8-slot scheduler), 64.8 s -> 58.0 s (event
 scheduler), about 10 %. That phase is also GS/IOP heavy, so the EE share is only part of the time. Not measured: Cemu,
 real Wii U, any game. The Wii code is unchanged (disassembly diff of the Wii ELF against the previous commit).
+
+## IOP worker thread (experimental, off by default)
+
+`g2_config.iop_async` (create `<sd>/wiiu/gekko2/iop_async_on.txt`) runs the IOP catch-up of the event scheduler on the
+third Espresso core while the EE runs its next window; `event_sched_on.txt` enables the event scheduler alone.
+Ownership rules are in `include/core/iop_async.h`: the 34 functions on the EE/IOP border (found from the object files'
+symbol tables: SIF, SIF0/SIF1 DMA, EE INTC, CDVD/HLE file and load protocols, IOP heap, pad, memory card, CDVD config)
+wait either for the IOP job (EE side) or until the EE is parked at a fixed point (IOP side). The worker is recognised
+by its stack range.
+
+Host result (real BIOS, clock frozen, 501M EE instructions): the worker gives exactly the same EE state, EE RAM and IOP
+RAM hashes as the synchronous event scheduler, but it is slower (53-58 s against 44-45 s). The IOP's own event horizon
+(timers) cuts windows so short that a job averages 4 IOP ticks, and 20-25 million hand-overs cost more than the overlap
+saves. That is why it stays off. The event scheduler alone was about 5 % faster than the 8-slot scheduler on the host
+(46.5 s against 49.2 s) and is also off by default.

@@ -3,6 +3,7 @@
  * scope, per-register semantics, and PCSX2 source cross-reference.
  */
 #include "core/hw/iop_dma.h"
+#include "core/iop_async.h"
 #include "core/hw/iop_intc.h" /* Round 114: iop_intc_raise/iop_intc_raise_soft */
 #include <string.h>
 #include "core/hw/dma.h" /* Round 199: dma_channel_receive_quadwords() - the EE-side inbound-write primitive Round 198 built */
@@ -297,6 +298,7 @@ int iop_dma_channel_write_bytes(int channel, const uint8_t *data, uint32_t nbyte
  * rebind) for where this gets wired in. */
 void iop_dma_sif1_ee_to_iop_sink(int channel, const uint8_t *data, uint32_t qwc)
 {
+    G2_EE_CALLS_IOP();
     (void)channel; /* dma.c always calls this only for DMA_CHANNEL_SIF1 - see dma_set_sink() call sites */
     iop_dma_channel_write_bytes(IOP_DMA_SIF1_CHANNEL, data, qwc * 16u); /* 1 quadword = 16 bytes */
     iop_dma_signal_channel_done(IOP_DMA_SIF1_CHANNEL); /* real per-channel completion IRQ, same path as SIF0/SIF2 */
@@ -381,6 +383,7 @@ int iop_dma_mmio_read32(uint32_t addr, uint32_t *out)
  * and honesty caveats. */
 void iop_dma_signal_channel_done(int channel)
 {
+    G2_EE_CALLS_IOP();
     if (channel < 0 || channel == 5 || channel > 12)
         return;
 

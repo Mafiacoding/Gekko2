@@ -270,6 +270,7 @@ static int emu_entry(int argc, void *argv)
 /* GS/GIF worker thread: a second Espresso core runs the GIF/GS work, the emulation thread only hands data over.
  * On by default; create <sd>/wiiu/gekko2/gs_async_off.txt to run everything on one thread again. */
 static OSThread gs_thread;
+static unsigned gs_core = 0xffu;
 static void *gs_stack;
 static void (*gs_fn)(void);
 static int gs_entry(int argc, void *argv)
@@ -290,6 +291,7 @@ static int start_worker(void (*fn)(void), void *user)
     unsigned core = 2;
     if ((unsigned)OSGetCoreId() == core)
         core = 1;
+    gs_core = core;
     if (!OSCreateThread(&gs_thread, gs_entry, 0, NULL, (uint8_t *)gs_stack + stack_size, stack_size, 16, 1u << core))
         return -1;
     OSSetThreadName(&gs_thread, "gekko2-gs");
@@ -297,6 +299,32 @@ static int start_worker(void (*fn)(void), void *user)
     return 0;
 }
 static void worker_idle(void) { OSYieldThread(); }
+
+/* IOP worker: the third Espresso core (neither the emulation thread's nor the GS worker's). The core needs the stack
+ * range to tell the worker apart, so the caller provides the stack. */
+static OSThread iop_thread;
+static void (*iop_fn)(void);
+static int iop_entry(int argc, void *argv)
+{
+    (void)argc; (void)argv;
+    iop_fn();
+    return 0;
+}
+static int start_worker_stack(void (*fn)(void), void *user, void *stack, unsigned stack_size)
+{
+    (void)user;
+    iop_fn = fn;
+    const unsigned emu = (unsigned)OSGetCoreId();
+    const unsigned gs = gs_core <= 2u ? gs_core : (emu == 2u ? 1u : 2u);
+    unsigned core = 3u - emu - gs;
+    if (core > 2u || core == emu || core == gs)
+        core = emu == 0u ? 1u : 0u;
+    if (!OSCreateThread(&iop_thread, iop_entry, 0, NULL, (uint8_t *)stack + stack_size, stack_size, 16, 1u << core))
+        return -1;
+    OSSetThreadName(&iop_thread, "gekko2-iop");
+    OSResumeThread(&iop_thread);
+    return 0;
+}
 
 static wiiu_menu *menu;
 static uint32_t menu_fb[WM_W * WM_H];
@@ -475,7 +503,7 @@ int main(void)
             wiiu_menu_set_notice(menu, "BIOS not found: sd:/wiiu/gekko2/bios/ps2bios.bin");
         show_menu();
     }
-    g_platform = (g2_platform){ on_log, on_present, keep, now_ms, poll_pad, start_worker, worker_idle, NULL };
+    g_platform = (g2_platform){ on_log, on_present, keep, now_ms, poll_pad, start_worker, worker_idle, NULL, start_worker_stack };
     while (menu && WHBProcIsRunning()) {
         VPADStatus st;
         VPADReadError err = VPAD_READ_SUCCESS;
@@ -498,7 +526,8 @@ int main(void)
                     static char session_log[300];
                     snprintf(session_log, sizeof session_log, "%s/wiiu/gekko2/session.log", sd_root[0] ? sd_root : "/vol/external01");
                     g_config = (g2_config){ bios, action == WM_ACTION_START_DISC ? wiiu_menu_disc(menu) : NULL,
-                                            2000u, 0, 1000u, 0, 1, session_log, gs_async_wanted(sd_root), !file_exists_flag(sd_root, "fast_run_off.txt") };
+                                            2000u, 0, 1000u, 0, 1, session_log, gs_async_wanted(sd_root), !file_exists_flag(sd_root, "fast_run_off.txt"),
+                                            file_exists_flag(sd_root, "event_sched_on.txt"), file_exists_flag(sd_root, "iop_async_on.txt") };
                     run_emulation();
                     wiiu_menu_set_notice(menu, "Back from emulation. Restart the app for a clean boot.");
                 }

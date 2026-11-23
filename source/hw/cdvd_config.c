@@ -1,4 +1,5 @@
 #include "core/hw/cdvd_config.h"
+#include "core/iop_async.h"
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -9,12 +10,16 @@ static const unsigned blocks[3]={4,2,7};
 static uint32_t crc(const uint8_t*p,unsigned n){uint32_t x=~0u;while(n--){x^=*p++;for(unsigned i=0;i<8;i++)x=(x>>1)^(0xedb88320u&-(x&1u));}return ~x;}
 static void put32(uint8_t*p,uint32_t v){for(unsigned i=0;i<4;i++)p[i]=v>>(8*i);}
 static uint32_t get32(const uint8_t*p){return p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
-void cdvd_config_reset_session(void){active=mode=bank=count=block_index=0;}
+void cdvd_config_reset_session(void){
+    G2_IOP_CALLS_EE();active=mode=bank=count=block_index=0;}
 void cdvd_config_reset(void){memset(banks,0,sizeof banks);filename[0]=0;cdvd_config_reset_session();}
 unsigned cdvd_config_count(void){return active?count:0;}
-uint8_t cdvd_config_open(unsigned m,unsigned b,unsigned n){cdvd_config_reset_session();if(m>1||b>2||n>255)return 0x80;active=1;mode=m;bank=b;count=n;return 0;}
-uint8_t cdvd_config_close(void){cdvd_config_reset_session();return 0;}
+uint8_t cdvd_config_open(unsigned m,unsigned b,unsigned n){
+    G2_IOP_CALLS_EE();cdvd_config_reset_session();if(m>1||b>2||n>255)return 0x80;active=1;mode=m;bank=b;count=n;return 0;}
+uint8_t cdvd_config_close(void){
+    G2_IOP_CALLS_EE();cdvd_config_reset_session();return 0;}
 uint8_t cdvd_config_read(uint8_t out[16]){
+    G2_IOP_CALLS_EE();
  memset(out,0,16);if(!active||mode!=0||block_index>=count){out[0]=0x80;return 0x80;}
  /* PCSX2 cdvdReadConfig: requests beyond implemented blocks read zeros,
   * without advancing the physical block cursor. */
@@ -41,6 +46,7 @@ static int persist(void){
  remove(bak);return 0;
 }
 uint8_t cdvd_config_write(const uint8_t in[16]){
+    G2_IOP_CALLS_EE();
  if(!active||mode!=1||block_index>=count)return 0x80;if(block_index>=blocks[bank])return 0;
  uint8_t old[16];memcpy(old,banks[bank][block_index],16);memcpy(banks[bank][block_index],in,16);
  if(persist()){memcpy(banks[bank][block_index],old,16);return 0x80;}block_index++;return 0;

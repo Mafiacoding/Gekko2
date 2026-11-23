@@ -18,6 +18,8 @@ typedef struct {
     int (*start_worker)(void (*fn)(void), void *user);
     void (*worker_idle)(void);
     void *user;
+    /* Optional second worker with a caller-provided stack (the IOP thread). Returns 0 on success. */
+    int (*start_worker_stack)(void (*fn)(void), void *user, void *stack, unsigned stack_size);
 } g2_platform;
 
 typedef struct {
@@ -31,6 +33,8 @@ typedef struct {
     const char *session_log;                  /* optional: one stats line per second is appended to this file */
     int gs_async;                             /* run GIF/GS work on a second core (needs platform->start_worker) */
     int fast_run;                             /* interpreted fast runs (interpreter build only; ignored when the dynarec is used) */
+    int event_sched;                          /* EE windows with IOP catch-up (the R1353 event scheduler) */
+    int iop_async;                            /* IOP catch-up on its own core (needs event_sched and start_worker_stack) */
 } g2_config;
 
 typedef struct {

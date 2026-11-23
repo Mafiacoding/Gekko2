@@ -1,4 +1,5 @@
 #include "core/hw/game_trace.h"
+#include "core/iop_async.h"
 extern void ee_core_event_notify(void) __attribute__((weak));
 /*
  * ee_intc.c - EE interrupt controller register model. See
@@ -74,6 +75,7 @@ uint32_t ee_intc_get_sbus_ack_count(void) { return g_sbus_ack_count; }
 
 void ee_intc_raise(int irq)
 {
+    G2_IOP_CALLS_EE();
     if(ee_core_event_notify)ee_core_event_notify();
     if (irq < 0 || irq > 31)
         return;

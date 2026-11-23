@@ -25,6 +25,8 @@
 #include <time.h>
 #include "core/hw/gs_async.h"
 #include "core/hw/vu.h"
+#include "core/iop_async.h"
+#include <stdlib.h>
 
 extern int gekko2_wiiu_iw;
 extern uint64_t ee_iw_stats[4];
@@ -96,6 +98,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
     gekko2_prof_gs_enabled = 1;
     gekko2_prof_vu_enabled = 1;
     gekko2_wiiu_iw = config->fast_run && !config->use_jit;
+    gekko2_wiiu_event_sched = config->event_sched || config->iop_async;
     static uint32_t frame[1024u * 1024u];            /* largest frame accepted by g2_read_display() */
     g2_result local;
     memset(&local, 0, sizeof local);
@@ -171,6 +174,24 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         } else {
             gs_async_detach();
             say(platform, "GS worker thread could not be started; GIF/GS stays on the emulation thread");
+        }
+    }
+    int iop_async_active = 0;
+    if (config->iop_async && platform->start_worker_stack) {
+        static void *iop_stack;
+        const unsigned iop_stack_size = 512u * 1024u;
+        if (!iop_stack)
+            iop_stack = malloc(iop_stack_size);
+        if (iop_stack) {
+            system_iop_async_attach(platform->worker_idle, iop_stack, (char *)iop_stack + iop_stack_size);
+            if (platform->start_worker_stack(system_iop_worker_main, platform->user, iop_stack, iop_stack_size) == 0 &&
+                system_iop_async_enable() == 0) {
+                iop_async_active = 1;
+                say(platform, "IOP worker thread active (IOP catch-up runs on its own core)");
+            } else {
+                system_iop_async_detach();
+                say(platform, "IOP worker thread could not be started; IOP stays on the emulation thread");
+            }
         }
     }
     unsigned batch = config->batch_slices ? config->batch_slices : 2000u;
@@ -286,6 +307,12 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "HALT %s | %s", e->halt_reason, i->halt_reason);
             break;
         }
+    }
+    if (iop_async_active) {
+        unsigned long long st[4];
+        system_iop_async_stats(st);
+        say(platform, "IOP worker: jobs=%llu ticks=%llu emulation waits=%llu worker shared waits=%llu", st[0], st[1], st[2], st[3]);
+        system_iop_async_detach();
     }
     if (gs_async_active) {
         uint64_t st[8];

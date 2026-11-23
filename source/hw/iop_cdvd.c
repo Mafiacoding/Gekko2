@@ -2,6 +2,7 @@
  * iop_cdvd.c - see include/core/hw/iop_cdvd.h for scope notes.
  */
 #include "core/hw/iop_cdvd.h"
+#include "core/iop_async.h"
 #include "core/hw/iop_dma.h"   /* Round 206: iop_dma_channel_write_bytes() */
 #include "core/hw/iop_intc.h"  /* Round 206: real IRQ2 raise (shared with legacy CD-ROM, iop_cdrom_legacy.c) */
 #include <string.h>
@@ -190,6 +191,7 @@ int iop_cdvd_rebind_iso(const char *path)
  * genuinely contains the requested name. */
 int iop_cdvd_disc_find_file(const char *name, uint32_t *out_lba, uint32_t *out_size)
 {
+    G2_EE_CALLS_IOP();
     iso_dirent_t dirent;
     if (!g_disc_mounted) return 0;
     if (iso_find_path(&g_disc, name, &dirent) != 0) return 0; /* iso_find_in_root() returns 0 on success, -1 on failure - matches iso_open()'s own documented convention */
@@ -201,6 +203,7 @@ int iop_cdvd_disc_find_file(const char *name, uint32_t *out_lba, uint32_t *out_s
 
 int iop_cdvd_disc_read_sector(uint32_t lba, uint8_t *buf)
 {
+    G2_EE_CALLS_IOP();
     if (!g_disc_mounted) return -1;
     return iso_read_sector(&g_disc, lba, buf);
 }
@@ -323,6 +326,7 @@ static void dispatch_ncmd(uint8_t cmd)
 static uint8_t clock_bcd(unsigned n) { return (uint8_t)(((n / 10) << 4) | (n % 10)); }
 int iop_cdvd_read_clock(uint8_t out[8])
 {
+    G2_EE_CALLS_IOP();
     /* The emulated battery-backed RTC follows the host RTC, converted to JST.
      * sceCdCLOCK order: status, second, minute, hour, pad, day, month, year. */
     time_t now = time(NULL);
@@ -486,6 +490,7 @@ int iop_cdvd_mmio_read8(uint32_t addr, uint8_t *out)
 
 int iop_cdvd_mmio_write8(uint32_t addr, uint8_t value)
 {
+    G2_EE_CALLS_IOP();
     /* Round 130 (170th finding): same KUSEG/KSEG0/KSEG1 aliasing fix
      * as iop_cdvd_mmio_read8() above - see that function's comment
      * for the full citation trail. */
@@ -556,10 +561,12 @@ uint8_t  iop_cdvd_get_last_scmd_issued(void) { return g_last_scmd_issued; }
  * already-real result, without racing or disturbing whatever real
  * IOP-side code (if any) later reads+clears OFF_ERROR through the
  * normal MMIO path for its own purposes. */
-uint8_t iop_cdvd_peek_last_ncmd_error(void) { return g_regs[OFF_ERROR]; }
+uint8_t iop_cdvd_peek_last_ncmd_error(void) {
+    G2_EE_CALLS_IOP(); return g_regs[OFF_ERROR]; }
 uint8_t iop_cdvd_get_status(void)        { return g_regs[OFF_STATUS]; }
 uint8_t iop_cdvd_get_ready(void)         { return g_regs[OFF_NREADY]; }
-uint8_t iop_cdvd_get_disc_type(void)     { return g_regs[OFF_TYPE]; }
+uint8_t iop_cdvd_get_disc_type(void)     {
+    G2_EE_CALLS_IOP(); return g_regs[OFF_TYPE]; }
 
 void iop_cdvd_set_disc_present(uint8_t disc_type)
 {

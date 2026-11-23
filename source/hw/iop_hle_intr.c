@@ -4,6 +4,7 @@
  * continuation).
  */
 #include <string.h>
+#include "core/iop_async.h"
 #include "core/hw/iop_hle_intr.h"
 #include "core/hw/iop_intc.h"
 #include "core/hw/iop_dma.h" /* Round 113: real EnableIntr/DisableIntr target DMA_ICR/DMA_ICR2 */
@@ -138,6 +139,7 @@ uint32_t iop_hle_intr_get_exc_handler(int exc)
 /* Round 347: see handler_completion_count's own comment above. */
 uint32_t iop_hle_intr_get_handler_completion_count(int irq)
 {
+    G2_EE_CALLS_IOP();
     if (irq < 0 || irq >= IOP_HLE_INTR_NUM_IRQ) return 0;
     return g.handler_completion_count[irq];
 }

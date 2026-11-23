@@ -11,6 +11,7 @@ extern void system_shared_sync_reason(unsigned reason) __attribute__((weak));
  */
 
 #include "core/hw/dma.h"
+#include "core/iop_async.h"
 #include "core/hw/graphics_scheduler.h"
 #include "core/hw/gif.h"
 #include "core/hw/vif.h"
@@ -710,6 +711,7 @@ void dma_channel_signal_done(int channel)
  */
 int dma_channel_receive_quadwords(int channel, const uint8_t *data, uint32_t qwc)
 {
+    G2_IOP_CALLS_EE();
     if (channel < 0 || channel >= DMA_CHANNEL_COUNT)
         return 0;
     if (!g_ee_ram)
