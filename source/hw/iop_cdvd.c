@@ -275,6 +275,9 @@ static void dispatch_ncmd(uint8_t cmd)
              * path, so this only bounds the LOOP, it doesn't fake a
              * specific real error code. */
             if (count > 4096u) count = 4096u;
+#ifdef G2_VU0_TRACE
+            { extern void g2_cd_read_hook(uint8_t cmd,uint32_t sector,uint32_t count,const uint8_t *params,unsigned n); g2_cd_read_hook(cmd,sector,count,g_param_buf,g_param_count); }
+#endif
 
             uint8_t sector_buf[CDVD_SECTOR_SIZE];
             uint32_t i;
