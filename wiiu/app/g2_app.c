@@ -216,7 +216,20 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 /* Share of emulation wall time spent in GIF/GS work (cumulative). Upper bound for what a GS thread could save. */
                 const uint64_t gs_pm = prof_run_ns ? gekko2_prof_gs_ns * 1000u / prof_run_ns : 0;
                 const uint64_t vu_pm = prof_run_ns ? gekko2_prof_vu1_ns * 1000u / prof_run_ns : 0;
-                say(platform, "PROF iw=%llu%% (runs=%llu) ", (unsigned long long)(e->instructions_executed ? ee_iw_stats[1] * 100u / e->instructions_executed : 0), (unsigned long long)ee_iw_stats[0]);
+                {
+                    system_profile_t sp;
+                    system_profile_get(&sp);
+                    const uint64_t tot = sp.ee_ticks + sp.iop_ticks;
+                    const uint64_t iop_pm = tot ? sp.iop_ticks * 1000u / tot : 0;
+                    say(platform, "PROF iw=%llu%% (runs=%llu) iop=%llu.%llu%% of EE+IOP time (samples=%llu)",
+                        (unsigned long long)(e->instructions_executed ? ee_iw_stats[1] * 100u / e->instructions_executed : 0),
+                        (unsigned long long)ee_iw_stats[0], (unsigned long long)(iop_pm / 10u), (unsigned long long)(iop_pm % 10u),
+                        (unsigned long long)sp.samples);
+                    if (session)
+                        fprintf(session, "# prof2 t=%llus iw_pct=%llu iop_permille=%llu samples=%llu\n", (unsigned long long)((now - start) / 1000u),
+                                (unsigned long long)(e->instructions_executed ? ee_iw_stats[1] * 100u / e->instructions_executed : 0),
+                                (unsigned long long)iop_pm, (unsigned long long)sp.samples);
+                }
                 say(platform, "PROF gs=%llu.%llu%% vu1=%llu.%llu%% of emulation time (gif calls=%llu, vu1 runs=%llu); VU pairs so far: vu0=%llu vu1=%llu",
                     (unsigned long long)(gs_pm / 10u), (unsigned long long)(gs_pm % 10u), (unsigned long long)(vu_pm / 10u),
                     (unsigned long long)(vu_pm % 10u), (unsigned long long)gekko2_prof_gs_calls, (unsigned long long)gekko2_prof_vu1_calls,
