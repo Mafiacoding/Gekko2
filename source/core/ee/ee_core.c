@@ -5889,6 +5889,10 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
     }
 
     uint32_t pc = st->pc;
+#ifdef G2_VU0_TRACE
+    { extern uint32_t g2_hook_pcs[8]; extern void g2_pc_hook(ee_state_t *st);
+      for(unsigned hk=0;hk<8u&&g2_hook_pcs[hk];hk++)if(pc==g2_hook_pcs[hk]){g2_pc_hook(st);break;} }
+#endif
 
     /* Round 832: real per-instruction hit counters, see the block
      * comment above g_r832_handler_hits for why this replaces external
