@@ -52,6 +52,9 @@ static inline uint32_t vu_rd_le32(const uint8_t *p)
 
 static inline void vu_wr_le32(uint8_t *p, uint32_t v)
 {
+#ifdef G2_VU0_TRACE
+    { extern void g2_vu_wr_hook(uint8_t *p,uint32_t v); g2_vu_wr_hook(p,v); }
+#endif
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
 }
 

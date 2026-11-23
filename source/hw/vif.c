@@ -290,8 +290,12 @@ static void vif_unpack_write_lane(vif_state_t *vif, uint32_t dest_addr, int lane
 
     if (vif->is_vif1)
         vu1_mem_write32(dest_addr + (uint32_t)lane * 4u, out);
-    else
+    else {
+#ifdef G2_VU0_TRACE
+        { extern void g2_vu0_memw(int src,uint32_t addr,uint32_t val); g2_vu0_memw(1,dest_addr+(uint32_t)lane*4u,out); }
+#endif
         vu0_mem_write32(ee_core_get_state(), dest_addr + (uint32_t)lane * 4u, out);
+    }
 }
 
 /* UNPACK (CMD 0x60-0x7F) - see vif.h's header comment for the full

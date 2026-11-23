@@ -2160,6 +2160,9 @@ static void apply_xyz2_kick(uint32_t word0, uint32_t word1, uint32_t word2, int 
     int32_t y = (raw_y - (int32_t)oy) >> 4;
 
     uint32_t ptype = g_gif.prim & 0x7u;
+#ifdef G2_VTX_TRACE
+    { extern FILE *g2_vtx_trace; if(g2_vtx_trace)fprintf(g2_vtx_trace,"V %u %u %08x %d %d %08x %u %u %u\n",s_gif_active_path,vertex_encoding,g_gif.prim,raw_x,raw_y,raw_z,ox,oy,do_draw_kick); }
+#endif
     if(ptype>=PRIM_TYPE_TRIANGLE&&ptype<=PRIM_TYPE_TRIANGLE_FAN&&vertex_source_used<4u){
      uint32_t *sample=vertex_source[vertex_source_used++];
      sample[0]=s_gif_active_path;sample[1]=vertex_encoding;

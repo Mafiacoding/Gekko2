@@ -2363,6 +2363,9 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size, 
         uint8_t *data=bank==0u?st->vu0_micro:bank==1u?st->vu0_mem:
                       bank==2u?vu1_get_state()->micro:vu1_get_state()->mem;
         unsigned bytes=bank<2u?4096u:16384u,off=vu_phys&(bytes-1u);
+#ifdef G2_VU0_TRACE
+        if(bank==1u&&is_store){ extern void g2_vu0_memw(int src,uint32_t addr,uint32_t val); g2_vu0_memw(3,off,size); }
+#endif
         st->mem_tlb_miss=0;
         return size<=bytes-off?data+off:NULL;
     }
@@ -2431,6 +2434,9 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size, 
         uint8_t *data=bank==0u?st->vu0_micro:bank==1u?st->vu0_mem:
                       bank==2u?vu1_get_state()->micro:vu1_get_state()->mem;
         unsigned bytes=bank<2u?4096u:16384u,off=phys&(bytes-1u);
+#ifdef G2_VU0_TRACE
+        if(bank==1u&&is_store){ extern void g2_vu0_memw(int src,uint32_t addr,uint32_t val); g2_vu0_memw(4,off,size); }
+#endif
         return size<=bytes-off?data+off:NULL;
     }
     if (phys >= 0x1FC00000u) {
@@ -5047,6 +5053,12 @@ static inline int vu0_block_candidate(const ee_state_t *st)
     }
     return 1;
 }
+#ifdef G2_VU0_TRACE
+extern void g2_vu0_trace(ee_state_t *st,int phase);
+#define VU0_TRACE(st,ph) g2_vu0_trace(st,ph)
+#else
+#define VU0_TRACE(st,ph) do{}while(0)
+#endif
 static void vu0_run_pairs(ee_state_t *st)
 {
     for (uint32_t i = 0; i < VU0_EXEC_STEP_CAP; i++) {
@@ -5057,7 +5069,7 @@ static void vu0_run_pairs(ee_state_t *st)
                                      &st->vu0_ebit_delay,
                                      &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing);
         if (stopped) {
-            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;break;
+            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;VU0_TRACE(st,1);break;
         }
         if(st->vu0_timing.m_yield)break;
     }
@@ -5074,7 +5086,7 @@ static void vu0_run_blocks(ee_state_t *st)
             &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing,0,0};
         if(vu0_block_candidate(st))ran=vu_jit_try_timed_block(&c,VU0_EXEC_STEP_CAP-i);
         if(ran){
-            if(c.stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;break;}
+            if(c.stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;VU0_TRACE(st,1);break;}
             if(st->vu0_timing.m_yield)break;
             i+=ran-1u;continue;
         }
@@ -5085,7 +5097,7 @@ static void vu0_run_blocks(ee_state_t *st)
                                      &st->vu0_ebit_delay,
                                      &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing);
         if (stopped) {
-            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;break;
+            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;VU0_TRACE(st,1);break;
         }
         if(st->vu0_timing.m_yield)break;
     }
@@ -5100,6 +5112,7 @@ void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
      * a sensible live value, same real register slot round 12's
      * generic CTC2/CFC2 dispatch already exposes. */
     st->cop2_ctrl[26] = (start_addr << 3) & (uint32_t)(sizeof(st->vu0_micro) - 1u);
+    VU0_TRACE(st,0);
     st->vu0_running = 1;st->cop2_ctrl[29]|=1u;st->vu0_timing.m_yield=0;
 
     /* Re-enter native batching after a branch/Q/P boundary clears. */
@@ -5138,7 +5151,7 @@ static void vu0_tick(ee_state_t *st) {
         &st->vu0_branch_delay,&st->vu0_branch_target,&st->vu0_ebit_delay,
         &st->vu0_instructions_executed,&st->vu0_unimplemented_opcodes_seen,
         &st->vu0_pipeline,&st->vu0_timing);
-    if(stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;}
+    if(stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;VU0_TRACE(st,1);}
     gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
 }
 /* COP2 synchronization runs to a real M or end boundary. It does not
