@@ -20,6 +20,12 @@
 #include <math.h>
 
 static vu1_state_t g_vu1;
+#ifdef G2_VU0_TRACE
+extern void g2_vu1_trace(vu1_state_t *v,int phase);
+#define VU1_TRACE(ph) g2_vu1_trace(&g_vu1,ph)
+#else
+#define VU1_TRACE(ph) do{}while(0)
+#endif
 #ifdef GEKKO2_GAME_TRACE
 static uint32_t unknown_words[8][2];
 static unsigned unknown_used;
@@ -676,7 +682,7 @@ static void vu1_run_pairs(void)
                                      &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline,&g_vu1.timing);
         if(stopped==2)break;
         if (stopped==1) {
-            g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);
+            g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);VU1_TRACE(1);
             vu1_service_xgkick(1);
             break;
         }
@@ -694,7 +700,7 @@ static void vu1_run_blocks(void)
             &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline,&g_vu1.timing,0,0};
         if(vu1_block_candidate())ran=vu_jit_try_timed_block(&c,VU_EXEC_STEP_CAP-i);
         if(ran){
-            if(c.stopped==1){g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);vu1_service_xgkick(1);break;}
+            if(c.stopped==1){g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);VU1_TRACE(1);vu1_service_xgkick(1);break;}
             if(c.stopped==2)break;
             i+=ran-1u;continue;
         }
@@ -706,7 +712,7 @@ static void vu1_run_blocks(void)
                                      &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline,&g_vu1.timing);
         if(stopped==2)break;
         if (stopped==1) {
-            g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);
+            g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);VU1_TRACE(1);
             vu1_service_xgkick(1);
             break;
         }
@@ -733,6 +739,7 @@ void vu1_exec_micro(uint32_t start_addr)
     VU_PROF_BEGIN;
     unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
+    VU1_TRACE(0);
     g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
 
     /* Q/P, branch and GIF boundaries can be scalar; later work can
@@ -765,6 +772,7 @@ void vu1_exec_micro(uint32_t start_addr)
 void vu1_exec_micro_continue(void)
 {
     VU_PROF_BEGIN;
+    VU1_TRACE(0);
     unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
 
@@ -788,7 +796,7 @@ void vu1_tick(void) {
             &g_vu1.tpc,&g_vu1.branch_delay,&g_vu1.branch_target,&g_vu1.ebit_delay,
             &g_vu1.instructions_executed,&g_vu1.unimplemented_opcodes_seen,
             &g_vu1.pipeline,&g_vu1.timing);
-        if(stopped==1){g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);}
+        if(stopped==1){g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);VU1_TRACE(1);}
         if(stopped==2)g_vu1.pipeline.cycle++;
     } else g_vu1.pipeline.cycle++;
     vu1_service_xgkick(!g_vu1.running);
