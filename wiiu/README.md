@@ -115,3 +115,19 @@ Host measurement (real BIOS to the same reference frame, two runs each, 4 cores,
 sync 348-354 s, worker 324-327 s (about 8 % faster). Worker busy ~103 s, emulation thread waited ~17 s in drains.
 The final frame hash matched the synchronous run every time. This is a host result for the BIOS boot; Cemu and real Wii U
 timing, and games, are not measured. The session log prints `GS worker: ...` counters at exit.
+
+## Interpreted fast runs (interpreter build)
+
+`g2_config.fast_run` (on by default; create `<sd>/wiiu/gekko2/fast_run_off.txt` to disable; ignored in the JIT build)
+runs up to 96 guest instructions per call on the live register file: integer ALU, RAM loads/stores and non-likely
+branches with their delay slot. Before a run, the guards of the native-window admission (pending interrupts, timers,
+display phase, Count/Compare, DMA/VU/GIF activity, special PCs) bound how many instructions are free of events;
+the retirement is then published in bulk. Anything else (MMIO, COP0, MULT/DIV, FPU, MMI, likely branches) ends the run and
+the scalar interpreter executes it as before. Code: `ee_iw_*` in `source/core/ee/ee_core.c`, `GEKKO2_WIIU` only.
+
+Host verification (real BIOS, clock frozen because the BIOS RTC reads the host clock): the scalar path is deterministic
+(two runs identical) and the fast-run path gives identical hashes over GPRs, COP0 and the whole EE RAM at 150M, 267M, 385M
+and 501M EE instructions, in both the 8-slot scheduler and the event scheduler. 74-77 % of those instructions ran inside
+runs. Speed on the host for that BIOS animation phase: 68.3 s -> 61.5 s (8-slot scheduler), 64.8 s -> 58.0 s (event
+scheduler), about 10 %. That phase is also GS/IOP heavy, so the EE share is only part of the time. Not measured: Cemu,
+real Wii U, any game. The Wii code is unchanged (disassembly diff of the Wii ELF against the previous commit).

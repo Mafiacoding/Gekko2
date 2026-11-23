@@ -236,6 +236,17 @@ static int readable(const char *path)
 static g2_platform g_platform;
 static g2_config g_config;
 static g2_result g_result;
+static int file_exists_flag(const char *sd_root, const char *name)
+{
+    char path[300];
+    snprintf(path, sizeof path, "%s/wiiu/gekko2/%s", sd_root[0] ? sd_root : "/vol/external01", name);
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        fclose(f);
+        return 1;
+    }
+    return 0;
+}
 static int gs_async_wanted(const char *sd_root)
 {
     char path[300];
@@ -487,7 +498,7 @@ int main(void)
                     static char session_log[300];
                     snprintf(session_log, sizeof session_log, "%s/wiiu/gekko2/session.log", sd_root[0] ? sd_root : "/vol/external01");
                     g_config = (g2_config){ bios, action == WM_ACTION_START_DISC ? wiiu_menu_disc(menu) : NULL,
-                                            2000u, 0, 1000u, 0, 1, session_log, gs_async_wanted(sd_root) };
+                                            2000u, 0, 1000u, 0, 1, session_log, gs_async_wanted(sd_root), !file_exists_flag(sd_root, "fast_run_off.txt") };
                     run_emulation();
                     wiiu_menu_set_notice(menu, "Back from emulation. Restart the app for a clean boot.");
                 }

@@ -11287,11 +11287,19 @@ static int ee_native_address_value(uint32_t iw,uint32_t a,uint32_t b,uint32_t *v
  return 0;
 }
 
+#ifdef GEKKO2_WIIU
+static int ee_iw_force;
+#endif
 static unsigned ee_core_native_window_begin_impl(ee_state_t *st,uint32_t pc,const uint32_t *words,unsigned count,unsigned budget,uint32_t needed,int trusted)
 {
  unsigned n=count<budget?count:budget;
  n=ee_core_interleave_limit(n);
- if(!gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)||!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)||
+ if(
+#ifdef GEKKO2_WIIU
+    (!ee_iw_force&&(!gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)||!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)))||
+#else
+    !gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)||!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)||
+#endif
     st->vu0_running||vu1_get_state()->running||vu1_get_state()->xgkick_pending||gif_get_state()->fifo_count||
     (dma_get_state()->chan[0].chcr&0x100u)||(dma_get_state()->chan[1].chcr&0x100u)||(dma_get_state()->chan[2].chcr&0x100u)||
     st!=&g_state||n<2u||n>GEKKO2_EE_MAX_BLOCK_WORDS||st->pc!=pc||st->next_pc!=pc+4u||st->halted||st->idle||st->branch_pending)return 0;
@@ -11881,6 +11889,226 @@ static void ee_speed_session_reset(void)
  memset(ee_idle_skip_stats,0,sizeof ee_idle_skip_stats);memset(ee_dma_diag,0,sizeof ee_dma_diag);
 #endif
 }
+#ifdef GEKKO2_WIIU
+/* Interpreted fast runs (Wii U port only).
+ * Up to GEKKO2_IW_MAX guest instructions run in one go on the live register file: integer ALU, RAM loads/stores,
+ * and non-likely branches/jumps with their delay slot. Before the run, the same event guards as native-window
+ * admission (pending interrupts, timers, display phase, Count/Compare, DMA/VU/GIF activity, special PCs) bound how
+ * many instructions are provably free of events; afterwards the retirement is published in bulk. The run stops
+ * before any instruction it does not handle (and before every PC the scalar path treats specially); the scalar
+ * path then executes that instruction exactly as before. Nothing in a run can fault: loads/stores are proven RAM. */
+#define GEKKO2_IW_MAX 96u
+int gekko2_wiiu_iw;
+uint64_t ee_iw_stop_op[64],ee_iw_stop_fn[64]; /* why a run ended: primary opcode / SPECIAL function */
+uint64_t ee_iw_stats[4]; /* runs, instructions, declined admissions, runs shorter than 2 */
+static inline int ee_iw_special_pc(uint32_t pc)
+{
+ return pc==0u||pc==0x80000000u||pc==0x80000200u||pc==0xBFC00400u||pc==0x80001d58u||pc==0x8000fb28u||
+  (uint32_t)(pc-0x0100ec00u)<0x100u||(uint32_t)(pc-0x00208000u)<0x200u||
+  pc==0x0101bb28u||pc==0x0101bc10u||pc==0x0101bc24u||pc==0x0101d878u||pc==0x0101da50u||pc==0x0101d508u||
+  pc==EE_BOOT_UNBLOCK_SELFLOOP_PC||pc==EE_EELOAD_START_PC||EE_SBUS_WAIT_PC_MATCH(pc);
+}
+static int ee_iw_pending_intc,ee_iw_pending_dmac;
+/* Largest run length (0 = decline) for which every guard of native-window admission holds. */
+static unsigned ee_iw_admit(ee_state_t *st,unsigned want)
+{
+ if(st!=&g_state||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u||(st->pc&3u))return 0;
+ if(st->vu0_running||vu1_get_state()->running||vu1_get_state()->xgkick_pending||gif_get_state()->fifo_count||
+    (dma_get_state()->chan[0].chcr&0x100u)||(dma_get_state()->chan[1].chcr&0x100u)||(dma_get_state()->chan[2].chcr&0x100u))return 0;
+ const int pending_intc=ee_intc_pending_fast(),pending_dmac=dma_dmac_interrupt_pending_fast();
+ const uint32_t status=st->cop0[12];
+ const int interrupts_enabled=(status&0x10007u)==0x10001u;
+ if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending()||
+    g_ee_irq.intc_delay||!!pending_intc!=!!g_ee_irq.intc_armed||
+    (interrupts_enabled&&((pending_intc&&(status&EE_STATUS_IM2))||(pending_dmac&&(status&EE_STATUS_IM3)))))return 0;
+ uint64_t m=want;
+ if(ee_timers_batch_clock[0]<=1u)return 0;
+ if(m>ee_timers_batch_clock[0]-1u)m=ee_timers_batch_clock[0]-1u;
+ if(g_ee_display_ticks>UINT64_MAX-GEKKO2_IW_MAX)return 0;
+ if(g_ee_display_phase+1u>=EE_CYCLES_PER_FRAME_NTSC)return 0;
+ if(m>EE_CYCLES_PER_FRAME_NTSC-1u-g_ee_display_phase)m=EE_CYCLES_PER_FRAME_NTSC-1u-g_ee_display_phase;
+ if(g_ee_display_phase<EE_CYCLES_VBLANK_DURATION){
+  if(g_ee_display_phase+1u>=EE_CYCLES_VBLANK_DURATION)return 0;
+  if(m>EE_CYCLES_VBLANK_DURATION-1u-g_ee_display_phase)m=EE_CYCLES_VBLANK_DURATION-1u-g_ee_display_phase;
+ }
+ const uint32_t cnt=st->cop0[9],cmp=st->cop0[11];
+ if(cnt>UINT32_MAX-GEKKO2_IW_MAX)return 0;
+ if((status&0x10007u)==0x10001u&&(status&0x8000u)){
+  if((st->cop0[13]&EE_CAUSE_IP7)||cnt+1u>=cmp)return 0;
+  if(m>cmp-cnt-1u)m=cmp-cnt-1u;
+ }
+ if(m<2u)return 0;
+ m=ee_core_interleave_limit((unsigned)m);
+ ee_iw_pending_intc=pending_intc;ee_iw_pending_dmac=pending_dmac;
+ return (unsigned)m;
+}
+static inline uint32_t ee_iw_le32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
+/* 1 = instruction handled (state changed), 0 = not handled (state untouched). Memory ops are proven RAM first. */
+static int ee_iw_exec(ee_state_t *st,uint32_t iw)
+{
+ const unsigned op=iw>>26,rs=(iw>>21)&31u,rt=(iw>>16)&31u,rd=(iw>>11)&31u,sa=(iw>>6)&31u,f=iw&63u;
+ const int32_t imm=(int16_t)iw;const uint32_t uimm=iw&65535u;
+ const uint64_t a=st->gpr[rs].ud0,b=st->gpr[rt].ud0;const uint32_t a32=(uint32_t)a,b32=(uint32_t)b;
+ unsigned dest=0;uint64_t v=0;
+ switch(op){
+ case 9:dest=rt;v=sext32(a32+(uint32_t)imm);break;
+ case 10:dest=rt;v=(int64_t)a<(int64_t)imm;break;
+ case 11:dest=rt;v=a<(uint64_t)(int64_t)imm;break;
+ case 12:dest=rt;v=a&uimm;break;
+ case 13:dest=rt;v=a|uimm;break;
+ case 14:dest=rt;v=a^uimm;break;
+ case 15:dest=rt;v=sext32(uimm<<16);break;
+ case 25:dest=rt;v=a+(uint64_t)(int64_t)imm;break;
+ case 0:
+  dest=rd;
+  switch(f){
+  case 0:v=sext32(b32<<sa);break;
+  case 2:v=sext32(b32>>sa);break;
+  case 3:v=sext32((uint32_t)((int32_t)b32>>sa));break;
+  case 4:v=sext32(b32<<(a32&31u));break;
+  case 6:v=sext32(b32>>(a32&31u));break;
+  case 7:v=sext32((uint32_t)((int32_t)b32>>(a32&31u)));break;
+  case 10:if(b!=0)return 1;v=a;break;           /* MOVZ */
+  case 11:if(b==0)return 1;v=a;break;           /* MOVN */
+  case 33:v=sext32(a32+b32);break;
+  case 35:v=sext32(a32-b32);break;
+  case 36:v=a&b;break;
+  case 37:v=a|b;break;
+  case 38:v=a^b;break;
+  case 39:v=~(a|b);break;
+  case 42:v=(int64_t)a<(int64_t)b;break;
+  case 43:v=a<b;break;
+  case 45:v=a+b;break;
+  case 47:v=a-b;break;
+  case 56:v=b<<sa;break;
+  case 58:v=b>>sa;break;
+  case 59:v=(uint64_t)((int64_t)b>>sa);break;
+  case 60:v=b<<(sa+32u);break;
+  case 62:v=b>>(sa+32u);break;
+  case 63:v=(uint64_t)((int64_t)b>>(sa+32u));break;
+  default:return 0;
+  }
+  break;
+ case 0x20:case 0x21:case 0x23:case 0x24:case 0x25:case 0x27:case 0x37:{ /* LB LH LW LBU LHU LWU LD */
+  const unsigned width=ee_jit_block_memory_width(iw);
+  const uint32_t phys1=ee_core_block_memory_resolve_address(st,iw,a32+(uint32_t)imm);
+  if(!phys1)return 0;
+  const uint8_t *q=st->ram+phys1-1u;
+  uint64_t x=q[0];
+  if(width>=2u)x|=(uint64_t)q[1]<<8;
+  if(width>=4u)x|=(uint64_t)q[2]<<16|(uint64_t)q[3]<<24;
+  if(width>=8u)x|=(uint64_t)q[4]<<32|(uint64_t)q[5]<<40|(uint64_t)q[6]<<48|(uint64_t)q[7]<<56;
+  if(op==0x20u)x=(uint64_t)(int64_t)(int8_t)x;
+  else if(op==0x21u)x=(uint64_t)(int64_t)(int16_t)x;
+  else if(op==0x23u)x=sext32((uint32_t)x);
+  dest=rt;v=x;
+ }break;
+ case 0x28:case 0x29:case 0x2b:case 0x3f:{ /* SB SH SW SD */
+  const unsigned width=ee_jit_block_memory_width(iw);
+  const uint32_t phys1=ee_core_block_memory_resolve_address(st,iw,a32+(uint32_t)imm);
+  if(!phys1)return 0;
+  uint8_t *q=st->ram+phys1-1u;
+  ee_jit_notify_ram_write(st,q,width);
+  for(unsigned i=0;i<width;i++)q[i]=(uint8_t)(b>>(8u*i));
+  return 1;
+ }
+ default:return 0;
+ }
+ if(dest)st->gpr[dest].ud0=v;
+ return 1;
+}
+/* Decode-only: a delay slot we can run (no branch, no state beyond GPR/RAM). */
+static inline int ee_iw_slot_ok(uint32_t iw)
+{
+ const unsigned op=iw>>26,f=iw&63u;
+ if(op==0u)return f==0||f==2||f==3||f==4||f==6||f==7||f==10||f==11||f==33||f==35||f==36||f==37||f==38||f==39||f==42||f==43||f==45||f==47||
+  f==56||f==58||f==59||f==60||f==62||f==63;
+ return (op>=9u&&op<=15u)||op==25u||op==0x20u||op==0x21u||op==0x23u||op==0x24u||op==0x25u||op==0x27u||op==0x37u||
+  op==0x28u||op==0x29u||op==0x2bu||op==0x3fu;
+}
+static unsigned ee_iw_run(ee_state_t *st,unsigned budget)
+{
+ unsigned want=budget<GEKKO2_IW_MAX?budget:GEKKO2_IW_MAX;
+ if(want<2u)return 0;
+ {
+  /* Cheap pre-check: do not pay for admission when the very first instruction cannot run here. */
+  uint32_t avail;const uint8_t *p0=ee_core_block_pointer(st,st->pc,&avail);
+  if(!p0||avail<8u)return 0;
+  const uint32_t w0=ee_iw_le32(p0);
+  const unsigned op0=w0>>26;
+  const int br0=(op0>=2u&&op0<=7u)||(op0==0u&&((w0&63u)==8u||(w0&63u)==9u))||(op0==1u&&(((w0>>16)&31u)<=1u));
+  if(!br0){
+   if(!ee_iw_slot_ok(w0))return 0;
+   if(ee_jit_block_memory_width(w0)&&
+      !ee_core_block_memory_resolve_address(st,w0,(uint32_t)st->gpr[(w0>>21)&31u].ud0+(uint32_t)(int32_t)(int16_t)w0))return 0;
+  }
+ }
+ unsigned m=ee_iw_admit(st,want);
+ if(!m){ee_iw_stats[2]++;return 0;}
+ uint32_t pc=st->pc,last_pc=pc;
+ unsigned last_in_slot=0;
+ const uint8_t *page=NULL;uint32_t page_lo=0,page_hi=0;
+ unsigned j=0;
+ while(j<m){
+  if(ee_iw_special_pc(pc))break;
+  if(!page||pc<page_lo||pc>=page_hi){
+   uint32_t avail;const uint8_t *p=ee_core_block_pointer(st,pc,&avail);
+   if(!p)break;
+   uint32_t room=4096u-(pc&4095u);if(room>avail)room=avail&~3u;
+   if(room<4u)break;
+   page=p-(pc-page_lo);page=p;page_lo=pc;page_hi=pc+room;
+  }
+  const uint32_t iw=ee_iw_le32(page+(pc-page_lo));
+  const unsigned op=iw>>26;
+  const int is_branch=(op>=2u&&op<=7u)||(op==0u&&((iw&63u)==8u||(iw&63u)==9u))||(op==1u&&(((iw>>16)&31u)<=1u));
+  if(!is_branch){
+   if(!ee_iw_exec(st,iw)){ee_iw_stop_op[op]++;if(op==0u)ee_iw_stop_fn[iw&63u]++;break;}
+   last_pc=pc;last_in_slot=0;pc+=4u;j++;continue;
+  }
+  if(j+2u>m||pc+4u>=page_hi)break;
+  const uint32_t slot=ee_iw_le32(page+(pc+4u-page_lo));
+  if(!ee_iw_slot_ok(slot)||ee_iw_special_pc(pc+4u))break;
+  const unsigned rs=(iw>>21)&31u,rt=(iw>>16)&31u,rd=(iw>>11)&31u;
+  const int32_t imm=(int16_t)iw;
+  const uint64_t a=st->gpr[rs].ud0,b=st->gpr[rt].ud0;
+  uint32_t target=pc+8u;int taken=0,link=0;unsigned link_reg=31u;
+  switch(op){
+  case 4:taken=a==b;target=pc+4u+(uint32_t)(imm*4);break;
+  case 5:taken=a!=b;target=pc+4u+(uint32_t)(imm*4);break;
+  case 6:taken=(int64_t)a<=0;target=pc+4u+(uint32_t)(imm*4);break;
+  case 7:taken=(int64_t)a>0;target=pc+4u+(uint32_t)(imm*4);break;
+  case 1:taken=((iw>>16)&31u)==0u?((int64_t)a<0):((int64_t)a>=0);target=pc+4u+(uint32_t)(imm*4);break;
+  case 2:taken=1;target=((pc+4u)&0xf0000000u)|((iw&0x03ffffffu)<<2);break;
+  case 3:taken=1;link=1;target=((pc+4u)&0xf0000000u)|((iw&0x03ffffffu)<<2);break;
+  default: /* JR / JALR */
+   taken=1;target=(uint32_t)a;
+   if((iw&63u)==9u){link=rd!=0u;link_reg=rd;}
+   break;
+  }
+  (void)rt;(void)b;
+  if(taken&&(target&3u))break;
+  if(link&&ee_jit_block_memory_width(slot))break; /* the slot could fail after the link write */
+  /* The slot may only fail through memory proof, and only when there is no link write. */
+  if(link)st->gpr[link_reg].ud0=(uint64_t)pc+8u;
+  if(!ee_iw_exec(st,slot)){break;}
+  last_pc=pc+4u;last_in_slot=1;j+=2u;pc=taken?target:pc+8u;
+ }
+ if(!j){ee_iw_stats[3]++;return 0;} /* anything executed in place must be published, however short */
+ /* Publish the retirement exactly like native-window admission does. */
+ const uint32_t after=st->cop0[9]+j;
+ st->gpr[0].ud0=st->gpr[0].ud1=0;
+ st->instructions_executed+=j;st->cop0[9]=after;
+ if(after>=st->cop0[11])st->cop0[13]|=EE_CAUSE_IP7;
+ st->cop0[13]=(st->cop0[13]&~(EE_CAUSE_IP2|EE_CAUSE_IP3))|(ee_iw_pending_intc?EE_CAUSE_IP2:0u)|(ee_iw_pending_dmac?EE_CAUSE_IP3:0u);
+ g_ee_display_ticks+=j;g_ee_display_phase+=j;
+ ee_timers_batch_clock[0]-=j;ee_timers_batch_clock[1]+=j;
+ st->exc_this_pc=last_pc;st->exc_in_delay_slot=(uint8_t)last_in_slot;st->exc_raised_this_step=0;st->mem_tlb_miss=0;
+ st->pc=pc;st->next_pc=pc+4u;
+ ee_iw_stats[0]++;ee_iw_stats[1]+=j;
+ return j;
+}
+#endif
+
 unsigned ee_core_step_n(unsigned n)
 {
     unsigned retired = 0, used = 0;
@@ -11890,6 +12118,10 @@ unsigned ee_core_step_n(unsigned n)
 #ifdef GEKKO2_IDLE_SKIP
         { unsigned sk=ee_idle_skip(&g_state,n-used);
           if(sk){retired+=sk;used+=sk;ee_core_interleave_account(sk);continue;} }
+#endif
+#ifdef GEKKO2_WIIU
+        if(gekko2_wiiu_iw){unsigned w=ee_iw_run(&g_state,n-used);
+          if(w){retired+=w;used+=w;ee_core_interleave_account(w);continue;}}
 #endif
 #ifdef GEKKO2_SPEED_STUB
         uint32_t scalar_entry_pc = g_state.pc;

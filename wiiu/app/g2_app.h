@@ -30,6 +30,7 @@ typedef struct {
     int mask_preset;                          /* 1 = the caller already applied the option mask (menu); 0 = FASTMEM + use_jit */
     const char *session_log;                  /* optional: one stats line per second is appended to this file */
     int gs_async;                             /* run GIF/GS work on a second core (needs platform->start_worker) */
+    int fast_run;                             /* interpreted fast runs (interpreter build only; ignored when the dynarec is used) */
 } g2_config;
 
 typedef struct {

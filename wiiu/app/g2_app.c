@@ -26,6 +26,8 @@
 #include "core/hw/gs_async.h"
 #include "core/hw/vu.h"
 
+extern int gekko2_wiiu_iw;
+extern uint64_t ee_iw_stats[4];
 extern int gekko2_prof_vu_enabled;
 extern uint64_t gekko2_prof_vu1_ns, gekko2_prof_vu1_calls;
 extern int gekko2_prof_gs_enabled;
@@ -93,6 +95,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
 {
     gekko2_prof_gs_enabled = 1;
     gekko2_prof_vu_enabled = 1;
+    gekko2_wiiu_iw = config->fast_run && !config->use_jit;
     static uint32_t frame[1024u * 1024u];            /* largest frame accepted by g2_read_display() */
     g2_result local;
     memset(&local, 0, sizeof local);
@@ -213,6 +216,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 /* Share of emulation wall time spent in GIF/GS work (cumulative). Upper bound for what a GS thread could save. */
                 const uint64_t gs_pm = prof_run_ns ? gekko2_prof_gs_ns * 1000u / prof_run_ns : 0;
                 const uint64_t vu_pm = prof_run_ns ? gekko2_prof_vu1_ns * 1000u / prof_run_ns : 0;
+                say(platform, "PROF iw=%llu%% (runs=%llu) ", (unsigned long long)(e->instructions_executed ? ee_iw_stats[1] * 100u / e->instructions_executed : 0), (unsigned long long)ee_iw_stats[0]);
                 say(platform, "PROF gs=%llu.%llu%% vu1=%llu.%llu%% of emulation time (gif calls=%llu, vu1 runs=%llu); VU pairs so far: vu0=%llu vu1=%llu",
                     (unsigned long long)(gs_pm / 10u), (unsigned long long)(gs_pm % 10u), (unsigned long long)(vu_pm / 10u),
                     (unsigned long long)(vu_pm % 10u), (unsigned long long)gekko2_prof_gs_calls, (unsigned long long)gekko2_prof_vu1_calls,
