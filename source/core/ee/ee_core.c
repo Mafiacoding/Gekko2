@@ -2446,7 +2446,12 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size, 
         return NULL;
     }
     if (phys + size <= st->ram_size)
+    {
+#ifdef G2_VU0_TRACE
+        if(is_store){ extern void g2_ram_store_hook(uint32_t phys,uint32_t size); g2_ram_store_hook(phys,size); }
+#endif
         return st->ram + phys;
+    }
     return NULL;
 }
 
