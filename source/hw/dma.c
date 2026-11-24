@@ -434,6 +434,9 @@ static int dma_graphics_service_one(int channel) {
             }
             if(!ram_ptr(ch->madr,wanted*16u,&p))goto bad;
             uint32_t done=channel==2?gif_try_process_quadwords(GIF_PATH_3,p,wanted):vif_accept_quadwords(channel,p,wanted);
+#ifdef G2_VIF_TRACE
+            { extern void g2_dma_trace(int,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t); g2_dma_trace(channel,ch->madr,ch->qwc,wanted,done,ch->tadr); }
+#endif
             ch->madr+=done*16u;ch->qwc-=done;ch->quadwords_transferred+=done;
             if(ring&&done&&mfifo_contains(ch->madr-done*16u))ch->madr=mfifo_wrap(ch->madr);
             if(done)progress=1;
@@ -963,10 +966,25 @@ int dma_mmio_write32(uint32_t addr, uint32_t val)
         if (ch < 0) return 1; /* consumed, ignored - unknown sub-register */
         uint32_t *reg = channel_reg_ptr(&g_dma.chan[ch], off);
         if (reg) {
+#ifdef G2_VIF_TRACE
+            { extern void g2_dmaw_trace(int,uint32_t,uint32_t,uint32_t,uint32_t); g2_dmaw_trace(ch,off,val,g_dma.chan[ch].chcr,g_dma.chan[ch].qwc); }
+#endif
             if(off==0&&!(val&0x100u)) {
                 if(ch==2)g_dma.gif_tag_pending=g_dma.gif_tag_end=0;
                 if(ch<2)g_dma.vif_tag_pending[ch]=g_dma.vif_tag_end[ch]=0;
             }
+#ifdef GEKKO2_WIIU
+            /* Wii U only (not yet in the Wii build): a chain-mode restart with QWC>0 resumes the
+             * current tag at MADR/QWC instead of fetching the next tag (PCSX2 dmaVIF1/dmaGIF:
+             * "if (qwc > 0) transfer the QWC first"; done if the CHCR tag is REFE/END or IRQ with TIE).
+             * Tekken Tag clears and re-sets VIF1 STR mid-REF (0x35d9b0/0x35d9ec); dropping the
+             * remainder desynchronised the VIF1 stream (invalid code 0xa5323160, attract demo hang). */
+            if(off==0&&(val&0x100u)&&ch<3&&((val>>2)&3u)==1u&&g_dma.chan[ch].qwc) {
+                uint32_t id=(val>>28)&7u,end=id==DMA_TAG_REFE||id==DMA_TAG_END||((val>>31)&(val>>7)&1u);
+                if(ch==2){g_dma.gif_tag_pending=1;g_dma.gif_tag_end=end;g_dma.gif_tag_id=id;}
+                else{g_dma.vif_tag_pending[ch]=1;g_dma.vif_tag_end[ch]=end;g_dma.vif_tag_id[ch]=id;}
+            }
+#endif
             if(ch==DMA_CHANNEL_TOIPU&&off==0&&!(val&0x100u))g_dma.ipu_tag_pending=g_dma.ipu_tag_end=0;
             *reg = val;
             /* Writing CHCR (offset 0x00) with STR (bit 8) set kicks off

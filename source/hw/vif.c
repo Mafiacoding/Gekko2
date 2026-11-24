@@ -577,6 +577,9 @@ static void vif_process(vif_state_t *vif, const uint8_t *data, uint32_t total_wo
         pos++;
         vif->code = code;
         vif->codes_processed++;
+#ifdef G2_VIF_TRACE
+        { extern void g2_vif_trace(int is_vif1,uint32_t code,uint32_t pos,uint32_t total); g2_vif_trace(vif->is_vif1,code,pos,total_words); }
+#endif
 
         uint32_t cmd = (code >> 24) & 0x7Fu;
         uint32_t imm = code & 0xFFFFu;
