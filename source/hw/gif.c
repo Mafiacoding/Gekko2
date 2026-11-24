@@ -543,6 +543,15 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
     uint32_t frag_g = rgba_channel(frag_color, 8);
     uint32_t frag_b = rgba_channel(frag_color, 16);
     uint32_t frag_a = rgba_channel(frag_color, 24);
+#ifdef GEKKO2_WIIU
+    /* Wii U: AA1 on LINE primitives blends through the ALPHA register even with ABE=0, and the
+     * source alpha is the coverage, 0x80 for fully covered pixels (PCSX2 GSDrawScanline: blend gated
+     * on abe||aa1, ga mixed with 0x80 when !abe). The BIOS intro trails rely on this additive glow. */
+    uint32_t aa1_attr = gs_effective_attr_prim();
+    int aa1_line_blend = (aa1_attr & 0x80u) && !(aa1_attr & PRIM_ABE_MASK) &&
+                         ((aa1_attr & 7u) == 1u || (aa1_attr & 7u) == 2u);
+    if (aa1_line_blend) frag_a = 0x80u;
+#endif
 
     int color_write = 1;
     int z_write = z_write_allowed;
@@ -590,7 +599,11 @@ static void gs_finish_pixel(int32_t xx, int32_t yy, uint32_t frag_color, uint32_
          * as every pre-existing round already implements - a genuine
          * no-op for every pre-existing test/demo. */
         int pabe_allows_blend = !g_gif.pabe || (frag_a & 0x80u) != 0;
+#ifdef GEKKO2_WIIU
+        if (((gs_effective_attr_prim() & PRIM_ABE_MASK) || aa1_line_blend) && pabe_allows_blend) {
+#else
         if ((gs_effective_attr_prim() & PRIM_ABE_MASK) && pabe_allows_blend) {
+#endif
             /* Real alpha blending - RGB channels only; the written
              * alpha is always the fragment's own source alpha (As),
              * matching real GS hardware (see gif.h's ALPHA field
@@ -876,6 +889,9 @@ static void gs_activate_context(void)
     g_gx_opaque=!g_gif.date && !g_gif.ate && !gs_dither_active() && !g_gif.fba && !g_gif.fbmask &&
         (g_gif.frame_psm==TEX_PSM_PSMCT32 || g_gif.frame_psm==TEX_PSM_PSMCT24) &&
         !(gs_effective_attr_prim()&PRIM_ABE_MASK);
+#ifdef GEKKO2_WIIU
+    if((attr&0x80u)&&((attr&7u)==1u||(attr&7u)==2u))g_gx_opaque=0; /* AA1 line: coverage blend */
+#endif
     g_opaque_pixel=g_gx_opaque && g_gif.frame_psm==TEX_PSM_PSMCT32;
 
 }

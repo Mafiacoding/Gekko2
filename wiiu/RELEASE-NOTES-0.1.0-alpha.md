@@ -34,6 +34,11 @@ All of these work at the same time and drive PS2 pad 1:
   controller button you want. The mapping is saved to `sd:/wiiu/gekko2/controls.cfg`.
 - Back to the menu while a game runs: hold **L + R + ZL + ZR** and press **+**.
 
+## Fixed in this build
+
+- PS2 BIOS start-up animation: the light trails were drawn with black, jagged pieces. Anti-aliased (AA1)
+  lines now blend like on a real PS2, so the trails glow again.
+
 ## Reporting bugs (please do this)
 
 1. On the main menu press **X** to switch the **verbose log ON** (the bottom bar turns green).
@@ -49,7 +54,6 @@ cannot help.
   been measured yet. This alpha is about compatibility and feedback, not playability.
 - **Real Wii U hardware is untested** for this exact build; it was developed and tested on Cemu 2.6.
 - No sound yet.
-- The PS2 BIOS start-up animation (blue cloud) is much too dark and looks blocky for a few seconds.
 - Picture output uses software scaling (OSScreen). The GPU presenter (GX2) is used when
   `sd:/wiiu/gekko2/present.gsh` is on the SD card.
 - `gekko2-wiiu-jit.rpx` (experimental dynarec) is slower than the normal build on Cemu.
