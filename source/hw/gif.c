@@ -2412,6 +2412,9 @@ static void gs_mtba(unsigned context,unsigned bp,unsigned tw,unsigned psm)
 static void apply_ad_write(uint32_t addr, uint32_t data_lo, uint32_t data_hi)
 {
     vertex_encoding=1;
+#ifdef G2_VIF_TRACE
+    { extern void g2_gsreg_trace(uint32_t,uint32_t,uint32_t); g2_gsreg_trace(addr,data_lo,data_hi); }
+#endif
     switch (addr) {
     case GS_REG_PRIM:
         g_gif.prim = data_lo;
