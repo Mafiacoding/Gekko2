@@ -3,6 +3,8 @@
 #ifndef GEKKO2_WIIU_APP_H
 #define GEKKO2_WIIU_APP_H
 #include <stdint.h>
+/* Public release label shown in the menu, on the loading screen and in every session log. */
+#define G2_WIIU_VERSION "0.1.0-alpha"
 
 typedef struct {
     void (*log)(void *user, const char *line);

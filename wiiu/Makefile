@@ -19,7 +19,7 @@ TARGET        := gekko2-wiiu
 BUILD         := build
 JITFLAGS      :=
 endif
-APP_NAME      := Gekko2 (Wii U test)
+APP_NAME      := Gekko2 Wii U Edition (Alpha)
 APP_SHORTNAME := Gekko2
 APP_AUTHOR    := Gekko2
 ROOT          := $(abspath $(CURDIR)/..)

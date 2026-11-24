@@ -46,6 +46,7 @@ static uint64_t prof_now(void)
 
 static void say(const g2_platform *p, const char *format, ...) __attribute__((format(printf, 2, 3)));
 #include <stdarg.h>
+static FILE *say_file; /* verbose log: every status line is also written to the SD session log */
 static void say(const g2_platform *p, const char *format, ...)
 {
     char line[160];
@@ -55,6 +56,10 @@ static void say(const g2_platform *p, const char *format, ...)
     va_end(args);
     if (p->log)
         p->log(p->user, line);
+    if (say_file) {
+        fprintf(say_file, "# log %s\n", line);
+        fflush(say_file);
+    }
 }
 
 int g2_read_display(uint32_t *xrgb, unsigned w_max, unsigned h_max, unsigned *w_out, unsigned *h_out)
@@ -162,6 +167,16 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
     uint16_t last_pad_pressed = 0;
     FILE *session = config->session_log ? fopen(config->session_log, "a") : NULL;
     if (session) {
+        fprintf(session, "# gekko2 %s build=%s compiled=%s %s\n", G2_WIIU_VERSION,
+#ifdef GEKKO2_WIIU_JIT
+                "jit",
+#else
+                "interpreter",
+#endif
+                __DATE__, __TIME__);
+        fprintf(session, "# config gs_async=%d vu1_async=%d iop_async=%d event_sched=%d fast_run=%d vu_jit_off=%d\n", config->gs_async,
+                config->vu1_async, config->iop_async, config->event_sched, config->fast_run, config->vu_jit_off);
+        say_file = session;
         fprintf(session, "# session bios=%s disc=%s mask=%08x batch=%u\n# t_s,ee_instr,ips,vblank_total,vblank_per_s(59.94=100%%),frames_presented,pad_mask\n",
                 config->bios_path ? config->bios_path : "?", config->iso_path ? config->iso_path : "(none)",
                 (unsigned)gekko2_optimization_mask, config->batch_slices ? config->batch_slices : 2000u);
@@ -354,8 +369,10 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             (unsigned long long)(st[5] / 1000000u));
         gs_async_detach();
     }
-    if (session)
+    if (session) {
+        say_file = NULL;
         fclose(session);
+    }
     say(platform, "done: batches=%llu frames=%u EE instr=%llu", (unsigned long long)result->batches,
         result->frames_presented, (unsigned long long)result->ee_instructions);
     return result->status = G2_OK;

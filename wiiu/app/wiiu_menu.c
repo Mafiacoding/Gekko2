@@ -1,16 +1,19 @@
 /* GPL-3.0-or-later. See wiiu_menu.h. */
 #include "wiiu_menu.h"
+#include "g2_app.h"
+#include <stdio.h>
 #include "frontend.h" /* static ui_* page drawing shared with the Wii launcher */
 #include "core/hw/frontend_font_data.h"
 #include "core/hw/frontend_logo_data.h"
 #include "core/hw/frontend_settings.h"
 #include "core/recompiler/optimization.h"
+#include "core/hw/iop_sio2.h"
 #include <stdlib.h>
 #include <string.h>
 
 /* Page numbers follow the Wii launcher (source/main.c): 0 main, 1 settings, 2 about, 3 disc browser,
  * 4 developer switches, 5 experiments, 6 network logger (not available here). */
-enum { PG_MAIN = 0, PG_SETTINGS = 1, PG_ABOUT = 2, PG_BROWSER = 3, PG_DEV = 4, PG_EXP = 5 };
+enum { PG_MAIN = 0, PG_SETTINGS = 1, PG_ABOUT = 2, PG_BROWSER = 3, PG_DEV = 4, PG_EXP = 5, PG_CONTROLS = 7 };
 
 struct wiiu_menu {
     int page, selected, settings_selected, opt_selected, experiment_selected;
@@ -18,6 +21,11 @@ struct wiiu_menu {
     int browser_ready, last_disc;
     unsigned hud, throughput, fps, gx;
     char root[256], disc[512], disc_notice[80], notice[96], opt_path[300], settings_path[300], bios_name[64];
+    int verbose;
+    char verbose_path[300];
+    uint8_t map_src[16];       /* PS2 target row -> unified source button G2B_* */
+    int ctl_selected, ctl_capture;
+    char controls_path[300];
 };
 
 static uint32_t *g_fb;
@@ -104,6 +112,80 @@ static uint32_t wiiu_available(void)
     return gekko2_opt_available() & ~not_here; /* Wii hardware features and the IOP/VU dynarecs are not wired up here */
 }
 
+/* ---- controls ---- */
+static const char *const g2b_names[G2B_COUNT] = { "A", "B", "X", "Y", "L", "R", "ZL", "ZR", "+ (PLUS)", "- (MINUS)",
+                                                  "D-PAD UP", "D-PAD DOWN", "D-PAD LEFT", "D-PAD RIGHT", "L-STICK CLICK", "R-STICK CLICK" };
+static const char *const ps2_names[16] = { "CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "L1", "R1", "L2", "R2", "START", "SELECT",
+                                            "UP", "DOWN", "LEFT", "RIGHT", "L3", "R3" };
+static const uint16_t ps2_bits[16] = { IOP_PAD_BTN_CROSS, IOP_PAD_BTN_CIRCLE, IOP_PAD_BTN_SQUARE, IOP_PAD_BTN_TRIANGLE,
+                                       IOP_PAD_BTN_L1, IOP_PAD_BTN_R1, IOP_PAD_BTN_L2, IOP_PAD_BTN_R2, IOP_PAD_BTN_START,
+                                       IOP_PAD_BTN_SELECT, IOP_PAD_BTN_UP, IOP_PAD_BTN_DOWN, IOP_PAD_BTN_LEFT, IOP_PAD_BTN_RIGHT,
+                                       IOP_PAD_BTN_L3, IOP_PAD_BTN_R3 };
+/* Nintendo layout default: B = Cross, A = Circle, Y = Square, X = Triangle. */
+static const uint8_t map_default[16] = { G2B_B, G2B_A, G2B_Y, G2B_X, G2B_L, G2B_R, G2B_ZL, G2B_ZR, G2B_PLUS, G2B_MINUS,
+                                         G2B_UP, G2B_DOWN, G2B_LEFT, G2B_RIGHT, G2B_L3, G2B_R3 };
+static void controls_load(wiiu_menu *m)
+{
+    memcpy(m->map_src, map_default, sizeof m->map_src);
+    FILE *f = fopen(m->controls_path, "rb");
+    if (!f) return;
+    unsigned v[16];
+    if (fscanf(f, "gekko2-controls-1 %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+               &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12], &v[13], &v[14], &v[15]) == 16) {
+        int ok = 1;
+        for (unsigned i = 0; i < 16u; i++) if (v[i] >= G2B_COUNT) ok = 0;
+        if (ok) for (unsigned i = 0; i < 16u; i++) m->map_src[i] = (uint8_t)v[i];
+    }
+    fclose(f);
+}
+static int controls_save(const wiiu_menu *m)
+{
+    FILE *f = fopen(m->controls_path, "wb");
+    if (!f) return -1;
+    fprintf(f, "gekko2-controls-1");
+    for (unsigned i = 0; i < 16u; i++) fprintf(f, " %u", (unsigned)m->map_src[i]);
+    fprintf(f, "\n");
+    return fclose(f) ? -1 : 0;
+}
+uint16_t wiiu_menu_map_buttons(const wiiu_menu *m, uint32_t hold)
+{
+    uint16_t p = 0;
+    for (unsigned i = 0; i < 16u; i++) {
+        const unsigned src = m ? m->map_src[i] : map_default[i];
+        if (hold & (1u << src)) p |= ps2_bits[i];
+    }
+    return p;
+}
+int wiiu_menu_raw_trigger(wiiu_menu *m, uint32_t trig)
+{
+    if (!m || m->page != PG_CONTROLS || !m->ctl_capture || !trig) return 0;
+    for (unsigned b = 0; b < G2B_COUNT; b++)
+        if (trig & (1u << b)) {
+            m->map_src[m->ctl_selected] = (uint8_t)b;
+            m->ctl_capture = 0;
+            char t[96];
+            snprintf(t, sizeof t, "PS2 %s = %s. %s", ps2_names[m->ctl_selected], g2b_names[b],
+                     controls_save(m) ? "NOT saved (SD?)" : "Saved.");
+            wiiu_menu_set_notice(m, t);
+            return 1;
+        }
+    return 0;
+}
+static void controls_draw(const wiiu_menu *m)
+{
+    menu_rect(0, 0, (int)WM_W, (int)WM_H, 9, 14, 28);
+    menu_text(36, 34, 3, "CONTROLS", 204, 232, 255);
+    menu_text(36, 82, 1, "GamePad, Pro, Classic, Wii Remote (+Nunchuk) -> PS2 pad 1", 150, 170, 200);
+    for (unsigned i = 0; i < 16u; i++) {
+        const int y = 106 + (int)i * 19, sel = (int)i == m->ctl_selected;
+        if (sel) menu_rect(30, y - 2, 420, 18, m->ctl_capture ? 120 : 30, m->ctl_capture ? 40 : 60, m->ctl_capture ? 30 : 110);
+        menu_text(40, y, 1, ps2_names[i], 220, 220, 230);
+        menu_text(200, y, 1, sel && m->ctl_capture ? "press a button..." : g2b_names[m->map_src[i]], 120, 200, 255);
+    }
+    menu_text(36, 420, 1, "UP/DOWN select   A assign   X defaults   B back", 170, 170, 180);
+    menu_text(36, 438, 1, m->notice, 255, 220, 120);
+}
+
 static int save_all(wiiu_menu *m)
 {
     frontend_settings st = { m->hud, m->throughput, m->fps, m->gx };
@@ -134,6 +216,14 @@ wiiu_menu *wiiu_menu_create(const char *sd_root, const char *bios_name)
     m->hud = st.hud; m->throughput = st.throughput; m->fps = st.fps; m->gx = 0; /* no GX on the Wii U */
     options_defaults();
     gekko2_opt_load(m->opt_path); /* keeps the defaults when there is no saved file */
+    snprintf(m->verbose_path, sizeof m->verbose_path, "%s/wiiu/gekko2/verbose_log_on.txt", m->root);
+    {
+        FILE *f = fopen(m->verbose_path, "rb");
+        m->verbose = f != NULL;
+        if (f) fclose(f);
+    }
+    snprintf(m->controls_path, sizeof m->controls_path, "%s/wiiu/gekko2/controls.cfg", m->root);
+    controls_load(m);
     snprintf(m->notice, sizeof m->notice, "SD: wiiu/gekko2/bios/ and games/");
     return m;
 }
@@ -159,18 +249,58 @@ static int open_browser(wiiu_menu *m)
     return 0;
 }
 
+int wiiu_menu_verbose(const wiiu_menu *m) { return m ? m->verbose : 0; }
+
+/* ALPHA marking on every page: a red bar at the top and the log switch at the bottom. */
+static void alpha_overlay(const wiiu_menu *m)
+{    if (m->page == PG_MAIN || m->page == PG_ABOUT) {
+        /* The shared launcher page prints the Wii release name; this is the Wii U edition. */
+        menu_rect(330, 80, (int)WM_W - 330, 22, 9, 22, 40);
+        menu_text(344, 84, 1, "W I I  U  /  " G2_WIIU_VERSION, 255, 120, 110);
+    }
+    menu_rect(0, 0, (int)WM_W, 18, 150, 20, 20);
+    menu_text(6, 2, 1, "GEKKO2 Wii U EDITION  " G2_WIIU_VERSION "  -  ALPHA, EXPECT BUGS", 255, 255, 255);
+    menu_rect(0, (int)WM_H - 18, (int)WM_W, 18, 24, 24, 32);
+    menu_text(6, (int)WM_H - 16, 1, m->verbose ? "Verbose log ON (X)  Y: controls  -> sd:/wiiu/gekko2/session.log"
+                                               : "Verbose log OFF (X: on, needed for bug reports)  Y: controls", m->verbose ? 120 : 255,
+              m->verbose ? 255 : 200, m->verbose ? 140 : 90);
+}
+
+void wiiu_menu_render_loading(wiiu_menu *m, uint32_t *xrgb, const char *title)
+{
+    (void)m;
+    g_fb = xrgb;
+    menu_rect(0, 0, (int)WM_W, (int)WM_H, 8, 10, 16);
+    menu_logo(((int)WM_W - (int)FRONTEND_LOGO_WIDTH) / 2, 120);
+    menu_text(((int)WM_W - 24 * 7) / 2, 236, 3, "Loading", 230, 230, 240);
+    menu_text(((int)WM_W - 8 * 33) / 2, 292, 1, "Gekko2 Wii U Edition " G2_WIIU_VERSION, 200, 200, 210);
+    if (title && title[0]) {
+        char t[72];
+        const char *base = strrchr(title, '/');
+        snprintf(t, sizeof t, "%.70s", base ? base + 1 : title);
+        menu_text(((int)WM_W - 8 * (int)strlen(t)) / 2, 316, 1, t, 150, 190, 255);
+    }
+    menu_text(((int)WM_W - 8 * 52) / 2, 380, 1, "PS2 boot can take several minutes on the Wii U alpha.", 170, 170, 180);
+    menu_text(((int)WM_W - 8 * 44) / 2, 400, 1, "Hold L+R+ZL+ZR and press + to return to menu", 140, 140, 150);
+    menu_rect(0, 0, (int)WM_W, 18, 150, 20, 20);
+    menu_text(6, 2, 1, "GEKKO2 Wii U EDITION  " G2_WIIU_VERSION "  -  ALPHA, EXPECT BUGS", 255, 255, 255);
+    g_fb = NULL;
+}
+
 void wiiu_menu_render(wiiu_menu *m, uint32_t *xrgb)
 {
     g_fb = xrgb;
     ui_text_renderer = menu_text;
     ui_logo_renderer = menu_logo;
     switch (m->page) {
+    case PG_CONTROLS: controls_draw(m); break;
     case PG_DEV: ui_optimization_draw(menu_rect, m->opt_selected, gekko2_opt_requested(), wiiu_available(), m->notice); break;
     case PG_EXP: ui_experiments_draw(menu_rect, m->experiment_selected, m->notice); break;
     case PG_SETTINGS: ui_settings_draw(menu_rect, m->settings_selected, (int)m->hud, (int)m->throughput, (int)m->fps, (int)m->gx, m->notice); break;
     case PG_BROWSER: ui_browser_draw(menu_rect, &m->browser, m->notice); break;
     default: ui_draw(menu_rect, m->selected, m->page, 0, (int)m->hud, (int)m->throughput, (int)m->fps, (int)m->gx, gekko2_opt_requested(), m->notice); break;
     }
+    alpha_overlay(m);
     g_fb = NULL;
 }
 
@@ -214,6 +344,37 @@ static int settings_change(wiiu_menu *m)
 
 int wiiu_menu_input(wiiu_menu *m, unsigned edges)
 {
+    if (m && m->page == PG_CONTROLS) {
+        if (m->ctl_capture) {
+            if (edges & WM_B) { m->ctl_capture = 0; wiiu_menu_set_notice(m, "Cancelled."); }
+            return WM_ACTION_NONE; /* the next raw button press is captured by wiiu_menu_raw_trigger() */
+        }
+        if (edges & WM_B) { m->page = PG_MAIN; return WM_ACTION_NONE; }
+        if (edges & WM_UP) m->ctl_selected = (m->ctl_selected + 15) % 16;
+        if (edges & WM_DOWN) m->ctl_selected = (m->ctl_selected + 1) % 16;
+        if (edges & WM_A) { m->ctl_capture = 1; wiiu_menu_set_notice(m, "Press the controller button for this PS2 button."); }
+        if (edges & WM_X) {
+            memcpy(m->map_src, map_default, sizeof m->map_src);
+            wiiu_menu_set_notice(m, controls_save(m) ? "Defaults set (NOT saved)." : "Defaults restored and saved.");
+        }
+        return WM_ACTION_NONE;
+    }
+    if (m && (edges & WM_Y) && m->page == PG_MAIN) {
+        m->page = PG_CONTROLS;
+        m->ctl_capture = 0;
+        wiiu_menu_set_notice(m, "Choose a PS2 button and press A.");
+        return WM_ACTION_NONE;
+    }
+    if (m && (edges & WM_X) && m->page == PG_MAIN) {
+        m->verbose = !m->verbose;
+        if (m->verbose) {
+            FILE *f = fopen(m->verbose_path, "wb");
+            if (f) { fputs("1\n", f); fclose(f); }
+            else m->verbose = 0;
+        } else remove(m->verbose_path);
+        wiiu_menu_set_notice(m, m->verbose ? "Verbose SD log ON: send session.log with your report." : "Verbose SD log OFF.");
+        return WM_ACTION_NONE;
+    }
     if (!m || !edges) return WM_ACTION_NONE;
     if (edges & WM_START) { /* the Wii launcher resumes a paused session here; this port has none */
         wiiu_menu_set_notice(m, "No paused session. Choose BIOS or DISC.");

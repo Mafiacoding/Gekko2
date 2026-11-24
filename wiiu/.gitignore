@@ -6,3 +6,4 @@ build/
 build-jit/
 *.lst
 out/
+app/present_gsh_embedded.h

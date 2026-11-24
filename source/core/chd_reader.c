@@ -3,7 +3,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#ifdef GEKKO2_WIIU
+struct gekko2_chd {chd_file *file;uint8_t *hunk;uint32_t hunk_bytes,cached,unit,sectors,offset,base;};
+#else
 struct gekko2_chd {chd_file *file;uint8_t *hunk;uint32_t hunk_bytes,cached,unit,sectors,offset;};
+#endif
 static uint64_t stats[4];
 uint64_t gekko2_chd_stat(unsigned n){return n<4?stats[n]:0;}
 void gekko2_chd_close(struct gekko2_chd *d){if(!d)return;if(d->file)chd_close(d->file);free(d->hunk);free(d);}
@@ -14,7 +18,11 @@ static int read_bytes(struct gekko2_chd *d,uint64_t pos,uint8_t *out,size_t size
   size_t n=d->hunk_bytes-off;if(n>size)n=size;memcpy(out,d->hunk+off,n);out+=n;size-=n;pos+=n;
  }return 0;
 }
+#ifdef GEKKO2_WIIU
+int gekko2_chd_read(struct gekko2_chd *d,uint32_t lba,uint8_t *out){if(!d||!out||lba>=d->sectors)return -1;stats[0]++;return read_bytes(d,((uint64_t)lba+d->base)*d->unit+d->offset,out,2048);}
+#else
 int gekko2_chd_read(struct gekko2_chd *d,uint32_t lba,uint8_t *out){if(!d||!out||lba>=d->sectors)return -1;stats[0]++;return read_bytes(d,(uint64_t)lba*d->unit+d->offset,out,2048);}
+#endif
 int gekko2_chd_open(const char *path,struct gekko2_chd **out,uint32_t *sectors){
  if(!path||!out||!sectors)return -1;*out=NULL;
  struct gekko2_chd *d=calloc(1,sizeof(*d));if(!d)return -1;d->cached=UINT32_MAX;
@@ -31,10 +39,20 @@ int gekko2_chd_open(const char *path,struct gekko2_chd **out,uint32_t *sectors){
   chd_error e=chd_get_metadata(d->file,CDROM_TRACK_METADATA2_TAG,0,meta,sizeof(meta)-1,&len,NULL,NULL);
   if(e==CHDERR_NONE){if(sscanf(meta,"TRACK:%d TYPE:%63s SUBTYPE:%63s FRAMES:%d PREGAP:%d PGTYPE:%63s PGSUB:%63s POSTGAP:%d",&track,type,sub,&frames,&pregap,pgtype,pgsub,&postgap)!=8)goto fail;}
   else {if(chd_get_metadata(d->file,CDROM_TRACK_METADATA_TAG,0,meta,sizeof(meta)-1,&len,NULL,NULL)!=CHDERR_NONE||sscanf(meta,"TRACK:%d TYPE:%63s SUBTYPE:%63s FRAMES:%d",&track,type,sub,&frames)!=4)goto fail;}
+#ifdef GEKKO2_WIIU
+  /* Wii U: PS2 CDs keep the filesystem in data track 1. Later tracks (CD audio) are not part of the ISO9660
+   * data and are simply not exposed. A pregap stored in the image ("PGTYPE:V...") precedes track 1's frames. */
+  if(track!=1||frames<=16||!strcmp(type,"AUDIO"))goto fail;
+  uint32_t first=(pregap>0&&pgtype[0]=='V')?(uint32_t)pregap:0u;
+  if((uint64_t)first+(uint32_t)frames>d->sectors)goto fail;
+  d->sectors=(uint32_t)frames;
+  d->base=first;
+#else
   /* Multi-track/audio/pregap layouts require a real track map, never guess. */
   if(track!=1||frames<=16||pregap||postgap||!strcmp(type,"AUDIO")||(uint32_t)frames>d->sectors)goto fail;
   if(chd_get_metadata(d->file,CDROM_TRACK_METADATA2_TAG,1,meta,sizeof(meta)-1,&len,NULL,NULL)==CHDERR_NONE||chd_get_metadata(d->file,CDROM_TRACK_METADATA_TAG,1,meta,sizeof(meta)-1,&len,NULL,NULL)==CHDERR_NONE)goto fail;
   d->sectors=(uint32_t)frames;
+#endif
  }
  d->hunk=malloc(d->hunk_bytes);if(!d->hunk)goto fail;
  uint8_t pvd[2048];unsigned offsets[3]={0,16,24};int found=0;

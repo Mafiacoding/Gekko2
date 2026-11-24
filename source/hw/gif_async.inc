@@ -148,18 +148,22 @@ static int ga_pass(void)
     return any;
 }
 
+/* Optional: set by the app. Idle workers call it after many empty polls instead of spinning, so an emulator such
+ * as Cemu (or a busy core) does not lose time to a polling thread. */
+void (*gekko2_worker_nap)(void);
 void gs_async_worker_main(void)
 {
     __atomic_store_n(&ga_started, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&ga_running, 1, __ATOMIC_RELEASE);
+    unsigned idle = 0;
     while (!__atomic_load_n(&ga_stop, __ATOMIC_ACQUIRE)) {
         const uint32_t e = __atomic_load_n(&ga_epoch, __ATOMIC_ACQUIRE);
         const uint64_t b0 = ga_now();
         const int any = ga_pass();
-        if (any) ga_busy_ns += ga_now() - b0;
+        if (any) { ga_busy_ns += ga_now() - b0; idle = 0; }
         if (!any) {
             __atomic_store_n(&ga_stall_epoch, e, __ATOMIC_RELEASE);
-            ga_wait();
+            if (++idle > 512u && gekko2_worker_nap) gekko2_worker_nap(); else ga_wait();
         }
     }
     __atomic_store_n(&ga_running, 0, __ATOMIC_RELEASE);

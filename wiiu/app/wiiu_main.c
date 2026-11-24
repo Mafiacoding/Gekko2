@@ -15,6 +15,8 @@
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <vpad/input.h>
+#include <padscore/kpad.h>
+#include <padscore/wpad.h>
 #include <whb/log.h>
 #include <whb/log_cafe.h>
 #include <whb/proc.h>
@@ -59,6 +61,7 @@ static uint64_t last_render_ms;
 static volatile int return_to_menu; /* hold L+R+ZL+ZR and press + while emulating */
 
 static int use_gx2;
+static int show_log; /* status lines over the picture: only with the verbose log switched on */
 static uint32_t compose[640u * 480u];
 
 /* GPU path: compose the current picture (menu or emulator frame) and the last log lines into 640x480 on the CPU,
@@ -70,8 +73,8 @@ static void render_gx2(void)
         wiiu_scale_nearest(compose, 640u, 480u, shown, shown_w, shown_h);
     else
         memset(compose, 0, sizeof compose);
-    wiiu_text_dim_rows(compose, 640u, 480u - 3u * 15u - 4u, 480u);
-    const unsigned first = line_count > 3u ? line_count - 3u : 0;
+    if (show_log) wiiu_text_dim_rows(compose, 640u, 480u - 3u * 15u - 4u, 480u);
+    const unsigned first = !show_log ? line_count : line_count > 3u ? line_count - 3u : 0;
     for (unsigned i = first; i < line_count; i++) {
         char t[81];
         snprintf(t, sizeof t, "%.80s", lines[i % LINES]);
@@ -105,9 +108,20 @@ static void render(void)
             for (unsigned x = 0; x < dw; x++)
                 OSScreenPutPixelEx(SCREEN_TV, ox + x, y, row[xmap[x]] << 8);
         }
+        if (!show_log) {
+            /* GamePad: 854x480, 4:3 picture 640x480 centred. */
+            static uint16_t dmap[640];
+            for (unsigned x = 0; x < 640u; x++)
+                dmap[x] = (uint16_t)((unsigned long)x * shown_w / 640u);
+            for (unsigned y = 0; y < 480u; y++) {
+                const uint32_t *row = &shown[(size_t)((unsigned long)y * shown_h / 480u) * shown_w];
+                for (unsigned x = 0; x < 640u; x++)
+                    OSScreenPutPixelEx(SCREEN_DRC, 107u + x, y, row[dmap[x]] << 8);
+            }
+        }
     }
-    const unsigned first = line_count > LINES ? line_count - LINES : 0;
-    const unsigned tv_first = line_count > TV_LOG_LINES ? line_count - TV_LOG_LINES : 0;
+    const unsigned first = !show_log ? line_count : line_count > LINES ? line_count - LINES : 0;
+    const unsigned tv_first = !show_log ? line_count : line_count > TV_LOG_LINES ? line_count - TV_LOG_LINES : 0;
     for (unsigned i = first; i < line_count; i++)
         OSScreenPutFontEx(SCREEN_DRC, 0, i - first, lines[i % LINES]);
     for (unsigned i = tv_first; i < line_count; i++)
@@ -163,39 +177,104 @@ static int keep(void *u)
 static uint64_t now_ms(void *u) { (void)u; return (uint64_t)OSTicksToMilliseconds(OSGetSystemTime()); }
 
 
-/* Wii U GamePad to PS2 pad. Nintendo layout: B = Cross, A = Circle, Y = Square, X = Triangle,
- * L/R = L1/R1, ZL/ZR = L2/R2, + = Start, - = Select, stick clicks = L3/R3. HOME is left to the OS. */
-static int read_pad(uint16_t *pressed, uint8_t axes[4])
+static wiiu_menu *menu;
+
+/* Every Wii U controller is read as unified buttons (G2B_*, see wiiu_menu.h); the menu's mapping table turns them
+ * into the PS2 pad. GamePad and Pro/Classic Controller use their own labels; a Wii Remote held sideways uses
+ * 2 = B, 1 = Y, B = A, A = X; with a Nunchuk (held upright) A = B, B = A, 1 = Y, 2 = X, C = L, Z = ZL. */
+static uint32_t ub(int cond, unsigned b) { return cond ? 1u << b : 0u; }
+static uint32_t from_vpad(uint32_t h)
 {
+    return ub(h & VPAD_BUTTON_A, G2B_A) | ub(h & VPAD_BUTTON_B, G2B_B) | ub(h & VPAD_BUTTON_X, G2B_X) | ub(h & VPAD_BUTTON_Y, G2B_Y) |
+           ub(h & VPAD_BUTTON_L, G2B_L) | ub(h & VPAD_BUTTON_R, G2B_R) | ub(h & VPAD_BUTTON_ZL, G2B_ZL) | ub(h & VPAD_BUTTON_ZR, G2B_ZR) |
+           ub(h & VPAD_BUTTON_PLUS, G2B_PLUS) | ub(h & VPAD_BUTTON_MINUS, G2B_MINUS) | ub(h & VPAD_BUTTON_UP, G2B_UP) |
+           ub(h & VPAD_BUTTON_DOWN, G2B_DOWN) | ub(h & VPAD_BUTTON_LEFT, G2B_LEFT) | ub(h & VPAD_BUTTON_RIGHT, G2B_RIGHT) |
+           ub(h & VPAD_BUTTON_STICK_L, G2B_L3) | ub(h & VPAD_BUTTON_STICK_R, G2B_R3);
+}
+static uint32_t from_classic(uint32_t h, int pro)
+{
+    return ub(h & WPAD_CLASSIC_BUTTON_A, G2B_A) | ub(h & WPAD_CLASSIC_BUTTON_B, G2B_B) | ub(h & WPAD_CLASSIC_BUTTON_X, G2B_X) |
+           ub(h & WPAD_CLASSIC_BUTTON_Y, G2B_Y) | ub(h & WPAD_CLASSIC_BUTTON_L, G2B_L) | ub(h & WPAD_CLASSIC_BUTTON_R, G2B_R) |
+           ub(h & WPAD_CLASSIC_BUTTON_ZL, G2B_ZL) | ub(h & WPAD_CLASSIC_BUTTON_ZR, G2B_ZR) | ub(h & WPAD_CLASSIC_BUTTON_PLUS, G2B_PLUS) |
+           ub(h & WPAD_CLASSIC_BUTTON_MINUS, G2B_MINUS) | ub(h & WPAD_CLASSIC_BUTTON_UP, G2B_UP) | ub(h & WPAD_CLASSIC_BUTTON_DOWN, G2B_DOWN) |
+           ub(h & WPAD_CLASSIC_BUTTON_LEFT, G2B_LEFT) | ub(h & WPAD_CLASSIC_BUTTON_RIGHT, G2B_RIGHT) |
+           (pro ? ub(h & WPAD_PRO_BUTTON_STICK_L, G2B_L3) | ub(h & WPAD_PRO_BUTTON_STICK_R, G2B_R3) : 0u);
+}
+static uint32_t from_wiimote(uint32_t h, int nunchuk)
+{
+    if (nunchuk)
+        return ub(h & WPAD_BUTTON_A, G2B_B) | ub(h & WPAD_BUTTON_B, G2B_A) | ub(h & WPAD_BUTTON_1, G2B_Y) | ub(h & WPAD_BUTTON_2, G2B_X) |
+               ub(h & WPAD_BUTTON_C, G2B_L) | ub(h & WPAD_BUTTON_Z, G2B_ZL) | ub(h & WPAD_BUTTON_PLUS, G2B_PLUS) |
+               ub(h & WPAD_BUTTON_MINUS, G2B_MINUS) | ub(h & WPAD_BUTTON_UP, G2B_UP) | ub(h & WPAD_BUTTON_DOWN, G2B_DOWN) |
+               ub(h & WPAD_BUTTON_LEFT, G2B_LEFT) | ub(h & WPAD_BUTTON_RIGHT, G2B_RIGHT);
+    /* Sideways: the D-pad is rotated a quarter turn. */
+    return ub(h & WPAD_BUTTON_2, G2B_B) | ub(h & WPAD_BUTTON_1, G2B_Y) | ub(h & WPAD_BUTTON_B, G2B_A) | ub(h & WPAD_BUTTON_A, G2B_X) |
+           ub(h & WPAD_BUTTON_PLUS, G2B_PLUS) | ub(h & WPAD_BUTTON_MINUS, G2B_MINUS) | ub(h & WPAD_BUTTON_RIGHT, G2B_UP) |
+           ub(h & WPAD_BUTTON_LEFT, G2B_DOWN) | ub(h & WPAD_BUTTON_UP, G2B_LEFT) | ub(h & WPAD_BUTTON_DOWN, G2B_RIGHT);
+}
+static int kpad_ready;
+/* All controllers ORed together. axes: right x, right y, left x, left y in -1..1 (y up). Returns how many answered. */
+static int read_unified(uint32_t *hold, float axes[4])
+{
+    int n = 0;
+    *hold = 0;
+    for (unsigned i = 0; i < 4; i++) axes[i] = 0.0f;
     VPADStatus st;
     VPADReadError err = VPAD_READ_SUCCESS;
-    if (VPADRead(VPAD_CHAN_0, &st, 1, &err) < 1 || err != VPAD_READ_SUCCESS)
-        return 1;
-    const uint32_t h = st.hold;
-    {
-        const uint32_t combo = VPAD_BUTTON_L | VPAD_BUTTON_R | VPAD_BUTTON_ZL | VPAD_BUTTON_ZR;
-        if ((h & combo) == combo && (st.trigger & VPAD_BUTTON_PLUS))
-            return_to_menu = 1;
+    if (VPADRead(VPAD_CHAN_0, &st, 1, &err) >= 1 && err == VPAD_READ_SUCCESS) {
+        *hold |= from_vpad(st.hold);
+        axes[0] = st.rightStick.x; axes[1] = st.rightStick.y; axes[2] = st.leftStick.x; axes[3] = st.leftStick.y;
+        n++;
     }
-    uint16_t p = 0;
-    if (h & VPAD_BUTTON_B) p |= IOP_PAD_BTN_CROSS;
-    if (h & VPAD_BUTTON_A) p |= IOP_PAD_BTN_CIRCLE;
-    if (h & VPAD_BUTTON_Y) p |= IOP_PAD_BTN_SQUARE;
-    if (h & VPAD_BUTTON_X) p |= IOP_PAD_BTN_TRIANGLE;
-    if (h & VPAD_BUTTON_L) p |= IOP_PAD_BTN_L1;
-    if (h & VPAD_BUTTON_R) p |= IOP_PAD_BTN_R1;
-    if (h & VPAD_BUTTON_ZL) p |= IOP_PAD_BTN_L2;
-    if (h & VPAD_BUTTON_ZR) p |= IOP_PAD_BTN_R2;
-    if (h & VPAD_BUTTON_PLUS) p |= IOP_PAD_BTN_START;
-    if (h & VPAD_BUTTON_MINUS) p |= IOP_PAD_BTN_SELECT;
-    if (h & VPAD_BUTTON_UP) p |= IOP_PAD_BTN_UP;
-    if (h & VPAD_BUTTON_DOWN) p |= IOP_PAD_BTN_DOWN;
-    if (h & VPAD_BUTTON_LEFT) p |= IOP_PAD_BTN_LEFT;
-    if (h & VPAD_BUTTON_RIGHT) p |= IOP_PAD_BTN_RIGHT;
-    if (h & VPAD_BUTTON_STICK_L) p |= IOP_PAD_BTN_L3;
-    if (h & VPAD_BUTTON_STICK_R) p |= IOP_PAD_BTN_R3;
-    *pressed = p;
-    const float v[4] = { st.rightStick.x, -st.rightStick.y, st.leftStick.x, -st.leftStick.y };
+    if (kpad_ready)
+        for (unsigned c = 0; c < 4u; c++) {
+            KPADStatus k;
+            KPADError ke = KPAD_ERROR_OK;
+            memset(&k, 0, sizeof k);
+            if (KPADReadEx((KPADChan)c, &k, 1, &ke) < 1 || ke != KPAD_ERROR_OK) continue;
+            float lx = 0, ly = 0, rx = 0, ry = 0;
+            switch (k.extensionType) {
+            case WPAD_EXT_PRO_CONTROLLER:
+                *hold |= from_classic(k.pro.hold, 1);
+                lx = k.pro.leftStick.x; ly = k.pro.leftStick.y; rx = k.pro.rightStick.x; ry = k.pro.rightStick.y;
+                break;
+            case WPAD_EXT_CLASSIC:
+            case WPAD_EXT_MPLUS_CLASSIC:
+                *hold |= from_classic(k.classic.hold, 0);
+                lx = k.classic.leftStick.x; ly = k.classic.leftStick.y; rx = k.classic.rightStick.x; ry = k.classic.rightStick.y;
+                break;
+            case WPAD_EXT_NUNCHUK:
+            case WPAD_EXT_MPLUS_NUNCHUK:
+                *hold |= from_wiimote(k.hold, 1);
+                lx = k.nunchuk.stick.x; ly = k.nunchuk.stick.y;
+                break;
+            default:
+                *hold |= from_wiimote(k.hold, 0);
+                break;
+            }
+            /* The stick pushed furthest wins when several controllers are used at once. */
+            const float v[4] = { rx, ry, lx, ly };
+            for (unsigned a = 0; a < 4; a++)
+                if ((v[a] < 0 ? -v[a] : v[a]) > (axes[a] < 0 ? -axes[a] : axes[a])) axes[a] = v[a];
+            n++;
+        }
+    return n;
+}
+
+/* PS2 pad from all controllers through the user's mapping. Hold L+R+ZL+ZR and press + to return to the menu. */
+static int read_pad(uint16_t *pressed, uint8_t axes[4])
+{
+    static uint32_t prev;
+    uint32_t h;
+    float a[4];
+    if (!read_unified(&h, a))
+        return 1;
+    const uint32_t combo = (1u << G2B_L) | (1u << G2B_R) | (1u << G2B_ZL) | (1u << G2B_ZR);
+    if ((h & combo) == combo && (h & ~prev & (1u << G2B_PLUS)))
+        return_to_menu = 1;
+    prev = h;
+    *pressed = wiiu_menu_map_buttons(menu, h);
+    const float v[4] = { a[0], -a[1], a[2], -a[3] };
     for (unsigned i = 0; i < 4; i++) {
         float f = v[i] * 127.0f + 128.0f;
         axes[i] = (uint8_t)(f < 0.0f ? 0 : f > 255.0f ? 255 : (int)f);
@@ -299,6 +378,7 @@ static int start_worker(void (*fn)(void), void *user)
     return 0;
 }
 static void worker_idle(void) { OSYieldThread(); }
+static void worker_nap(void) { OSSleepTicks(OSMicrosecondsToTicks(50)); }
 
 /* IOP worker: the third Espresso core (neither the emulation thread's nor the GS worker's). The core needs the stack
  * range to tell the worker apart, so the caller provides the stack. */
@@ -357,7 +437,6 @@ static int start_worker_vu(void (*fn)(void), void *user)
     return 0;
 }
 
-static wiiu_menu *menu;
 static uint32_t menu_fb[WM_W * WM_H];
 
 static void show_menu(void)
@@ -371,24 +450,27 @@ static void show_menu(void)
     SHARED_UNLOCK();
 }
 
-/* D-pad / buttons to menu edges, with a simple key repeat on UP/DOWN. */
+/* Controller buttons (unified) to menu edges, with a simple key repeat on UP/DOWN. */
 static unsigned menu_edges(uint32_t trigger, uint32_t hold, uint64_t now)
 {
     static uint64_t next_repeat;
+    const uint32_t up = 1u << G2B_UP, down = 1u << G2B_DOWN;
     unsigned e = 0;
-    if (trigger & VPAD_BUTTON_UP) e |= WM_UP;
-    if (trigger & VPAD_BUTTON_DOWN) e |= WM_DOWN;
-    if (trigger & VPAD_BUTTON_LEFT) e |= WM_LEFT;
-    if (trigger & VPAD_BUTTON_RIGHT) e |= WM_RIGHT;
-    if (trigger & VPAD_BUTTON_A) e |= WM_A;
-    if (trigger & VPAD_BUTTON_B) e |= WM_B;
-    if (trigger & VPAD_BUTTON_PLUS) e |= WM_START;
-    if (trigger & VPAD_BUTTON_L) e |= WM_PAGE_UP;
-    if (trigger & VPAD_BUTTON_R) e |= WM_PAGE_DOWN;
-    if (trigger & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN))
+    if (trigger & up) e |= WM_UP;
+    if (trigger & down) e |= WM_DOWN;
+    if (trigger & (1u << G2B_LEFT)) e |= WM_LEFT;
+    if (trigger & (1u << G2B_RIGHT)) e |= WM_RIGHT;
+    if (trigger & (1u << G2B_A)) e |= WM_A;
+    if (trigger & (1u << G2B_B)) e |= WM_B;
+    if (trigger & (1u << G2B_PLUS)) e |= WM_START;
+    if (trigger & (1u << G2B_L)) e |= WM_PAGE_UP;
+    if (trigger & (1u << G2B_R)) e |= WM_PAGE_DOWN;
+    if (trigger & (1u << G2B_X)) e |= WM_X;
+    if (trigger & (1u << G2B_Y)) e |= WM_Y;
+    if (trigger & (up | down))
         next_repeat = now + 400u;
-    else if ((hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN)) && now >= next_repeat) {
-        e |= (hold & VPAD_BUTTON_UP) ? WM_UP : WM_DOWN;
+    else if ((hold & (up | down)) && now >= next_repeat) {
+        e |= (hold & up) ? WM_UP : WM_DOWN;
         next_repeat = now + 80u;
     }
     return e;
@@ -475,12 +557,15 @@ int main(void)
     WHBProcInit();
     WHBLogCafeInit();
     VPADInit();
+    KPADInit();
+    WPADEnableURCC(1);
+    kpad_ready = 1;
 #ifdef GEKKO2_WIIU_JIT
     OSInitMutex(&shared_lock);
 #endif
 
-    on_log(NULL, "Gekko2 Wii U / Cemu test port (interpreter, software video)");
-    on_log(NULL, "Test build: not a release, no speed claim.");
+    on_log(NULL, "Gekko2 Wii U Edition " G2_WIIU_VERSION " (ALPHA)");
+    on_log(NULL, "Alpha build: expect bugs; speed is far below full PS2 speed.");
     char mount_bios[256] = "", fallback_bios[256] = "fs:/vol/external01/wiiu/gekko2/bios/ps2bios.bin";
     char plain_bios[256] = "/vol/external01/wiiu/gekko2/bios/ps2bios.bin", sd_root[256] = "";
     if (WHBMountSdCard()) {
@@ -518,6 +603,17 @@ int main(void)
             snprintf(gsh_path, sizeof gsh_path, "%s/wiiu/gekko2/present.gsh", sd_root);
             gsh = read_whole_file(gsh_path, &gsh_size);
         }
+#if __has_include("present_gsh_embedded.h")
+        /* Release builds carry the assembled presenter shaders; a present.gsh on the SD card still overrides them. */
+        if (!gsh) {
+#include "present_gsh_embedded.h"
+            gsh = MEMAllocFromDefaultHeapEx(sizeof present_gsh_data, 0x100);
+            if (gsh) {
+                memcpy(gsh, present_gsh_data, sizeof present_gsh_data);
+                gsh_size = sizeof present_gsh_data;
+            }
+        }
+#endif
         if (gsh && gx2_present_init(gsh, gsh_size, 640u, 480u)) {
             use_gx2 = 1;
             on_log(NULL, "GX2 presenter active (GPU scaling, present.gsh)");
@@ -534,17 +630,20 @@ int main(void)
             wiiu_menu_set_notice(menu, "BIOS not found: sd:/wiiu/gekko2/bios/ps2bios.bin");
         show_menu();
     }
+    { extern void (*gekko2_worker_nap)(void); gekko2_worker_nap = worker_nap; }
     g_platform = (g2_platform){ on_log, on_present, keep, now_ms, poll_pad, start_worker, worker_idle, NULL, start_worker_stack, start_worker_vu };
     while (menu && WHBProcIsRunning()) {
-        VPADStatus st;
-        VPADReadError err = VPAD_READ_SUCCESS;
-        uint32_t hold = 0, trigger = 0;
-        if (VPADRead(VPAD_CHAN_0, &st, 1, &err) >= 1 && err == VPAD_READ_SUCCESS) {
-            hold = st.hold;
-            trigger = st.trigger;
-        }
+        static uint32_t prev_hold;
+        uint32_t hold = 0;
+        float axes_unused[4];
+        read_unified(&hold, axes_unused);
+        const uint32_t trigger = hold & ~prev_hold;
+        prev_hold = hold;
         const uint64_t now = now_ms(NULL);
-        const unsigned edges = menu_edges(trigger, hold, now);
+        /* Controls page: a captured button assigns a mapping and is not also a menu command. */
+        const int captured = trigger && wiiu_menu_raw_trigger(menu, trigger);
+        if (captured) show_menu();
+        const unsigned edges = captured ? 0u : menu_edges(trigger, hold, now);
         if (edges) {
             const int action = wiiu_menu_input(menu, edges);
             show_menu();
@@ -556,12 +655,27 @@ int main(void)
                 } else {
                     static char session_log[300];
                     snprintf(session_log, sizeof session_log, "%s/wiiu/gekko2/session.log", sd_root[0] ? sd_root : "/vol/external01");
+                    const int verbose = wiiu_menu_verbose(menu);
+                    show_log = verbose;
+                    SHARED_LOCK();
+                    line_count = 0;
+                    SHARED_UNLOCK();
+                    wiiu_menu_render_loading(menu, menu_fb, action == WM_ACTION_START_DISC ? wiiu_menu_disc(menu) : "PS2 BIOS");
+                    SHARED_LOCK();
+                    memcpy(shown, menu_fb, sizeof menu_fb);
+                    shown_w = WM_W;
+                    shown_h = WM_H;
+                    dirty = 1;
+                    SHARED_UNLOCK();
+                    render();
+                    last_render_ms = now_ms(NULL);
                     g_config = (g2_config){ bios, action == WM_ACTION_START_DISC ? wiiu_menu_disc(menu) : NULL,
-                                            2000u, 0, 1000u, 0, 1, session_log, gs_async_wanted(sd_root), !file_exists_flag(sd_root, "fast_run_off.txt"),
+                                            2000u, 0, 1000u, 0, 1, verbose ? session_log : NULL, gs_async_wanted(sd_root), !file_exists_flag(sd_root, "fast_run_off.txt"),
                                             file_exists_flag(sd_root, "event_sched_on.txt"), file_exists_flag(sd_root, "iop_async_on.txt"),
-                                            file_exists_flag(sd_root, "vu_jit_off.txt"), !file_exists_flag(sd_root, "vu1_async_off.txt") };
+                                            file_exists_flag(sd_root, "vu_jit_off.txt"), file_exists_flag(sd_root, "vu1_async_on.txt") };
                     run_emulation();
-                    wiiu_menu_set_notice(menu, "Back from emulation. Restart the app for a clean boot.");
+                    show_log = 0;
+                    wiiu_menu_set_notice(menu, verbose ? "Back. Log saved: sd:/wiiu/gekko2/session.log" : "Back from emulation. Restart the app for a clean boot.");
                 }
                 show_menu();
             }
@@ -573,6 +687,7 @@ int main(void)
         OSSleepTicks(OSMillisecondsToTicks(16));
     }
     wiiu_menu_destroy(menu);
+    KPADShutdown();
     VPADShutdown();
     WHBUnmountSdCard();
     if (use_gx2) {

@@ -808,8 +808,14 @@ void vu1_async_worker_main(void)
 {
     __atomic_store_n(&va_started, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&va_running, 1, __ATOMIC_RELEASE);
+    extern void (*gekko2_worker_nap)(void);
+    unsigned idle = 0;
     while (!__atomic_load_n(&va_stop, __ATOMIC_ACQUIRE)) {
-        if (!__atomic_load_n(&va_req, __ATOMIC_ACQUIRE)) { va_wait(); continue; }
+        if (!__atomic_load_n(&va_req, __ATOMIC_ACQUIRE)) {
+            if (++idle > 512u && gekko2_worker_nap) gekko2_worker_nap(); else va_wait();
+            continue;
+        }
+        idle = 0;
         const uint64_t t0 = va_now();
         vu1_worker_run();
         va_busy_ns += va_now() - t0;
