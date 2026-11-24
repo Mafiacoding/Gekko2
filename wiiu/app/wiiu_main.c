@@ -326,6 +326,37 @@ static int start_worker_stack(void (*fn)(void), void *user, void *stack, unsigne
     return 0;
 }
 
+/* VU1 worker: the third Espresso core as well (shared with the IOP worker only if both are switched on). */
+static OSThread vu_thread;
+static void *vu_stack;
+static void (*vu_fn)(void);
+static int vu_entry(int argc, void *argv)
+{
+    (void)argc; (void)argv;
+    vu_fn();
+    return 0;
+}
+static int start_worker_vu(void (*fn)(void), void *user)
+{
+    (void)user;
+    const uint32_t stack_size = 256u * 1024u;
+    if (!vu_stack)
+        vu_stack = MEMAllocFromDefaultHeapEx(stack_size, 16);
+    if (!vu_stack)
+        return -1;
+    vu_fn = fn;
+    const unsigned emu = (unsigned)OSGetCoreId();
+    const unsigned gs = gs_core <= 2u ? gs_core : (emu == 2u ? 1u : 2u);
+    unsigned core = 3u - emu - gs;
+    if (core > 2u || core == emu || core == gs)
+        core = emu == 0u ? 1u : 0u;
+    if (!OSCreateThread(&vu_thread, vu_entry, 0, NULL, (uint8_t *)vu_stack + stack_size, stack_size, 16, 1u << core))
+        return -1;
+    OSSetThreadName(&vu_thread, "gekko2-vu1");
+    OSResumeThread(&vu_thread);
+    return 0;
+}
+
 static wiiu_menu *menu;
 static uint32_t menu_fb[WM_W * WM_H];
 
@@ -503,7 +534,7 @@ int main(void)
             wiiu_menu_set_notice(menu, "BIOS not found: sd:/wiiu/gekko2/bios/ps2bios.bin");
         show_menu();
     }
-    g_platform = (g2_platform){ on_log, on_present, keep, now_ms, poll_pad, start_worker, worker_idle, NULL, start_worker_stack };
+    g_platform = (g2_platform){ on_log, on_present, keep, now_ms, poll_pad, start_worker, worker_idle, NULL, start_worker_stack, start_worker_vu };
     while (menu && WHBProcIsRunning()) {
         VPADStatus st;
         VPADReadError err = VPAD_READ_SUCCESS;
@@ -527,7 +558,8 @@ int main(void)
                     snprintf(session_log, sizeof session_log, "%s/wiiu/gekko2/session.log", sd_root[0] ? sd_root : "/vol/external01");
                     g_config = (g2_config){ bios, action == WM_ACTION_START_DISC ? wiiu_menu_disc(menu) : NULL,
                                             2000u, 0, 1000u, 0, 1, session_log, gs_async_wanted(sd_root), !file_exists_flag(sd_root, "fast_run_off.txt"),
-                                            file_exists_flag(sd_root, "event_sched_on.txt"), file_exists_flag(sd_root, "iop_async_on.txt") };
+                                            file_exists_flag(sd_root, "event_sched_on.txt"), file_exists_flag(sd_root, "iop_async_on.txt"),
+                                            file_exists_flag(sd_root, "vu_jit_off.txt"), !file_exists_flag(sd_root, "vu1_async_off.txt") };
                     run_emulation();
                     wiiu_menu_set_notice(menu, "Back from emulation. Restart the app for a clean boot.");
                 }

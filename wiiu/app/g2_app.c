@@ -120,7 +120,8 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             /* The codegen area is only usable from the codegen core; ask now, on the emulator thread. */
             if (gekko2_codegen_area(NULL)) {
                 gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
-                say(platform, "EE dynarec requested (Wii U codegen area)");
+                if (!config->vu_jit_off) gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
+                say(platform, "EE dynarec requested (Wii U codegen area)%s", config->vu_jit_off ? "" : ", VU dynarec on");
             } else {
                 say(platform, "EE dynarec NOT available: %s - interpreter only", gekko2_codegen_status());
             }
@@ -133,9 +134,11 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
 #ifdef GEKKO2_WIIU_JIT
     else if (gekko2_optimization_mask & GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)) {
         if (gekko2_codegen_area(NULL)) {
-            say(platform, "EE dynarec on (Wii U codegen area)");
+            if (!config->vu_jit_off) gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
+            else gekko2_optimization_mask &= ~GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
+            say(platform, "EE dynarec on (Wii U codegen area)%s", config->vu_jit_off ? "" : ", VU dynarec on");
         } else {
-            gekko2_optimization_mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS));
+            gekko2_optimization_mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS) | GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT));
             say(platform, "EE dynarec NOT available: %s - interpreter only", gekko2_codegen_status());
         }
     }
@@ -174,6 +177,17 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         } else {
             gs_async_detach();
             say(platform, "GS worker thread could not be started; GIF/GS stays on the emulation thread");
+        }
+    }
+    int vu1_async_active = 0;
+    if (config->vu1_async && gs_async_active && platform->start_worker_vu) {
+        vu1_async_attach(platform->worker_idle);
+        if (platform->start_worker_vu(vu1_async_worker_main, platform->user) == 0 && vu1_async_enable() == 0) {
+            vu1_async_active = 1;
+            say(platform, "VU1 worker thread active (VU1 microprograms run on the third core)");
+        } else {
+            vu1_async_detach();
+            say(platform, "VU1 worker thread could not be started; VU1 stays on the emulation thread");
         }
     }
     int iop_async_active = 0;
@@ -251,6 +265,16 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                                 (unsigned long long)(e->instructions_executed ? ee_iw_stats[1] * 100u / e->instructions_executed : 0),
                                 (unsigned long long)iop_pm, (unsigned long long)sp.samples);
                 }
+                if (vu1_async_active) {
+                    uint64_t vst[3];
+                    vu1_async_stats(vst);
+                    const uint64_t vw = prof_run_ns ? vst[1] * 1000u / prof_run_ns : 0;
+                    say(platform, "PROF vu1 worker busy=%llu.%llu%% of emulation time (runs=%llu, GIF waits=%llu)", (unsigned long long)(vw / 10u),
+                        (unsigned long long)(vw % 10u), (unsigned long long)vst[0], (unsigned long long)vst[2]);
+                    if (session)
+                        fprintf(session, "# prof3 t=%llus vu1w_permille=%llu vu1w_runs=%llu vu1w_gif_waits=%llu\n", (unsigned long long)((now - start) / 1000u),
+                                (unsigned long long)vw, (unsigned long long)vst[0], (unsigned long long)vst[2]);
+                }
                 say(platform, "PROF gs=%llu.%llu%% vu1=%llu.%llu%% of emulation time (gif calls=%llu, vu1 runs=%llu); VU pairs so far: vu0=%llu vu1=%llu",
                     (unsigned long long)(gs_pm / 10u), (unsigned long long)(gs_pm % 10u), (unsigned long long)(vu_pm / 10u),
                     (unsigned long long)(vu_pm % 10u), (unsigned long long)gekko2_prof_gs_calls, (unsigned long long)gekko2_prof_vu1_calls,
@@ -307,6 +331,13 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "HALT %s | %s", e->halt_reason, i->halt_reason);
             break;
         }
+    }
+    if (vu1_async_active) {
+        uint64_t st[3];
+        vu1_async_stats(st);
+        say(platform, "VU1 worker: runs=%llu busy=%llu ms GIF waits=%llu", (unsigned long long)st[0], (unsigned long long)(st[1] / 1000000u),
+            (unsigned long long)st[2]);
+        vu1_async_detach();
     }
     if (iop_async_active) {
         unsigned long long st[4];

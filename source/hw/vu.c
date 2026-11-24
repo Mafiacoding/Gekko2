@@ -31,11 +31,22 @@ static uint32_t unknown_words[8][2];
 static unsigned unknown_used;
 #endif
 const vu1_state_t * const vu1_scheduler_view = &g_vu1;
+#ifdef GEKKO2_WIIU
+/* VPU_STAT is shared with the EE thread; the VU1 worker core changes its bits atomically. */
+#define G2_VPU1_OR(v) __atomic_fetch_or(&ee_core_get_state()->cop2_ctrl[29],(v),__ATOMIC_ACQ_REL)
+#define G2_VPU1_AND(v) __atomic_fetch_and(&ee_core_get_state()->cop2_ctrl[29],(v),__ATOMIC_ACQ_REL)
+#else
+#define G2_VPU1_OR(v) ee_core_get_state()->cop2_ctrl[29]|=v
+#define G2_VPU1_AND(v) ee_core_get_state()->cop2_ctrl[29]&=v
+#endif
 static void vu1_service_xgkick(int flush);
 static void vu1_issue_xgkick(uint32_t addr);
 
 void vu1_init(void)
 {
+#ifdef GEKKO2_WIIU
+    vu1_async_wait();
+#endif
     memset(&g_vu1, 0, sizeof(g_vu1));
 #ifdef GEKKO2_GAME_TRACE
     unknown_used=0;
@@ -374,7 +385,11 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
         if((upper&0x10000000u)&&(control[28]&(4u<<shift)))flags|=2u<<shift;
         if((upper&0x08000000u)&&(control[28]&(8u<<shift)))flags|=4u<<shift;
         if(flags) {
+#ifdef GEKKO2_WIIU
+            __atomic_fetch_or(&control[29],flags,__ATOMIC_ACQ_REL);
+#else
             control[29]|=flags;
+#endif
             /* Each enabled source has its own raise, including D+T. */
             if(flags&(2u<<shift))ee_intc_raise(unit1?7:6);
             if(flags&(4u<<shift))ee_intc_raise(unit1?7:6);
@@ -562,7 +577,7 @@ static void vu1_start_xgkick(uint32_t addr)
     g_vu1.xgkick_last_cycle=g_vu1.pipeline.cycle;
     g_vu1.xgkick_eop=0;
     g_vu1.xgkick_pending=1;
-    ee_core_get_state()->cop2_ctrl[29]|=1u<<12;
+    G2_VPU1_OR(1u<<12);
     gif_begin_xgkick();
 }
 
@@ -605,7 +620,7 @@ static void vu1_service_xgkick(int flush)
         if(!g_vu1.xgkick_ring_qwords ||
            (!g_vu1.xgkick_packet_qwords && g_vu1.xgkick_eop)) {
             g_vu1.xgkick_pending=0;
-            ee_core_get_state()->cop2_ctrl[29]&=~(1u<<12);
+            G2_VPU1_AND(~(1u<<12));
             gif_end_xgkick();
             if(g_vu1.xgkick_deferred){
                 uint32_t next=g_vu1.xgkick_deferred_addr;
@@ -682,7 +697,7 @@ static void vu1_run_pairs(void)
                                      &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline,&g_vu1.timing);
         if(stopped==2)break;
         if (stopped==1) {
-            g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);VU1_TRACE(1);
+            g_vu1.running=0;G2_VPU1_AND(~(1u<<8));VU1_TRACE(1);
             vu1_service_xgkick(1);
             break;
         }
@@ -700,7 +715,7 @@ static void vu1_run_blocks(void)
             &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline,&g_vu1.timing,0,0};
         if(vu1_block_candidate())ran=vu_jit_try_timed_block(&c,VU_EXEC_STEP_CAP-i);
         if(ran){
-            if(c.stopped==1){g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);VU1_TRACE(1);vu1_service_xgkick(1);break;}
+            if(c.stopped==1){g_vu1.running=0;G2_VPU1_AND(~(1u<<8));VU1_TRACE(1);vu1_service_xgkick(1);break;}
             if(c.stopped==2)break;
             i+=ran-1u;continue;
         }
@@ -712,7 +727,7 @@ static void vu1_run_blocks(void)
                                      &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline,&g_vu1.timing);
         if(stopped==2)break;
         if (stopped==1) {
-            g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);VU1_TRACE(1);
+            g_vu1.running=0;G2_VPU1_AND(~(1u<<8));VU1_TRACE(1);
             vu1_service_xgkick(1);
             break;
         }
@@ -734,13 +749,97 @@ static inline uint64_t vu_prof_now(void){struct timespec t;clock_gettime(CLOCK_M
 #define VU_PROF_END
 #endif
 
+#ifdef GEKKO2_WIIU
+/* Wii U port only: VU1 microprograms on their own core. MSCAL/MSCNT hand the run to the worker and return; the
+ * VIF already waits for g_vu1.running (FLUSH/MSCAL barriers), so ordering is kept. The worker is the only PATH1
+ * producer of the GS worker's per-path rings (needs gs_async). VU JIT code is only executable on the codegen core,
+ * so the worker always interprets. */
+volatile int vu1_async_on;
+static volatile int va_req, va_stop, va_running, va_started;
+static void (*va_idle)(void);
+static uint64_t va_busy_ns, va_runs, va_gif_waits;
+static inline void va_wait(void) { if (va_idle) va_idle(); }
+static inline uint64_t va_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
+void vu1_async_attach(void (*idle)(void))
+{
+    va_idle = idle; va_req = 0; va_stop = 0; va_running = 0; va_started = 0;
+    va_busy_ns = va_runs = va_gif_waits = 0;
+}
+int vu1_async_enable(void)
+{
+    for (unsigned i = 0; i < 2000000u && !__atomic_load_n(&va_running, __ATOMIC_ACQUIRE); i++) va_wait();
+    if (!__atomic_load_n(&va_running, __ATOMIC_ACQUIRE)) return -1;
+    vu1_async_on = 1;
+    return 0;
+}
+void vu1_async_wait(void)
+{
+    if (!vu1_async_on) return;
+    while (__atomic_load_n(&va_req, __ATOMIC_ACQUIRE)) va_wait();
+}
+void vu1_async_detach(void)
+{
+    vu1_async_wait();
+    __atomic_store_n(&va_stop, 1, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&va_started, __ATOMIC_ACQUIRE))
+        while (__atomic_load_n(&va_running, __ATOMIC_ACQUIRE)) va_wait();
+    vu1_async_on = 0;
+}
+void vu1_async_stats(uint64_t out[3]) { out[0] = va_runs; out[1] = va_busy_ns; out[2] = va_gif_waits; }
+static void vu1_worker_run(void)
+{
+    for (uint64_t n = 0; n < (1ull << 28); n++) {
+        int stopped = vu_micro_step_timed(g_vu1.vf, g_vu1.vi, g_vu1.acc, g_vu1.mem, VU1_MEM_SIZE - 1u,
+                                          g_vu1.micro, VU1_MICRO_SIZE - 1u, &g_vu1.tpc, &g_vu1.branch_delay,
+                                          &g_vu1.branch_target, &g_vu1.ebit_delay, &g_vu1.instructions_executed,
+                                          &g_vu1.unimplemented_opcodes_seen, &g_vu1.pipeline, &g_vu1.timing);
+        if (stopped == 1) break;
+        if (stopped == 2) { va_gif_waits++; va_wait(); }
+    }
+    /* Ends with E (or the runaway cap): publish idle first, as the synchronous runner does, then flush PATH1. */
+    __atomic_store_n(&g_vu1.running, 0, __ATOMIC_RELEASE);
+    G2_VPU1_AND(~(1u << 8));
+    while (g_vu1.xgkick_pending) {
+        vu1_service_xgkick(1);
+        if (g_vu1.xgkick_pending) { va_gif_waits++; va_wait(); }
+    }
+}
+void vu1_async_worker_main(void)
+{
+    __atomic_store_n(&va_started, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&va_running, 1, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&va_stop, __ATOMIC_ACQUIRE)) {
+        if (!__atomic_load_n(&va_req, __ATOMIC_ACQUIRE)) { va_wait(); continue; }
+        const uint64_t t0 = va_now();
+        vu1_worker_run();
+        va_busy_ns += va_now() - t0;
+        va_runs++;
+        __atomic_store_n(&va_req, 0, __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&va_running, 0, __ATOMIC_RELEASE);
+}
+static int vu1_async_start(int reset_pc, uint32_t start_addr)
+{
+    if (!vu1_async_on) return 0;
+    vu1_async_wait();
+    if (reset_pc) g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
+    g_vu1.running = 1;
+    G2_VPU1_OR(1u << 8);
+    __atomic_store_n(&va_req, 1, __ATOMIC_RELEASE);
+    return 1;
+}
+#endif
+
 void vu1_exec_micro(uint32_t start_addr)
 {
+#ifdef GEKKO2_WIIU
+    if (vu1_async_start(1, start_addr)) return;
+#endif
     VU_PROF_BEGIN;
     unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
     VU1_TRACE(0);
-    g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
+    g_vu1.running = 1;G2_VPU1_OR(1u<<8);
 
     /* Q/P, branch and GIF boundaries can be scalar; later work can
      * resume native blocks within the same synchronously ordered run. */
@@ -771,10 +870,13 @@ void vu1_exec_micro(uint32_t start_addr)
  * vu1_exec_micro() but without the reset line. */
 void vu1_exec_micro_continue(void)
 {
+#ifdef GEKKO2_WIIU
+    if (vu1_async_start(0, 0)) return;
+#endif
     VU_PROF_BEGIN;
     VU1_TRACE(0);
     unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
-    g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
+    g_vu1.running = 1;G2_VPU1_OR(1u<<8);
 
     /* Q/P, branch and GIF boundaries can be scalar; later work can
      * resume native blocks within the same synchronously ordered run. */
@@ -788,6 +890,9 @@ void vu1_exec_micro_continue(void)
 /* Called by the common EE scheduler for a yielded microprogram or a
  * pending transfer after E. No synthetic microinstruction retirement. */
 void vu1_tick(void) {
+#ifdef GEKKO2_WIIU
+    if (vu1_async_on) return; /* the worker core runs VU1 and its PATH1 transfers */
+#endif
     if(!g_vu1.running&&!g_vu1.xgkick_pending)return;
     unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     if(g_vu1.running) {
@@ -796,7 +901,7 @@ void vu1_tick(void) {
             &g_vu1.tpc,&g_vu1.branch_delay,&g_vu1.branch_target,&g_vu1.ebit_delay,
             &g_vu1.instructions_executed,&g_vu1.unimplemented_opcodes_seen,
             &g_vu1.pipeline,&g_vu1.timing);
-        if(stopped==1){g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);VU1_TRACE(1);}
+        if(stopped==1){g_vu1.running=0;G2_VPU1_AND(~(1u<<8));VU1_TRACE(1);}
         if(stopped==2)g_vu1.pipeline.cycle++;
     } else g_vu1.pipeline.cycle++;
     vu1_service_xgkick(!g_vu1.running);

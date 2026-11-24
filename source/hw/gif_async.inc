@@ -32,7 +32,7 @@ static uint8_t ga_mem[3][GA_SLOTS][16];
 static uint8_t ga_buf[3][GA_MAXE * 16u];
 static ga_ring_t ga_ring[3];
 static ga_cur_t ga_cur[3];
-static uint32_t ga_seq;                       /* emulation thread */
+static uint32_t ga_seq;                       /* producers: emulation thread (PATH2/3) and the VU1 worker (PATH1) */
 static volatile uint32_t ga_push_cnt;         /* emulation thread */
 static volatile uint32_t ga_done_cnt;         /* worker */
 static volatile uint32_t ga_epoch, ga_stall_epoch;
@@ -219,7 +219,7 @@ static uint32_t ga_push(unsigned kind, unsigned path, const uint8_t *data, uint3
             if (++spins > GA_SPIN_LIMIT) return 0xFFFFFFFFu; /* caller falls back to a synchronous call */
             ga_wait();
         }
-        uint32_t h[4] = { ga_seq++, kind, take, arg };
+        uint32_t h[4] = { __atomic_fetch_add(&ga_seq, 1u, __ATOMIC_RELAXED), kind, take, arg };
         memcpy(ga_mem[path][w & GA_MASK_IDX], h, 16);
         if (take) {
             const uint32_t first = (w + 1u) & GA_MASK_IDX;

@@ -20,6 +20,8 @@ typedef struct {
     void *user;
     /* Optional second worker with a caller-provided stack (the IOP thread). Returns 0 on success. */
     int (*start_worker_stack)(void (*fn)(void), void *user, void *stack, unsigned stack_size);
+    /* Optional third worker (the VU1 thread), on the core the emulation and GS threads do not use. */
+    int (*start_worker_vu)(void (*fn)(void), void *user);
 } g2_platform;
 
 typedef struct {
@@ -35,6 +37,8 @@ typedef struct {
     int fast_run;                             /* interpreted fast runs (interpreter build only; ignored when the dynarec is used) */
     int event_sched;                          /* EE windows with IOP catch-up (the R1353 event scheduler) */
     int iop_async;                            /* IOP catch-up on its own core (needs event_sched and start_worker_stack) */
+    int vu_jit_off;                           /* JIT build: keep VU micro code interpreted even when the EE dynarec runs */
+    int vu1_async;                            /* run VU1 microprograms on their own core (needs start_worker_stack) */
 } g2_config;
 
 typedef struct {

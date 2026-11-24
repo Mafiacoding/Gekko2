@@ -215,4 +215,14 @@ int vu_micro_step_timed(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
 /* Stable read-only scheduler views. Point at the same state as getters;
  * no cached activity flags to invalidate after MMIO or checkpoint restore. */
 extern const vu1_state_t * const vu1_scheduler_view;
+#ifdef GEKKO2_WIIU
+/* Wii U port only: optional VU1 worker core (see vu.c). Attach before the worker starts, enable once it runs. */
+extern volatile int vu1_async_on;
+void vu1_async_attach(void (*idle)(void));
+int vu1_async_enable(void);
+void vu1_async_worker_main(void);
+void vu1_async_wait(void);   /* emulation thread: wait until the worker finished the current microprogram */
+void vu1_async_detach(void);
+void vu1_async_stats(uint64_t out[3]); /* [0] runs [1] worker busy ns [2] GIF back-pressure waits */
+#endif
 #endif

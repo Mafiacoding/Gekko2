@@ -4980,6 +4980,14 @@ static inline void vu0_vf_write_lane(ee_state_t *st, uint32_t reg, uint32_t lane
     st->vu0_vf[reg][lane] = val;
 }
 
+#ifdef GEKKO2_WIIU
+/* Wii U: VPU_STAT bits are also changed by the VU1 worker core, so every read-modify-write is atomic. */
+#define G2_VPU_OR(st,v) __atomic_fetch_or(&(st)->cop2_ctrl[29],(v),__ATOMIC_ACQ_REL)
+#define G2_VPU_AND(st,v) __atomic_fetch_and(&(st)->cop2_ctrl[29],(v),__ATOMIC_ACQ_REL)
+#else
+#define G2_VPU_OR(st,v) st->cop2_ctrl[29]|=v
+#define G2_VPU_AND(st,v) st->cop2_ctrl[29]&=v
+#endif
 static inline uint32_t vu0_vi_read(ee_state_t *st, uint32_t reg)
 {
     return (reg == 0) ? 0u : st->cop2_ctrl[reg];
@@ -5113,7 +5121,7 @@ static void vu0_run_pairs(ee_state_t *st)
                                      &st->vu0_ebit_delay,
                                      &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing);
         if (stopped) {
-            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;VU0_TRACE(st,1);break;
+            st->vu0_running=0;G2_VPU_AND(st,~1u);VU0_TRACE(st,1);break;
         }
         if(st->vu0_timing.m_yield)break;
     }
@@ -5130,7 +5138,7 @@ static void vu0_run_blocks(ee_state_t *st)
             &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing,0,0};
         if(vu0_block_candidate(st))ran=vu_jit_try_timed_block(&c,VU0_EXEC_STEP_CAP-i);
         if(ran){
-            if(c.stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;VU0_TRACE(st,1);break;}
+            if(c.stopped){st->vu0_running=0;G2_VPU_AND(st,~1u);VU0_TRACE(st,1);break;}
             if(st->vu0_timing.m_yield)break;
             i+=ran-1u;continue;
         }
@@ -5141,7 +5149,7 @@ static void vu0_run_blocks(ee_state_t *st)
                                      &st->vu0_ebit_delay,
                                      &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing);
         if (stopped) {
-            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;VU0_TRACE(st,1);break;
+            st->vu0_running=0;G2_VPU_AND(st,~1u);VU0_TRACE(st,1);break;
         }
         if(st->vu0_timing.m_yield)break;
     }
@@ -5157,7 +5165,7 @@ void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
      * generic CTC2/CFC2 dispatch already exposes. */
     st->cop2_ctrl[26] = (start_addr << 3) & (uint32_t)(sizeof(st->vu0_micro) - 1u);
     VU0_TRACE(st,0);
-    st->vu0_running = 1;st->cop2_ctrl[29]|=1u;st->vu0_timing.m_yield=0;
+    st->vu0_running = 1;G2_VPU_OR(st,1u);st->vu0_timing.m_yield=0;
 
     /* Re-enter native batching after a branch/Q/P boundary clears. */
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu0_run_blocks(st);
@@ -5175,7 +5183,7 @@ void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
 void vu0_exec_micro_continue(ee_state_t *st)
 {
     unsigned profile=gp_enter(GP_VU0);uint64_t profile_before=st->vu0_instructions_executed;
-    st->vu0_running = 1;st->cop2_ctrl[29]|=1u;st->vu0_timing.m_yield=0;
+    st->vu0_running = 1;G2_VPU_OR(st,1u);st->vu0_timing.m_yield=0;
 
     /* Re-enter native batching after a branch/Q/P boundary clears. */
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu0_run_blocks(st);
@@ -5195,7 +5203,7 @@ static void vu0_tick(ee_state_t *st) {
         &st->vu0_branch_delay,&st->vu0_branch_target,&st->vu0_ebit_delay,
         &st->vu0_instructions_executed,&st->vu0_unimplemented_opcodes_seen,
         &st->vu0_pipeline,&st->vu0_timing);
-    if(stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;VU0_TRACE(st,1);}
+    if(stopped){st->vu0_running=0;G2_VPU_AND(st,~1u);VU0_TRACE(st,1);}
     gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
 }
 /* COP2 synchronization runs to a real M or end boundary. It does not
