@@ -4991,6 +4991,45 @@ static inline void vu0_vi_write(ee_state_t *st, uint32_t reg, uint32_t val)
     st->cop2_ctrl[reg] = val;
 }
 
+#ifdef GEKKO2_WIIU
+/* Wii U only (not yet in the Wii build): VU0 macro-mode FMAC ops update the MAC (VI17) and status
+ * (VI16) flags like PCSX2 VUflags.cpp VU_MAC_UPDATE/VU_STAT_UPDATE. Tekken Tag clears VI16 with
+ * CTC2, runs VSUB/VMULA/VMADD and tests CFC2 VI16 & 0xC0 (sticky zero/sign) to cull objects behind
+ * the camera (0x34b360..0x34b47c); without these flags every object passed the test and was
+ * projected through w<0 (giant inverted fighters, upside-down spectators). Returns 0 for ops that
+ * leave the flags alone (MAX/MINI/ABS/ITOF/FTOI/CLIP/moves/integer/load-store/DIV). */
+int ee_vu0_macro_flag_op(uint32_t instr,int *to_acc)
+{
+    uint32_t funct=instr&63u;
+    if(((instr>>26)&63u)!=0x12u||!((instr>>25)&1u))return 0;
+    if(funct<0x3cu) {
+        *to_acc=0;
+        return funct<0x10u||(funct>=0x18u&&funct<=0x1cu)||funct==0x1eu||(funct>=0x20u&&funct<=0x2au&&funct!=0x2bu)||
+               funct==0x2cu||funct==0x2du||funct==0x2eu;
+    }
+    uint32_t idx=(instr&3u)|((instr>>4)&0x7cu);
+    *to_acc=1;
+    return idx<0x10u||(idx>=0x18u&&idx<=0x1cu)||idx==0x1eu||(idx>=0x20u&&idx<=0x2au)||(idx>=0x2cu&&idx<=0x2eu);
+}
+static void vu0_macro_update_flags(ee_state_t *st,uint32_t instr)
+{
+    int to_acc=0;
+    if(!ee_vu0_macro_flag_op(instr,&to_acc))return;
+    uint32_t dest=(instr>>21)&15u,fd=(instr>>6)&31u,mac=0;
+    if(!to_acc&&!fd)return; /* the result of a VF00 write is discarded with it */
+    for(unsigned lane=0;lane<4u;lane++) {
+        if(!(dest&(8u>>lane)))continue;
+        uint32_t v=to_acc?st->vu0_acc[lane]:st->vu0_vf[fd][lane],shift=3u-lane,exp=(v>>23)&255u;
+        if(v>>31)mac|=0x10u<<shift;
+        if(!exp){mac|=1u<<shift;if(v&0x7fffffu)mac|=0x100u<<shift;}
+        else if(exp==255u)mac|=0x1000u<<shift;
+    }
+    uint32_t now=((mac&0xfu)?1u:0u)|((mac&0xf0u)?2u:0u)|((mac&0xf00u)?4u:0u)|((mac&0xf000u)?8u:0u);
+    st->cop2_ctrl[17]=mac;
+    st->cop2_ctrl[16]=(st->cop2_ctrl[16]&0xff0u)|now|(now<<6);
+}
+#endif
+
 /* VU0 local data memory address helper: VI holds a quadword index:
  * byte address = (VI & 0xFF) * 16 + lane * 4 (lane 0=x,1=y,2=z,3=w).
  * The & 0xFF wraps to VU0's real 256-quadword (4KB) address space -

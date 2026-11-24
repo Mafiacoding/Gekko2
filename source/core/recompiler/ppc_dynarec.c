@@ -3589,6 +3589,10 @@ int ppc_dynarec_translate_one(ppc_codegen_ctx_t *ctx, uint32_t mips_instr)
          * path, same "real, tested, roadmap-directed" scoping this
          * whole JIT arc has followed since Round 887. */
         uint32_t rs = (mips_instr >> 21) & 0x1Fu;
+#ifdef GEKKO2_WIIU
+        /* Flag-setting VU0 macro FMAC ops run in the interpreter, which updates MAC/status. */
+        { extern int ee_vu0_macro_flag_op(uint32_t,int*); int acc_dest; if(ee_vu0_macro_flag_op(mips_instr,&acc_dest))return -1; }
+#endif
         if (rs == 8u) { /* BC2F/T/FL/TL; scalar fetch retains VU interlocks. */
             if(rt>3u)return -1;
             emit(ctx,enc_lwz(SCRATCH_A,CTX_REG,COP2_CTRL_OFF(29)));

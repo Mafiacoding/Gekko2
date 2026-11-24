@@ -926,5 +926,8 @@
                 ee_core_raise_reserved(st);
                 break;
             }
+#ifdef GEKKO2_WIIU
+            vu0_macro_update_flags(st,instr);
+#endif
         }
         break;
