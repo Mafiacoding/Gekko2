@@ -34,6 +34,11 @@ static int ready, tex_pending_use, cur_blend = -1;
 static unsigned tw_max = 1024, th_max = 1024;
 static unsigned cur_w, cur_h, tex_linear, tex_wrap, tex_w_used, tex_h_used; static int tex_valid;
 static uint64_t stats[5];
+static GX2Texture tex_view;
+static int view_ok;
+static GX2Texture zconv_tex;
+static GX2ColorBuffer zrb;
+static int z_read_shader, z_read_swap;
 static int ctx_lost;
 /* Depth: D24_S8 UNORM depth buffer (format code 0x011), FLOAT_R32 upload texture, converted + linear copies for
  * readback. Endianness of the readback word and of the uploaded floats is calibrated at init (z_word_mode,
@@ -140,6 +145,7 @@ void gx2_gs_shutdown(void)
     ctx = NULL;
     cur_w = cur_h = 0;
     tex_valid = 0;
+    view_ok = 0;
     memset(&tex, 0, sizeof tex);
     memset(&target, 0, sizeof target);
     if (sh_color.vertexShader || sh_color.pixelShader) WHBGfxFreeShaderGroup(&sh_color);
@@ -150,6 +156,9 @@ void gx2_gs_shutdown(void)
     if (ztex.surface.image) MEMFreeToDefaultHeap(ztex.surface.image);
     if (zconv.image) MEMFreeToDefaultHeap(zconv.image);
     if (zlin.image) MEMFreeToDefaultHeap(zlin.image);
+    if (zrb.surface.image) MEMFreeToDefaultHeap(zrb.surface.image);
+    zrb.surface.image = NULL;
+    z_read_shader = z_read_swap = 0;
     if (sh_zload.vertexShader || sh_zload.pixelShader) WHBGfxFreeShaderGroup(&sh_zload);
     memset(&zbuf, 0, sizeof zbuf);
     memset(&ztex, 0, sizeof ztex);
@@ -214,6 +223,35 @@ int gx2_gs_set_texture(const uint32_t *argb, unsigned w, unsigned h, int has_alp
     return gx2_gs_set_texture_rect(argb, w, h, 0, 0, w, h, has_alpha, linear, wrap);
 }
 
+/* The bound texture is a separate, persistent GX2Texture describing exactly w x h (its own pitch) over the slot's
+ * memory. Its fields are never changed while it is bound: Cemu showed black textures when the old code bound a
+ * struct whose width/height were reset to the slot size right after GX2SetPixelTexture. */
+static int prepare_view(unsigned w, unsigned h)
+{
+    if (view_ok && tex_view.surface.width == w && tex_view.surface.height == h)
+        return 1;
+    memset(&tex_view, 0, sizeof tex_view);
+    tex_view.surface.width = w;
+    tex_view.surface.height = h;
+    tex_view.surface.depth = 1;
+    tex_view.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+    tex_view.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+    tex_view.surface.use = GX2_SURFACE_USE_TEXTURE;
+    tex_view.surface.mipLevels = 1;
+    tex_view.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    tex_view.viewNumSlices = 1;
+    tex_view.compMap = 0x00010203;
+    GX2CalcSurfaceSizeAndAlignment(&tex_view.surface);
+    if (tex_view.surface.imageSize > tex.surface.imageSize) {
+        view_ok = 0;
+        return 0;
+    }
+    tex_view.surface.image = tex.surface.image;
+    GX2InitTextureRegs(&tex_view);
+    view_ok = 1;
+    return 1;
+}
+
 int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsigned rx0, unsigned ry0, unsigned rx1,
                             unsigned ry1, int has_alpha, int linear, int wrap)
 {
@@ -224,8 +262,10 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
         gpu_wait();
         bind_state();
     }
-    uint32_t *dst = (uint32_t *)tex.surface.image;
-    const unsigned pitch = tex.surface.pitch;
+    if (!prepare_view(w, h))
+        return 0;
+    uint32_t *dst = (uint32_t *)tex_view.surface.image;
+    const unsigned pitch = tex_view.surface.pitch;
     for (unsigned y = ry0; y < ry1; y++) {
         uint32_t *row = dst + (size_t)y * pitch;
         const uint32_t *src = argb + (size_t)y * w;
@@ -238,16 +278,10 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
         }
     }
     /* Flush only the rewritten rows. */
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, (uint8_t *)tex.surface.image + (size_t)ry0 * pitch * 4u,
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, (uint8_t *)tex_view.surface.image + (size_t)ry0 * pitch * 4u,
                   (uint32_t)((ry1 - ry0) * pitch * 4u));
-    /* Sample only the used part: the caller's u,v are relative to w x h, scale them via the texture size. */
-    tex.surface.width = w;
-    tex.surface.height = h;
-    GX2InitTextureRegs(&tex);
-    GX2SetPixelTexture(&tex, sh_mod.pixelShader->samplerVars[0].location);
+    GX2SetPixelTexture(&tex_view, sh_mod.pixelShader->samplerVars[0].location);
     GX2SetPixelSampler(&samplers[linear ? 1 : 0][wrap ? 1 : 0], sh_mod.pixelShader->samplerVars[0].location);
-    tex.surface.width = tw_max;
-    tex.surface.height = th_max;
     tex_w_used = w;
     tex_h_used = h;
     tex_linear = linear;
@@ -259,15 +293,10 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
 
 void gx2_gs_rebind_texture(int linear, int wrap)
 {
-    if (!ready || !tex_valid)
+    if (!ready || !tex_valid || !view_ok)
         return;
-    tex.surface.width = tex_w_used;
-    tex.surface.height = tex_h_used;
-    GX2InitTextureRegs(&tex);
-    GX2SetPixelTexture(&tex, sh_mod.pixelShader->samplerVars[0].location);
+    GX2SetPixelTexture(&tex_view, sh_mod.pixelShader->samplerVars[0].location);
     GX2SetPixelSampler(&samplers[linear ? 1 : 0][wrap ? 1 : 0], sh_mod.pixelShader->samplerVars[0].location);
-    tex.surface.width = tw_max;
-    tex.surface.height = th_max;
     tex_linear = linear;
     tex_wrap = wrap;
 }
@@ -456,18 +485,14 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
     bind_state();
     GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, FALSE);
     GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS);
-    const unsigned fw = ztex.surface.width, fh = ztex.surface.height;
-    ztex.surface.width = cur_w;
-    ztex.surface.height = cur_h;
-    GX2InitTextureRegs(&ztex);
+    /* The full-size upload texture stays as initialised; the quad's u,v select the cur_w x cur_h corner. */
     GX2SetPixelTexture(&ztex, sh_zload.pixelShader->samplerVars[0].location);
     GX2SetPixelSampler(&samplers[0][0], sh_zload.pixelShader->samplerVars[0].location);
-    ztex.surface.width = fw;
-    ztex.surface.height = fh;
     gx2_gs_vertex q[4];
     const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
-    const float va = (float)y0 / (float)cur_h, vb2 = (float)y1 / (float)cur_h;
-    const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, 1, 1, 0 }, v[4] = { va, va, vb2, vb2 };
+    const float ue = (float)cur_w / (float)ztex.surface.width;
+    const float va = (float)y0 / (float)ztex.surface.height, vb2 = (float)y1 / (float)ztex.surface.height;
+    const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, ue, ue, 0 }, v[4] = { va, va, vb2, vb2 };
     for (int i = 0; i < 4; i++) {
         q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
         q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 1.0f;
@@ -510,10 +535,57 @@ void gx2_gs_depth_clear(float d)
     bind_state();
 }
 
+/* Readback B (used when A returns nothing, as on Cemu): convert the depth buffer to a texture and draw it with
+ * the modulate shader (colour 1.0) into a linear FLOAT_R32 colour buffer; the CPU reads floats 0..1. */
+static const uint32_t *depth_read_shader_rows(unsigned y0, unsigned y1, unsigned *pitch)
+{
+    GX2Flush();
+    gpu_wait();
+    GX2ConvertDepthBufferToTextureSurface(&zbuf, &zconv, 0, 0);
+    GX2SetContextState(ctx);
+    GX2SetColorBuffer(&zrb, GX2_RENDER_TARGET_0);
+    GX2SetViewport(0.0f, 0.0f, (float)cur_w, (float)cur_h, 0.0f, 1.0f);
+    GX2SetScissor(0, 0, cur_w, cur_h);
+    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, TRUE);
+    GX2SetPixelTexture(&zconv_tex, sh_mod.pixelShader->samplerVars[0].location);
+    GX2SetPixelSampler(&samplers[0][0], sh_mod.pixelShader->samplerVars[0].location);
+    gx2_gs_vertex q[4];
+    const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
+    const float ue = (float)cur_w / (float)zconv.width;
+    const float va = (float)y0 / (float)zconv.height, vb2 = (float)y1 / (float)zconv.height;
+    const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, ue, ue, 0 }, v[4] = { va, va, vb2, vb2 };
+    for (int i = 0; i < 4; i++) {
+        q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
+        q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 1.0f;
+        q[i].uv[0] = u[i]; q[i].uv[1] = v[i]; q[i].uv[2] = 0.0f; q[i].uv[3] = 1.0f;
+    }
+    gx2_gs_vertex *dst = vb + vb_used;
+    memcpy(dst, q, sizeof q);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, sizeof q);
+    GX2SetFetchShader(&sh_mod.fetchShader);
+    GX2SetVertexShader(sh_mod.vertexShader);
+    GX2SetPixelShader(sh_mod.pixelShader);
+    GX2SetAttribBuffer(0, sizeof q, sizeof q[0], dst);
+    GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+    vb_used += 4;
+    GX2Flush();
+    gpu_wait();
+    if (y1 > zrb.surface.height) y1 = zrb.surface.height;
+    if (y1 > y0)
+        DCInvalidateRange((uint8_t *)zrb.surface.image + (size_t)y0 * zrb.surface.pitch * 4u,
+                          (uint32_t)((y1 - y0) * zrb.surface.pitch * 4u));
+    ctx_lost = 1; /* colour buffer, texture and shaders changed: the next GS draw restores everything */
+    if (pitch)
+        *pitch = zrb.surface.pitch;
+    return (const uint32_t *)zrb.surface.image;
+}
 static const uint32_t *depth_read_raw_rows(unsigned y0, unsigned y1, unsigned *pitch);
 static const uint32_t *depth_read_raw(unsigned *pitch) { return depth_read_raw_rows(0, zlin.height, pitch); }
 static const uint32_t *depth_read_raw_rows(unsigned y0, unsigned y1, unsigned *pitch)
 {
+    if (z_read_shader)
+        return depth_read_shader_rows(y0, y1, pitch);
     GX2Flush();
     gpu_wait();
     GX2ConvertDepthBufferToTextureSurface(&zbuf, &zconv, 0, 0);
@@ -531,6 +603,13 @@ static const uint32_t *depth_read_raw_rows(unsigned y0, unsigned y1, unsigned *p
 
 uint32_t gx2_gs_depth_word(uint32_t w)
 {
+    if (z_read_shader) { /* FLOAT_R32 0..1 */
+        union { uint32_t u; float f; } c;
+        c.u = z_read_swap ? __builtin_bswap32(w) : w;
+        if (!(c.f > 0.0f)) return 0;
+        if (c.f >= 1.0f) return 0xffffffu;
+        return (uint32_t)(c.f * 16777215.0f + 0.5f);
+    }
     switch (z_word_mode) {
     case 1: return swap32(w) & 0xffffffu;
     case 2: return w >> 8;
@@ -606,7 +685,26 @@ int gx2_gs_init_depth(const void *gsh_zload)
     GX2CalcSurfaceSizeAndAlignment(&ztex.surface);
     GX2InitTextureRegs(&ztex);
     ztex.surface.image = MEMAllocFromDefaultHeapEx(ztex.surface.imageSize, ztex.surface.alignment);
-    if (!zbuf.surface.image || !zconv.image || !zlin.image || !ztex.surface.image) {
+    memset(&zconv_tex, 0, sizeof zconv_tex);
+    zconv_tex.surface = zconv;
+    zconv_tex.viewNumSlices = 1;
+    zconv_tex.compMap = 0x00010203;
+    GX2InitTextureRegs(&zconv_tex);
+    memset(&zrb, 0, sizeof zrb);
+    zrb.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+    zrb.surface.width = zbuf.surface.width;
+    zrb.surface.height = zbuf.surface.height;
+    zrb.surface.depth = 1;
+    zrb.surface.mipLevels = 1;
+    zrb.surface.format = GX2_SURFACE_FORMAT_FLOAT_R32;
+    zrb.surface.aa = GX2_AA_MODE1X;
+    zrb.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
+    zrb.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    zrb.viewNumSlices = 1;
+    GX2CalcSurfaceSizeAndAlignment(&zrb.surface);
+    GX2InitColorBufferRegs(&zrb);
+    zrb.surface.image = MEMAllocFromDefaultHeapEx(zrb.surface.imageSize, zrb.surface.alignment);
+    if (!zbuf.surface.image || !zconv.image || !zlin.image || !ztex.surface.image || !zrb.surface.image) {
         snprintf(z_status, sizeof z_status, "depth: out of memory");
         return 0;
     }
@@ -627,7 +725,22 @@ int gx2_gs_init_depth(const void *gsh_zload)
         z_word_mode = -1;
     }
     if (z_word_mode < 0) {
-        snprintf(z_status, sizeof z_status, "depth: readback layout unknown (cleared 0.25 -> word %08x)", (unsigned)w);
+        /* Readback A gave nothing usable (Cemu returns zeros): try readback B through a shader. */
+        z_read_shader = 1;
+        gx2_gs_depth_clear(0.25f);
+        const uint32_t w2 = depth_read_raw(&pitch)[0];
+        for (int sw = 0; sw < 2 && z_word_mode < 0; sw++) {
+            z_read_swap = sw;
+            if (near24(gx2_gs_depth_word(w2), want))
+                z_word_mode = 4;
+        }
+        if (z_word_mode < 0)
+            z_read_shader = z_read_swap = 0;
+        if (z_word_mode < 0)
+            snprintf(z_status, sizeof z_status, "depth: readback failed (A: word %08x, B: word %08x after clear 0.25)",
+                     (unsigned)w, (unsigned)w2);
+    }
+    if (z_word_mode < 0) {
         zready = 0;
         cur_w = keep_w;
         cur_h = keep_h;
@@ -655,7 +768,8 @@ int gx2_gs_init_depth(const void *gsh_zload)
         zready = 0;
         return 0;
     }
-    snprintf(z_status, sizeof z_status, "depth ready (word mode %d, upload swap %d, tile %d)", z_word_mode, z_upload_swap,
+    snprintf(z_status, sizeof z_status, "depth ready (readback %s, word mode %d, upload swap %d, tile %d)",
+             z_read_shader ? "B shader" : "A copy", z_word_mode, z_upload_swap,
              (int)zbuf.surface.tileMode);
     ctx_lost = 1;
     return 1;

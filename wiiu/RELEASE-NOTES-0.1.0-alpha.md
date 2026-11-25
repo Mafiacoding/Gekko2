@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 10)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 11)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -54,6 +54,11 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
 
 ## Fixed in this build
 
+- **GPU renderer (build 11):** Cemu showed heavy artifacts. The GX2 probe found two causes: textured draws came
+  out black (the texture description was changed after it had been handed to the GPU), and depth could not be
+  read back (Cemu returns zeros for the old copy path). Textures now use a separate, fixed texture view, and
+  depth is read back through a small shader draw when the copy path returns nothing. Not yet confirmed on Cemu
+  or a real Wii U: please run `gekko2-wiiu-gx2probe.rpx` once and send `sd:/wiiu/gekko2/gx2probe.log`.
 - **Hitman 2 boot hang:** its SYSTEM.CNF has a blank after the file name (`cdrom0:\SLUS_203.74;1 `); Gekko2 kept
   the blank and looked for a file that does not exist. Hitman 2 now loads its program and game data; it still
   stops before the first picture (being investigated).
