@@ -427,6 +427,12 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 fprintf(session, "# jitb t=%llus", (unsigned long long)((now - start) / 1000u));
                 for (unsigned k = 0; k < 16u; k++)
                     fprintf(session, " %u:%llu", k, (unsigned long long)gekko2_wiiu_block_diag[k]);
+                {
+                    extern void gekko2_codegen_switch_sites(char *out, unsigned size);
+                    char sites[320];
+                    gekko2_codegen_switch_sites(sites, sizeof sites);
+                    fprintf(session, " rw_sites%s", sites);
+                }
                 fprintf(session, " lookups=%llu hits=%llu misses=%llu stale=%llu installed=%llu failures=%llu\n",
                         (unsigned long long)cp.lookups, (unsigned long long)cp.hits, (unsigned long long)cp.misses,
                         (unsigned long long)cp.stale, (unsigned long long)cp.installed, (unsigned long long)cp.failures);

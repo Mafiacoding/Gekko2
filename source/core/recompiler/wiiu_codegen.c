@@ -6,6 +6,7 @@
 #include <coreinit/cache.h>
 #include <coreinit/codegen.h>
 #include <coreinit/core.h>
+#include <stdio.h>
 static void *area;
 static uint32_t area_size;
 static unsigned rw_depth, exec_depth;
@@ -54,7 +55,37 @@ void *gekko2_codegen_area(uint32_t *size)
         *size = area ? area_size : 0;
     return area;
 }
-void gekko2_codegen_rw_begin(void) { if (area) { rw_depth++; to_rw(); } }
+/* Tester diagnostics: which callers cause RW switches (return addresses, mapped to functions with the build's
+ * symbol table). Up to 12 distinct callers. */
+static struct { uintptr_t addr; unsigned long long n; } sw_site[12];
+void gekko2_codegen_rw_begin(void)
+{
+    if (!area)
+        return;
+    rw_depth++;
+    if (in_rx) {
+        const uintptr_t a = (uintptr_t)__builtin_return_address(0);
+        for (unsigned i = 0; i < 12u; i++)
+            if (sw_site[i].addr == a || !sw_site[i].addr) {
+                sw_site[i].addr = a;
+                sw_site[i].n++;
+                break;
+            }
+    }
+    to_rw();
+}
+/* "addr:count addr:count ..." */
+void gekko2_codegen_switch_sites(char *out, unsigned size)
+{
+    unsigned k = 0;
+    if (!out || !size)
+        return;
+    out[0] = 0;
+    /* reference point: the run-time address of this function, to undo the RPX load offset */
+    k = (unsigned)snprintf(out, size, " ref=%08lx", (unsigned long)(uintptr_t)&gekko2_codegen_switch_sites);
+    for (unsigned i = 0; i < 12u && sw_site[i].addr && k + 24u < size; i++)
+        k += (unsigned)snprintf(out + k, size - k, " %08lx:%llu", (unsigned long)sw_site[i].addr, sw_site[i].n);
+}
 void gekko2_codegen_rw_end(void)
 {
     if (area && rw_depth && --rw_depth == 0 && exec_depth > 0)
