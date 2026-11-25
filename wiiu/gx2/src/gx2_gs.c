@@ -36,27 +36,53 @@ static unsigned cur_w, cur_h, tex_linear, tex_wrap, tex_w_used, tex_h_used; stat
 static uint64_t stats[5];
 static GX2Texture tex_view;
 static int view_ok;
-/* Colour uploads go through a staging texture drawn onto the target (see gx2_gs_target_ready_rows). */
-static GX2Texture utex;
-/* Cemu checks a texture for CPU changes at most once per frame unless an invalidation starts at the texture's
- * base address, and it samples the memory sparsely. Every CPU-filled texture therefore gets 64 spare texels per
- * row (never sampled) that receive a new marker value with each upload, and invalidations start at the base. */
-#define G2_PAD_TEXELS 64u
-static uint32_t upload_gen;
-static void pad_surface(GX2Surface *s)
+/* Texture ring: every CPU texture upload (GS textures, colour rows, depth rows) gets fresh memory from a ring.
+ * Nothing the GPU may still read is overwritten, so no wait is needed when the texture changes, and Cemu, which
+ * re-checks a texture's memory at most once per frame, always meets a new address. Cemu also recomputes the pitch
+ * of linear textures itself, so every texture uses exactly the pitch GX2CalcSurfaceSizeAndAlignment gives. */
+#define RING_BYTES (24u << 20)
+static uint8_t *ring;
+static uint32_t ring_off;
+static uint64_t ring_wraps;
+static void gpu_wait(void);
+static void *ring_get(uint32_t size, uint32_t align)
 {
-    s->pitch = ((s->width + 63u) & ~63u) + G2_PAD_TEXELS;
-    s->imageSize = s->pitch * s->height * 4u;
-}
-static void mark_rows(uint32_t *base, unsigned pitch, unsigned width, unsigned y0, unsigned y1)
-{
-    upload_gen++;
-    for (unsigned y = y0; y < y1; y++) {
-        uint32_t *row = base + (size_t)y * pitch;
-        for (unsigned x = width; x < pitch; x++)
-            row[x] = upload_gen;
+    if (align < 256u) align = 256u;
+    uint32_t off = (ring_off + align - 1u) & ~(align - 1u);
+    if (size > RING_BYTES)
+        return NULL;
+    if (off + size > RING_BYTES) {
+        gpu_wait(); /* the GPU is done with everything in the ring */
+        ring_wraps++;
+        off = 0;
     }
+    ring_off = off + size;
+    return ring + off;
 }
+static void *tex_in_ring(GX2Texture *t, unsigned w, unsigned h, GX2SurfaceFormat fmt)
+{
+    memset(t, 0, sizeof *t);
+    t->surface.width = w;
+    t->surface.height = h;
+    t->surface.depth = 1;
+    t->surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+    t->surface.format = fmt;
+    t->surface.use = GX2_SURFACE_USE_TEXTURE;
+    t->surface.mipLevels = 1;
+    t->surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    t->viewNumSlices = 1;
+    t->compMap = 0x00010203;
+    GX2CalcSurfaceSizeAndAlignment(&t->surface);
+    t->surface.image = ring_get(t->surface.imageSize, t->surface.alignment);
+    if (!t->surface.image)
+        return NULL;
+    GX2InitTextureRegs(t);
+    return t->surface.image;
+}
+/* CPU staging for colour and depth rows (plain memory; copied into the ring on upload). */
+static uint32_t *cstage;
+static unsigned cstage_pitch;
+static GX2Texture up_tex;
 static GX2Texture zconv_tex;
 static GX2ColorBuffer zrb;
 static int z_read_shader, z_read_swap;
@@ -119,45 +145,14 @@ int gx2_gs_init(const void *gsh_color, const void *gsh_modulate, unsigned width,
     memset(target.surface.image, 0, target.surface.imageSize);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU, target.surface.image, target.surface.imageSize);
 
-    memset(&tex, 0, sizeof tex);
-    tex.surface.width = tw_max;
-    tex.surface.height = th_max;
-    tex.surface.depth = 1;
-    tex.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
-    tex.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
-    tex.surface.use = GX2_SURFACE_USE_TEXTURE;
-    tex.surface.mipLevels = 1;
-    tex.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
-    tex.viewNumSlices = 1;
-    tex.compMap = 0x00010203;
-    GX2CalcSurfaceSizeAndAlignment(&tex.surface);
-    pad_surface(&tex.surface);
-    GX2InitTextureRegs(&tex);
-    tex.surface.image = MEMAllocFromDefaultHeapEx(tex.surface.imageSize, tex.surface.alignment);
-    if (!tex.surface.image)
+    ring = MEMAllocFromDefaultHeapEx(RING_BYTES, 0x1000);
+    if (!ring)
         goto fail;
-    memset(tex.surface.image, 0, tex.surface.imageSize);
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, tex.surface.image, tex.surface.imageSize);
-
-    memset(&utex, 0, sizeof utex);
-    utex.surface.width = target.surface.width;
-    utex.surface.height = target.surface.height;
-    utex.surface.depth = 1;
-    utex.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
-    utex.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
-    utex.surface.use = GX2_SURFACE_USE_TEXTURE;
-    utex.surface.mipLevels = 1;
-    utex.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
-    utex.viewNumSlices = 1;
-    utex.compMap = 0x00010203;
-    GX2CalcSurfaceSizeAndAlignment(&utex.surface);
-    pad_surface(&utex.surface);
-    GX2InitTextureRegs(&utex);
-    utex.surface.image = MEMAllocFromDefaultHeapEx(utex.surface.imageSize, utex.surface.alignment);
-    if (!utex.surface.image)
+    ring_off = 0;
+    cstage_pitch = target.surface.width;
+    cstage = MEMAllocFromDefaultHeapEx(cstage_pitch * target.surface.height * 4u, 64);
+    if (!cstage)
         goto fail;
-    memset(utex.surface.image, 0, utex.surface.imageSize);
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, utex.surface.image, utex.surface.imageSize);
 
     for (int l = 0; l < 2; l++)
         for (int w = 0; w < 2; w++)
@@ -180,9 +175,10 @@ void gx2_gs_shutdown(void)
     if (ready)
         GX2DrawDone();
     if (vb) MEMFreeToDefaultHeap(vb);
-    if (tex.surface.image) MEMFreeToDefaultHeap(tex.surface.image);
-    if (utex.surface.image) MEMFreeToDefaultHeap(utex.surface.image);
-    memset(&utex, 0, sizeof utex);
+    if (ring) MEMFreeToDefaultHeap(ring);
+    ring = NULL;
+    if (cstage) MEMFreeToDefaultHeap(cstage);
+    cstage = NULL;
     if (target.surface.image) MEMFreeToDefaultHeap(target.surface.image);
     if (ctx) MEMFreeToDefaultHeap(ctx);
     vb = NULL;
@@ -267,49 +263,19 @@ int gx2_gs_set_texture(const uint32_t *argb, unsigned w, unsigned h, int has_alp
     return gx2_gs_set_texture_rect(argb, w, h, 0, 0, w, h, has_alpha, linear, wrap);
 }
 
-/* The bound texture is a separate, persistent GX2Texture describing exactly w x h (its own pitch) over the slot's
- * memory. Its fields are never changed while it is bound: Cemu showed black textures when the old code bound a
- * struct whose width/height were reset to the slot size right after GX2SetPixelTexture. */
-static int prepare_view(unsigned w, unsigned h)
-{
-    if (view_ok && tex_view.surface.width == w && tex_view.surface.height == h)
-        return 1;
-    memset(&tex_view, 0, sizeof tex_view);
-    tex_view.surface.width = w;
-    tex_view.surface.height = h;
-    tex_view.surface.depth = 1;
-    tex_view.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
-    tex_view.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
-    tex_view.surface.use = GX2_SURFACE_USE_TEXTURE;
-    tex_view.surface.mipLevels = 1;
-    tex_view.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
-    tex_view.viewNumSlices = 1;
-    tex_view.compMap = 0x00010203;
-    GX2CalcSurfaceSizeAndAlignment(&tex_view.surface);
-    pad_surface(&tex_view.surface);
-    if (tex_view.surface.imageSize > tex.surface.imageSize) {
-        view_ok = 0;
-        return 0;
-    }
-    tex_view.surface.image = tex.surface.image;
-    GX2InitTextureRegs(&tex_view);
-    view_ok = 1;
-    return 1;
-}
-
 int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsigned rx0, unsigned ry0, unsigned rx1,
                             unsigned ry1, int has_alpha, int linear, int wrap)
 {
     if (!ready || !argb || !w || !h || w > tw_max || h > th_max || rx1 > w || ry1 > h || rx0 >= rx1 || ry0 >= ry1)
         return 0;
-    if (tex_pending_use) {
-        /* One texture slot: the GPU must be done with queued draws that read it. */
-        gpu_wait();
-        bind_state();
-    }
-    if (!prepare_view(w, h))
+    /* A fresh ring slot per upload: the previous texture may still be in use by queued draws. Only the rectangle
+     * rx0..rx1 x ry0..ry1 is valid; draws bound to this texture sample inside it. */
+    uint32_t *dst = tex_in_ring(&tex_view, w, h, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
+    if (!dst) {
+        view_ok = 0;
         return 0;
-    uint32_t *dst = (uint32_t *)tex_view.surface.image;
+    }
+    view_ok = 1;
     const unsigned pitch = tex_view.surface.pitch;
     for (unsigned y = ry0; y < ry1; y++) {
         uint32_t *row = dst + (size_t)y * pitch;
@@ -322,9 +288,7 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
             row[x] = (c << 8) | a;
         }
     }
-    mark_rows(dst, pitch, w, ry0, ry1);
-    /* Flush from the base address (Cemu looks the texture up by it) to the last rewritten row. */
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, tex_view.surface.image, (uint32_t)(ry1 * pitch * 4u));
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, tex_view.surface.image, tex_view.surface.imageSize);
     GX2SetPixelTexture(&tex_view, sh_mod.pixelShader->samplerVars[0].location);
     GX2SetPixelSampler(&samplers[linear ? 1 : 0][wrap ? 1 : 0], sh_mod.pixelShader->samplerVars[0].location);
     tex_w_used = w;
@@ -356,8 +320,8 @@ uint32_t *gx2_gs_target_cpu(unsigned w, unsigned h, unsigned *pitch)
     cur_w = w;
     cur_h = h;
     if (pitch)
-        *pitch = utex.surface.pitch;
-    return (uint32_t *)utex.surface.image;
+        *pitch = cstage_pitch;
+    return cstage;
 }
 
 void gx2_gs_target_ready(void)
@@ -377,20 +341,23 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     /* The CPU filled rows y0..y1 of the staging texture; the GPU copies them onto the target with a quad (no
      * blending, no depth). Writing the colour buffer memory directly is not seen by Cemu, whose render targets live
      * in host textures. */
-    mark_rows((uint32_t *)utex.surface.image, utex.surface.pitch, utex.surface.width, y0, y1);
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, utex.surface.image, (uint32_t)(y1 * utex.surface.pitch * 4u));
+    uint32_t *img = tex_in_ring(&up_tex, cur_w, y1 - y0, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
+    if (!img)
+        return;
+    for (unsigned y = y0; y < y1; y++)
+        memcpy(img + (size_t)(y - y0) * up_tex.surface.pitch, cstage + (size_t)y * cstage_pitch, cur_w * 4u);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, img, up_tex.surface.imageSize);
     if (vb_used + 4 > VB_MAX) {
         gpu_wait();
         bind_state();
         gx2_gs_set_blend(GX2_GS_BLEND_OFF, 0x80);
     }
     GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
-    GX2SetPixelTexture(&utex, sh_mod.pixelShader->samplerVars[0].location);
+    GX2SetPixelTexture(&up_tex, sh_mod.pixelShader->samplerVars[0].location);
     GX2SetPixelSampler(&samplers[0][0], sh_mod.pixelShader->samplerVars[0].location);
     gx2_gs_vertex q[4];
     const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
-    const float ue = (float)cur_w / (float)utex.surface.width;
-    const float va = (float)y0 / (float)utex.surface.height, vb2 = (float)y1 / (float)utex.surface.height;
+    const float ue = 1.0f, va = 0.0f, vb2 = 1.0f;
     const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, ue, ue, 0 }, v[4] = { va, va, vb2, vb2 };
     for (int i = 0; i < 4; i++) {
         q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
@@ -556,24 +523,29 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
     if (y1 > cur_h) y1 = cur_h;
     if (y1 <= y0)
         return;
-    if (swap) {
-        uint32_t *w = (uint32_t *)ztex.surface.image;
-        for (unsigned y = y0; y < y1; y++)
+    static GX2Texture zup;
+    uint32_t *img = tex_in_ring(&zup, cur_w, y1 - y0, GX2_SURFACE_FORMAT_FLOAT_R32);
+    if (!img)
+        return;
+    const uint32_t *zs = (const uint32_t *)ztex.surface.image;
+    for (unsigned y = y0; y < y1; y++) {
+        uint32_t *d = img + (size_t)(y - y0) * zup.surface.pitch;
+        const uint32_t *r = zs + (size_t)y * ztex.surface.pitch;
+        if (swap)
             for (unsigned x = 0; x < cur_w; x++)
-                w[y * ztex.surface.pitch + x] = swap32(w[y * ztex.surface.pitch + x]);
+                d[x] = swap32(r[x]);
+        else
+            memcpy(d, r, cur_w * 4u);
     }
-    mark_rows((uint32_t *)ztex.surface.image, ztex.surface.pitch, ztex.surface.width, y0, y1);
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, ztex.surface.image, (uint32_t)(y1 * ztex.surface.pitch * 4u));
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, img, zup.surface.imageSize);
     bind_state();
     GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, FALSE);
     GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS);
-    /* The full-size upload texture stays as initialised; the quad's u,v select the cur_w x cur_h corner. */
-    GX2SetPixelTexture(&ztex, sh_zload.pixelShader->samplerVars[0].location);
+    GX2SetPixelTexture(&zup, sh_zload.pixelShader->samplerVars[0].location);
     GX2SetPixelSampler(&samplers[0][0], sh_zload.pixelShader->samplerVars[0].location);
     gx2_gs_vertex q[4];
     const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
-    const float ue = (float)cur_w / (float)ztex.surface.width;
-    const float va = (float)y0 / (float)ztex.surface.height, vb2 = (float)y1 / (float)ztex.surface.height;
+    const float ue = 1.0f, va = 0.0f, vb2 = 1.0f;
     const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, ue, ue, 0 }, v[4] = { va, va, vb2, vb2 };
     for (int i = 0; i < 4; i++) {
         q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
@@ -765,7 +737,6 @@ int gx2_gs_init_depth(const void *gsh_zload)
     ztex.viewNumSlices = 1;
     ztex.compMap = 0x00010203;
     GX2CalcSurfaceSizeAndAlignment(&ztex.surface);
-    pad_surface(&ztex.surface);
     GX2InitTextureRegs(&ztex);
     ztex.surface.image = MEMAllocFromDefaultHeapEx(ztex.surface.imageSize, ztex.surface.alignment);
     memset(&zconv_tex, 0, sizeof zconv_tex);
