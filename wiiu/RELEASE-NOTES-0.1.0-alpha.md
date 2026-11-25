@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 15)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 16)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -58,6 +58,11 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
   the row length of these textures itself and ignored the padded rows build 12 used. Build 13 removes the padding
   and gives every texture upload fresh memory from a ring buffer instead, so Cemu always sees new data. This also
   removes a wait for the GPU on every texture change (helps real hardware too; not measured yet).
+- **GPU renderer: misplaced picture pieces (build 16):** Tekken's "PRODUCED BY namco" logo was drawn in pieces at
+  several wrong places with the GPU renderer. The texture memory ring from build 13 starts over when it is full,
+  and a texture that was still cached could then point at memory that already held other data. Cached textures
+  are now uploaded again after the ring starts over. Reproduced and checked in Cemu 2.6: the logo is drawn
+  correctly again.
 - **Speed, normal app (build 15):** on an SD card without `optimization.cfg` (every new install) the default
   settings switched off the interpreter's fast path even though the normal app has no JIT. Fixed. Measured in Cemu
   2.6 (software GPU on a Linux PC, Tekken Tag boot, 86 s): 227 million PS2 instructions with the GPU renderer on,

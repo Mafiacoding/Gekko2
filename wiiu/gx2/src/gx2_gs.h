@@ -55,6 +55,8 @@ void gx2_gs_size(unsigned *w, unsigned *h);
 /* Re-bind the last uploaded texture with another filter/wrap mode (no upload). */
 void gx2_gs_rebind_texture(int linear, int wrap);
 void gx2_gs_mark_texture_used(void);
+/* Changes whenever texture memory may have been reused (ring wrap): a cached texture must be uploaded again. */
+uint32_t gx2_gs_texture_epoch(void);
 /* Another GX2 user (the presenter) changed the context: the next gx2_gs_set_scissor() restores ours. */
 void gx2_gs_context_lost(void);
 /* Depth (after gx2_gs_init): gsh_zload = gs.vsh + gs_zload.psh. Calibrates readback/upload byte order on the GPU.

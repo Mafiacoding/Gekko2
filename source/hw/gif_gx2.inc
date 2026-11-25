@@ -37,7 +37,7 @@ static struct {
     /* Row bands: uploaded to the GPU (u) and drawn by the GPU (d), colour and depth. Empty when y0 >= y1. */
     uint32_t uy0, uy1, dy0, dy1, zuy0, zuy1, zdy0, zdy1;
 } g2r;
-static struct { int valid; uint32_t lo, hi, w, h, linear, wrap, rx0, ry0, rx1, ry1; uint64_t data; } g2t;
+static struct { int valid; uint32_t lo, hi, w, h, linear, wrap, rx0, ry0, rx1, ry1, epoch; uint64_t data; } g2t;
 static uint64_t g2_stats[12];
 static uint64_t g2_cause[4]; /* resolves caused by: 0 texture overlap, 1 target switch, 2 other CPU access */
 uint64_t gekko2_gx2_gs_cause(unsigned i) { return i < 4 ? g2_cause[i] : 0; }
@@ -478,7 +478,10 @@ static int g2_bind_texture_impl(g2_rect rc)
             hi = ((hi << 5) | (hi >> 27)) ^ gs_clut_hash_word(k);
         }
     /* Same texture still in the slot and its decoded rectangle's GS memory unchanged? */
-    int same = g2t.valid && g2t.lo == lo && g2t.hi == hi && g2t.w == tw && g2t.h == th;
+    /* The texture memory lives in a ring that is reused after it wraps (gx2_gs_texture_epoch changes): a texture
+     * uploaded before the wrap may have been overwritten, so it is uploaded again. */
+    int same = g2t.valid && g2t.epoch == gx2_gs_texture_epoch() && g2t.lo == lo && g2t.hi == hi && g2t.w == tw &&
+               g2t.h == th;
 
     if (same && g2_overlaps_target(base, gs_page_end(base, tbw, g2t.rx1, g2t.ry1, g_gif.tex_psm)))
         same = 0; /* checking the old area would resolve the GPU target: start over with this rectangle */
@@ -528,6 +531,7 @@ static int g2_bind_texture_impl(g2_rect rc)
     if (!gx2_gs_set_texture_rect(g2_tex_buf, tw, th, u.x0, u.y0, u.x1, u.y1, g_gif.tex_tcc ? 1 : 0, (int)linear, (int)wrap))
         return 0;
     g2t.valid = 1;
+    g2t.epoch = gx2_gs_texture_epoch();
     g2t.lo = lo;
     g2t.hi = hi;
     g2t.w = tw;

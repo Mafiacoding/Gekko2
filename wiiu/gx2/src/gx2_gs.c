@@ -54,6 +54,7 @@ static void *ring_get(uint32_t size, uint32_t align)
     if (off + size > RING_BYTES) {
         gpu_wait(); /* the GPU is done with everything in the ring */
         ring_wraps++;
+        view_ok = 0; /* the bound GS texture may be overwritten from now on */
         off = 0;
     }
     ring_off = off + size;
@@ -311,6 +312,7 @@ void gx2_gs_rebind_texture(int linear, int wrap)
 }
 
 void gx2_gs_mark_texture_used(void) { tex_pending_use = 1; }
+uint32_t gx2_gs_texture_epoch(void) { return (uint32_t)ring_wraps; }
 
 uint32_t *gx2_gs_target_cpu(unsigned w, unsigned h, unsigned *pitch)
 {
