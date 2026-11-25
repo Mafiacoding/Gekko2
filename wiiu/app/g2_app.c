@@ -155,6 +155,12 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
     }
 #ifdef GEKKO2_WIIU_JIT
     else if (gekko2_optimization_mask & GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)) {
+        {
+            extern const char *gekko2_codegen_rwx_info(void);
+            extern int gekko2_wiiu_rwx_jit;
+            if (gekko2_wiiu_rwx_jit)
+                say(platform, "JIT RWX heap: %s", gekko2_codegen_rwx_info()[0] ? gekko2_codegen_rwx_info() : "not tried");
+        }
         if (gekko2_codegen_area(NULL)) {
             /* The menu mask (optimization.cfg) keeps native EE blocks off by default, as on the Wii. Without them
              * the dynarec only translates single instructions (tester logs: blocks=0), so the JIT app turns them on. */

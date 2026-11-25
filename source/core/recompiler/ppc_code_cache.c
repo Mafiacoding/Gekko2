@@ -11,8 +11,12 @@
 typedef struct {uint32_t span,next,magic,previous_span,free_previous,pad[3];} chunk;
 #if !defined(GEKKO2_CODE_ARENA_DISABLE)
 #ifdef GEKKO2_WIIU_JIT
-/* Wii U: the cache lives in the codegen area (R_X except while this file or finalize() writes to it). */
+/* Wii U: the cache lives in the codegen area (R_X except while this file or finalize() writes to it) or in an RWX
+ * heap found at run time (wiiu_codegen.c); its size is fixed when the area is first taken (at most 6 MiB). */
 static uint8_t *arena;
+static uint32_t wiiu_cache_bytes = PPC_CODE_CACHE_BYTES;
+#undef PPC_CODE_CACHE_BYTES
+#define PPC_CODE_CACHE_BYTES wiiu_cache_bytes
 #else
 static uint8_t arena[PPC_CODE_CACHE_BYTES] __attribute__((aligned(32)));
 #endif
@@ -58,7 +62,8 @@ static void init(void)
 #ifdef GEKKO2_WIIU_JIT
  if(!arena){
   uint32_t size=0;void *area=gekko2_codegen_area(&size);
-  if(!area||size<PPC_CODE_CACHE_BYTES+32u)return;
+  if(!area||size<256u*1024u+32u)return;
+  if(size-32u<wiiu_cache_bytes)wiiu_cache_bytes=(size-32u)&~31u;
   arena=(uint8_t *)(((uintptr_t)area+31u)&~(uintptr_t)31u);
  }
  gekko2_codegen_rw_begin();

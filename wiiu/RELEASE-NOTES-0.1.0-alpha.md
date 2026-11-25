@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 16)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 17, test build)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -58,6 +58,18 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
   the row length of these textures itself and ignored the padded rows build 12 used. Build 13 removes the padding
   and gives every texture upload fresh memory from a ring buffer instead, so Cemu always sees new data. This also
   removes a wait for the GPU on every texture change (helps real hardware too; not measured yet).
+- **Test build 17, JIT app on a real Wii U: RWX code memory (please test).** Under Aroma the JIT app now looks for
+  read/write/execute memory in the range 0x00800000-0x01000000 (technique from the PPSSPP Wii U port by jereif,
+  GPL-2.0-or-later, re-implemented). Generated code there needs no write/execute switching and may run on any
+  CPU core, so the emulator and the GPU renderer run together on the main core (2 MB cache), as on Cemu. The
+  verbose log shows `JIT RWX heap: ...` with the result. If the JIT app crashes or misbehaves, create
+  `sd:/wiiu/gekko2/jit_codegen.txt` to go back to the official code area and please send the log. Untested on
+  hardware; no speed claim.
+- **Cemu, JIT app:** the emulator runs on the main core there as well (Cemu does not enforce the code core):
+  516 million PS2 instructions after 290 s with the GPU renderer, about 450 million before (local Cemu 2.6).
+- **Known Cemu issue (GPU renderer):** Tekken's Namco logo can show a second copy lower in the picture on every
+  other field in Cemu. It comes from reading GPU pictures back through Cemu; the PC model of the GPU and the
+  software renderer show one logo. Not checked on a real Wii U.
 - **GPU renderer: misplaced picture pieces (build 16):** Tekken's "PRODUCED BY namco" logo was drawn in pieces at
   several wrong places with the GPU renderer. The texture memory ring from build 13 starts over when it is full,
   and a texture that was still cached could then point at memory that already held other data. Cached textures

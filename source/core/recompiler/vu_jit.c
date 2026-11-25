@@ -4,7 +4,8 @@
 #include <coreinit/codegen.h>
 #include <coreinit/core.h>
 /* Generated code lives in the codegen area, usable only on the codegen core; the VU1 worker core interprets. */
-#define VU_JIT_CORE_OK() (OSGetCoreId()==OSGetCodegenCore())
+int gekko2_codegen_any_core(void);
+#define VU_JIT_CORE_OK() (gekko2_codegen_any_core()||OSGetCoreId()==OSGetCodegenCore())
 #else
 #define VU_JIT_CORE_OK() 1
 #endif

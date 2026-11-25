@@ -870,7 +870,18 @@ int main(void)
                     /* JIT app on a Wii U: the emulator runs on the codegen core, so the GPU renderer needs the GS work
                      * on this main thread (the GX2 core); without the GS worker thread it stays off. On Cemu the
                      * emulator runs here (fast Cemu codegen mode), unless jit_cemu_safe.txt asks for the Wii U layout. */
-                    const int cemu_main = on_cemu && !file_exists_flag(sd_root, "jit_cemu_safe.txt");
+                    /* Real Wii U (Aroma): generated code in the RWX heap (see wiiu_codegen.c) can run on this main core
+                     * as well, so the layout is the same as on Cemu. jit_codegen.txt keeps the official codegen area. */
+                    extern int gekko2_wiiu_rwx_jit;
+                    extern int gekko2_codegen_try_rwx(void);
+                    gekko2_wiiu_rwx_jit = !on_cemu && !file_exists_flag(sd_root, "jit_codegen.txt");
+                    const int rwx = gekko2_wiiu_rwx_jit && gekko2_codegen_try_rwx();
+                    {
+                        extern const char *gekko2_codegen_rwx_info(void);
+                        if (gekko2_wiiu_rwx_jit)
+                            on_log(NULL, gekko2_codegen_rwx_info());
+                    }
+                    const int cemu_main = (on_cemu && !file_exists_flag(sd_root, "jit_cemu_safe.txt")) || rwx;
                     const int gpu = wiiu_menu_gpu(menu) && (cemu_main || gs_async_wanted(sd_root)) && gx2_gs_start();
                     const int split = gpu && !cemu_main;
 #else
