@@ -6179,6 +6179,11 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         int backed_candidate=code_backing &&
             ((ram_offset>=0x100000u&&ram_offset<st->ram_size)||
              (st->bios&&(uintptr_t)code_backing-(uintptr_t)st->bios->data<st->bios->size));
+#ifdef GEKKO2_WIIU
+        { extern uint64_t gekko2_wiiu_block_diag[16]; gekko2_wiiu_block_diag[0]++;
+          if(!candidate)gekko2_wiiu_block_diag[1]++; else if(!code_backing)gekko2_wiiu_block_diag[2]++;
+          else if(!backed_candidate)gekko2_wiiu_block_diag[3]++; }
+#endif
         /* Match ee_core_block_pointer's 1 MiB admission floor. Backing
          * came from this instruction's real fetch, not a cached translation.
          * Keep the low physical kernel region on its guarded scalar path. */
@@ -6186,6 +6191,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             unsigned profile=gp_enter(GP_EE_NATIVE);
             unsigned n=ee_jit_try_execute_chain_fetched(st,budget,instr);
             gp_work(GP_EE_NATIVE,n);gp_leave(profile);
+#ifdef GEKKO2_WIIU
+            { extern uint64_t gekko2_wiiu_block_diag[16]; gekko2_wiiu_block_diag[n?5:4]++; }
+#endif
             if(n){*block_retired=n;return 0;}
         }
     }

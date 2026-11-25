@@ -1339,17 +1339,28 @@ unsigned ee_jit_hotpc_top(uint32_t *pcs,uint32_t *runs,uint64_t *ret,unsigned ma
 #else
 #define EE_HOTPC_NOTE(pc,n) ((void)0)
 #endif
+#ifdef GEKKO2_WIIU
+/* Wii U tester diagnostics, why a native block was not executed:
+ * 0 gate visits, 1 not a candidate, 2 no direct code backing, 3 backing outside RAM >= 1 MiB / BIOS,
+ * 4 block path returned 0, 5 block path ran, 6 precondition, 7 quantum < 2, 8 first-instruction admission,
+ * 9 no slot, 10 fewer than 2 instructions, 11 source snapshot, 12 build/install failed, 13 prefix,
+ * 14 first word/prepare mismatch, 15 native code retired 0. */
+uint64_t gekko2_wiiu_block_diag[16];
+#define G2BD(i) (gekko2_wiiu_block_diag[(i)]++)
+#else
+#define G2BD(i) ((void)0)
+#endif
 static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetched,uint32_t first_word,int native_chain)
 {
 #ifdef GEKKO2_SPEED_STUB
  ee_quiet_left=0u;
 #endif
 #if GEKKO2_EE_BLOCKS_ENABLED
- if(!st||budget<2u||st->halted||st->idle||st->exc_raised_this_step||st->mem_tlb_miss||st->branch_pending||st->next_pc!=st->pc+4u||precise_active)return 0;
- if(!gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)||!gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS))return 0;
+ if(!st||budget<2u||st->halted||st->idle||st->exc_raised_this_step||st->mem_tlb_miss||st->branch_pending||st->next_pc!=st->pc+4u||precise_active){G2BD(6);return 0;}
+ if(!gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)||!gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)){G2BD(6);return 0;}
  native_chain &= gekko2_opt_enabled(GEKKO2_OPT_NATIVE_LINKS);
  unsigned quantum_budget=ee_core_interleave_limit(budget);
- if(quantum_budget<2u)return 0;
+ if(quantum_budget<2u){G2BD(7);return 0;}
  uint32_t pc=st->pc,words[GEKKO2_EE_MAX_BLOCK_WORDS];
  unsigned maximum=gekko2_opt_enabled(GEKKO2_OPT_LONG_EE_BLOCKS)?GEKKO2_EE_MAX_BLOCK_WORDS:8u;
  unsigned count=0,limit=quantum_budget<maximum?quantum_budget:maximum;
@@ -1359,16 +1370,16 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  uint32_t admitted_physical=0;
  int admitted=gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES);
  if(admitted) {
-  if(!fetched&&!ee_core_block_peek(st,pc,&first_word))return 0;
-  if(!ee_jit_block_candidate(first_word)&&!ee_jit_block_terminal(first_word))return 0;
+  if(!fetched&&!ee_core_block_peek(st,pc,&first_word)){G2BD(8);return 0;}
+  if(!ee_jit_block_candidate(first_word)&&!ee_jit_block_terminal(first_word)){G2BD(8);return 0;}
   if(ee_jit_block_memory_width(first_word)) {
    admitted_physical=ee_core_block_memory_resolve_precise(st,first_word);
-   if(!admitted_physical)return 0;
+   if(!admitted_physical){G2BD(8);return 0;}
   }
  }
  ee_precise_slot *slot=ee_precise_find(pc,1,quantum_budget);
  precise_profile.lookups++;
- if(!slot){precise_profile.misses++;return 0;}
+ if(!slot){precise_profile.misses++;G2BD(9);return 0;}
  /* The emitted prepare callback validates live mapping/encoding before
   * EACH instruction. A warm entry needs no duplicate full-block scan. */
  int grow=slot->fn&&slot->pc==pc&&slot->formation_limit&&slot->count==slot->formation_limit&&
@@ -1387,14 +1398,14 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   }
   if(!ee_jit_block_candidate(words[count]))break;
  }
- if(count<2u)return 0;
+ if(count<2u){G2BD(10);return 0;}
  uint32_t source_page,source_generation;
- if(!ee_precise_source_snapshot(st,pc,&source_page,&source_generation))return 0;
+ if(!ee_precise_source_snapshot(st,pc,&source_page,&source_generation)){G2BD(11);return 0;}
  uint32_t mapping_generation=precise_mapping_generation;
  if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
-  ee_precise_fn fn=ee_precise_build(pc,words,count,slot);if(!fn)return 0;
+  ee_precise_fn fn=ee_precise_build(pc,words,count,slot);if(!fn){G2BD(12);return 0;}
   if(!ee_precise_install_slot(slot,pc,words,count,source_page,source_generation,mapping_generation,fn)) {
-   ppc_code_cache_release((void*)fn);return 0;
+   ppc_code_cache_release((void*)fn);G2BD(12);return 0;
   }
   slot->formation_limit=formation_limit;
  } else {
@@ -1434,21 +1445,21 @@ execute_slot:;
  }
  int prefix=slot->count>quantum_budget;
  if(prefix) {
-  if(!gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX))return 0;
+  if(!gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX)){G2BD(13);return 0;}
   if(!slot->prefix_fn)slot->prefix_fn=ee_precise_build_prefix(slot);
-  if(!slot->prefix_fn)return 0;
+  if(!slot->prefix_fn){G2BD(13);return 0;}
  }
  ee_precise_touch((unsigned)(slot-precise_cache));
  uint32_t first_physical=admitted_physical;
  if(fetched||admitted) {
-  if(slot->words[0]!=first_word)return 0;
+  if(slot->words[0]!=first_word){G2BD(14);return 0;}
   /* The scalar fetch already happened, but preparation must wait until
    * a first memory operation proves its current direct-RAM address. */
   if(!admitted&&ee_jit_block_memory_width(first_word)) {
    first_physical=ee_core_block_memory_resolve_precise(st,first_word);
-   if(!first_physical)return 0;
+   if(!first_physical){G2BD(14);return 0;}
   }
-  if(!ee_core_block_prepare_fetched(st,pc))return 0;
+  if(!ee_core_block_prepare_fetched(st,pc)){G2BD(14);return 0;}
   fetched=1u; /* Reuse the admitted fetch/address in the native entry. */
  }
  if(!resident_chain&&!prefix&&native_chain&&slot->count+2u<=budget)ee_precise_make_chain();
@@ -1474,7 +1485,7 @@ execute_slot:;
  if(prefix){precise_budget_stats[6]++;precise_budget_stats[7]+=n;}
  /* Changed first word/mapping: release only after the native function
   * returns. The scalar path handles this instruction; later visits retry. */
- if(!n)ee_precise_release_slot(slot);
+ if(!n){G2BD(15);ee_precise_release_slot(slot);}
  return n;
 #else
  (void)st;(void)budget;(void)fetched;(void)first_word;(void)native_chain;return 0;

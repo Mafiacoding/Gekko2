@@ -139,6 +139,9 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
 #ifdef GEKKO2_WIIU_JIT
     else if (gekko2_optimization_mask & GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)) {
         if (gekko2_codegen_area(NULL)) {
+            /* The menu mask (optimization.cfg) keeps native EE blocks off by default, as on the Wii. Without them
+             * the dynarec only translates single instructions (tester logs: blocks=0), so the JIT app turns them on. */
+            gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
             if (!config->vu_jit_off) gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
             else gekko2_optimization_mask &= ~GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
             say(platform, "EE dynarec on (Wii U codegen area)%s", config->vu_jit_off ? "" : ", VU dynarec on");
@@ -416,6 +419,17 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                         (unsigned long long)ee_jit_get_compile_attempt_count(), (unsigned)(ppc_code_cache_used() / 1024u),
                         gekko2_codegen_switch_count(), (unsigned long long)vu_jit_get_block_count(),
                         (unsigned long long)vu_jit_get_pair_count());
+            }
+            if (session) {
+                extern uint64_t gekko2_wiiu_block_diag[16];
+                jit_cache_profile cp;
+                ee_jit_get_cache_profile(&cp);
+                fprintf(session, "# jitb t=%llus", (unsigned long long)((now - start) / 1000u));
+                for (unsigned k = 0; k < 16u; k++)
+                    fprintf(session, " %u:%llu", k, (unsigned long long)gekko2_wiiu_block_diag[k]);
+                fprintf(session, " lookups=%llu hits=%llu misses=%llu stale=%llu installed=%llu failures=%llu\n",
+                        (unsigned long long)cp.lookups, (unsigned long long)cp.hits, (unsigned long long)cp.misses,
+                        (unsigned long long)cp.stale, (unsigned long long)cp.installed, (unsigned long long)cp.failures);
             }
             say(platform, "  JIT %s exec=%llu comp=%llu blk=%llu cache=%uKiB sw=%llu", gekko2_codegen_status(),
                 (unsigned long long)ee_jit_get_executed_count(), (unsigned long long)ee_jit_get_compile_attempt_count(),
