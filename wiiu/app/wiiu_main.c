@@ -45,20 +45,19 @@ static unsigned shown_w, shown_h;
 static void *screen_memory;
 static uint32_t tv_size, drc_size;
 
-#ifdef GEKKO2_WIIU_JIT
-/* JIT build: the emulator runs on its own thread on the codegen core (core 0); this thread (core 1) keeps
- * ProcUI, VPAD and OSScreen. Shared state is guarded by one mutex. */
+/* Threaded mode: the emulator runs on its own thread; this main thread (core 1) keeps ProcUI, controllers, the
+ * screen and GX2. JIT build: always (emulator on the codegen core 0). Normal build: with the GPU renderer and
+ * "GS core: own" (emulator on core 2, the GS worker runs on this thread, which owns GX2). Shared state is guarded
+ * by one mutex. */
 static OSMutex shared_lock;
-static volatile int stop_requested;
+static int threaded;          /* the emulator runs on its own thread during this session */
+static int gs_on_main;        /* the GS worker runs on this main thread (GX2 core) */
+static volatile int stop_requested, emu_done;
 static volatile uint16_t shared_pressed;
 static volatile uint8_t shared_axes[4] = { 0x80, 0x80, 0x80, 0x80 };
 static volatile int shared_pad_ok;
 #define SHARED_LOCK() OSLockMutex(&shared_lock)
 #define SHARED_UNLOCK() OSUnlockMutex(&shared_lock)
-#else
-#define SHARED_LOCK() ((void)0)
-#define SHARED_UNLOCK() ((void)0)
-#endif
 
 static int dirty = 1;
 static uint64_t last_render_ms;
@@ -104,6 +103,8 @@ static uint32_t procui_acquire(void *ctx)
         OSScreenEnableEx(SCREEN_DRC, 1);
     }
     in_foreground = 1;
+    if (use_gx2_gs)
+        gx2_gs_context_lost(); /* the system used the GPU while we were in the background */
     return 0;
 }
 static uint32_t procui_release(void *ctx)
@@ -199,9 +200,8 @@ static void on_log(void *u, const char *s)
     line_count++;
     dirty = 1;
     SHARED_UNLOCK();
-#ifndef GEKKO2_WIIU_JIT
-    WHBLogPrint(s);
-#endif
+    if (!threaded)
+        WHBLogPrint(s);
 }
 
 static int on_present(void *u, const uint32_t *p, unsigned w, unsigned h)
@@ -219,9 +219,8 @@ static int on_present(void *u, const uint32_t *p, unsigned w, unsigned h)
 static int keep(void *u)
 {
     (void)u;
-#ifdef GEKKO2_WIIU_JIT
-    return !stop_requested;
-#else
+    if (threaded)
+        return !stop_requested;
     static uint64_t last_proc_ms;
     const uint64_t now = (uint64_t)OSTicksToMilliseconds(OSGetSystemTime());
     if (now - last_proc_ms >= 16u) { /* ProcUI messages (HOME button) about 60 times a second */
@@ -236,7 +235,6 @@ static int keep(void *u)
         render();
     }
     return 1;
-#endif
 }
 static uint64_t now_ms(void *u) { (void)u; return (uint64_t)OSTicksToMilliseconds(OSGetSystemTime()); }
 
@@ -346,10 +344,11 @@ static int read_pad(uint16_t *pressed, uint8_t axes[4])
     return 0;
 }
 
-#ifdef GEKKO2_WIIU_JIT
 static int poll_pad(void *u, uint16_t *pressed, uint8_t axes[4])
 {
     (void)u;
+    if (!threaded)
+        return read_pad(pressed, axes);
     if (!shared_pad_ok)
         return 1;
     *pressed = shared_pressed;
@@ -357,13 +356,6 @@ static int poll_pad(void *u, uint16_t *pressed, uint8_t axes[4])
         axes[i] = shared_axes[i];
     return 0;
 }
-#else
-static int poll_pad(void *u, uint16_t *pressed, uint8_t axes[4])
-{
-    (void)u;
-    return read_pad(pressed, axes);
-}
-#endif
 
 static int readable(const char *path)
 {
@@ -401,14 +393,48 @@ static int gs_async_wanted(const char *sd_root)
     }
     return 1;
 }
-#ifdef GEKKO2_WIIU_JIT
 static int emu_entry(int argc, void *argv)
 {
     (void)argc; (void)argv;
     g2_run(&g_config, &g_platform, &g_result);
+    emu_done = 1;
     return 0;
 }
-#endif
+
+/* GX2 calls requested by the emulation thread (GPU renderer resolves) run on this main thread. */
+static OSThread *gx2_thread;
+static volatile int rpc_pending, rpc_done;
+static int (*rpc_fn)(void *, uint8_t *, uint32_t);
+static void *rpc_opaque;
+static uint8_t *rpc_vram;
+static uint32_t rpc_size;
+static int rpc_ret;
+static int gx2_call(int (*fn)(void *, uint8_t *, uint32_t), void *opaque, uint8_t *vram, uint32_t size)
+{
+    if (OSGetCurrentThread() == gx2_thread)
+        return fn(opaque, vram, size);
+    rpc_fn = fn;
+    rpc_opaque = opaque;
+    rpc_vram = vram;
+    rpc_size = size;
+    rpc_done = 0;
+    __sync_synchronize();
+    rpc_pending = 1;
+    while (!rpc_done)
+        OSSleepTicks(OSMicrosecondsToTicks(20));
+    __sync_synchronize();
+    return rpc_ret;
+}
+static void rpc_service(void)
+{
+    if (!rpc_pending)
+        return;
+    __sync_synchronize();
+    rpc_pending = 0;
+    rpc_ret = rpc_fn(rpc_opaque, rpc_vram, rpc_size);
+    __sync_synchronize();
+    rpc_done = 1;
+}
 
 /* GS/GIF worker thread: a second Espresso core runs the GIF/GS work, the emulation thread only hands data over.
  * On by default; create <sd>/wiiu/gekko2/gs_async_off.txt to run everything on one thread again. */
@@ -422,9 +448,18 @@ static int gs_entry(int argc, void *argv)
     gs_fn();
     return 0;
 }
+static volatile int gs_main_pending;
 static int start_worker(void (*fn)(void), void *user)
 {
     (void)user;
+    if (gs_on_main) {
+        /* The main thread (GX2 core) runs the GS worker: run_emulation() picks it up. */
+        gs_fn = fn;
+        gs_core = (unsigned)OSGetMainCoreId();
+        __sync_synchronize();
+        gs_main_pending = 1;
+        return 0;
+    }
     const uint32_t stack_size = 512u * 1024u;
     if (!gs_stack)
         gs_stack = MEMAllocFromDefaultHeapEx(stack_size, 16);
@@ -535,6 +570,7 @@ static unsigned menu_edges(uint32_t trigger, uint32_t hold, uint64_t now)
     if (trigger & (1u << G2B_X)) e |= WM_X;
     if (trigger & (1u << G2B_Y)) e |= WM_Y;
     if (trigger & (1u << G2B_MINUS)) e |= WM_MINUS;
+    if (trigger & (1u << G2B_ZR)) e |= WM_ZR;
     if (trigger & (up | down))
         next_repeat = now + 400u;
     else if ((hold & (up | down)) && now >= next_repeat) {
@@ -544,11 +580,45 @@ static unsigned menu_edges(uint32_t trigger, uint32_t hold, uint64_t now)
     return e;
 }
 
+/* Main-thread housekeeping while the emulator runs on its own thread: controllers, HOME/ProcUI, picture,
+ * GX2 requests. full = 0: only the GX2 requests (called very often from the GS worker loop). */
+static void main_tick(int full)
+{
+    rpc_service();
+    static uint64_t last_ms;
+    const uint64_t now = now_ms(NULL);
+    if (!full && now - last_ms < 4u)
+        return;
+    last_ms = now;
+    uint16_t pressed = 0;
+    uint8_t axes[4] = { 0x80, 0x80, 0x80, 0x80 };
+    const int ok = read_pad(&pressed, axes) == 0;
+    shared_pressed = pressed;
+    for (unsigned i = 0; i < 4; i++)
+        shared_axes[i] = axes[i];
+    shared_pad_ok = ok;
+    static uint64_t last_proc_ms;
+    if (now - last_proc_ms >= 16u) {
+        last_proc_ms = now;
+        if (!app_running())
+            stop_requested = 1;
+    }
+    if (return_to_menu)
+        stop_requested = 1;
+    if (dirty && now - last_render_ms >= 500u) {
+        last_render_ms = now;
+        render();
+    }
+}
+static void worker_tick(void) { main_tick(0); }
+
 static void run_emulation(void)
 {
     return_to_menu = 0;
-#ifdef GEKKO2_WIIU_JIT
-    /* Emulator thread on the codegen core; this thread keeps ProcUI, VPAD and the screen. */
+    if (!threaded) {
+        g2_run(&g_config, &g_platform, &g_result);
+        return;
+    }
     static OSThread emu_thread;
     static void *stack;
     const uint32_t stack_size = 1024u * 1024u;
@@ -559,30 +629,43 @@ static void run_emulation(void)
         return;
     }
     stop_requested = 0;
-    OSCreateThread(&emu_thread, emu_entry, 0, NULL, (uint8_t *)stack + stack_size, stack_size, 16,
-                   1u << (unsigned)OSGetCodegenCore());
+    emu_done = 0;
+    gs_main_pending = 0;
+    gx2_thread = OSGetCurrentThread();
+#ifdef GEKKO2_WIIU_JIT
+    const unsigned emu_core = (unsigned)OSGetCodegenCore(); /* generated code only runs on the codegen core */
+#else
+    const unsigned emu_core = (unsigned)OSGetMainCoreId() == 2u ? 0u : 2u;
+#endif
+#ifdef GEKKO2_WIIU_GX2
+    if (gs_on_main) {
+        extern int (*gekko2_gx2_call)(int (*fn)(void *, uint8_t *, uint32_t), void *, uint8_t *, uint32_t);
+        gekko2_gx2_call = gx2_call;
+    }
+#endif
+    OSCreateThread(&emu_thread, emu_entry, 0, NULL, (uint8_t *)stack + stack_size, stack_size, 16, 1u << emu_core);
     OSSetThreadName(&emu_thread, "gekko2-emu");
     OSResumeThread(&emu_thread);
-    while (app_running() && !return_to_menu) {
-        uint16_t pressed = 0;
-        uint8_t axes[4] = { 0x80, 0x80, 0x80, 0x80 };
-        const int ok = read_pad(&pressed, axes) == 0;
-        shared_pressed = pressed;
-        for (unsigned i = 0; i < 4; i++)
-            shared_axes[i] = axes[i];
-        shared_pad_ok = ok;
-        const uint64_t now = now_ms(NULL);
-        if (dirty && now - last_render_ms >= 500u) {
-            last_render_ms = now;
-            render();
+    while (!emu_done) {
+        main_tick(1);
+        if (gs_main_pending) {
+            /* GS worker on this thread (GX2 core) until the run loop detaches it; housekeeping via the tick hook. */
+            extern void (*gekko2_worker_tick)(void);
+            gs_main_pending = 0;
+            gekko2_worker_tick = worker_tick;
+            gs_fn();
+            gekko2_worker_tick = NULL;
+            continue;
         }
-        OSSleepTicks(OSMillisecondsToTicks(16));
+        OSSleepTicks(OSMillisecondsToTicks(2));
     }
-    stop_requested = 1;
     int ret = 0;
     OSJoinThread(&emu_thread, &ret);
-#else
-    g2_run(&g_config, &g_platform, &g_result);
+#ifdef GEKKO2_WIIU_GX2
+    if (gs_on_main) {
+        extern int (*gekko2_gx2_call)(int (*fn)(void *, uint8_t *, uint32_t), void *, uint8_t *, uint32_t);
+        gekko2_gx2_call = NULL;
+    }
 #endif
 }
 
@@ -630,9 +713,7 @@ int main(void)
     KPADInit();
     WPADEnableURCC(1);
     kpad_ready = 1;
-#ifdef GEKKO2_WIIU_JIT
     OSInitMutex(&shared_lock);
-#endif
 
     on_log(NULL, "Gekko2 Wii U Edition " G2_WIIU_VERSION " (ALPHA)");
     on_log(NULL, "Alpha build: expect bugs; speed is far below full PS2 speed.");
@@ -743,12 +824,22 @@ int main(void)
                     SHARED_UNLOCK();
                     render();
                     last_render_ms = now_ms(NULL);
+                    const int gpu = wiiu_menu_gpu(menu) && gx2_gs_start();
+                    const int split = gpu && wiiu_menu_gpu_split(menu) && gs_async_wanted(sd_root);
+#ifdef GEKKO2_WIIU_JIT
+                    threaded = 1;
+#else
+                    threaded = split;
+#endif
+                    gs_on_main = split;
                     g_config = (g2_config){ bios, action == WM_ACTION_START_DISC ? wiiu_menu_disc(menu) : NULL,
                                             2000u, 0, 1000u, 0, 1, verbose ? session_log : NULL, gs_async_wanted(sd_root), !file_exists_flag(sd_root, "fast_run_off.txt"),
                                             file_exists_flag(sd_root, "event_sched_on.txt"), file_exists_flag(sd_root, "iop_async_on.txt"),
                                             file_exists_flag(sd_root, "vu_jit_off.txt"), file_exists_flag(sd_root, "vu1_async_on.txt"),
-                                            wiiu_menu_gpu(menu) && gx2_gs_start() };
+                                            gpu, split };
                     run_emulation();
+                    threaded = 0;
+                    gs_on_main = 0;
                     show_log = 0;
                     wiiu_menu_set_notice(menu, verbose ? "Back. Log saved: sd:/wiiu/gekko2/session.log" : "Back from emulation. Restart the app for a clean boot.");
                 }

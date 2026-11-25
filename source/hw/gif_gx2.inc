@@ -79,7 +79,20 @@ static uint32_t g2_read_zbytes(const uint8_t *p, uint32_t zpsm)
 #ifdef G2_HOST_PROF
 static uint32_t g2_shadow[1024u * 1024u];
 #endif
+static int g2_resolver_body(void *opaque, uint8_t *vram, uint32_t size);
+/* GX2 may only be used from the core that initialised it. With the GPU renderer on its own core the GS worker runs
+ * there, but a resolve can also be requested by the emulation thread (picture output, detach); the front end then
+ * runs the body on the GX2 thread and waits. NULL hook: call directly. */
+int (*gekko2_gx2_call)(int (*fn)(void *, uint8_t *, uint32_t), void *opaque, uint8_t *vram, uint32_t size);
 static int g2_resolver(void *opaque, uint8_t *vram, uint32_t size)
+{
+    if (!g2r.open)
+        return 1;
+    if (gekko2_gx2_call)
+        return gekko2_gx2_call(g2_resolver_body, opaque, vram, size);
+    return g2_resolver_body(opaque, vram, size);
+}
+static int g2_resolver_body(void *opaque, uint8_t *vram, uint32_t size)
 {
     (void)opaque;
     if (!g2r.open)

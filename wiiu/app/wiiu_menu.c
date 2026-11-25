@@ -23,8 +23,8 @@ struct wiiu_menu {
     char root[256], disc[512], disc_notice[80], notice[96], opt_path[300], settings_path[300], bios_name[64];
     int verbose;
     char verbose_path[300];
-    int gpu;
-    char gpu_path[300];
+    int gpu, split;
+    char gpu_path[300], split_path[300];
     uint8_t map_src[16];       /* PS2 target row -> unified source button G2B_* */
     int ctl_selected, ctl_capture;
     char controls_path[300];
@@ -230,6 +230,12 @@ wiiu_menu *wiiu_menu_create(const char *sd_root, const char *bios_name)
         m->gpu = f != NULL;
         if (f) fclose(f);
     }
+    snprintf(m->split_path, sizeof m->split_path, "%s/wiiu/gekko2/gx2_split_on.txt", m->root);
+    {
+        FILE *f = fopen(m->split_path, "rb");
+        m->split = f != NULL;
+        if (f) fclose(f);
+    }
     snprintf(m->controls_path, sizeof m->controls_path, "%s/wiiu/gekko2/controls.cfg", m->root);
     controls_load(m);
     snprintf(m->notice, sizeof m->notice, "SD: wiiu/gekko2/bios/ and games/");
@@ -259,6 +265,7 @@ static int open_browser(wiiu_menu *m)
 
 int wiiu_menu_verbose(const wiiu_menu *m) { return m ? m->verbose : 0; }
 int wiiu_menu_gpu(const wiiu_menu *m) { return m ? m->gpu : 0; }
+int wiiu_menu_gpu_split(const wiiu_menu *m) { return m ? m->split : 0; }
 
 /* ALPHA marking on every page: a red bar at the top and the log switch at the bottom. */
 static void alpha_overlay(const wiiu_menu *m)
@@ -273,9 +280,11 @@ static void alpha_overlay(const wiiu_menu *m)
     /* One line, two switches: verbose log (X, needed for bug reports) and GPU renderer (-). */
     menu_text(6, (int)WM_H - 16, 1, m->verbose ? "LOG ON (X)" : "LOG OFF (X)", m->verbose ? 120 : 255, m->verbose ? 255 : 200,
               m->verbose ? 140 : 90);
-    menu_text(6 + 13 * 8, (int)WM_H - 16, 1, m->gpu ? "GPU RENDERER ON (-)" : "GPU RENDERER OFF (-)", m->gpu ? 120 : 200,
+    menu_text(6 + 13 * 8, (int)WM_H - 16, 1, m->gpu ? "GPU ON (-)" : "GPU OFF (-)", m->gpu ? 120 : 200,
               m->gpu ? 200 : 200, m->gpu ? 255 : 200);
-    menu_text(6 + 35 * 8, (int)WM_H - 16, 1, "Y: CONTROLS", 170, 170, 180);
+    menu_text(6 + 26 * 8, (int)WM_H - 16, 1, m->split ? "GS CORE: OWN (ZR)" : "GS CORE: SHARED (ZR)", m->split ? 120 : 200,
+              m->split ? 200 : 200, m->split ? 255 : 200);
+    menu_text(6 + 49 * 8, (int)WM_H - 16, 1, "Y: CONTROLS", 170, 170, 180);
 }
 
 void wiiu_menu_render_loading(wiiu_menu *m, uint32_t *xrgb, const char *title)
@@ -386,6 +395,17 @@ int wiiu_menu_input(wiiu_menu *m, unsigned edges)
         } else remove(m->gpu_path);
         wiiu_menu_set_notice(m, m->gpu ? "GPU renderer ON (experimental): applies at the next game start."
                                        : "GPU renderer OFF: software renderer.");
+        return WM_ACTION_NONE;
+    }
+    if (m && (edges & WM_ZR) && m->page == PG_MAIN) {
+        m->split = !m->split;
+        if (m->split) {
+            FILE *f = fopen(m->split_path, "wb");
+            if (f) { fputs("1\n", f); fclose(f); }
+            else m->split = 0;
+        } else remove(m->split_path);
+        wiiu_menu_set_notice(m, m->split ? "GS on its own core (GPU renderer only): emulation moves to core 2."
+                                         : "GS shares the emulation core when the GPU renderer is on.");
         return WM_ACTION_NONE;
     }
     if (m && (edges & WM_X) && m->page == PG_MAIN) {

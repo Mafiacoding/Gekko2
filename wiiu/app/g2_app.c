@@ -187,8 +187,9 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 "interpreter",
 #endif
                 __DATE__, __TIME__);
-        fprintf(session, "# config gs_async=%d vu1_async=%d iop_async=%d event_sched=%d fast_run=%d vu_jit_off=%d gx2_gs=%d\n", config->gs_async,
-                config->vu1_async, config->iop_async, config->event_sched, config->fast_run, config->vu_jit_off, config->gx2_gs);
+        fprintf(session, "# config gs_async=%d vu1_async=%d iop_async=%d event_sched=%d fast_run=%d vu_jit_off=%d gx2_gs=%d gx2_split=%d\n",
+                config->gs_async, config->vu1_async, config->iop_async, config->event_sched, config->fast_run, config->vu_jit_off,
+                config->gx2_gs, config->gx2_split);
         say_file = session;
         fprintf(session, "# session bios=%s disc=%s mask=%08x batch=%u\n# t_s,ee_instr,ips,vblank_total,vblank_per_s(59.94=100%%),frames_presented,pad_mask\n",
                 config->bios_path ? config->bios_path : "?", config->iso_path ? config->iso_path : "(none)",
@@ -199,7 +200,8 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
     int gs_async_active = 0, gx2_gs_active = 0;
 #ifdef GEKKO2_WIIU_GX2
     {
-        /* GX2 may only be used from the core that initialised it: GPU GS drawing keeps GIF/GS on this thread. */
+        /* GX2 may only be used from the core that initialised it: GPU GS drawing keeps GIF/GS on this thread,
+         * unless the platform runs the GS worker on the GX2 core (gx2_split). */
         extern int gekko2_gx2_gs_attach(void);
         if (config->gx2_gs) {
             gx2_gs_active = gekko2_gx2_gs_attach();
@@ -213,7 +215,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         }
     }
 #endif
-    if (config->gs_async && !gx2_gs_active && platform->start_worker) {
+    if (config->gs_async && (!gx2_gs_active || config->gx2_split) && platform->start_worker) {
         gs_async_attach(platform->worker_idle);
         if (platform->start_worker(gs_async_worker_main, platform->user) == 0 && gs_async_enable() == 0) {
             gs_async_active = 1;

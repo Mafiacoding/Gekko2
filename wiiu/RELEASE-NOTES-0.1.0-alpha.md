@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 4)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 6)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -45,6 +45,12 @@ In our PC model of the GPU the picture matched the software renderer (BIOS intro
 2D-heavy scenes it was slower. Whether it is faster on a real Wii U, especially in 3D scenes, is exactly what we
 need to find out: please run the same game with the GPU renderer on and off (verbose log on) and send both logs.
 The switch is saved (as `sd:/wiiu/gekko2/gx2_gs_on.txt`). It has no effect in the JIT app.
+
+**GS core switch (ZR in the main menu, only with the GPU renderer on):** GX2 can only be used from the CPU core
+that started it (core 1). With `GS CORE: SHARED` the PS2 graphics work runs together with the emulation on core 1.
+With `GS CORE: OWN` the emulation moves to core 2 and core 1 does the graphics work, GX2 and the picture output, so
+graphics get their own core again. Core 2 has a smaller cache (512 KB instead of 2 MB), so it is not clear which
+is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_on.txt`.
 
 ## Fixed in this build
 
@@ -97,6 +103,7 @@ cannot help.
 | `vu_jit_off.txt` | JIT build: keep VU microcode interpreted |
 | `gx2_off.txt` | software picture output (OSScreen) instead of the GPU (also turns the GPU renderer off) |
 | `gx2_gs_on.txt` | GPU renderer on (same as the - switch in the menu) |
+| `gx2_split_on.txt` | GS on its own core with the GPU renderer (same as ZR in the menu) |
 
 ## License
 

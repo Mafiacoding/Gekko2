@@ -151,12 +151,20 @@ static int ga_pass(void)
 /* Optional: set by the app. Idle workers call it after many empty polls instead of spinning, so an emulator such
  * as Cemu (or a busy core) does not lose time to a polling thread. */
 void (*gekko2_worker_nap)(void);
+#ifdef GEKKO2_WIIU
+/* Wii U: when the GS worker runs on the main thread (GPU renderer on its own core), the front end keeps ProcUI,
+ * controllers, picture output and GX2 requests alive through this hook, called once per worker loop. */
+void (*gekko2_worker_tick)(void);
+#endif
 void gs_async_worker_main(void)
 {
     __atomic_store_n(&ga_started, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&ga_running, 1, __ATOMIC_RELEASE);
     unsigned idle = 0;
     while (!__atomic_load_n(&ga_stop, __ATOMIC_ACQUIRE)) {
+#ifdef GEKKO2_WIIU
+        if (gekko2_worker_tick) gekko2_worker_tick();
+#endif
         const uint32_t e = __atomic_load_n(&ga_epoch, __ATOMIC_ACQUIRE);
         const uint64_t b0 = ga_now();
         const int any = ga_pass();

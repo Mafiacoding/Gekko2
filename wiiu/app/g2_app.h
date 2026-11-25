@@ -41,7 +41,9 @@ typedef struct {
     int iop_async;                            /* IOP catch-up on its own core (needs event_sched and start_worker_stack) */
     int vu_jit_off;                           /* JIT build: keep VU micro code interpreted even when the EE dynarec runs */
     int vu1_async;                            /* run VU1 microprograms on their own core (needs start_worker_stack) */
-    int gx2_gs;                               /* Wii U: GPU (GX2) draws GS triangles/sprites; GS stays on this thread */
+    int gx2_gs;                               /* Wii U: GPU (GX2) draws GS triangles/sprites */
+    int gx2_split;                            /* with gx2_gs: the platform runs the GS worker on the GX2 core (main
+                                                 thread) and this run loop on another core */
 } g2_config;
 
 typedef struct {
