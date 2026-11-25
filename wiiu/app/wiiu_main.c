@@ -7,6 +7,7 @@
 #include "gx2_present.h"
 #include "gx2_gs.h"
 #include "core/hw/iop_sio2.h"
+#include <coreinit/title.h>
 #include <coreinit/cache.h>
 #include <coreinit/codegen.h>
 #include <coreinit/core.h>
@@ -593,6 +594,7 @@ static unsigned menu_edges(uint32_t trigger, uint32_t hold, uint64_t now)
 
 /* Main-thread housekeeping while the emulator runs on its own thread: controllers, HOME/ProcUI, picture,
  * GX2 requests. full = 0: only the GX2 requests (called very often from the GS worker loop). */
+static int no_render_in_worker; /* diagnostics: norender_worker.txt */
 static void main_tick(int full)
 {
     rpc_service();
@@ -616,7 +618,7 @@ static void main_tick(int full)
     }
     if (return_to_menu)
         stop_requested = 1;
-    if (dirty && now - last_render_ms >= 500u) {
+    if (dirty && now - last_render_ms >= 500u && !(no_render_in_worker && !full)) {
         last_render_ms = now;
         render();
     }
@@ -860,17 +862,23 @@ int main(void)
                     SHARED_UNLOCK();
                     render();
                     last_render_ms = now_ms(NULL);
+                    /* Cemu (directly loaded RPX, title ID ffffffff...): GS work on its own core made Cemu write back
+                     * GPU pixels late, so stale rows reached the PS2 picture (Tekken: second Namco logo). There the
+                     * emulator and the GS work share the main core, as with GS CORE: SHARED. */
+                    const int on_cemu = (OSGetTitleID() >> 32) == 0xffffffffull;
 #ifdef GEKKO2_WIIU_JIT
-                    /* JIT app: the emulator always runs on the codegen core, so the GPU renderer needs the GS work on
-                     * this main thread (the GX2 core); without the GS worker thread it stays off. */
-                    const int gpu = wiiu_menu_gpu(menu) && gs_async_wanted(sd_root) && gx2_gs_start();
-                    const int split = gpu;
+                    /* JIT app on a Wii U: the emulator runs on the codegen core, so the GPU renderer needs the GS work
+                     * on this main thread (the GX2 core); without the GS worker thread it stays off. On Cemu the
+                     * emulator runs here (fast Cemu codegen mode), unless jit_cemu_safe.txt asks for the Wii U layout. */
+                    const int cemu_main = on_cemu && !file_exists_flag(sd_root, "jit_cemu_safe.txt");
+                    const int gpu = wiiu_menu_gpu(menu) && (cemu_main || gs_async_wanted(sd_root)) && gx2_gs_start();
+                    const int split = gpu && !cemu_main;
 #else
                     const int gpu = wiiu_menu_gpu(menu) && gx2_gs_start();
-                    const int split = gpu && wiiu_menu_gpu_split(menu) && gs_async_wanted(sd_root);
+                    const int split = gpu && !on_cemu && wiiu_menu_gpu_split(menu) && gs_async_wanted(sd_root);
 #endif
 #ifdef GEKKO2_WIIU_JIT
-                    threaded = 1;
+                    threaded = !cemu_main;
                     {
                         extern int gekko2_wiiu_cemu_fast_jit;
                         gekko2_wiiu_cemu_fast_jit = !file_exists_flag(sd_root, "jit_cemu_safe.txt");
@@ -910,6 +918,27 @@ int main(void)
                     {
                         extern int gekko2_wiiu_display_sync;
                         gekko2_wiiu_display_sync = file_exists_flag(sd_root, "display_sync.txt");
+                        no_render_in_worker = file_exists_flag(sd_root, "norender_worker.txt");
+                        {
+                            extern int gekko2_wiiu_g2_notex;
+                            gekko2_wiiu_g2_notex = file_exists_flag(sd_root, "gpu_notex.txt");
+                            extern int tex_pad_rows;
+                            tex_pad_rows = file_exists_flag(sd_root, "tex_pad.txt");
+                            extern int gekko2_wiiu_g2trace_on;
+                            gekko2_wiiu_g2trace_on = file_exists_flag(sd_root, "g2trace.txt");
+                        }
+                        extern unsigned gekko2_wiiu_dump_first, gekko2_wiiu_dump_last;
+                        extern char gekko2_wiiu_dump_dir[200];
+                        snprintf(gekko2_wiiu_dump_dir, sizeof gekko2_wiiu_dump_dir, "%s/wiiu/gekko2", sd_root[0] ? sd_root : "/vol/external01");
+                        char fp[300];
+                        snprintf(fp, sizeof fp, "%s/frame_dump.txt", gekko2_wiiu_dump_dir);
+                        FILE *ff = fopen(fp, "r");
+                        gekko2_wiiu_dump_first = gekko2_wiiu_dump_last = 0;
+                        if (ff) {
+                            if (fscanf(ff, "%u %u", &gekko2_wiiu_dump_first, &gekko2_wiiu_dump_last) != 2)
+                                gekko2_wiiu_dump_first = gekko2_wiiu_dump_last = 0;
+                            fclose(ff);
+                        }
                     }
                     run_emulation();
                     threaded = 0;

@@ -17,6 +17,8 @@
  * correctly for STQ textures; triangle edges follow the GPU fill rule; depth is 24-bit (Z32 compares on the top
  * 24 bits). */
 #include "gx2_gs.h"
+#include <stdarg.h>
+#include <stdio.h>
 #ifdef G2_HOST_PROF
 #include <time.h>
 static uint64_t g2_ns[4]; /* 0 upload, 1 resolve, 2 texture decode, 3 gpu draw calls */
@@ -81,6 +83,22 @@ static uint32_t g2_read_zbytes(const uint8_t *p, uint32_t zpsm)
 static uint32_t g2_shadow[1024u * 1024u];
 #endif
 static int g2_resolver_body(void *opaque, uint8_t *vram, uint32_t size);
+/* Diagnostics (session log "# g2trace"): uploads U, textured sprites S, rows changed by a resolve R. */
+char gekko2_wiiu_g2trace[4096];
+int gekko2_wiiu_g2_notex; /* diagnostics: textured draws stay in software */
+int gekko2_wiiu_g2trace_on; /* g2trace.txt */
+static void g2_trace(const char *fmt, ...)
+{
+    if (!gekko2_wiiu_g2trace_on)
+        return;
+    size_t k = strlen(gekko2_wiiu_g2trace);
+    if (k > sizeof gekko2_wiiu_g2trace - 64u)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(gekko2_wiiu_g2trace + k, sizeof gekko2_wiiu_g2trace - k, fmt, ap);
+    va_end(ap);
+}
 /* GX2 may only be used from the core that initialised it. With the GPU renderer on its own core the GS worker runs
  * there, but a resolve can also be requested by the emulation thread (picture output, detach); the front end then
  * runs the body on the GX2 thread and waits. NULL hook: call directly. */
@@ -106,8 +124,23 @@ static int g2_resolver_body(void *opaque, uint8_t *vram, uint32_t size)
         return 0;
     }
     const uint32_t page = g2r.fbp / 2048u;
+    int run0 = -1;
+    g2_trace("R%u-%u:", (unsigned)g2r.dy0, (unsigned)g2r.dy1);
     for (uint32_t y = g2r.dy0; y < g2r.dy1; y++) {
         const uint32_t *row = px + (size_t)y * pitch;
+        if (gekko2_wiiu_g2trace_on) {
+            int changed = 0;
+            for (uint32_t x = 0; x < g2r.w && !changed; x++) {
+                const uint32_t off = gs_mem_swizzle_addr32(page, g2r.fbw, x, y);
+                if (off <= size - 4u && row[x] != g2_upload_word(vram + off, g2r.psm))
+                    changed = 1;
+            }
+            if (changed && run0 < 0) run0 = (int)y;
+            if ((!changed || y + 1 == g2r.dy1) && run0 >= 0) {
+                g2_trace("%d-%d,", run0, changed ? (int)y + 1 : (int)y);
+                run0 = -1;
+            }
+        }
         for (uint32_t x = 0; x < g2r.w; x++) {
             const uint32_t off = gs_mem_swizzle_addr32(page, g2r.fbw, x, y);
             if (off > size - 4u)
@@ -255,6 +288,7 @@ static void g2_upload_color(const uint8_t *vram, uint32_t y0, uint32_t y1)
 #endif
         }
     }
+    g2_trace("U%u-%u ", (unsigned)y0, (unsigned)y1);
     gx2_gs_target_ready_rows(y0, y1);
     g2_stats[8] += (uint64_t)g2r.w * (y1 - y0);
 }
@@ -451,6 +485,16 @@ static int g2_bind_texture_impl(g2_rect rc);
 static int g2_bind_texture(g2_rect rc)
 {
     g2_cause_now = 0;
+    if (gekko2_wiiu_g2trace_on) {
+        static uint32_t last_tbp = ~0u, last_y0 = ~0u;
+        if (g_gif.tex_tbp0 != last_tbp || rc.y0 != last_y0) {
+            g2_trace("T%x/%u/%ux%u/%s:%u-%u ", (unsigned)g_gif.tex_tbp0, (unsigned)g_gif.tex_tbw, 1u << g_gif.tex_tw,
+                     1u << g_gif.tex_th, g2_overlaps_target((uint64_t)g_gif.tex_tbp0 * 256u, (uint64_t)g_gif.tex_tbp0 * 256u + 1u) ? "fb" : "",
+                     (unsigned)rc.y0, (unsigned)rc.y1);
+            last_tbp = g_gif.tex_tbp0;
+            last_y0 = rc.y0;
+        }
+    }
     const int r = g2_bind_texture_impl(rc);
     g2_cause_now = 2;
     return r;
@@ -481,8 +525,9 @@ static int g2_bind_texture_impl(g2_rect rc)
     /* Same texture still in the slot and its decoded rectangle's GS memory unchanged? */
     /* The texture memory lives in a ring that is reused after it wraps (gx2_gs_texture_epoch changes): a texture
      * uploaded before the wrap may have been overwritten, so it is uploaded again. */
+    /* A changed wrap mode needs a new upload: clamped textures carry extra rows (see gx2_gs_set_texture_rect). */
     int same = g2t.valid && g2t.epoch == gx2_gs_texture_epoch() && g2t.lo == lo && g2t.hi == hi && g2t.w == tw &&
-               g2t.h == th;
+               g2t.h == th && g2t.wrap == wrap;
 
     if (same && g2_overlaps_target(base, gs_page_end(base, tbw, g2t.rx1, g2t.ry1, g_gif.tex_psm)))
         same = 0; /* checking the old area would resolve the GPU target: start over with this rectangle */
@@ -613,6 +658,10 @@ static int g2_prepare(uint32_t attr, int textured, g2_rect rc, uint32_t ry0, uin
     const int blend = g2_state_ok(attr, textured, &zfunc, &zwrite, &need_z);
     if (blend < 0) {
         if (gekko2_gx2_gs_enabled) g2_stats[4]++;
+        return 0;
+    }
+    if (textured && gekko2_wiiu_g2_notex) {
+        g2_reasons[12]++;
         return 0;
     }
     if (textured && !g2_bind_texture(rc)) { /* may resolve the target (feedback): bind before opening it */
@@ -764,6 +813,8 @@ static int g2_try_sprite(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t
         v[i].uv[3] = 1.0f;
     }
     G2_T0;
+    if (textured)
+        g2_trace("S%d-%d ", (int)py0, (int)py1);
     if (!gx2_gs_draw(v, 4, GX2_GS_QUADS, textured))
         return 0;
     G2_T1(3);

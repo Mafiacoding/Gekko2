@@ -57,13 +57,14 @@ void *gekko2_codegen_area(uint32_t *size)
         if (!area || !area_size) {
             area = NULL;
             status = "no codegen area for this app";
-        } else if (OSGetCoreId() != OSGetCodegenCore()) {
-            area = NULL;
-            status = "emulator thread is not on the codegen core";
         } else if ((OSGetTitleID() >> 32) == 0xffffffffull && gekko2_wiiu_cemu_fast_jit) {
+            /* Cemu does not tie generated code to the codegen core, so the emulator may run on the main core. */
             cemu_mode = 1;
             in_rx = 0;
             status = "codegen area ready (Cemu: no mode switches, Cemu recompiles the generated code)";
+        } else if (OSGetCoreId() != OSGetCodegenCore()) {
+            area = NULL;
+            status = "emulator thread is not on the codegen core";
         } else {
             OSSwitchSecCodeGenMode(CODEGEN_RW_); /* RW by default; R_X only while generated code runs */
             in_rx = 0;

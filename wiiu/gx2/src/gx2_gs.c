@@ -35,6 +35,8 @@ static unsigned tw_max = 1024, th_max = 1024;
 static unsigned cur_w, cur_h, tex_linear, tex_wrap, tex_w_used, tex_h_used; static int tex_valid;
 static uint64_t stats[5];
 static GX2Texture tex_view;
+static float tex_vscale = 1.0f;
+int tex_pad_rows; /* diagnostics: tex_pad.txt */
 static int view_ok;
 /* Texture ring: every CPU texture upload (GS textures, colour rows, depth rows) gets fresh memory from a ring.
  * Nothing the GPU may still read is overwritten, so no wait is needed when the texture changes, and Cemu, which
@@ -54,7 +56,9 @@ static void *ring_get(uint32_t size, uint32_t align)
     if (off + size > RING_BYTES) {
         gpu_wait(); /* the GPU is done with everything in the ring */
         ring_wraps++;
-        view_ok = 0; /* the bound GS texture may be overwritten from now on */
+        /* The bound GS texture stays usable: it lies near the end of the ring, which the next round reaches only much
+         * later, and gx2_gs_texture_epoch() makes the GS texture cache upload it again before its next use. (Dropping it
+         * here left the colour-row upload texture bound, which then drew picture rows at wrong places.) */
         off = 0;
     }
     ring_off = off + size;
@@ -271,7 +275,12 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
         return 0;
     /* A fresh ring slot per upload: the previous texture may still be in use by queued draws. Only the rectangle
      * rx0..rx1 x ry0..ry1 is valid; draws bound to this texture sample inside it. */
-    uint32_t *dst = tex_in_ring(&tex_view, w, h, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
+    /* Clamped textures get two extra rows below the image: a copy of the last row (keeps edge filtering as with
+     * clamping) and an upload counter. Cemu re-checks texture memory sparsely and otherwise kept a stale texture
+     * when a new one of the same size landed on a reused ring address (Tekken: a second Namco logo). The v
+     * coordinates are scaled by h / (h + 2) in gx2_gs_draw. Repeating (wrap) textures cannot be padded this way. */
+    const unsigned pad = (wrap || !tex_pad_rows) ? 0u : 2u;
+    uint32_t *dst = tex_in_ring(&tex_view, w, h + pad, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
     if (!dst) {
         view_ok = 0;
         return 0;
@@ -289,6 +298,15 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
             row[x] = (c << 8) | a;
         }
     }
+    if (pad) {
+        static uint32_t tex_nonce;
+        tex_nonce++;
+        memcpy(dst + (size_t)h * pitch, dst + (size_t)(h - 1u) * pitch, w * 4u);
+        uint32_t *nr = dst + (size_t)(h + 1u) * pitch;
+        for (unsigned x = 0; x < pitch; x++)
+            nr[x] = tex_nonce;
+    }
+    tex_vscale = pad ? (float)h / (float)(h + pad) : 1.0f;
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, tex_view.surface.image, tex_view.surface.imageSize);
     GX2SetPixelTexture(&tex_view, sh_mod.pixelShader->samplerVars[0].location);
     GX2SetPixelSampler(&samplers[linear ? 1 : 0][wrap ? 1 : 0], sh_mod.pixelShader->samplerVars[0].location);
@@ -456,6 +474,9 @@ int gx2_gs_draw(const gx2_gs_vertex *v, unsigned count, int prim, int textured)
     }
     gx2_gs_vertex *dst = vb + vb_used;
     memcpy(dst, v, count * sizeof *v);
+    if (textured && tex_vscale != 1.0f)
+        for (unsigned i = 0; i < count; i++)
+            dst[i].uv[1] *= tex_vscale;
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, count * sizeof *v);
     WHBGfxShaderGroup *g = textured ? &sh_mod : &sh_color;
     GX2SetFetchShader(&g->fetchShader);

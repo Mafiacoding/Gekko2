@@ -63,6 +63,8 @@ static void say(const g2_platform *p, const char *format, ...)
 }
 
 int gekko2_wiiu_display_sync;
+unsigned gekko2_wiiu_dump_first, gekko2_wiiu_dump_last;
+char gekko2_wiiu_dump_dir[200];
 char gekko2_wiiu_disp_info[160];
 int g2_read_display(uint32_t *xrgb, unsigned w_max, unsigned h_max, unsigned *w_out, unsigned *h_out)
 {
@@ -428,6 +430,13 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 say(platform, "  DISP %s | GPU target fbp=%x fbw=%u h=%u", gekko2_wiiu_disp_info, (unsigned)gekko2_gx2_gs_target_info(0),
                     (unsigned)gekko2_gx2_gs_target_info(1), (unsigned)gekko2_gx2_gs_target_info(2));
             }
+            {
+                extern char gekko2_wiiu_g2trace[4096];
+                if (session && gekko2_wiiu_g2trace[0]) {
+                    fprintf(session, "# g2trace t=%llus %s\n", (unsigned long long)((now - start) / 1000u), gekko2_wiiu_g2trace);
+                    gekko2_wiiu_g2trace[0] = 0;
+                }
+            }
             say(platform, "  EE v0=%08x v1=%08x a0=%08x a1=%08x a2=%08x a3=%08x", (unsigned)e->gpr[2].ud0,
                 (unsigned)e->gpr[3].ud0, (unsigned)e->gpr[4].ud0, (unsigned)e->gpr[5].ud0, (unsigned)e->gpr[6].ud0,
                 (unsigned)e->gpr[7].ud0);
@@ -491,6 +500,25 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             unsigned w = 0, h = 0;
             if (g2_read_display(frame, 1024u, 1024u, &w, &h)) {
                 last_present = now;
+                {
+                    /* frame_dump.txt "first last": raw PS2 frames number first..last as PPM files (diagnostics) */
+                    extern unsigned gekko2_wiiu_dump_first, gekko2_wiiu_dump_last;
+                    extern char gekko2_wiiu_dump_dir[200];
+                    const unsigned n = (unsigned)result->frames_presented;
+                    if (gekko2_wiiu_dump_last && n >= gekko2_wiiu_dump_first && n <= gekko2_wiiu_dump_last) {
+                        char fn[260];
+                        snprintf(fn, sizeof fn, "%s/f%05u.ppm", gekko2_wiiu_dump_dir, n);
+                        FILE *pf = fopen(fn, "wb");
+                        if (pf) {
+                            fprintf(pf, "P6\n%u %u\n255\n", w, h);
+                            for (unsigned k = 0; k < w * h; k++) {
+                                const uint8_t px[3] = { (uint8_t)(frame[k] >> 16), (uint8_t)(frame[k] >> 8), (uint8_t)frame[k] };
+                                fwrite(px, 1, 3, pf);
+                            }
+                            fclose(pf);
+                        }
+                    }
+                }
                 if (platform->present(platform->user, frame, w, h) == 0) {
                     result->frames_presented++;
                     result->last_w = w;
