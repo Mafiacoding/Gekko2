@@ -12,6 +12,7 @@ known issues before you report a bug.
 
 ```
 sd:/wiiu/apps/gekko2/gekko2-wiiu.wuhb        (Wii U; Cemu: load gekko2-wiiu.rpx)
+sd:/wiiu/apps/gekko2-jit/gekko2-wiiu-jit.wuhb (optional: experimental recompiler build, see below)
 sd:/wiiu/gekko2/bios/ps2bios.bin             (your BIOS dump)
 sd:/wiiu/gekko2/games/                       (your games: .iso, .bin/.cue raw images, .chd)
 ```
@@ -46,6 +47,13 @@ All of these work at the same time and drive PS2 pad 1:
 - PS2 BIOS start-up animation: the light trails were drawn with black, jagged pieces. Anti-aliased (AA1)
   lines now blend like on a real PS2, so the trails glow again.
 
+## Experimental JIT build (please test on a real Wii U)
+
+`Gekko2 Wii U Edition JIT` translates PS2 code into native Wii U code instead of interpreting it. On Cemu it is
+slower than the normal build, but Cemu handles generated code very differently from the real console, so we
+need measurements from real hardware. Please run the same game with both apps (verbose log on) and send both
+`session.log` files.
+
 ## Reporting bugs (please do this)
 
 1. On the main menu press **X** to switch the **verbose log ON** (the bottom bar turns green).
@@ -66,7 +74,7 @@ cannot help.
 - **Games larger than 4 GiB:** FAT32 SD cards cannot hold files of 4 GiB or more; such an ISO is cut off and
   the game hangs while loading. Convert it to CHD (`chdman createdvd`).
 - Some games hang while loading (for example Hitman 2 on one tester's console). Please send the verbose log.
-- `gekko2-wiiu-jit.rpx` (experimental dynarec) is slower than the normal build on Cemu.
+- The JIT build is slower than the normal build on Cemu; real Wii U results are still missing.
 
 ## Optional switches (files on the SD card in `sd:/wiiu/gekko2/`)
 

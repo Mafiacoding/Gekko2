@@ -19,8 +19,13 @@ TARGET        := gekko2-wiiu
 BUILD         := build
 JITFLAGS      :=
 endif
+ifeq ($(JIT),1)
+APP_NAME      := Gekko2 Wii U Edition JIT (Alpha)
+APP_SHORTNAME := Gekko2 JIT
+else
 APP_NAME      := Gekko2 Wii U Edition (Alpha)
 APP_SHORTNAME := Gekko2
+endif
 APP_AUTHOR    := Gekko2
 ROOT          := $(abspath $(CURDIR)/..)
 SOURCES       := app gx2/src ../source ../source/core ../source/core/ee ../source/core/iop ../source/core/vu \
