@@ -6,6 +6,7 @@
 #include <coreinit/cache.h>
 #include <coreinit/codegen.h>
 #include <coreinit/core.h>
+#include <coreinit/title.h>
 #include <stdio.h>
 static void *area;
 static uint32_t area_size;
@@ -14,10 +15,17 @@ static int in_rx;
 static unsigned long long switch_count;
 static int acquired;
 static const char *status = "not initialised";
+/* Cemu turns its own recompiler off for the whole codegen area as soon as OSSwitchSecCodeGenMode is called, so
+ * generated code then runs in Cemu's slow interpreter. Cemu does not protect the area and tracks changes through
+ * ICInvalidateRange, so on Cemu the area is written directly and never switched. Cemu is recognised by the
+ * title ID it gives a directly loaded RPX (upper half ffffffff); a real Wii U never uses that range. */
+static int cemu_mode;
 /* Lazy mode switching: the area stays R_X after generated code ran and only a writer switches it back to RW.
  * Running code repeatedly therefore costs no mode switch; a switch happens only on a write/execute transition. */
 static void to_rw(void)
 {
+    if (cemu_mode)
+        return;
     if (in_rx) {
         OSSwitchSecCodeGenMode(CODEGEN_RW_);
         in_rx = 0;
@@ -26,6 +34,8 @@ static void to_rw(void)
 }
 static void to_rx(void)
 {
+    if (cemu_mode)
+        return;
     if (!in_rx) {
         OSSwitchSecCodeGenMode(CODEGEN_R_X);
         in_rx = 1;
@@ -45,6 +55,10 @@ void *gekko2_codegen_area(uint32_t *size)
         } else if (OSGetCoreId() != OSGetCodegenCore()) {
             area = NULL;
             status = "emulator thread is not on the codegen core";
+        } else if ((OSGetTitleID() >> 32) == 0xffffffffull) {
+            cemu_mode = 1;
+            in_rx = 0;
+            status = "codegen area ready (Cemu: no mode switches, Cemu recompiles the generated code)";
         } else {
             OSSwitchSecCodeGenMode(CODEGEN_RW_); /* RW by default; R_X only while generated code runs */
             in_rx = 0;
