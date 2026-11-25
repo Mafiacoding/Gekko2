@@ -37,13 +37,14 @@ All of these work at the same time and drive PS2 pad 1:
 
 ## New in build 4: GPU renderer (GX2), opt-in
 
-Create the empty file `sd:/wiiu/gekko2/gx2_gs_on.txt` to let the Wii U GPU draw the PS2 graphics (triangles and
+Press **-** in the main menu (bottom line: `GPU RENDERER ON/OFF`) to let the Wii U GPU draw the PS2 graphics (triangles and
 sprites with textures, blending and depth). Draws the GPU path cannot reproduce exactly still use the software
 renderer. While it is on, the PS2 graphics work runs on the emulation thread instead of the second CPU core
 (GX2 can only be used from one core), and games that copy their frame buffer into itself cost extra time.
 In our PC model of the GPU the picture matched the software renderer (BIOS intro and Tekken Tag intro), but in
 2D-heavy scenes it was slower. Whether it is faster on a real Wii U, especially in 3D scenes, is exactly what we
-need to find out: please run the same game with and without `gx2_gs_on.txt` (verbose log on) and send both logs.
+need to find out: please run the same game with the GPU renderer on and off (verbose log on) and send both logs.
+The switch is saved (as `sd:/wiiu/gekko2/gx2_gs_on.txt`). It has no effect in the JIT app.
 
 ## Fixed in this build
 
@@ -95,7 +96,7 @@ cannot help.
 | `fast_run_off.txt` | disable interpreted fast runs |
 | `vu_jit_off.txt` | JIT build: keep VU microcode interpreted |
 | `gx2_off.txt` | software picture output (OSScreen) instead of the GPU (also turns the GPU renderer off) |
-| `gx2_gs_on.txt` | GPU (GX2) draws the PS2 graphics (experimental, see above) |
+| `gx2_gs_on.txt` | GPU renderer on (same as the - switch in the menu) |
 
 ## License
 

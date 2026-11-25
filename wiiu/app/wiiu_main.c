@@ -64,7 +64,28 @@ static int dirty = 1;
 static uint64_t last_render_ms;
 static volatile int return_to_menu; /* hold L+R+ZL+ZR and press + while emulating */
 
-static int use_gx2, use_gx2_gs;
+static int use_gx2, use_gx2_gs, gx2_gs_available;
+
+/* GPU GS renderer (menu switch "-"): GX2 draws GS triangles/sprites. Started lazily on the first game start with
+ * the switch on, so the menu costs no GPU memory when it is off. */
+static int gx2_gs_start(void)
+{
+#if defined(GEKKO2_WIIU_GX2) && __has_include("gs_color_gsh.h") && __has_include("gs_mod_gsh.h") && __has_include("gs_zload_gsh.h")
+#include "gs_color_gsh.h"
+#include "gs_mod_gsh.h"
+#include "gs_zload_gsh.h"
+    if (use_gx2_gs || !gx2_gs_available)
+        return use_gx2_gs;
+    use_gx2_gs = gx2_gs_init(gs_color_gsh_data, gs_mod_gsh_data, 1024u, 1024u);
+    if (use_gx2_gs)
+        gx2_gs_init_depth(gs_zload_gsh_data); /* without depth, Z draws stay in software */
+    else
+        gx2_gs_available = 0;
+    return use_gx2_gs;
+#else
+    return 0;
+#endif
+}
 static int show_log; /* status lines over the picture: only with the verbose log switched on */
 
 /* ProcUI (Aroma HOME menu): while the app is in the background nothing may be drawn, and after it comes back the
@@ -513,6 +534,7 @@ static unsigned menu_edges(uint32_t trigger, uint32_t hold, uint64_t now)
     if (trigger & (1u << G2B_R)) e |= WM_PAGE_DOWN;
     if (trigger & (1u << G2B_X)) e |= WM_X;
     if (trigger & (1u << G2B_Y)) e |= WM_Y;
+    if (trigger & (1u << G2B_MINUS)) e |= WM_MINUS;
     if (trigger & (up | down))
         next_repeat = now + 400u;
     else if ((hold & (up | down)) && now >= next_repeat) {
@@ -667,20 +689,7 @@ int main(void)
             use_gx2 = 1;
             on_log(NULL, "GX2 presenter active (GPU scaling, present.gsh)");
 #if defined(GEKKO2_WIIU_GX2) && __has_include("gs_color_gsh.h") && __has_include("gs_mod_gsh.h") && __has_include("gs_zload_gsh.h")
-            /* GPU GS renderer: GS triangles/sprites drawn by GX2. Opt-in with gx2_gs_on.txt until real-hardware
-             * measurements show it is faster: it moves GS work off the second core (GX2 is bound to this core) and
-             * frame-buffer feedback copies cost a readback each. */
-            if (file_exists_flag(sd_root, "gx2_gs_on.txt")) {
-#include "gs_color_gsh.h"
-#include "gs_mod_gsh.h"
-#include "gs_zload_gsh.h"
-                use_gx2_gs = gx2_gs_init(gs_color_gsh_data, gs_mod_gsh_data, 1024u, 1024u);
-                on_log(NULL, use_gx2_gs ? "GPU GS renderer ready (GX2)" : "GPU GS renderer could not start: software GS");
-                if (use_gx2_gs) {
-                    gx2_gs_init_depth(gs_zload_gsh_data); /* without depth, Z draws stay in software */
-                    on_log(NULL, gx2_gs_depth_status());
-                }
-            }
+            gx2_gs_available = 1; /* GPU GS renderer: started on the first game start with the menu switch on */
 #endif
         } else {
             on_log(NULL, gx2_off ? "gx2_off.txt: OSScreen (software)" : gsh ? "present.gsh was rejected: using OSScreen" : "no present.gsh on the SD card: OSScreen (software)");
@@ -738,7 +747,7 @@ int main(void)
                                             2000u, 0, 1000u, 0, 1, verbose ? session_log : NULL, gs_async_wanted(sd_root), !file_exists_flag(sd_root, "fast_run_off.txt"),
                                             file_exists_flag(sd_root, "event_sched_on.txt"), file_exists_flag(sd_root, "iop_async_on.txt"),
                                             file_exists_flag(sd_root, "vu_jit_off.txt"), file_exists_flag(sd_root, "vu1_async_on.txt"),
-                                            use_gx2_gs };
+                                            wiiu_menu_gpu(menu) && gx2_gs_start() };
                     run_emulation();
                     show_log = 0;
                     wiiu_menu_set_notice(menu, verbose ? "Back. Log saved: sd:/wiiu/gekko2/session.log" : "Back from emulation. Restart the app for a clean boot.");
