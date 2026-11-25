@@ -1702,6 +1702,12 @@ static int ee_read_boot2_path_from_system_cnf(char *out, size_t out_size)
     while (tag < end && *tag != '\r' && *tag != '\n' && *tag != 0 && n + 1 < out_size) {
         out[n++] = *tag++;
     }
+#ifdef GEKKO2_WIIU
+    /* Trailing blanks are not part of the path: Hitman 2 (SLUS_203.74) has "BOOT2 = cdrom0:\SLUS_203.74;1 \r\n";
+     * keeping the blank made EELOAD look for a file that does not exist and the boot hung after SYSTEM.CNF. */
+    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t'))
+        n--;
+#endif
     out[n] = 0;
     return n > 0;
 }

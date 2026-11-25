@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 7)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 8)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -54,6 +54,11 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
 
 ## Fixed in this build
 
+- **Hitman 2 boot hang:** its SYSTEM.CNF has a blank after the file name (`cdrom0:\SLUS_203.74;1 `); Gekko2 kept
+  the blank and looked for a file that does not exist. Hitman 2 now loads its program and game data; it still
+  stops before the first picture (being investigated).
+- **JIT app:** the interpreted fast path ran before the recompiler and took 83-89 % of the time, so the JIT never
+  executed a single block (tester logs). The JIT app now really uses the recompiler. Real Wii U results needed.
 - **Exit with software picture output (`gx2_off.txt`):** the app hands the screen back before the Wii U Menu
   takes over; exiting froze on a tester's console.
 - **Logs for loading hangs:** the verbose log now records the disc image size and every disc command and sector
