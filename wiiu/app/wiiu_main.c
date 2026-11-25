@@ -907,6 +907,10 @@ int main(void)
                                             file_exists_flag(sd_root, "event_sched_on.txt"), file_exists_flag(sd_root, "iop_async_on.txt"),
                                             file_exists_flag(sd_root, "vu_jit_off.txt"), file_exists_flag(sd_root, "vu1_async_on.txt"),
                                             gpu, split };
+                    {
+                        extern int gekko2_wiiu_display_sync;
+                        gekko2_wiiu_display_sync = file_exists_flag(sd_root, "display_sync.txt");
+                    }
                     run_emulation();
                     threaded = 0;
                     gs_on_main = 0;

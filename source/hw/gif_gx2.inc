@@ -44,6 +44,7 @@ uint64_t gekko2_gx2_gs_cause(unsigned i) { return i < 4 ? g2_cause[i] : 0; }
 static int g2_cause_now = 2;
 /* 0 GPU triangles, 1 GPU sprites, 2 target uploads, 3 resolves, 4 rejects, 5 texture uploads,
  * 6 texture reuses, 7 resolver failures, 8 upload pixels, 9 readback pixels, 10 depth uploads, 11 depth resolves */
+uint32_t gekko2_gx2_gs_target_info(unsigned i) { return !g2r.open ? 0 : i == 0 ? g2r.fbp : i == 1 ? g2r.fbw : g2r.h; }
 uint64_t gekko2_gx2_gs_stat(unsigned i) { return i < 12 ? g2_stats[i] : 0; }
 /* Reject reasons: 0 frame format, 1 fbmask/fba/date/dither/fog/scanmsk, 2 depth, 3 alpha test, 4 colclamp,
  * 5 pabe, 6 blend equation, 7 texture function, 8 mipmap, 9 texture size, 10 clamp mode, 11 Q <= 0,

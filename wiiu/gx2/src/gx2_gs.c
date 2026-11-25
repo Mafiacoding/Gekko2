@@ -343,11 +343,21 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     /* The CPU filled rows y0..y1 of the staging texture; the GPU copies them onto the target with a quad (no
      * blending, no depth). Writing the colour buffer memory directly is not seen by Cemu, whose render targets live
      * in host textures. */
-    uint32_t *img = tex_in_ring(&up_tex, cur_w, y1 - y0, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
+    /* One extra row (never sampled) holds an upload counter: Cemu samples texture memory sparsely to detect
+     * changes, and mostly black rows uploaded to a reused address looked unchanged (stale picture rows). */
+    const unsigned rows = y1 - y0;
+    uint32_t *img = tex_in_ring(&up_tex, cur_w, rows + 1u, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
     if (!img)
         return;
     for (unsigned y = y0; y < y1; y++)
         memcpy(img + (size_t)(y - y0) * up_tex.surface.pitch, cstage + (size_t)y * cstage_pitch, cur_w * 4u);
+    {
+        static uint32_t nonce;
+        nonce++;
+        uint32_t *nr = img + (size_t)rows * up_tex.surface.pitch;
+        for (unsigned x = 0; x < up_tex.surface.pitch; x++)
+            nr[x] = nonce;
+    }
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, img, up_tex.surface.imageSize);
     if (vb_used + 4 > VB_MAX) {
         gpu_wait();
@@ -359,7 +369,7 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     GX2SetPixelSampler(&samplers[0][0], sh_mod.pixelShader->samplerVars[0].location);
     gx2_gs_vertex q[4];
     const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
-    const float ue = 1.0f, va = 0.0f, vb2 = 1.0f;
+    const float ue = 1.0f, va = 0.0f, vb2 = (float)rows / (float)(rows + 1u);
     const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, ue, ue, 0 }, v[4] = { va, va, vb2, vb2 };
     for (int i = 0; i < 4; i++) {
         q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
@@ -526,9 +536,17 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
     if (y1 <= y0)
         return;
     static GX2Texture zup;
-    uint32_t *img = tex_in_ring(&zup, cur_w, y1 - y0, GX2_SURFACE_FORMAT_FLOAT_R32);
+    const unsigned zrows = y1 - y0;
+    uint32_t *img = tex_in_ring(&zup, cur_w, zrows + 1u, GX2_SURFACE_FORMAT_FLOAT_R32); /* + counter row, as above */
     if (!img)
         return;
+    {
+        static uint32_t znonce;
+        znonce++;
+        uint32_t *nr = img + (size_t)zrows * zup.surface.pitch;
+        for (unsigned x = 0; x < zup.surface.pitch; x++)
+            nr[x] = znonce;
+    }
     const uint32_t *zs = (const uint32_t *)ztex.surface.image;
     for (unsigned y = y0; y < y1; y++) {
         uint32_t *d = img + (size_t)(y - y0) * zup.surface.pitch;
@@ -547,7 +565,7 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
     GX2SetPixelSampler(&samplers[0][0], sh_zload.pixelShader->samplerVars[0].location);
     gx2_gs_vertex q[4];
     const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
-    const float ue = 1.0f, va = 0.0f, vb2 = 1.0f;
+    const float ue = 1.0f, va = 0.0f, vb2 = (float)zrows / (float)(zrows + 1u);
     const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, ue, ue, 0 }, v[4] = { va, va, vb2, vb2 };
     for (int i = 0; i < 4; i++) {
         q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;

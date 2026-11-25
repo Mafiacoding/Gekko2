@@ -62,9 +62,17 @@ static void say(const g2_platform *p, const char *format, ...)
     }
 }
 
+int gekko2_wiiu_display_sync;
+char gekko2_wiiu_disp_info[160];
 int g2_read_display(uint32_t *xrgb, unsigned w_max, unsigned h_max, unsigned *w_out, unsigned *h_out)
 {
     gs_state_t *g = gs_get_state();
+    {
+        /* Experiment (display_sync.txt): resolve all GPU-owned GS memory before the scanout read. */
+        extern int gekko2_wiiu_display_sync;
+        if (gekko2_wiiu_display_sync)
+            gs_mem_sync();
+    }
     for (unsigned c = 0; c < 2; c++) {
         if (!(g->pmode & (1u << c)))
             continue;
@@ -93,6 +101,13 @@ int g2_read_display(uint32_t *xrgb, unsigned w_max, unsigned h_max, unsigned *w_
         }
         *w_out = w;
         *h_out = h;
+        {
+            extern char gekko2_wiiu_disp_info[160];
+            snprintf(gekko2_wiiu_disp_info, sizeof gekko2_wiiu_disp_info,
+                     "pmode=%x circ=%u bp=%x bw=%u psm=%u x=%u y=%u w=%u h=%u smode2=%llx display=%llx", (unsigned)g->pmode,
+                     c, (unsigned)bp, (unsigned)bw, psm, (unsigned)x, (unsigned)y, (unsigned)w, (unsigned)h,
+                     (unsigned long long)g->smode2, (unsigned long long)display);
+        }
         return 1;
     }
     return 0;
@@ -408,6 +423,11 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "  EE halted=%u sr=%08x cause=%08x ra=%08x | IOP pc=%08x halted=%u",
                 (unsigned)e->halted, e->cop0[12], e->cop0[13], (unsigned)e->gpr[31].ud0, i->pc,
                 (unsigned)i->halted);
+            {
+                extern uint32_t gekko2_gx2_gs_target_info(unsigned i);
+                say(platform, "  DISP %s | GPU target fbp=%x fbw=%u h=%u", gekko2_wiiu_disp_info, (unsigned)gekko2_gx2_gs_target_info(0),
+                    (unsigned)gekko2_gx2_gs_target_info(1), (unsigned)gekko2_gx2_gs_target_info(2));
+            }
             say(platform, "  EE v0=%08x v1=%08x a0=%08x a1=%08x a2=%08x a3=%08x", (unsigned)e->gpr[2].ud0,
                 (unsigned)e->gpr[3].ud0, (unsigned)e->gpr[4].ud0, (unsigned)e->gpr[5].ud0, (unsigned)e->gpr[6].ud0,
                 (unsigned)e->gpr[7].ud0);

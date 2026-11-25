@@ -988,6 +988,8 @@ static void emit_slt_core(ppc_codegen_ctx_t *ctx, int is_signed)
         emit(ctx, enc_xoris(SCRATCH_D, SCRATCH_D, 0x8000));
     }
 #ifdef GEKKO2_WIIU
+    extern int gekko2_wiiu_jit_exp;
+    if (!(gekko2_wiiu_jit_exp & 1)) {
     /* Wii U: no carry chain through two carry-consuming instructions. Cemu's PPC recompiler (2.6) gets the
      * carry OUT of SUBFE wrong when another SUBFE consumes it (measured in Cemu: the chained form below returned
      * the inverted result once Cemu had compiled the block, which kept the PS2 BIOS in its timer calibration).
@@ -1004,6 +1006,7 @@ static void emit_slt_core(ppc_codegen_ctx_t *ctx, int is_signed)
     emit(ctx, enc_or(SCRATCH_A, SCRATCH_E, SCRATCH_F));
     emit(ctx, enc_andi_dot(SCRATCH_A, SCRATCH_A, 1));
     return;
+    }
 #endif
     /* left.lo - right.lo (subfc rD,rA,rB computes rD=rB-rA, so the
      * value being subtracted goes in the rA slot: rA=right, rB=left);
