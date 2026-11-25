@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 12)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 13)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -54,6 +54,14 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
 
 ## Fixed in this build
 
+- **GPU renderer on Cemu (build 13):** build 12 made the picture worse in Cemu (horizontal streaks): Cemu works out
+  the row length of these textures itself and ignored the padded rows build 12 used. Build 13 removes the padding
+  and gives every texture upload fresh memory from a ring buffer instead, so Cemu always sees new data. This also
+  removes a wait for the GPU on every texture change (helps real hardware too; not measured yet).
+- **JIT app on Cemu (build 13):** Cemu switches off its own recompiler for the JIT code area as soon as an app
+  switches that area between write and execute mode, so the JIT code ran in Cemu's slow interpreter. When Gekko2
+  runs as a directly loaded RPX in Cemu, it no longer switches the area. Real Wii U behaviour is unchanged.
+  Not yet measured on Cemu.
 - **GPU renderer on Cemu (build 12):** build 11 fixed the probe (9 of 9 checks), but games still showed artifacts.
   Cemu checks texture memory for changes only once per frame and does not see CPU writes into the GPU's picture,
   so textures that change several times per frame and picture parts drawn by the software renderer were lost.
