@@ -146,15 +146,18 @@ static void test_b(void)
     MEMFreeToDefaultHeap(buf);
 }
 
-#if __has_include("gs_color_gsh.h") && __has_include("gs_mod_gsh.h") && __has_include("present_gsh_probe.h")
+#if __has_include("gs_color_gsh.h") && __has_include("gs_mod_gsh.h") && __has_include("present_gsh_probe.h") && \
+    __has_include("gs_zload_gsh.h")
 #include "gs_color_gsh.h"
 #include "gs_mod_gsh.h"
+#include "gs_zload_gsh.h"
 #include "present_gsh_probe.h"
 #define HAVE_TEST_C 1
+static float vz;
 static gx2_gs_vertex vtx(float x, float y, uint32_t argb, float u, float v)
 {
-    /* GS-style window coordinates (0..640, 0..480) to clip space; colour with GS 0x80 = 1.0 */
-    gx2_gs_vertex r = { { x / 320.0f - 1.0f, 1.0f - y / 240.0f, 0.0f, 1.0f },
+    /* GS-style window coordinates (0..640, 0..480) to clip space; colour with GS 0x80 = 1.0; depth vz */
+    gx2_gs_vertex r = { { x / 320.0f - 1.0f, 1.0f - y / 240.0f, vz, 1.0f },
                         { (float)((argb >> 16) & 0xffu) / 128.0f, (float)((argb >> 8) & 0xffu) / 128.0f,
                           (float)(argb & 0xffu) / 128.0f, (float)(argb >> 24) / 128.0f },
                         { u, v, 0.0f, 1.0f } };
@@ -186,6 +189,26 @@ static void scene(void)
                            vtx(600, 440, 0x40ff0000u, 0, 0), vtx(360, 440, 0x40ff0000u, 0, 0) };
     gx2_gs_draw(m, 4, GX2_GS_QUADS, 0);
     gx2_gs_set_blend(GX2_GS_BLEND_OFF, 0x80);
+    if (gx2_gs_depth_ready()) {
+        /* Depth: blue at 0.75 (always, write), yellow at 0.25 GEQUAL (must fail), white at 0.9 GEQUAL lower half (passes). */
+        gx2_gs_depth_clear(0.0f);
+        vz = 0.75f;
+        gx2_gs_set_depth(7, 1);
+        gx2_gs_vertex b[4] = { vtx(300, 300, 0x800000ffu, 0, 0), vtx(340, 300, 0x800000ffu, 0, 0),
+                               vtx(340, 460, 0x800000ffu, 0, 0), vtx(300, 460, 0x800000ffu, 0, 0) };
+        gx2_gs_draw(b, 4, GX2_GS_QUADS, 0);
+        vz = 0.25f;
+        gx2_gs_set_depth(6, 0);
+        gx2_gs_vertex y[4] = { vtx(300, 300, 0x80ffff00u, 0, 0), vtx(340, 300, 0x80ffff00u, 0, 0),
+                               vtx(340, 460, 0x80ffff00u, 0, 0), vtx(300, 460, 0x80ffff00u, 0, 0) };
+        gx2_gs_draw(y, 4, GX2_GS_QUADS, 0);
+        vz = 0.9f;
+        gx2_gs_vertex w[4] = { vtx(300, 380, 0x80ffffffu, 0, 0), vtx(340, 380, 0x80ffffffu, 0, 0),
+                               vtx(340, 460, 0x80ffffffu, 0, 0), vtx(300, 460, 0x80ffffffu, 0, 0) };
+        gx2_gs_draw(w, 4, GX2_GS_QUADS, 0);
+        gx2_gs_set_depth(-1, 0);
+        vz = 0.0f;
+    }
 }
 static int near(uint32_t a, uint32_t b, unsigned tol)
 {
@@ -210,6 +233,9 @@ static void test_c(void)
         gx2_present_shutdown();
         return;
     }
+    say("test C: about to gx2_gs_init_depth (calibrates depth byte order)");
+    gx2_gs_init_depth(gs_zload_gsh_data);
+    say("test C: %s", gx2_gs_depth_status());
     say("test C: init ok; drawing the GS test scene on the GPU");
     unsigned frame = 0, shown = 0, checked = 0;
     const uint64_t start = OSTicksToMilliseconds(OSGetSystemTime());
@@ -239,17 +265,19 @@ static void test_c(void)
                 { 160, 380, 0x9f9fbf, 4, "additive white*0.5 + background" },
                 { 480, 380, 0x8f1020, 4, "mix red As=0.5 over background" },
                 { 620, 460, 0x202040, 2, "clear colour (corner)" },
+                { 320, 340, 0x0000ff, 2, "depth: yellow behind blue rejected" },
+                { 320, 420, 0xffffff, 2, "depth: white in front passes" },
             };
             unsigned ok = 0;
-            for (unsigned i = 0; i < sizeof chk / sizeof chk[0]; i++) {
+            const unsigned nchk = gx2_gs_depth_ready() ? sizeof chk / sizeof chk[0] : sizeof chk / sizeof chk[0] - 2;
+            for (unsigned i = 0; i < nchk; i++) {
                 const uint32_t got = fb[chk[i].y * 640 + chk[i].x];
                 const int good = near(got, chk[i].want, chk[i].tol);
                 ok += good;
                 say("test C: pixel (%u,%u) %s = %06x, expected %06x: %s", chk[i].x, chk[i].y, chk[i].what,
                     (unsigned)got, (unsigned)chk[i].want, good ? "OK" : "DIFFERENT");
             }
-            say("test C: %u of %u pixel checks OK; GPU scene + readback took %u us", ok,
-                (unsigned)(sizeof chk / sizeof chk[0]), (unsigned)(t1 - t0));
+            say("test C: %u of %u pixel checks OK; GPU scene + readback took %u us", ok, nchk, (unsigned)(t1 - t0));
         }
         gx2_present_frame(fb, 640, 480, 0);
         frame++;

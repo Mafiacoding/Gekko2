@@ -187,8 +187,8 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 "interpreter",
 #endif
                 __DATE__, __TIME__);
-        fprintf(session, "# config gs_async=%d vu1_async=%d iop_async=%d event_sched=%d fast_run=%d vu_jit_off=%d\n", config->gs_async,
-                config->vu1_async, config->iop_async, config->event_sched, config->fast_run, config->vu_jit_off);
+        fprintf(session, "# config gs_async=%d vu1_async=%d iop_async=%d event_sched=%d fast_run=%d vu_jit_off=%d gx2_gs=%d\n", config->gs_async,
+                config->vu1_async, config->iop_async, config->event_sched, config->fast_run, config->vu_jit_off, config->gx2_gs);
         say_file = session;
         fprintf(session, "# session bios=%s disc=%s mask=%08x batch=%u\n# t_s,ee_instr,ips,vblank_total,vblank_per_s(59.94=100%%),frames_presented,pad_mask\n",
                 config->bios_path ? config->bios_path : "?", config->iso_path ? config->iso_path : "(none)",
@@ -196,8 +196,24 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         fflush(session);
     }
     const uint64_t start = platform->now_ms ? platform->now_ms(platform->user) : 0;
-    int gs_async_active = 0;
-    if (config->gs_async && platform->start_worker) {
+    int gs_async_active = 0, gx2_gs_active = 0;
+#ifdef GEKKO2_WIIU_GX2
+    {
+        /* GX2 may only be used from the core that initialised it: GPU GS drawing keeps GIF/GS on this thread. */
+        extern int gekko2_gx2_gs_attach(void);
+        if (config->gx2_gs) {
+            gx2_gs_active = gekko2_gx2_gs_attach();
+            if (gx2_gs_active) /* CPU writes outside the GPU-owned buffers must not force a GPU resolve */
+                gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_GX_DISJOINT_WRITES);
+            say(platform, gx2_gs_active ? "GPU GS renderer on (GX2 draws triangles and sprites)"
+                                        : "GPU GS renderer could not start; software GS");
+            extern const char *gx2_gs_depth_status(void);
+            if (gx2_gs_active)
+                say(platform, "GPU GS %s", gx2_gs_depth_status());
+        }
+    }
+#endif
+    if (config->gs_async && !gx2_gs_active && platform->start_worker) {
         gs_async_attach(platform->worker_idle);
         if (platform->start_worker(gs_async_worker_main, platform->user) == 0 && gs_async_enable() == 0) {
             gs_async_active = 1;
@@ -313,6 +329,17 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                             (unsigned long long)gekko2_prof_gs_calls, (unsigned long long)gekko2_prof_vu1_calls,
                             (unsigned long long)gekko2_vu0_pairs(), (unsigned long long)gekko2_vu1_pairs());
             }
+#ifdef GEKKO2_WIIU_GX2
+            if (gx2_gs_active && session) {
+                extern uint64_t gekko2_gx2_gs_stat(unsigned i);
+                fprintf(session, "# gpu t=%llus tris=%llu sprites=%llu rejects=%llu uploads=%llu resolves=%llu tex=%llu tex_reused=%llu up_px=%llu rb_px=%llu\n",
+                        (unsigned long long)((now - start) / 1000u), (unsigned long long)gekko2_gx2_gs_stat(0),
+                        (unsigned long long)gekko2_gx2_gs_stat(1), (unsigned long long)gekko2_gx2_gs_stat(4),
+                        (unsigned long long)gekko2_gx2_gs_stat(2), (unsigned long long)gekko2_gx2_gs_stat(3),
+                        (unsigned long long)gekko2_gx2_gs_stat(5), (unsigned long long)gekko2_gx2_gs_stat(6),
+                        (unsigned long long)gekko2_gx2_gs_stat(8), (unsigned long long)gekko2_gx2_gs_stat(9));
+            }
+#endif
             {
                 /* Disc read health: requests and failed reads (ISO/BIN) and CHD hunk reads/failures. */
                 extern uint64_t iso_cache_stat(unsigned index);
@@ -402,6 +429,23 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         say(platform, "IOP worker: jobs=%llu ticks=%llu emulation waits=%llu worker shared waits=%llu", st[0], st[1], st[2], st[3]);
         system_iop_async_detach();
     }
+#ifdef GEKKO2_WIIU_GX2
+    if (gx2_gs_active) {
+        extern uint64_t gekko2_gx2_gs_stat(unsigned i);
+        extern void gekko2_gx2_gs_detach(void);
+        gekko2_gx2_gs_detach();
+        say(platform, "GPU GS: triangles=%llu sprites=%llu software-rejects=%llu uploads=%llu resolves=%llu textures=%llu reused=%llu",
+            (unsigned long long)gekko2_gx2_gs_stat(0), (unsigned long long)gekko2_gx2_gs_stat(1), (unsigned long long)gekko2_gx2_gs_stat(4),
+            (unsigned long long)gekko2_gx2_gs_stat(2), (unsigned long long)gekko2_gx2_gs_stat(3), (unsigned long long)gekko2_gx2_gs_stat(5),
+            (unsigned long long)gekko2_gx2_gs_stat(6));
+        extern uint64_t gekko2_gx2_gs_reason(unsigned i);
+        char rs[200];
+        int n = 0;
+        for (unsigned k = 0; k < 14 && n < (int)sizeof rs - 24; k++)
+            n += snprintf(rs + n, sizeof rs - (size_t)n, " %u:%llu", k, (unsigned long long)gekko2_gx2_gs_reason(k));
+        say(platform, "GPU GS reject reasons:%s", rs);
+    }
+#endif
     if (gs_async_active) {
         uint64_t st[8];
         gs_async_stats(st);

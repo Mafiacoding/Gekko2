@@ -10,3 +10,4 @@ app/present_gsh_embedded.h
 gx2/src/gs_color_gsh.h
 gx2/src/gs_mod_gsh.h
 gx2/src/present_gsh_probe.h
+gx2/src/gs_zload_gsh.h

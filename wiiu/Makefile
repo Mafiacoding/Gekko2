@@ -17,7 +17,7 @@ JITFLAGS      := -DGEKKO2_WIIU_JIT
 else
 TARGET        := gekko2-wiiu
 BUILD         := build
-JITFLAGS      :=
+JITFLAGS      := -DGEKKO2_WIIU_GX2
 endif
 ifeq ($(JIT),1)
 APP_NAME      := Gekko2 Wii U Edition JIT (Alpha)

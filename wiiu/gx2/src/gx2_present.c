@@ -1,5 +1,6 @@
 /* GPL-3.0-or-later. See gx2_present.h. */
 #include "gx2_present.h"
+#include "gx2_gs.h"
 #include <coreinit/cache.h>
 #include <coreinit/memdefaultheap.h>
 #include <gx2/draw.h>
@@ -138,4 +139,5 @@ void gx2_present_frame(const uint32_t *xrgb, unsigned w, unsigned h, int filter)
     draw_to(1, s);
     draw_to(0, s);
     WHBGfxFinishRender();
+    gx2_gs_context_lost();
 }

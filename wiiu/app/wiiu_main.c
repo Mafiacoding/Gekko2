@@ -5,6 +5,7 @@
 #include "wiiu_menu.h"
 #include "wiiu_text.h"
 #include "gx2_present.h"
+#include "gx2_gs.h"
 #include "core/hw/iop_sio2.h"
 #include <coreinit/cache.h>
 #include <coreinit/codegen.h>
@@ -63,7 +64,7 @@ static int dirty = 1;
 static uint64_t last_render_ms;
 static volatile int return_to_menu; /* hold L+R+ZL+ZR and press + while emulating */
 
-static int use_gx2;
+static int use_gx2, use_gx2_gs;
 static int show_log; /* status lines over the picture: only with the verbose log switched on */
 
 /* ProcUI (Aroma HOME menu): while the app is in the background nothing may be drawn, and after it comes back the
@@ -665,6 +666,20 @@ int main(void)
         if (gsh && gx2_present_init(gsh, gsh_size, 640u, 480u)) {
             use_gx2 = 1;
             on_log(NULL, "GX2 presenter active (GPU scaling, present.gsh)");
+#if defined(GEKKO2_WIIU_GX2) && __has_include("gs_color_gsh.h") && __has_include("gs_mod_gsh.h") && __has_include("gs_zload_gsh.h")
+            /* GPU GS renderer: GS triangles/sprites drawn by GX2 (gx2_gs_off.txt switches it off). */
+            if (!file_exists_flag(sd_root, "gx2_gs_off.txt")) {
+#include "gs_color_gsh.h"
+#include "gs_mod_gsh.h"
+#include "gs_zload_gsh.h"
+                use_gx2_gs = gx2_gs_init(gs_color_gsh_data, gs_mod_gsh_data, 1024u, 1024u);
+                on_log(NULL, use_gx2_gs ? "GPU GS renderer ready (GX2)" : "GPU GS renderer could not start: software GS");
+                if (use_gx2_gs) {
+                    gx2_gs_init_depth(gs_zload_gsh_data); /* without depth, Z draws stay in software */
+                    on_log(NULL, gx2_gs_depth_status());
+                }
+            }
+#endif
         } else {
             on_log(NULL, gx2_off ? "gx2_off.txt: OSScreen (software)" : gsh ? "present.gsh was rejected: using OSScreen" : "no present.gsh on the SD card: OSScreen (software)");
             if (!init_osscreen())
@@ -720,7 +735,8 @@ int main(void)
                     g_config = (g2_config){ bios, action == WM_ACTION_START_DISC ? wiiu_menu_disc(menu) : NULL,
                                             2000u, 0, 1000u, 0, 1, verbose ? session_log : NULL, gs_async_wanted(sd_root), !file_exists_flag(sd_root, "fast_run_off.txt"),
                                             file_exists_flag(sd_root, "event_sched_on.txt"), file_exists_flag(sd_root, "iop_async_on.txt"),
-                                            file_exists_flag(sd_root, "vu_jit_off.txt"), file_exists_flag(sd_root, "vu1_async_on.txt") };
+                                            file_exists_flag(sd_root, "vu_jit_off.txt"), file_exists_flag(sd_root, "vu1_async_on.txt"),
+                                            use_gx2_gs };
                     run_emulation();
                     show_log = 0;
                     wiiu_menu_set_notice(menu, verbose ? "Back. Log saved: sd:/wiiu/gekko2/session.log" : "Back from emulation. Restart the app for a clean boot.");
@@ -745,6 +761,8 @@ int main(void)
     VPADShutdown();
     WHBUnmountSdCard();
     if (use_gx2) {
+        if (use_gx2_gs)
+            gx2_gs_shutdown();
         gx2_present_shutdown();
     } else {
         OSScreenShutdown();

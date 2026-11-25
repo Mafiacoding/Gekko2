@@ -16,6 +16,10 @@
 #include <gx2/texture.h>
 #include <whb/gfx.h>
 #include <string.h>
+#include <stdio.h>
+
+/* Not declared by wut's headers; exported by gx2.rpl. */
+void GX2ConvertDepthBufferToTextureSurface(GX2DepthBuffer *src, GX2Surface *dst, uint32_t mipLevel, uint32_t slice);
 
 #define VB_MAX 49152u /* vertices per GPU wait; 48 bytes each */
 
@@ -28,7 +32,19 @@ static gx2_gs_vertex *vb;
 static unsigned vb_used, vb_flushed;
 static int ready, tex_pending_use, cur_blend = -1;
 static unsigned tw_max = 1024, th_max = 1024;
+static unsigned cur_w, cur_h, tex_linear, tex_wrap, tex_w_used, tex_h_used; static int tex_valid;
 static uint64_t stats[5];
+static int ctx_lost;
+/* Depth: D24_S8 UNORM depth buffer (format code 0x011), FLOAT_R32 upload texture, converted + linear copies for
+ * readback. Endianness of the readback word and of the uploaded floats is calibrated at init (z_word_mode,
+ * z_upload_swap) because it could not be checked on hardware by the author. */
+static WHBGfxShaderGroup sh_zload;
+static GX2DepthBuffer zbuf;
+static GX2Texture ztex;
+static GX2Surface zconv, zlin;
+static int zready, z_word_mode, z_upload_swap, cur_zfunc = -1, cur_zwrite;
+static char z_status[96] = "depth not initialised";
+void gx2_gs_context_lost(void) { ctx_lost = 1; }
 
 uint64_t gx2_gs_stat(unsigned i) { return i < 5 ? stats[i] : 0; }
 int gx2_gs_ready(void) { return ready; }
@@ -122,24 +138,52 @@ void gx2_gs_shutdown(void)
     if (ctx) MEMFreeToDefaultHeap(ctx);
     vb = NULL;
     ctx = NULL;
+    cur_w = cur_h = 0;
+    tex_valid = 0;
     memset(&tex, 0, sizeof tex);
     memset(&target, 0, sizeof target);
     if (sh_color.vertexShader || sh_color.pixelShader) WHBGfxFreeShaderGroup(&sh_color);
     if (sh_mod.vertexShader || sh_mod.pixelShader) WHBGfxFreeShaderGroup(&sh_mod);
     memset(&sh_color, 0, sizeof sh_color);
     memset(&sh_mod, 0, sizeof sh_mod);
+    if (zbuf.surface.image) MEMFreeToDefaultHeap(zbuf.surface.image);
+    if (ztex.surface.image) MEMFreeToDefaultHeap(ztex.surface.image);
+    if (zconv.image) MEMFreeToDefaultHeap(zconv.image);
+    if (zlin.image) MEMFreeToDefaultHeap(zlin.image);
+    if (sh_zload.vertexShader || sh_zload.pixelShader) WHBGfxFreeShaderGroup(&sh_zload);
+    memset(&zbuf, 0, sizeof zbuf);
+    memset(&ztex, 0, sizeof ztex);
+    memset(&zconv, 0, sizeof zconv);
+    memset(&zlin, 0, sizeof zlin);
+    memset(&sh_zload, 0, sizeof sh_zload);
+    zready = 0;
+    cur_zfunc = -1;
+    cur_zwrite = 0;
     ready = 0;
 }
 
 static void bind_state(void)
 {
+    ctx_lost = 0;
     GX2SetContextState(ctx);
     GX2SetColorBuffer(&target, GX2_RENDER_TARGET_0);
-    GX2SetViewport(0.0f, 0.0f, (float)target.surface.width, (float)target.surface.height, 0.0f, 1.0f);
-    GX2SetScissor(0, 0, target.surface.width, target.surface.height);
-    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+    if (!cur_w || !cur_h) {
+        cur_w = target.surface.width;
+        cur_h = target.surface.height;
+    }
+    GX2SetViewport(0.0f, 0.0f, (float)cur_w, (float)cur_h, 0.0f, 1.0f);
+    GX2SetScissor(0, 0, cur_w, cur_h);
+    if (zready)
+        GX2SetDepthBuffer(&zbuf);
+    if (zready && (cur_zfunc >= 0 || cur_zwrite))
+        GX2SetDepthOnlyControl(TRUE, cur_zwrite ? TRUE : FALSE,
+                               cur_zfunc >= 0 ? (GX2CompareFunction)cur_zfunc : GX2_COMPARE_FUNC_ALWAYS);
+    else
+        GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
     GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
     cur_blend = -1;
+    if (tex_valid)
+        gx2_gs_rebind_texture(tex_linear, tex_wrap);
 }
 
 /* Wait for the GPU; afterwards the vertex buffer and the texture may be rewritten. */
@@ -196,8 +240,70 @@ int gx2_gs_set_texture(const uint32_t *argb, unsigned w, unsigned h, int has_alp
     GX2SetPixelSampler(&samplers[linear ? 1 : 0][wrap ? 1 : 0], sh_mod.pixelShader->samplerVars[0].location);
     tex.surface.width = tw_max;
     tex.surface.height = th_max;
+    tex_w_used = w;
+    tex_h_used = h;
+    tex_linear = linear;
+    tex_wrap = wrap;
+    tex_valid = 1;
     stats[2]++;
     return 1;
+}
+
+void gx2_gs_rebind_texture(int linear, int wrap)
+{
+    if (!ready || !tex_valid)
+        return;
+    tex.surface.width = tex_w_used;
+    tex.surface.height = tex_h_used;
+    GX2InitTextureRegs(&tex);
+    GX2SetPixelTexture(&tex, sh_mod.pixelShader->samplerVars[0].location);
+    GX2SetPixelSampler(&samplers[linear ? 1 : 0][wrap ? 1 : 0], sh_mod.pixelShader->samplerVars[0].location);
+    tex.surface.width = tw_max;
+    tex.surface.height = th_max;
+    tex_linear = linear;
+    tex_wrap = wrap;
+}
+
+void gx2_gs_mark_texture_used(void) { tex_pending_use = 1; }
+
+uint32_t *gx2_gs_target_cpu(unsigned w, unsigned h, unsigned *pitch)
+{
+    if (!ready || !w || !h || w > target.surface.width || h > target.surface.height)
+        return NULL;
+    gpu_wait();
+    cur_w = w;
+    cur_h = h;
+    if (pitch)
+        *pitch = target.surface.pitch;
+    return (uint32_t *)target.surface.image;
+}
+
+void gx2_gs_target_ready(void)
+{
+    if (!ready)
+        return;
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_COLOR_BUFFER, target.surface.image,
+                  target.surface.pitch * 4u * cur_h);
+    bind_state();
+    gx2_gs_set_blend(GX2_GS_BLEND_OFF, 0x80);
+}
+
+void gx2_gs_set_scissor(unsigned x, unsigned y, unsigned w, unsigned h)
+{
+    if (!ready)
+        return;
+    if (ctx_lost) /* the presenter used the GPU in between: restore our context, viewport and texture */
+        bind_state();
+    if (x >= cur_w || y >= cur_h) { x = y = 0; w = h = 0; }
+    if (x + w > cur_w) w = cur_w - x;
+    if (y + h > cur_h) h = cur_h - y;
+    GX2SetScissor(x, y, w, h);
+}
+
+void gx2_gs_size(unsigned *w, unsigned *h)
+{
+    if (w) *w = cur_w;
+    if (h) *h = cur_h;
 }
 
 void gx2_gs_set_blend(int mode, uint32_t fix)
@@ -218,6 +324,10 @@ void gx2_gs_set_blend(int mode, uint32_t fix)
     case GX2_GS_BLEND_SUB_AS: s = GX2_BLEND_MODE_SRC_ALPHA; d = GX2_BLEND_MODE_ONE; op = GX2_BLEND_COMBINE_MODE_REV_SUB; break;
     case GX2_GS_BLEND_MIX_FIX: s = GX2_BLEND_MODE_BLEND_FACTOR; d = GX2_BLEND_MODE_INV_BLEND_FACTOR; break;
     case GX2_GS_BLEND_ADD: s = GX2_BLEND_MODE_ONE; d = GX2_BLEND_MODE_ONE; break;
+    case GX2_GS_BLEND_KEEP: s = GX2_BLEND_MODE_ZERO; d = GX2_BLEND_MODE_ONE; break;
+    case GX2_GS_BLEND_SUB_FIX: s = GX2_BLEND_MODE_BLEND_FACTOR; d = GX2_BLEND_MODE_ONE; op = GX2_BLEND_COMBINE_MODE_REV_SUB; break;
+    case GX2_GS_BLEND_MIX_AD: s = GX2_BLEND_MODE_DST_ALPHA; d = GX2_BLEND_MODE_INV_DST_ALPHA; break;
+    case GX2_GS_BLEND_ADD_AD: s = GX2_BLEND_MODE_DST_ALPHA; d = GX2_BLEND_MODE_ONE; break;
     default: break;
     }
     float f = (float)fix / 128.0f;
@@ -269,4 +379,234 @@ const uint32_t *gx2_gs_end(unsigned *pitch)
     if (pitch)
         *pitch = target.surface.pitch;
     return (const uint32_t *)target.surface.image;
+}
+
+/* ---------------------------------------------------------------------------------------------- depth ---- */
+
+const char *gx2_gs_depth_status(void) { return z_status; }
+int gx2_gs_depth_ready(void) { return zready; }
+
+void gx2_gs_set_depth(int func, int write)
+{
+    if (!ready || !zready)
+        return;
+    if (func == cur_zfunc && (write != 0) == (cur_zwrite != 0))
+        return;
+    cur_zfunc = func;
+    cur_zwrite = write != 0;
+    if (cur_zfunc >= 0 || cur_zwrite)
+        GX2SetDepthOnlyControl(TRUE, cur_zwrite ? TRUE : FALSE,
+                               cur_zfunc >= 0 ? (GX2CompareFunction)cur_zfunc : GX2_COMPARE_FUNC_ALWAYS);
+    else
+        GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+}
+
+float *gx2_gs_depth_cpu(unsigned *pitch)
+{
+    if (!ready || !ztex.surface.image)
+        return NULL;
+    gpu_wait();
+    if (pitch)
+        *pitch = ztex.surface.pitch;
+    return (float *)ztex.surface.image;
+}
+
+static uint32_t swap32(uint32_t v) { return (v >> 24) | ((v >> 8) & 0xff00u) | ((v << 8) & 0xff0000u) | (v << 24); }
+
+/* Full-target pass: depth = sampled float, colour writes off. The caller filled gx2_gs_depth_cpu() for cur_w x cur_h. */
+static void depth_upload_pass(int swap)
+{
+    if (swap) {
+        uint32_t *w = (uint32_t *)ztex.surface.image;
+        for (unsigned y = 0; y < cur_h; y++)
+            for (unsigned x = 0; x < cur_w; x++)
+                w[y * ztex.surface.pitch + x] = swap32(w[y * ztex.surface.pitch + x]);
+    }
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, ztex.surface.image, ztex.surface.imageSize);
+    bind_state();
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, FALSE);
+    GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS);
+    const unsigned fw = ztex.surface.width, fh = ztex.surface.height;
+    ztex.surface.width = cur_w;
+    ztex.surface.height = cur_h;
+    GX2InitTextureRegs(&ztex);
+    GX2SetPixelTexture(&ztex, sh_zload.pixelShader->samplerVars[0].location);
+    GX2SetPixelSampler(&samplers[0][0], sh_zload.pixelShader->samplerVars[0].location);
+    ztex.surface.width = fw;
+    ztex.surface.height = fh;
+    gx2_gs_vertex q[4];
+    static const float px[4] = { -1, 1, 1, -1 }, py[4] = { 1, 1, -1, -1 }, u[4] = { 0, 1, 1, 0 }, v[4] = { 0, 0, 1, 1 };
+    for (int i = 0; i < 4; i++) {
+        q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
+        q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 1.0f;
+        q[i].uv[0] = u[i]; q[i].uv[1] = v[i]; q[i].uv[2] = 0.0f; q[i].uv[3] = 1.0f;
+    }
+    gx2_gs_vertex *dst = vb + vb_used;
+    memcpy(dst, q, sizeof q);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, sizeof q);
+    GX2SetFetchShader(&sh_zload.fetchShader);
+    GX2SetVertexShader(sh_zload.vertexShader);
+    GX2SetPixelShader(sh_zload.pixelShader);
+    GX2SetAttribBuffer(0, sizeof q, sizeof q[0], dst);
+    GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+    vb_used += 4;
+    /* Restore the GS state; the texture slot binding is restored by bind_state. */
+    gpu_wait();
+    bind_state();
+}
+
+void gx2_gs_depth_upload(void)
+{
+    if (!ready || !zready)
+        return;
+    depth_upload_pass(z_upload_swap);
+}
+
+void gx2_gs_depth_clear(float d)
+{
+    if (!ready || !zready)
+        return;
+    gpu_wait();
+    GX2ClearDepthStencilEx(&zbuf, d, 0, GX2_CLEAR_FLAGS_BOTH);
+    bind_state();
+}
+
+static const uint32_t *depth_read_raw(unsigned *pitch)
+{
+    GX2Flush();
+    gpu_wait();
+    GX2ConvertDepthBufferToTextureSurface(&zbuf, &zconv, 0, 0);
+    GX2CopySurface(&zconv, 0, 0, &zlin, 0, 0);
+    GX2Flush();
+    gpu_wait();
+    DCInvalidateRange(zlin.image, zlin.imageSize);
+    ctx_lost = 1;
+    if (pitch)
+        *pitch = zlin.pitch;
+    return (const uint32_t *)zlin.image;
+}
+
+uint32_t gx2_gs_depth_word(uint32_t w)
+{
+    switch (z_word_mode) {
+    case 1: return swap32(w) & 0xffffffu;
+    case 2: return w >> 8;
+    case 3: return swap32(w) >> 8;
+    default: return w & 0xffffffu;
+    }
+}
+
+const uint32_t *gx2_gs_depth_read(unsigned *pitch)
+{
+    if (!ready || !zready)
+        return NULL;
+    return depth_read_raw(pitch);
+}
+
+static int near24(uint32_t a, uint32_t b) { return (a > b ? a - b : b - a) <= 0x400u; }
+
+int gx2_gs_init_depth(const void *gsh_zload)
+{
+    if (!ready || zready || !gsh_zload)
+        return 0;
+    if (!load_group(&sh_zload, gsh_zload)) {
+        snprintf(z_status, sizeof z_status, "depth: zload shader rejected");
+        return 0;
+    }
+    memset(&zbuf, 0, sizeof zbuf);
+    zbuf.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+    zbuf.surface.width = target.surface.width;
+    zbuf.surface.height = target.surface.height;
+    zbuf.surface.depth = 1;
+    zbuf.surface.mipLevels = 1;
+    zbuf.surface.format = (GX2SurfaceFormat)0x011; /* D24_S8 UNORM */
+    zbuf.surface.aa = GX2_AA_MODE1X;
+    zbuf.surface.use = GX2_SURFACE_USE_DEPTH_BUFFER;
+    zbuf.surface.tileMode = GX2_TILE_MODE_DEFAULT;
+    zbuf.viewNumSlices = 1;
+    zbuf.depthClear = 1.0f;
+    GX2CalcSurfaceSizeAndAlignment(&zbuf.surface);
+    GX2InitDepthBufferRegs(&zbuf);
+    zbuf.surface.image = MEMAllocFromDefaultHeapEx(zbuf.surface.imageSize, zbuf.surface.alignment);
+    zconv = zbuf.surface;
+    zconv.use = GX2_SURFACE_USE_TEXTURE;
+    zconv.image = MEMAllocFromDefaultHeapEx(zconv.imageSize, zconv.alignment);
+    memset(&zlin, 0, sizeof zlin);
+    zlin.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+    zlin.width = zbuf.surface.width;
+    zlin.height = zbuf.surface.height;
+    zlin.depth = 1;
+    zlin.mipLevels = 1;
+    zlin.format = GX2_SURFACE_FORMAT_UNORM_R24_X8;
+    zlin.use = GX2_SURFACE_USE_TEXTURE;
+    zlin.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    GX2CalcSurfaceSizeAndAlignment(&zlin);
+    zlin.image = MEMAllocFromDefaultHeapEx(zlin.imageSize, zlin.alignment);
+    memset(&ztex, 0, sizeof ztex);
+    ztex.surface.width = zbuf.surface.width;
+    ztex.surface.height = zbuf.surface.height;
+    ztex.surface.depth = 1;
+    ztex.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+    ztex.surface.format = GX2_SURFACE_FORMAT_FLOAT_R32;
+    ztex.surface.use = GX2_SURFACE_USE_TEXTURE;
+    ztex.surface.mipLevels = 1;
+    ztex.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    ztex.viewNumSlices = 1;
+    ztex.compMap = 0x00010203;
+    GX2CalcSurfaceSizeAndAlignment(&ztex.surface);
+    GX2InitTextureRegs(&ztex);
+    ztex.surface.image = MEMAllocFromDefaultHeapEx(ztex.surface.imageSize, ztex.surface.alignment);
+    if (!zbuf.surface.image || !zconv.image || !zlin.image || !ztex.surface.image) {
+        snprintf(z_status, sizeof z_status, "depth: out of memory");
+        return 0;
+    }
+    zready = 1;
+    const unsigned keep_w = cur_w, keep_h = cur_h;
+    cur_w = 64;
+    cur_h = 64;
+    /* 1. readback word layout: clear to 0.25 and find where 0x3fffff appears */
+    gx2_gs_depth_clear(0.25f);
+    unsigned pitch = 0;
+    uint32_t w = depth_read_raw(&pitch)[0];
+    const uint32_t want = 0x3fffffu;
+    z_word_mode = -1;
+    for (int m = 0; m < 4; m++) {
+        z_word_mode = m;
+        if (near24(gx2_gs_depth_word(w), want))
+            break;
+        z_word_mode = -1;
+    }
+    if (z_word_mode < 0) {
+        snprintf(z_status, sizeof z_status, "depth: readback layout unknown (cleared 0.25 -> word %08x)", (unsigned)w);
+        zready = 0;
+        cur_w = keep_w;
+        cur_h = keep_h;
+        return 0;
+    }
+    /* 2. upload float layout: write 0.75 and check the readback, first native, then byte-swapped */
+    const uint32_t want2 = 0xbfffffu;
+    z_upload_swap = -1;
+    for (int sw = 0; sw < 2; sw++) {
+        float *f = gx2_gs_depth_cpu(&pitch);
+        for (unsigned y = 0; y < cur_h; y++)
+            for (unsigned x = 0; x < cur_w; x++)
+                f[y * pitch + x] = 0.75f;
+        depth_upload_pass(sw);
+        const uint32_t got = gx2_gs_depth_word(depth_read_raw(&pitch)[pitch * 10 + 10]);
+        if (near24(got, want2)) {
+            z_upload_swap = sw;
+            break;
+        }
+        snprintf(z_status, sizeof z_status, "depth: upload swap=%d read %06x, want %06x", sw, (unsigned)got, (unsigned)want2);
+    }
+    cur_w = keep_w;
+    cur_h = keep_h;
+    if (z_upload_swap < 0) {
+        zready = 0;
+        return 0;
+    }
+    snprintf(z_status, sizeof z_status, "depth ready (word mode %d, upload swap %d, tile %d)", z_word_mode, z_upload_swap,
+             (int)zbuf.surface.tileMode);
+    ctx_lost = 1;
+    return 1;
 }

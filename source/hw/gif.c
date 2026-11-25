@@ -1312,6 +1312,9 @@ static uint32_t gs_gx_triangle_sample(int32_t xx,int32_t yy)
  return out;
 }
 
+#ifdef GEKKO2_WIIU_GX2
+#include "gif_gx2.inc"
+#endif
 static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                                 uint32_t c0, uint32_t c1, uint32_t c2,
                                 double u0, double v0, double u1, double v1, double u2, double v2,
@@ -1327,6 +1330,10 @@ static void rasterize_triangle_profile_impl(int32_t x0, int32_t y0, int32_t x1, 
 #endif
     if(area==0)return;
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
+#ifdef GEKKO2_WIIU_GX2
+    if (gekko2_gx2_gs_enabled && g2_try_triangle(x0,y0,x1,y1,x2,y2,c0,c1,c2,u0,v0,u1,v1,u2,v2,s0,t0,q0,s1,t1,q1,s2,t2,q2,z0,z1,z2))
+        return;
+#endif
     int32_t minx = x0, maxx = x0, miny = y0, maxy = y0;
     if (x1 < minx) minx = x1;
     if (x1 > maxx) maxx = x1;
@@ -1784,6 +1791,10 @@ static void rasterize_sprite_12_4_profile_impl(int32_t raw_x0, int32_t raw_y0, i
     int32_t x1=(raw_x1+15)>>4,y1=(raw_y1+15)>>4;
     double pos_x0=(double)raw_x0/16.0,pos_y0=(double)raw_y0/16.0;
     gs_activate_context(); /* Round 27: dual-context - see its own comment */
+#ifdef GEKKO2_WIIU_GX2
+    if (gekko2_gx2_gs_enabled && g2_try_sprite(raw_x0,raw_y0,raw_x1,raw_y1,u0,v0,u1,v1,s0,t0,q0,s1,t1,q1,z1))
+        return;
+#endif
     int textured = (gs_effective_attr_prim() & PRIM_TME_MASK) != 0;
     /* Z (task #89): real hardware treats SPRITE Z the same way it
      * treats SPRITE color - a single flat value for the whole

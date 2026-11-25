@@ -24,6 +24,13 @@ static gs_mem_gpu_resolver g_gpu_resolver;
 static void *g_gpu_opaque;
 static uint32_t g_gpu_pending, g_sync_active, g_sync_failures;
 static uint32_t g_protected_lo,g_protected_hi,g_read_guard;
+#ifdef GEKKO2_WIIU
+/* Wii U GX2 renderer: a second protected interval (colour and depth buffers are usually not adjacent). */
+static uint32_t g_protected2_lo,g_protected2_hi;
+static int g2_outside_protected(uint32_t lo,uint32_t hi)
+{ return (hi<=g_protected_lo||lo>=g_protected_hi)&&(g_protected2_lo==g_protected2_hi||hi<=g_protected2_lo||lo>=g_protected2_hi); }
+static void g2_invalidate_protected(void);
+#endif
 /* Conservative physical byte envelopes: GS PSM variants alias the SAME
  * 4 MiB eDRAM, even where texture/depth/color page layouts differ. */
 static uint64_t g_alias_queries,g_alias_resolves,g_alias_disjoint,g_alias_failures;
@@ -39,7 +46,11 @@ int gs_mem_gpu_sync_alias_range(uint32_t lo,uint32_t hi)
     if(!g_gpu_pending)return 1;
     /* GPU resolver promises to touch only its protected physical interval.
      * Outside that interval CPU/GS source reads remain directly coherent. */
+#ifdef GEKKO2_WIIU
+    if(g_read_guard&&g2_outside_protected(lo,hi)) {
+#else
     if(g_read_guard&&(hi<=g_protected_lo||lo>=g_protected_hi)) {
+#endif
         g_alias_disjoint++;return 1;
     }
     g_alias_resolves++;
@@ -54,23 +65,37 @@ int gs_mem_sync(void)
     /* A protected resolver promises writes only inside its interval. A
      * disjoint decoded texture digest survives color/depth ownership work. */
     if(!g_read_guard)g_hash_owner.valid=0;
+#ifdef GEKKO2_WIIU
+    else g2_invalidate_protected();
+#else
     else hash_invalidate_range(g_protected_lo,g_protected_hi-g_protected_lo);
+#endif
     g_sync_active=1;
     int ok=g_gpu_resolver(g_gpu_opaque,g_gs_mem,GS_MEM_SIZE);
     g_sync_active=0;
     if(!ok){g_sync_failures++;return 0;}
+#ifdef GEKKO2_WIIU
+    g_protected2_lo=g_protected2_hi=0;
+#endif
     g_gpu_pending=0;g_read_guard=0;return 1;
 }
 int gs_mem_gpu_bind(gs_mem_gpu_resolver resolver,void *opaque)
 {
     if(!gs_mem_sync())return 0;
+#ifdef GEKKO2_WIIU
+    g_protected2_lo=g_protected2_hi=0;
+#endif
     g_gpu_resolver=resolver;g_gpu_opaque=opaque;g_read_guard=0;return 1;
 }
 int gs_mem_gpu_mark_pending(void)
 {
     if(g_sync_active||!g_gpu_resolver)return 0;
     if(!g_read_guard)g_hash_owner.valid=0;
+#ifdef GEKKO2_WIIU
+    else g2_invalidate_protected();
+#else
     else hash_invalidate_range(g_protected_lo,g_protected_hi-g_protected_lo);
+#endif
     g_gpu_pending=1;return 1;
 }
 uint32_t gs_mem_gpu_pending(void){return g_gpu_pending;}
@@ -80,10 +105,29 @@ int gs_mem_gpu_protect_range(uint32_t lo,uint32_t hi)
  if(g_sync_active||!g_gpu_resolver||lo>=hi||hi>GS_MEM_SIZE)return 0;
  g_protected_lo=lo;g_protected_hi=hi;g_read_guard=1;return 1;
 }
+#ifdef GEKKO2_WIIU
+static void g2_invalidate_protected(void)
+{
+ hash_invalidate_range(g_protected_lo,g_protected_hi-g_protected_lo);
+ if(g_protected2_hi>g_protected2_lo)hash_invalidate_range(g_protected2_lo,g_protected2_hi-g_protected2_lo);
+}
+/* Second interval; call after gs_mem_gpu_protect_range(). lo==hi clears it. */
+int gs_mem_gpu_protect_range2(uint32_t lo,uint32_t hi)
+{
+ if(g_sync_active||!g_gpu_resolver||lo>hi||hi>GS_MEM_SIZE||!g_read_guard)return 0;
+ g_protected2_lo=lo;g_protected2_hi=hi;
+ if(hi>lo)hash_invalidate_range(lo,hi-lo);
+ return 1;
+}
+#endif
 static inline int cpu_read_access(uint32_t off,uint32_t bytes)
 {
  if(!g_gpu_pending)return 1;
+#ifdef GEKKO2_WIIU
+ if(g_read_guard&&off<=GS_MEM_SIZE-bytes&&g2_outside_protected(off,off+bytes))return 1;
+#else
  if(g_read_guard&&off<=GS_MEM_SIZE-bytes&&(off+bytes<=g_protected_lo||off>=g_protected_hi))return 1;
+#endif
  return gs_mem_sync();
 }
 const uint8_t *gs_mem_read_range(uint32_t off,uint32_t bytes)
@@ -129,6 +173,10 @@ void gs_mem_init(void)
 { if(cpu_access()){g_hash_owner.valid=0;g_hash_hits=g_hash_bytes_avoided=0;memset(g_gs_mem,0,sizeof(g_gs_mem));} }
 void gs_mem_reset_sync_stats(void)
 { if(!g_gpu_pending&&!g_sync_active){g_sync_failures=0;g_read_guard=0;g_protected_lo=g_protected_hi=0;
+#ifdef GEKKO2_WIIU
+ g_protected2_lo=g_protected2_hi=0;
+#endif
+
   g_alias_queries=g_alias_resolves=g_alias_disjoint=g_alias_failures=0;} }
 uint8_t *gs_mem_get(void)
 { if(!cpu_access())return NULL;g_hash_raw_exposed=1;g_hash_owner.valid=0;return g_gs_mem; }
