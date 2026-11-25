@@ -161,19 +161,6 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         if (!a)
             iop_cdvd_set_disc_present(0x12);
         say(platform, "disc mounted");
-        FILE *df = fopen(config->iso_path, "rb");
-        if (df) {
-            /* Disc diagnostics for tester logs: a 4 GiB file on FAT32 is a cut-off image (use CHD instead). */
-            unsigned long long bytes = 0;
-            if (fseeko(df, 0, SEEK_END) == 0) {
-                off_t end = ftello(df);
-                bytes = end > 0 ? (unsigned long long)end : 0ull;
-            }
-            fclose(df);
-            say(platform, "disc image size=%llu bytes (%llu MiB)", bytes, bytes >> 20);
-            if (bytes >= 0xFFFF0000ull && bytes <= 0xFFFFFFFFull)
-                say(platform, "WARNING: disc image is exactly at the FAT32 4 GiB limit; it is probably cut off. Convert it to CHD.");
-        }
     }
 
     uint64_t last_present = 0, last_report = 0, last_stat_ms = 0, last_stat_instr = 0, last_vb = 0;
@@ -195,6 +182,22 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 config->bios_path ? config->bios_path : "?", config->iso_path ? config->iso_path : "(none)",
                 (unsigned)gekko2_optimization_mask, config->batch_slices ? config->batch_slices : 2000u);
         fflush(session);
+    }
+    if (config->iso_path && config->iso_path[0]) {
+        /* Disc diagnostics for tester logs (after the session file is open so they reach it): a 4 GiB file on
+         * FAT32 is a cut-off image (use CHD instead). */
+        FILE *df = fopen(config->iso_path, "rb");
+        if (df) {
+            unsigned long long bytes = 0;
+            if (fseeko(df, 0, SEEK_END) == 0) {
+                off_t end = ftello(df);
+                bytes = end > 0 ? (unsigned long long)end : 0ull;
+            }
+            fclose(df);
+            say(platform, "disc image size=%llu bytes (%llu MiB)", bytes, bytes >> 20);
+            if (bytes >= 0xFFFF0000ull && bytes <= 0xFFFFFFFFull)
+                say(platform, "WARNING: disc image is exactly at the FAT32 4 GiB limit; it is probably cut off. Convert it to CHD.");
+        }
     }
     const uint64_t start = platform->now_ms ? platform->now_ms(platform->user) : 0;
     int gs_async_active = 0, gx2_gs_active = 0;
@@ -351,6 +354,24 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 if (fails > reported_fails) {
                     say(platform, "disc read errors: %llu (image damaged, cut off or unsupported layout?)", (unsigned long long)fails);
                     reported_fails = fails;
+                }
+                {
+                    /* New CDVD commands since the last report (last 64 kept), so a hang shows the command before it. */
+                    extern uint32_t iop_cdvd_trace_count(void);
+                    extern int iop_cdvd_trace_text(uint32_t seq, char *out, unsigned size);
+                    static uint32_t cdvd_seen;
+                    const uint32_t n = iop_cdvd_trace_count();
+                    if (session && n != cdvd_seen) {
+                        uint32_t from = n - cdvd_seen > 64u ? n - 64u : cdvd_seen;
+                        fprintf(session, "# cdvd t=%llus total=%u", (unsigned long long)((now - start) / 1000u), (unsigned)n);
+                        for (uint32_t q = from; q < n; q++) {
+                            char t[48];
+                            if (iop_cdvd_trace_text(q, t, sizeof t))
+                                fprintf(session, " %s", t);
+                        }
+                        fputc('\n', session);
+                        cdvd_seen = n;
+                    }
                 }
                 if (session && ((now - start) / 1000u) % 10u == 0u)
                     fprintf(session, "# disc t=%llus iso_reads=%llu iso_fail=%llu chd_reads=%llu chd_fail=%llu\n",

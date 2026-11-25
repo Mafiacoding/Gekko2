@@ -91,16 +91,19 @@ static int show_log; /* status lines over the picture: only with the verbose log
  * OSScreen buffers have to be set again. WHBProcIsRunning() shuts ProcUI down every time it returns false, so its
  * result is latched and it is never called again after the exit request. */
 static volatile int in_foreground = 1;
+static int osscreen_up; /* OSScreen initialised and owning the display */
 static int app_alive = 1;
 static uint32_t procui_acquire(void *ctx)
 {
     (void)ctx;
-    if (!use_gx2 && screen_memory) {
+    if (!use_gx2 && screen_memory && !osscreen_up) {
         OSScreenInit();
         OSScreenSetBufferEx(SCREEN_TV, screen_memory);
         OSScreenSetBufferEx(SCREEN_DRC, (char *)screen_memory + tv_size);
         OSScreenEnableEx(SCREEN_TV, 1);
         OSScreenEnableEx(SCREEN_DRC, 1);
+        osscreen_up = 1;
+        dirty = 1;
     }
     in_foreground = 1;
     if (use_gx2_gs)
@@ -111,6 +114,14 @@ static uint32_t procui_release(void *ctx)
 {
     (void)ctx;
     in_foreground = 0;
+    if (!use_gx2 && osscreen_up) {
+        /* Software picture output: hand the display back before ProcUI releases the foreground (HOME menu, exit).
+         * Shutting OSScreen down only after the system owns the display can hang on exit. */
+        OSScreenEnableEx(SCREEN_TV, 0);
+        OSScreenEnableEx(SCREEN_DRC, 0);
+        OSScreenShutdown();
+        osscreen_up = 0;
+    }
     return 0;
 }
 static int app_running(void)
@@ -144,7 +155,7 @@ static void render_gx2(void)
 
 static void render(void)
 {
-    if (!in_foreground)
+    if (!in_foreground || (!use_gx2 && !osscreen_up))
         return; /* HOME menu / background: the display belongs to the system */
     if (use_gx2) {
         render_gx2();
@@ -700,6 +711,7 @@ static int init_osscreen(void)
     OSScreenSetBufferEx(SCREEN_DRC, (char *)screen_memory + tv_size);
     OSScreenEnableEx(SCREEN_TV, 1);
     OSScreenEnableEx(SCREEN_DRC, 1);
+    osscreen_up = 1;
     return 1;
 }
 
@@ -867,7 +879,9 @@ int main(void)
             gx2_gs_shutdown();
         gx2_present_shutdown();
     } else {
-        OSScreenShutdown();
+        if (osscreen_up) /* normally already shut down by the ProcUI release callback */
+            OSScreenShutdown();
+        osscreen_up = 0;
         MEMFreeToDefaultHeap(screen_memory);
     }
     WHBLogCafeDeinit();

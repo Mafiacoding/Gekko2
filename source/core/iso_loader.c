@@ -87,8 +87,14 @@ void iso_close(iso_image_t *img)
     gekko2_chd_close(img->chd);
     free(img->sector_cache);memset(img,0,sizeof(*img));
 }
+#ifdef GEKKO2_WIIU
+extern void iop_cdvd_trace_extern(uint8_t kind, uint8_t cmd, uint32_t value); /* Wii U tester diagnostics */
+#endif
 int iso_read_sector(iso_image_t *img,uint32_t lba,uint8_t *buf)
 {
+#ifdef GEKKO2_WIIU
+    iop_cdvd_trace_extern('R', 0, lba);
+#endif
     if(!img||!img->opened||!buf)return -1;
     if(img->chd)return gekko2_chd_read(img->chd,lba,buf);
     if(!img->fp)return -1;
