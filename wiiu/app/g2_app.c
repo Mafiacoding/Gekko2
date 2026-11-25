@@ -102,7 +102,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
 {
     gekko2_prof_gs_enabled = 1;
     gekko2_prof_vu_enabled = 1;
-    gekko2_wiiu_iw = config->fast_run && !config->use_jit;
+    gekko2_wiiu_iw = config->fast_run && !config->use_jit; /* final value below, once the JIT state is known */
     gekko2_wiiu_event_sched = config->event_sched || config->iop_async;
     static uint32_t frame[1024u * 1024u];            /* largest frame accepted by g2_read_display() */
     g2_result local;
@@ -148,6 +148,10 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         }
     }
 #endif
+    /* Interpreted fast runs execute before the EE dynarec's block path in ee_core_step_n(): with the dynarec on
+     * they must be off, otherwise most instructions never reach the JIT (tester logs: 0 native blocks, iw=83%).
+     * The JIT app enables the dynarec through the menu mask (use_jit = 0), so decide on the final mask. */
+    gekko2_wiiu_iw = config->fast_run && !gekko2_opt_enabled(GEKKO2_OPT_EE_JIT);
     if (system_init(&bios, &bios) != 0) {
         say(platform, "system_init failed");
         return result->status = G2_ERR_INIT;
