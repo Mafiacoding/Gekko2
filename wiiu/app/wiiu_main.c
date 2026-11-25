@@ -840,6 +840,10 @@ int main(void)
                     const int split = gpu && wiiu_menu_gpu_split(menu) && gs_async_wanted(sd_root);
 #ifdef GEKKO2_WIIU_JIT
                     threaded = 1;
+                    {
+                        extern int gekko2_wiiu_cemu_fast_jit;
+                        gekko2_wiiu_cemu_fast_jit = file_exists_flag(sd_root, "jit_cemu_fast.txt");
+                    }
 #else
                     threaded = split;
 #endif

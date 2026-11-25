@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 13)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 14)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -58,6 +58,9 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
   the row length of these textures itself and ignored the padded rows build 12 used. Build 13 removes the padding
   and gives every texture upload fresh memory from a ring buffer instead, so Cemu always sees new data. This also
   removes a wait for the GPU on every texture change (helps real hardware too; not measured yet).
+- **JIT app on Cemu (build 14):** the build 13 change ran the JIT app about 3.5 times faster in Cemu (2.7 instead of
+  0.3-0.8 million PS2 instructions per second), but the PS2 BIOS then stayed in its timer calibration loop and
+  Tekken never loaded. It is now off by default; create `sd:/wiiu/gekko2/jit_cemu_fast.txt` to test it.
 - **JIT app on Cemu (build 13):** Cemu switches off its own recompiler for the JIT code area as soon as an app
   switches that area between write and execute mode, so the JIT code ran in Cemu's slow interpreter. When Gekko2
   runs as a directly loaded RPX in Cemu, it no longer switches the area. Real Wii U behaviour is unchanged.

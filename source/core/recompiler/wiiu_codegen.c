@@ -20,6 +20,10 @@ static const char *status = "not initialised";
  * ICInvalidateRange, so on Cemu the area is written directly and never switched. Cemu is recognised by the
  * title ID it gives a directly loaded RPX (upper half ffffffff); a real Wii U never uses that range. */
 static int cemu_mode;
+/* Opt-in (sd:/wiiu/gekko2/jit_cemu_fast.txt): Cemu tester log 2026-11-25 showed about 3.5x more EE instructions
+ * per second with this mode, but the BIOS then stayed in its timer calibration loop (EE pc 0x9fc41080), so it is
+ * off by default until that is understood. */
+int gekko2_wiiu_cemu_fast_jit;
 /* Lazy mode switching: the area stays R_X after generated code ran and only a writer switches it back to RW.
  * Running code repeatedly therefore costs no mode switch; a switch happens only on a write/execute transition. */
 static void to_rw(void)
@@ -55,7 +59,7 @@ void *gekko2_codegen_area(uint32_t *size)
         } else if (OSGetCoreId() != OSGetCodegenCore()) {
             area = NULL;
             status = "emulator thread is not on the codegen core";
-        } else if ((OSGetTitleID() >> 32) == 0xffffffffull) {
+        } else if ((OSGetTitleID() >> 32) == 0xffffffffull && gekko2_wiiu_cemu_fast_jit) {
             cemu_mode = 1;
             in_rx = 0;
             status = "codegen area ready (Cemu: no mode switches, Cemu recompiles the generated code)";
