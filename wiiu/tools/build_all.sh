@@ -30,9 +30,6 @@ fail=0
 skipped_shaders=0
 step() { echo; echo "=== $*"; }
 
-step "GX2 probe"
-if make -C wiiu/gx2/probe -j4; then cp wiiu/gx2/probe/gekko2-wiiu-gx2probe.rpx "$OUT/"; else echo "FAILED: gx2probe"; fail=1; fi
-
 step "shaders (latte-assembler)"
 if command -v latte-assembler >/dev/null 2>&1; then
   latte-assembler --help 2>&1 | head -20
@@ -43,16 +40,32 @@ if command -v latte-assembler >/dev/null 2>&1; then
   echo "latte-assembler exit code: $rc"
   if [ -s "$OUT/present.gsh" ]; then
     echo "present.gsh written ($(wc -c < "$OUT/present.gsh") bytes)"
+    # Built in (gitignored headers): presenter for the app and the probe, GS renderer shaders for the probe test C.
+    python3 wiiu/tools/embed_gsh.py "$OUT/present.gsh" || fail=1
+    python3 wiiu/tools/embed_gsh.py "$OUT/present.gsh" --name present_gsh_probe_data --out wiiu/gx2/src/present_gsh_probe.h || fail=1
   else
     echo "present.gsh was NOT written: send the output above"
     fail=1
   fi
+  for ps in color:gs_color mod:gs_modulate; do
+    name=${ps%%:*}; file=${ps##*:}
+    if latte-assembler assemble --vsh=wiiu/gx2/shaders/gs.vsh --psh=wiiu/gx2/shaders/$file.psh "$OUT/gs_$name.gsh" 2>&1 &&
+       [ -s "$OUT/gs_$name.gsh" ]; then
+      python3 wiiu/tools/embed_gsh.py "$OUT/gs_$name.gsh" --name gs_${name}_gsh_data --out wiiu/gx2/src/gs_${name}_gsh.h || fail=1
+    else
+      echo "gs_$name.gsh was NOT written"
+      fail=1
+    fi
+  done
 else
   skipped_shaders=1
   echo "latte-assembler not found (devkitPro does not ship it; it is part of decaf-emu): download the Windows artifact from"
   echo "https://github.com/decaf-emu/decaf-emu/actions (latest successful run; needs a GitHub login), put latte-assembler.exe in"
   echo "$DEVKITPRO/tools/bin or on PATH, then run this again."
 fi
+
+step "GX2 probe"
+if make -C wiiu/gx2/probe -j4; then cp wiiu/gx2/probe/gekko2-wiiu-gx2probe.rpx "$OUT/"; else echo "FAILED: gx2probe"; fail=1; fi
 
 step "gekko2-wiiu (interpreter + menu)"
 if make -C wiiu -j4; then cp wiiu/gekko2-wiiu.rpx "$OUT/"; else echo "FAILED: gekko2-wiiu"; fail=1; fi

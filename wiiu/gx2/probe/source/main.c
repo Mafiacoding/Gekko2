@@ -4,8 +4,11 @@
  *                                            (GX2_TV_RENDER_MODE_STANDARD_480P) that the console scales to the
  *                                            output resolution, written by the CPU.
  * Every step is logged to <sd>/wiiu/gekko2/gx2probe.log (fsync'd) with "about to ..." before risky calls.
+ *  - built with the GS shaders embedded (wiiu/tools/build_all.sh with latte-assembler) -> test C first: the GPU
+ *    draws GS-style primitives off screen, the CPU reads them back and checks pixels against expected values.
  * Nothing here is verified by the author on Cemu or a Wii U; the log tells us what happens. */
 #include "gx2_present.h"
+#include "gx2_gs.h"
 #include <coreinit/cache.h>
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/thread.h>
@@ -143,6 +146,127 @@ static void test_b(void)
     MEMFreeToDefaultHeap(buf);
 }
 
+#if __has_include("gs_color_gsh.h") && __has_include("gs_mod_gsh.h") && __has_include("present_gsh_probe.h")
+#include "gs_color_gsh.h"
+#include "gs_mod_gsh.h"
+#include "present_gsh_probe.h"
+#define HAVE_TEST_C 1
+static gx2_gs_vertex vtx(float x, float y, uint32_t argb, float u, float v)
+{
+    /* GS-style window coordinates (0..640, 0..480) to clip space; colour with GS 0x80 = 1.0 */
+    gx2_gs_vertex r = { { x / 320.0f - 1.0f, 1.0f - y / 240.0f, 0.0f, 1.0f },
+                        { (float)((argb >> 16) & 0xffu) / 128.0f, (float)((argb >> 8) & 0xffu) / 128.0f,
+                          (float)(argb & 0xffu) / 128.0f, (float)(argb >> 24) / 128.0f },
+                        { u, v, 0.0f, 1.0f } };
+    return r;
+}
+static void scene(void)
+{
+    static uint32_t checker[64 * 64];
+    for (unsigned y = 0; y < 64; y++)
+        for (unsigned x = 0; x < 64; x++)
+            checker[y * 64 + x] = ((x / 8 + y / 8) & 1) ? 0x80ffffffu : 0x80ff0000u;
+    gx2_gs_begin(1, 0x80202040u);
+    /* Gouraud triangle: red, green, blue corners. */
+    gx2_gs_vertex t[3] = { vtx(40, 40, 0x80ff0000u, 0, 0), vtx(280, 40, 0x8000ff00u, 0, 0), vtx(40, 280, 0x800000ffu, 0, 0) };
+    gx2_gs_draw(t, 3, GX2_GS_TRIANGLES, 0);
+    /* Textured quad (MODULATE with 0x80 = unchanged texels). */
+    gx2_gs_set_texture(checker, 64, 64, 1, 0, 0);
+    gx2_gs_vertex q[4] = { vtx(360, 40, 0x80808080u, 0, 0), vtx(600, 40, 0x80808080u, 1, 0),
+                           vtx(600, 280, 0x80808080u, 1, 1), vtx(360, 280, 0x80808080u, 0, 1) };
+    gx2_gs_draw(q, 4, GX2_GS_QUADS, 1);
+    /* Additive: white * FIX 0x40 (0.5) + Cd. */
+    gx2_gs_set_blend(GX2_GS_BLEND_ADD_FIX, 0x40);
+    gx2_gs_vertex a[4] = { vtx(40, 320, 0x80ffffffu, 0, 0), vtx(280, 320, 0x80ffffffu, 0, 0),
+                           vtx(280, 440, 0x80ffffffu, 0, 0), vtx(40, 440, 0x80ffffffu, 0, 0) };
+    gx2_gs_draw(a, 4, GX2_GS_QUADS, 0);
+    /* Mix: red with As 0x40 (0.5) over the background. */
+    gx2_gs_set_blend(GX2_GS_BLEND_MIX_AS, 0x80);
+    gx2_gs_vertex m[4] = { vtx(360, 320, 0x40ff0000u, 0, 0), vtx(600, 320, 0x40ff0000u, 0, 0),
+                           vtx(600, 440, 0x40ff0000u, 0, 0), vtx(360, 440, 0x40ff0000u, 0, 0) };
+    gx2_gs_draw(m, 4, GX2_GS_QUADS, 0);
+    gx2_gs_set_blend(GX2_GS_BLEND_OFF, 0x80);
+}
+static int near(uint32_t a, uint32_t b, unsigned tol)
+{
+    for (unsigned s = 0; s < 24; s += 8) {
+        const int d = (int)((a >> s) & 0xffu) - (int)((b >> s) & 0xffu);
+        if (d > (int)tol || d < -(int)tol)
+            return 0;
+    }
+    return 1;
+}
+static void test_c(void)
+{
+    static uint32_t fb[640 * 480];
+    say("test C: about to gx2_present_init (embedded present.gsh)");
+    if (!gx2_present_init(present_gsh_probe_data, sizeof present_gsh_probe_data, 640, 480)) {
+        say("test C: gx2_present_init FAILED");
+        return;
+    }
+    say("test C: about to gx2_gs_init (embedded gs shaders)");
+    if (!gx2_gs_init(gs_color_gsh_data, gs_mod_gsh_data, 640, 480)) {
+        say("test C: gx2_gs_init FAILED (shader groups, context state or memory)");
+        gx2_present_shutdown();
+        return;
+    }
+    say("test C: init ok; drawing the GS test scene on the GPU");
+    unsigned frame = 0, shown = 0, checked = 0;
+    const uint64_t start = OSTicksToMilliseconds(OSGetSystemTime());
+    uint64_t last = start;
+    while (WHBProcIsRunning()) {
+        const uint64_t t0 = OSTicksToMicroseconds(OSGetSystemTime());
+        scene();
+        unsigned pitch = 0;
+        const uint32_t *px = gx2_gs_end(&pitch);
+        const uint64_t t1 = OSTicksToMicroseconds(OSGetSystemTime());
+        if (!px) {
+            say("test C: gx2_gs_end returned no pixels");
+            break;
+        }
+        for (unsigned y = 0; y < 480; y++)
+            for (unsigned x = 0; x < 640; x++)
+                fb[y * 640 + x] = px[(size_t)y * pitch + x] >> 8;
+        if (!checked) {
+            checked = 1;
+            static const struct { unsigned x, y; uint32_t want; unsigned tol; const char *what; } chk[] = {
+                { 5, 5, 0x202040, 2, "clear colour" },
+                { 44, 44, 0xff0000, 24, "triangle red corner" },
+                { 272, 44, 0x00ff00, 40, "triangle green corner" },
+                { 44, 272, 0x0000ff, 40, "triangle blue corner" },
+                { 364, 44, 0xff0000, 2, "checker texel (0,0) red" },
+                { 364 + 30, 44, 0xffffff, 2, "checker texel (1,0) white" },
+                { 160, 380, 0x9f9fbf, 4, "additive white*0.5 + background" },
+                { 480, 380, 0x8f1020, 4, "mix red As=0.5 over background" },
+                { 620, 460, 0x202040, 2, "clear colour (corner)" },
+            };
+            unsigned ok = 0;
+            for (unsigned i = 0; i < sizeof chk / sizeof chk[0]; i++) {
+                const uint32_t got = fb[chk[i].y * 640 + chk[i].x];
+                const int good = near(got, chk[i].want, chk[i].tol);
+                ok += good;
+                say("test C: pixel (%u,%u) %s = %06x, expected %06x: %s", chk[i].x, chk[i].y, chk[i].what,
+                    (unsigned)got, (unsigned)chk[i].want, good ? "OK" : "DIFFERENT");
+            }
+            say("test C: %u of %u pixel checks OK; GPU scene + readback took %u us", ok,
+                (unsigned)(sizeof chk / sizeof chk[0]), (unsigned)(t1 - t0));
+        }
+        gx2_present_frame(fb, 640, 480, 0);
+        frame++;
+        shown++;
+        const uint64_t now = OSTicksToMilliseconds(OSGetSystemTime());
+        if (now - last >= 1000) {
+            say("test C: %u frames in the last second (GPU scene + readback %u us); draws=%llu waits=%llu", shown,
+                (unsigned)(t1 - t0), (unsigned long long)gx2_gs_stat(0), (unsigned long long)gx2_gs_stat(3));
+            shown = 0;
+            last = now;
+        }
+    }
+    gx2_gs_shutdown();
+    gx2_present_shutdown();
+}
+#endif
+
 int main(void)
 {
     WHBProcInit();
@@ -158,6 +282,12 @@ int main(void)
         snprintf(path, sizeof path, "%s/wiiu/gekko2/present.gsh", WHBGetSdCardMountPath());
         gsh = read_file(path, &size);
     }
+#ifdef HAVE_TEST_C
+    if (1) {
+        say("GS shaders built in: test C (GPU draws GS primitives, pixels are checked)");
+        test_c();
+    } else
+#endif
     if (gsh) {
         say("present.gsh found (%u bytes): test A", (unsigned)size);
         test_a(gsh, size);
