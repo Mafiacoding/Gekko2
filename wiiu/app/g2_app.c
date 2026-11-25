@@ -161,6 +161,19 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         if (!a)
             iop_cdvd_set_disc_present(0x12);
         say(platform, "disc mounted");
+        FILE *df = fopen(config->iso_path, "rb");
+        if (df) {
+            /* Disc diagnostics for tester logs: a 4 GiB file on FAT32 is a cut-off image (use CHD instead). */
+            unsigned long long bytes = 0;
+            if (fseeko(df, 0, SEEK_END) == 0) {
+                off_t end = ftello(df);
+                bytes = end > 0 ? (unsigned long long)end : 0ull;
+            }
+            fclose(df);
+            say(platform, "disc image size=%llu bytes (%llu MiB)", bytes, bytes >> 20);
+            if (bytes >= 0xFFFF0000ull && bytes <= 0xFFFFFFFFull)
+                say(platform, "WARNING: disc image is exactly at the FAT32 4 GiB limit; it is probably cut off. Convert it to CHD.");
+        }
     }
 
     uint64_t last_present = 0, last_report = 0, last_stat_ms = 0, last_stat_instr = 0, last_vb = 0;
@@ -299,6 +312,22 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                             (unsigned long long)((now - start) / 1000u), (unsigned long long)gs_pm, (unsigned long long)vu_pm,
                             (unsigned long long)gekko2_prof_gs_calls, (unsigned long long)gekko2_prof_vu1_calls,
                             (unsigned long long)gekko2_vu0_pairs(), (unsigned long long)gekko2_vu1_pairs());
+            }
+            {
+                /* Disc read health: requests and failed reads (ISO/BIN) and CHD hunk reads/failures. */
+                extern uint64_t iso_cache_stat(unsigned index);
+                extern uint64_t gekko2_chd_stat(unsigned index);
+                static uint64_t reported_fails;
+                const uint64_t fails = iso_cache_stat(4) + gekko2_chd_stat(3);
+                if (fails > reported_fails) {
+                    say(platform, "disc read errors: %llu (image damaged, cut off or unsupported layout?)", (unsigned long long)fails);
+                    reported_fails = fails;
+                }
+                if (session && ((now - start) / 1000u) % 10u == 0u)
+                    fprintf(session, "# disc t=%llus iso_reads=%llu iso_fail=%llu chd_reads=%llu chd_fail=%llu\n",
+                            (unsigned long long)((now - start) / 1000u), (unsigned long long)iso_cache_stat(0),
+                            (unsigned long long)iso_cache_stat(4), (unsigned long long)gekko2_chd_stat(0),
+                            (unsigned long long)gekko2_chd_stat(3));
             }
             if (session) {
                 fprintf(session, "%llu,%llu,%llu,%llu,%llu.%02llu,%u,%04x\n", (unsigned long long)((now - start) / 1000u),

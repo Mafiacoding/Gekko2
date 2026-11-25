@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha
+# Gekko2 Wii U Edition 0.1.0-alpha (build 2)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -36,6 +36,13 @@ All of these work at the same time and drive PS2 pad 1:
 
 ## Fixed in this build
 
+- **HOME button:** the Wii U HOME menu works during the menu and while a game runs; "Close software" returns
+  to the Wii U Menu without crashing. "Exit" in the Gekko2 menu also returns to the Wii U Menu.
+- **GamePad:** the picture is now always shown on the GamePad as well (no TV needed). With the verbose log on,
+  the last log lines are drawn over the bottom of the picture.
+- **GPU output (GX2):** the presenter shaders are now built in, so the picture is scaled by the GPU on TV and
+  GamePad. If you get a black screen, create `sd:/wiiu/gekko2/gx2_off.txt` to use the old software output.
+- **Disc diagnostics:** the log now records the image size and any disc read errors.
 - PS2 BIOS start-up animation: the light trails were drawn with black, jagged pieces. Anti-aliased (AA1)
   lines now blend like on a real PS2, so the trails glow again.
 
@@ -50,12 +57,15 @@ cannot help.
 
 ## Known issues
 
-- **Speed:** most games run at roughly 0.2 % to 1 % of full PS2 speed in Cemu. Real Wii U hardware has not
-  been measured yet. This alpha is about compatibility and feedback, not playability.
-- **Real Wii U hardware is untested** for this exact build; it was developed and tested on Cemu 2.6.
+- **Speed:** very slow. A tester's real Wii U log (Tekken Tag, first build) shows about 0.4 emulated frames per
+  second (under 1 % of full speed); after 5 minutes Tekken Tag was still on the "Produced by Namco" screen.
+  This alpha is about compatibility and feedback, not playability.
+- The fixes in this build (HOME, GamePad, GX2) were built and checked for compile errors but not yet run on
+  a real Wii U.
 - No sound yet.
-- Picture output uses software scaling (OSScreen). The GPU presenter (GX2) is used when
-  `sd:/wiiu/gekko2/present.gsh` is on the SD card.
+- **Games larger than 4 GiB:** FAT32 SD cards cannot hold files of 4 GiB or more; such an ISO is cut off and
+  the game hangs while loading. Convert it to CHD (`chdman createdvd`).
+- Some games hang while loading (for example Hitman 2 on one tester's console). Please send the verbose log.
 - `gekko2-wiiu-jit.rpx` (experimental dynarec) is slower than the normal build on Cemu.
 
 ## Optional switches (files on the SD card in `sd:/wiiu/gekko2/`)
@@ -66,6 +76,7 @@ cannot help.
 | `vu1_async_on.txt` | run VU1 on the third CPU core (experimental) |
 | `fast_run_off.txt` | disable interpreted fast runs |
 | `vu_jit_off.txt` | JIT build: keep VU microcode interpreted |
+| `gx2_off.txt` | software picture output (OSScreen) instead of the GPU |
 
 ## License
 

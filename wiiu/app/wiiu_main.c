@@ -17,6 +17,8 @@
 #include <vpad/input.h>
 #include <padscore/kpad.h>
 #include <padscore/wpad.h>
+#include <proc_ui/procui.h>
+#include <sysapp/launch.h>
 #include <whb/log.h>
 #include <whb/log_cafe.h>
 #include <whb/proc.h>
@@ -30,6 +32,7 @@
 #define LINES 16
 #define TV_LOG_LINES 3u
 #define TV_LOG_FIRST_ROW 26u
+#define DRC_LOG_FIRST_ROW 15u /* GamePad text rows 15..17 */
 #define PIC_MAX_W 1280u
 #define PIC_MAX_H 624u /* rows 0..25 of the TV text grid; the log uses the last three rows */
 #define LINE_CHARS 100
@@ -62,6 +65,37 @@ static volatile int return_to_menu; /* hold L+R+ZL+ZR and press + while emulatin
 
 static int use_gx2;
 static int show_log; /* status lines over the picture: only with the verbose log switched on */
+
+/* ProcUI (Aroma HOME menu): while the app is in the background nothing may be drawn, and after it comes back the
+ * OSScreen buffers have to be set again. WHBProcIsRunning() shuts ProcUI down every time it returns false, so its
+ * result is latched and it is never called again after the exit request. */
+static volatile int in_foreground = 1;
+static int app_alive = 1;
+static uint32_t procui_acquire(void *ctx)
+{
+    (void)ctx;
+    if (!use_gx2 && screen_memory) {
+        OSScreenInit();
+        OSScreenSetBufferEx(SCREEN_TV, screen_memory);
+        OSScreenSetBufferEx(SCREEN_DRC, (char *)screen_memory + tv_size);
+        OSScreenEnableEx(SCREEN_TV, 1);
+        OSScreenEnableEx(SCREEN_DRC, 1);
+    }
+    in_foreground = 1;
+    return 0;
+}
+static uint32_t procui_release(void *ctx)
+{
+    (void)ctx;
+    in_foreground = 0;
+    return 0;
+}
+static int app_running(void)
+{
+    if (app_alive && !WHBProcIsRunning())
+        app_alive = 0;
+    return app_alive;
+}
 static uint32_t compose[640u * 480u];
 
 /* GPU path: compose the current picture (menu or emulator frame) and the last log lines into 640x480 on the CPU,
@@ -87,6 +121,8 @@ static void render_gx2(void)
 
 static void render(void)
 {
+    if (!in_foreground)
+        return; /* HOME menu / background: the display belongs to the system */
     if (use_gx2) {
         render_gx2();
         return;
@@ -108,8 +144,8 @@ static void render(void)
             for (unsigned x = 0; x < dw; x++)
                 OSScreenPutPixelEx(SCREEN_TV, ox + x, y, row[xmap[x]] << 8);
         }
-        if (!show_log) {
-            /* GamePad: 854x480, 4:3 picture 640x480 centred. */
+        {
+            /* GamePad: 854x480, 4:3 picture 640x480 centred (always; the verbose log is drawn over its bottom). */
             static uint16_t dmap[640];
             for (unsigned x = 0; x < 640u; x++)
                 dmap[x] = (uint16_t)((unsigned long)x * shown_w / 640u);
@@ -120,10 +156,10 @@ static void render(void)
             }
         }
     }
-    const unsigned first = !show_log ? line_count : line_count > LINES ? line_count - LINES : 0;
+    const unsigned first = !show_log ? line_count : line_count > TV_LOG_LINES ? line_count - TV_LOG_LINES : 0;
     const unsigned tv_first = !show_log ? line_count : line_count > TV_LOG_LINES ? line_count - TV_LOG_LINES : 0;
     for (unsigned i = first; i < line_count; i++)
-        OSScreenPutFontEx(SCREEN_DRC, 0, i - first, lines[i % LINES]);
+        OSScreenPutFontEx(SCREEN_DRC, 0, DRC_LOG_FIRST_ROW + (i - first), lines[i % LINES]);
     for (unsigned i = tv_first; i < line_count; i++)
         OSScreenPutFontEx(SCREEN_TV, 0, TV_LOG_FIRST_ROW + (i - tv_first), lines[i % LINES]);
     DCFlushRange(screen_memory, tv_size + drc_size);
@@ -164,9 +200,15 @@ static int keep(void *u)
 #ifdef GEKKO2_WIIU_JIT
     return !stop_requested;
 #else
-    if (!WHBProcIsRunning() || return_to_menu)
-        return 0;
+    static uint64_t last_proc_ms;
     const uint64_t now = (uint64_t)OSTicksToMilliseconds(OSGetSystemTime());
+    if (now - last_proc_ms >= 16u) { /* ProcUI messages (HOME button) about 60 times a second */
+        last_proc_ms = now;
+        if (!app_running())
+            return 0;
+    }
+    if (!app_alive || return_to_menu)
+        return 0;
     if (dirty && now - last_render_ms >= 500u) {
         last_render_ms = now;
         render();
@@ -375,6 +417,7 @@ static int start_worker(void (*fn)(void), void *user)
         return -1;
     OSSetThreadName(&gs_thread, "gekko2-gs");
     OSResumeThread(&gs_thread);
+    OSDetachThread(&gs_thread);
     return 0;
 }
 static void worker_idle(void) { OSYieldThread(); }
@@ -403,6 +446,7 @@ static int start_worker_stack(void (*fn)(void), void *user, void *stack, unsigne
         return -1;
     OSSetThreadName(&iop_thread, "gekko2-iop");
     OSResumeThread(&iop_thread);
+    OSDetachThread(&iop_thread);
     return 0;
 }
 
@@ -434,6 +478,7 @@ static int start_worker_vu(void (*fn)(void), void *user)
         return -1;
     OSSetThreadName(&vu_thread, "gekko2-vu1");
     OSResumeThread(&vu_thread);
+    OSDetachThread(&vu_thread);
     return 0;
 }
 
@@ -495,7 +540,7 @@ static void run_emulation(void)
                    1u << (unsigned)OSGetCodegenCore());
     OSSetThreadName(&emu_thread, "gekko2-emu");
     OSResumeThread(&emu_thread);
-    while (WHBProcIsRunning() && !return_to_menu) {
+    while (app_running() && !return_to_menu) {
         uint16_t pressed = 0;
         uint8_t axes[4] = { 0x80, 0x80, 0x80, 0x80 };
         const int ok = read_pad(&pressed, axes) == 0;
@@ -555,6 +600,8 @@ static int init_osscreen(void)
 int main(void)
 {
     WHBProcInit();
+    ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, procui_acquire, NULL, 200);
+    ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, procui_release, NULL, 200);
     WHBLogCafeInit();
     VPADInit();
     KPADInit();
@@ -599,13 +646,14 @@ int main(void)
         char gsh_path[300];
         uint32_t gsh_size = 0;
         void *gsh = NULL;
-        if (sd_root[0]) {
+        const int gx2_off = sd_root[0] && file_exists_flag(sd_root, "gx2_off.txt"); /* force the OSScreen path */
+        if (sd_root[0] && !gx2_off) {
             snprintf(gsh_path, sizeof gsh_path, "%s/wiiu/gekko2/present.gsh", sd_root);
             gsh = read_whole_file(gsh_path, &gsh_size);
         }
 #if __has_include("present_gsh_embedded.h")
         /* Release builds carry the assembled presenter shaders; a present.gsh on the SD card still overrides them. */
-        if (!gsh) {
+        if (!gsh && !gx2_off) {
 #include "present_gsh_embedded.h"
             gsh = MEMAllocFromDefaultHeapEx(sizeof present_gsh_data, 0x100);
             if (gsh) {
@@ -618,7 +666,7 @@ int main(void)
             use_gx2 = 1;
             on_log(NULL, "GX2 presenter active (GPU scaling, present.gsh)");
         } else {
-            on_log(NULL, gsh ? "present.gsh was rejected: using OSScreen" : "no present.gsh on the SD card: OSScreen (software)");
+            on_log(NULL, gx2_off ? "gx2_off.txt: OSScreen (software)" : gsh ? "present.gsh was rejected: using OSScreen" : "no present.gsh on the SD card: OSScreen (software)");
             if (!init_osscreen())
                 return 1;
         }
@@ -632,7 +680,7 @@ int main(void)
     }
     { extern void (*gekko2_worker_nap)(void); gekko2_worker_nap = worker_nap; }
     g_platform = (g2_platform){ on_log, on_present, keep, now_ms, poll_pad, start_worker, worker_idle, NULL, start_worker_stack, start_worker_vu };
-    while (menu && WHBProcIsRunning()) {
+    while (menu && app_running()) {
         static uint32_t prev_hold;
         uint32_t hold = 0;
         float axes_unused[4];
@@ -685,6 +733,12 @@ int main(void)
             render();
         }
         OSSleepTicks(OSMillisecondsToTicks(16));
+    }
+    if (app_alive) {
+        /* "Exit" in our menu: under Aroma the app may not just return; launch the Wii U Menu and wait for EXITING. */
+        SYSLaunchMenu();
+        while (app_running())
+            OSSleepTicks(OSMillisecondsToTicks(16));
     }
     wiiu_menu_destroy(menu);
     KPADShutdown();
