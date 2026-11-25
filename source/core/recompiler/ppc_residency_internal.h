@@ -3,10 +3,25 @@
  * guest words; r30 tracks external GPR mutations. Opaque bodies invalidate
  * compile-time bindings rather than assuming an unknown helper contract. */
 typedef struct {
-    int8_t slot[128];
+    int8_t slot[139]; /* GPRs + HI/LO + PC/next_pc gaps + SA. */
     uint16_t offsets[12],valid;
     unsigned count,bank_words,generation_offset;
 } ppc_residency;
+static int residency_chain_plan(ppc_residency *a,const ppc_ee_chain_map *m)
+{
+    if(!m||!m->count||m->count>12u||!m->generation_offset||
+       m->generation_offset>32767u||(m->generation_offset&3u))return 0;
+    memset(a,0,sizeof(*a));memset(a->slot,-1,sizeof a->slot);
+    a->bank_words=139u;a->generation_offset=m->generation_offset;
+    for(unsigned n=0;n<m->count;n++) {
+        unsigned off=m->offsets[n];
+        if((off&3u)||off<16u||(off>=544u&&off!=552u)||a->slot[off/4u]>=0||
+           off==m->generation_offset)return 0;
+        a->slot[off/4u]=(int8_t)n;a->offsets[n]=(uint16_t)off;
+    }
+    a->count=m->count;a->valid=(uint16_t)((1u<<m->count)-1u);
+    return 1;
+}
 static uint64_t resident_blocks,resident_loads,resident_refresh_edges;
 uint64_t ppc_dynarec_get_resident_blocks(void){return resident_blocks;}
 uint64_t ppc_dynarec_get_resident_loads(void){return resident_loads;}

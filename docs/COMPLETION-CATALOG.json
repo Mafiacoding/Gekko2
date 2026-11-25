@@ -1,0 +1,782 @@
+{
+  "schema": 1,
+  "baseline_commit": "7681af281ddb814e302c1eb46cbb8db0deeaa6fb",
+  "items": [
+    {
+      "id": "EE-01",
+      "status": "implementiert_getestet",
+      "title": "C.F.S im Interpreter, Single-/Block-Emitter und AOT-Klassifizierer",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles",
+      "tests": [
+        "test_completion_ee_control",
+        "test_ee_cop2_branch_aot3",
+        "verify_completion_ee_control.py"
+      ],
+      "implementation_commit": "952cc59"
+    },
+    {
+      "id": "EE-02",
+      "status": "implementiert_getestet",
+      "title": "BC2F/T/FL/TL: native Single-Fragmente, weiter konservative Blockgrenze",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles",
+      "tests": [
+        "test_completion_ee_control",
+        "test_ee_cop2_branch_aot3",
+        "verify_completion_ee_control.py"
+      ],
+      "implementation_commit": "952cc59"
+    },
+    {
+      "id": "EE-03",
+      "status": "implementiert_getestet",
+      "title": "Unbekannte EE-Dispatchfälle liefern RI statt Emulator-Halt",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles",
+      "tests": [
+        "test_completion_ee_control",
+        "test_ee_cop2_branch_aot3",
+        "verify_completion_ee_control.py"
+      ],
+      "implementation_commit": "952cc59"
+    },
+    {
+      "id": "EE-04",
+      "status": "teilweise",
+      "title": "FPU-Flags und PS2-Mantissen-/Denormalmodell",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "EE-05",
+      "status": "skalar_absicht",
+      "title": "COP0/TLB/ASID/ERET/EI/DI bleiben Systembarrieren",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "EE-06",
+      "status": "teilweise",
+      "title": "CACHE/SYNC/PREF bilden nur bisherige Baseline-Semantik ab",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "RI, FPU/COP2, Reserved und Decoder-/PPC-Zustände mit unabhängigen Oracles",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "JIT-01",
+      "status": "vorhanden_pruefen",
+      "title": "103 MMI-Formen haben Emitter und Blockzulassung",
+      "source": "source/core/recompiler/ee_jit.c",
+      "gate": "Produktive Zulassung, alle Exits, Guards, EABI und ausgeführte PPC-Differentialtests",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "JIT-02",
+      "status": "vorhanden_pruefen",
+      "title": "Merge-/COP1-/COP2-RAM wird im Block statt Single-Emitter umgesetzt",
+      "source": "source/core/recompiler/ee_jit.c",
+      "gate": "Produktive Zulassung, alle Exits, Guards, EABI und ausgeführte PPC-Differentialtests",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "JIT-03",
+      "status": "teilweise",
+      "title": "Allgemeines Dirty-Writeback über Blockgrenzen fehlt",
+      "source": "source/core/recompiler/ee_jit.c",
+      "gate": "Produktive Zulassung, alle Exits, Guards, EABI und ausgeführte PPC-Differentialtests",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "JIT-04",
+      "status": "teilweise",
+      "title": "Gemeinsames Residenz-Mapping ist gruppenweise begrenzt",
+      "source": "source/core/recompiler/ee_jit.c",
+      "gate": "Produktive Zulassung, alle Exits, Guards, EABI und ausgeführte PPC-Differentialtests",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "JIT-05",
+      "status": "vorhanden_pruefen",
+      "title": "Code-/DMA-/TLB-/Budget-/IRQ-Kantenguards erhalten und verbreitern",
+      "source": "source/core/recompiler/ee_jit.c",
+      "gate": "Produktive Zulassung, alle Exits, Guards, EABI und ausgeführte PPC-Differentialtests",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "JIT-06",
+      "status": "offen",
+      "title": "Unabhängige legale Opcode-/Operand-Abdeckung vervollständigen",
+      "source": "source/core/recompiler/ee_jit.c",
+      "gate": "Produktive Zulassung, alle Exits, Guards, EABI und ausgeführte PPC-Differentialtests",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "JIT-07",
+      "status": "vorhanden_pruefen",
+      "title": "AOT-Infrastruktur vorhanden, öffentliche Tabellen absichtlich leer",
+      "source": "source/core/recompiler/ee_jit.c",
+      "gate": "Produktive Zulassung, alle Exits, Guards, EABI und ausgeführte PPC-Differentialtests",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "JIT-08",
+      "status": "hardware_nachweis",
+      "title": "Chain liefert bisher keinen gemessenen Wii-Gesamtgewinn",
+      "source": "source/core/recompiler/ee_jit.c",
+      "gate": "Produktive Zulassung, alle Exits, Guards, EABI und ausgeführte PPC-Differentialtests",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "IOP-01",
+      "status": "vorhanden_pruefen",
+      "title": "Load-Delay und präzise Integer-Exceptions bereits vorhanden",
+      "source": "source/core/iop/iop_core.c",
+      "gate": "R3000-Load-Delay/Exceptions, Native/HLE/IRQ und Memory-Notify",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "IOP-02",
+      "status": "teilweise",
+      "title": "Native IOP-/Lightrec-Zulassung und HLE-Interlocks umfassend prüfen",
+      "source": "source/core/iop/iop_core.c",
+      "gate": "R3000-Load-Delay/Exceptions, Native/HLE/IRQ und Memory-Notify",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "IOP-03",
+      "status": "optional_abwesend",
+      "title": "Optionale PS1-Kompatibilität/GTE-Geräte",
+      "source": "source/core/iop/iop_core.c",
+      "gate": "R3000-Load-Delay/Exceptions, Native/HLE/IRQ und Memory-Notify",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "VU-01",
+      "status": "vorhanden_pruefen",
+      "title": "95 Upper-Emitter und viele VU0-Macro-Formen bereits vorhanden",
+      "source": "source/hw/vu.c",
+      "gate": "Getaktete Paare, Flags/ACC/VI, Q/P/EFU und unabhängige Float-Oracles",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "VU-02",
+      "status": "teilweise",
+      "title": "Getaktete VU-Arithmetik nutzt gemeinsame skalare/AOT-Helfer",
+      "source": "source/hw/vu.c",
+      "gate": "Getaktete Paare, Flags/ACC/VI, Q/P/EFU und unabhängige Float-Oracles",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "VU-03",
+      "status": "teilweise",
+      "title": "PS2-Float/ACC-Zwischenwerte und EFU-Präzision",
+      "source": "source/hw/vu.c",
+      "gate": "Getaktete Paare, Flags/ACC/VI, Q/P/EFU und unabhängige Float-Oracles",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "VU-04",
+      "status": "teilweise",
+      "title": "CLIP-Latenz und VI-/Branch-Forwarding",
+      "source": "source/hw/vu.c",
+      "gate": "Getaktete Paare, Flags/ACC/VI, Q/P/EFU und unabhängige Float-Oracles",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "VU-05",
+      "status": "vorhanden_pruefen",
+      "title": "Q/P, FMAC-Queue, M-Yield und Scoreboards vorhanden",
+      "source": "source/hw/vu.c",
+      "gate": "Getaktete Paare, Flags/ACC/VI, Q/P/EFU und unabhängige Float-Oracles",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GIF-01",
+      "status": "hardware_nachweis",
+      "title": "Schmale GS-ACKs/pending IMR korrigiert; Crash-SIGNAL-/XGKICK-Fixbeleg auf Wii offen",
+      "source": "source/hw/gif.c",
+      "gate": "Producer/ACK, Pfadbesitz, EOP, Ringwrap und Backpressure ohne Datenverlust",
+      "tests": [
+        "tests/test_gs_irq_access.c",
+        "tests/test_gif_signal_backpressure.c"
+      ],
+      "implementation_commit": "7791683"
+    },
+    {
+      "id": "GIF-02",
+      "status": "teilweise",
+      "title": "PATH1/2/3, IMT/MSKPATH3/DIRECTHL und FIFO-Gesamtmatrix",
+      "source": "source/hw/gif.c",
+      "gate": "Producer/ACK, Pfadbesitz, EOP, Ringwrap und Backpressure ohne Datenverlust",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "VIF-01",
+      "status": "teilweise",
+      "title": "CPU-SQ/FIFO/FQC korrigiert; UNPACK/STCYCL/Masken/TOP/ITOP/MPG-Gesamtmatrix offen",
+      "source": "source/hw/vif.c",
+      "gate": "UNPACK-/STCYCL-/Maskenmatrix und laufende VU/DMA-/IRQ-Unterbrechungen",
+      "tests": [
+        "tests/test_vif_cpu_fifo.c",
+        "tests/test_vif_micro_barriers.c"
+      ],
+      "implementation_commit": "c6a1a04"
+    },
+    {
+      "id": "VIF-02",
+      "status": "teilweise",
+      "title": "FLUSH/MSCAL/MSCNT bei laufender VU und XGKICK",
+      "source": "source/hw/vif.c",
+      "gate": "UNPACK-/STCYCL-/Maskenmatrix und laufende VU/DMA-/IRQ-Unterbrechungen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "DMA-01",
+      "status": "teilweise",
+      "title": "Reverse-VIF1/GS-Chain und Richtungs-Sonderfälle",
+      "source": "source/hw/dma.c",
+      "gate": "Tagarten, Richtungen, Rest-QWC, FIFO, Fristen und tatsächliche IRQs",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "DMA-02",
+      "status": "teilweise",
+      "title": "Interleave/MFIFO/REFS und Bus-Timing",
+      "source": "source/hw/dma.c",
+      "gate": "Tagarten, Richtungen, Rest-QWC, FIFO, Fristen und tatsächliche IRQs",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "TIME-01",
+      "status": "teilweise",
+      "title": "EE/IOP-Scheduler basiert weiter auf Instruktionsslots",
+      "source": "source/core/system.c",
+      "gate": "Unveränderte sichtbare Geräteereignisse und belegte Zyklusrelationen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "TIME-02",
+      "status": "teilweise",
+      "title": "Physische Bus-/FIFO-/IRQ-Latenzen teilweise synchron",
+      "source": "source/core/system.c",
+      "gate": "Unveränderte sichtbare Geräteereignisse und belegte Zyklusrelationen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GS-01",
+      "status": "vorhanden_pruefen",
+      "title": "13 PSM-Quellformate und physische CLUT implementiert",
+      "source": "source/hw/gif.c",
+      "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GS-02",
+      "status": "implementiert_getestet",
+      "title": "Q/K/L-LOD pro Dreiecksfragment und Sprite, skalierte Mips und sechs Filter",
+      "source": "source/hw/gif.c",
+      "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
+      "tests": [
+        "tests/test_gs_lod_mtba.c",
+        "tests/test_gs_mipmap.c",
+        "tests/test_gs_mipmap_triangle.c"
+      ],
+      "implementation_commit": "e1fe59a"
+    },
+    {
+      "id": "GS-03",
+      "status": "teilweise",
+      "title": "MTBA erste drei Ebenen und Trilinear implementiert; TBW0/GS-Bitpräzision offen",
+      "source": "source/hw/gif.c",
+      "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
+      "tests": [
+        "tests/test_gs_lod_mtba.c"
+      ],
+      "implementation_commit": "e1fe59a"
+    },
+    {
+      "id": "GS-04",
+      "status": "teilweise",
+      "title": "AA1/Kanten und Texturierung von Punkten/Linien unvollständig",
+      "source": "source/hw/gif.c",
+      "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GS-05",
+      "status": "teilweise",
+      "title": "COLCLAMP/PABE/ALPHA/FBA/FBMSK-Gesamtmatrix",
+      "source": "source/hw/gif.c",
+      "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GS-06",
+      "status": "teilweise",
+      "title": "Texture-Shuffle/Framebuffer-Feedback",
+      "source": "source/hw/gif.c",
+      "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GS-07",
+      "status": "vorhanden_pruefen",
+      "title": "Zweikreis-PMODE-Komposition ist implementiert",
+      "source": "source/hw/gif.c",
+      "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GS-08",
+      "status": "offen",
+      "title": "EXTWRITE/externe PCRTC-Feedback-Ausgabe",
+      "source": "source/hw/gif.c",
+      "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GS-09",
+      "status": "teilweise",
+      "title": "CRT-/Interlace-/Field-Timing und Präsentation",
+      "source": "source/hw/gif.c",
+      "gate": "Unabhängige Pixel-/Adress-/Transfer-/Displayoracles vor GX-Zulassung",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GX-01",
+      "status": "teilweise",
+      "title": "Komplexe GS-Zustände fallen auf Software zurück",
+      "source": "source/hw/gs_gx.c",
+      "gate": "Softwarevergleich, Ownership/Fences und tatsächliches GPU-Readback",
+      "tests": [
+        "tests/test_gx_generic_admission.c",
+        "tests/test_gx_shaded_triangle_r1370.c"
+      ],
+      "implementation_commit": "96cebd8"
+    },
+    {
+      "id": "GX-02",
+      "status": "teilweise",
+      "title": "CT16/16S und maskierte Ziel-/Depth-Blends",
+      "source": "source/hw/gs_gx.c",
+      "gate": "Softwarevergleich, Ownership/Fences und tatsächliches GPU-Readback",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GX-03",
+      "status": "teilweise",
+      "title": "CPU-Pixelberechtigungen bleiben trotz GX-RGB teuer",
+      "source": "source/hw/gs_gx.c",
+      "gate": "Softwarevergleich, Ownership/Fences und tatsächliches GPU-Readback",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GX-04",
+      "status": "teilweise",
+      "title": "Cache-/Draw-Bündelung und partielle Readbacks",
+      "source": "source/hw/gs_gx.c",
+      "gate": "Softwarevergleich, Ownership/Fences und tatsächliches GPU-Readback",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GX-05",
+      "status": "hardware_nachweis",
+      "title": "Echte TEV-/Blend-/Kantenpixel nicht durch Hostmodelle bewiesen",
+      "source": "source/hw/gs_gx.c",
+      "gate": "Softwarevergleich, Ownership/Fences und tatsächliches GPU-Readback",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "IPU-01",
+      "status": "vorhanden_pruefen",
+      "title": "Legale Hauptcommands haben Implementierungen; Reserved separat führen",
+      "source": "source/hw/ipu.c",
+      "gate": "Legale unabhängige Bitstreams, Rundung, Retry, Reset und Gerätefristen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "IPU-02",
+      "status": "teilweise",
+      "title": "MPEG-Koeffizienten/Escape/Field/Scan-Konformität",
+      "source": "source/hw/ipu.c",
+      "gate": "Legale unabhängige Bitstreams, Rundung, Retry, Reset und Gerätefristen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "IPU-03",
+      "status": "teilweise",
+      "title": "IDCT-/CSC-/PACK-Grenzen und Rundung",
+      "source": "source/hw/ipu.c",
+      "gate": "Legale unabhängige Bitstreams, Rundung, Retry, Reset und Gerätefristen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "IPU-04",
+      "status": "vorhanden_pruefen",
+      "title": "CPU-/DMA-FIFO-Retries implementiert",
+      "source": "source/hw/ipu.c",
+      "gate": "Legale unabhängige Bitstreams, Rundung, Retry, Reset und Gerätefristen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "IPU-05",
+      "status": "teilweise",
+      "title": "Physische IPU-/DMA-/BUSY-Latenzen",
+      "source": "source/hw/ipu.c",
+      "gate": "Legale unabhängige Bitstreams, Rundung, Retry, Reset und Gerätefristen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "SPU-01",
+      "status": "implementiert_getestet",
+      "title": "Noise-Generator, alle 64 Clockwerte und NON im Mixer angebunden",
+      "source": "source/hw/spu2_mixer.c",
+      "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
+      "tests": [
+        "tests/test_completion_spu2.c",
+        "tests/test_spu2_mixer.c",
+        "tests/test_iop_dma_spu2.c",
+        "tests/test_checkpoint_rspu2_r1340.c"
+      ],
+      "implementation_commit": "fa84c9b"
+    },
+    {
+      "id": "SPU-02",
+      "status": "implementiert_getestet",
+      "title": "Pitch-Modulation aus voriger Post-ADSR-Stimme; Stimme 0 ausgenommen",
+      "source": "source/hw/spu2_mixer.c",
+      "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
+      "tests": [
+        "tests/test_completion_spu2.c",
+        "tests/test_spu2_mixer.c",
+        "tests/test_iop_dma_spu2.c",
+        "tests/test_checkpoint_rspu2_r1340.c"
+      ],
+      "implementation_commit": "fa84c9b"
+    },
+    {
+      "id": "SPU-03",
+      "status": "implementiert_getestet",
+      "title": "Voice-/Master-Sweeps, VOLX und abwärtskompatibler Checkpoint",
+      "source": "source/hw/spu2_mixer.c",
+      "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
+      "tests": [
+        "tests/test_completion_spu2.c",
+        "tests/test_spu2_mixer.c",
+        "tests/test_iop_dma_spu2.c",
+        "tests/test_checkpoint_rspu2_r1340.c"
+      ],
+      "implementation_commit": "fa84c9b"
+    },
+    {
+      "id": "SPU-04",
+      "status": "offen",
+      "title": "Gaussian-Interpolation fehlt",
+      "source": "source/hw/spu2_mixer.c",
+      "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "SPU-05",
+      "status": "offen",
+      "title": "Reverb-/Effekt-RAM-Datapath fehlt",
+      "source": "source/hw/spu2_mixer.c",
+      "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "SPU-06",
+      "status": "teilweise",
+      "title": "Writable ENVX und breite PMON korrigiert; ADSR/Key-On/stille Stimmen zeitlich unvollständig",
+      "source": "source/hw/spu2_mixer.c",
+      "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
+      "tests": [
+        "tests/test_spu2_envx.c"
+      ],
+      "implementation_commit": "d59ef23"
+    },
+    {
+      "id": "SPU-07",
+      "status": "vorhanden_pruefen",
+      "title": "SPU2-DMA/AutoDMA/Capture und Ausgabe angebunden",
+      "source": "source/hw/spu2_mixer.c",
+      "gate": "Unabhängige Clock-/PCM-/Register-Oracles, IRQ/DMA und Checkpoint",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "MC-01",
+      "status": "vorhanden_pruefen",
+      "title": "Native PS2-Karte und Standard-FAT-Dateien implementiert",
+      "source": "source/hw/ps2_mc_files.c",
+      "gate": "Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "MC-02",
+      "status": "teilweise",
+      "title": "GETENTSPACE implementiert; destruktives CheckBlock bleibt offen",
+      "source": "source/hw/ps2_mc_files.c",
+      "gate": "Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption",
+      "tests": [
+        "tests/test_mc_ent_space.c",
+        "tests/test_ps2_mc_files.c"
+      ],
+      "implementation_commit": "87d4013"
+    },
+    {
+      "id": "MC-03",
+      "status": "offen",
+      "title": "Raw-Page/Erase-RPCs fehlen",
+      "source": "source/hw/ps2_mc_files.c",
+      "gate": "Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "MC-04",
+      "status": "offen",
+      "title": "Directory-Open/Read-Descriptors fehlen",
+      "source": "source/hw/ps2_mc_files.c",
+      "gate": "Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "MC-05",
+      "status": "offen",
+      "title": "Zweiter Kartenport/Slot/Multitap fehlt",
+      "source": "source/hw/ps2_mc_files.c",
+      "gate": "Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "MC-06",
+      "status": "offen",
+      "title": "MagicGate und öffentlicher F0-Buspfad fehlen",
+      "source": "source/hw/ps2_mc_files.c",
+      "gate": "Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "MC-07",
+      "status": "teilweise",
+      "title": "Andere Kartengeometrien/importierte Sonderfälle",
+      "source": "source/hw/ps2_mc_files.c",
+      "gate": "Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "MC-08",
+      "status": "teilweise",
+      "title": "In-flight SIO2-DMA wird im Checkpoint abgewiesen",
+      "source": "source/hw/ps2_mc_files.c",
+      "gate": "Exakte RPC-/Karten-Layouts, Persistenz, Schreibschutz und keine Datenkorruption",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "RPC-01",
+      "status": "teilweise",
+      "title": "LOADFILE-Erfolg teils synthetische Modul-ID",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "Reale Modul-/Datei-/Transferzustände statt synthetischer Erfolgsmeldungen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "RPC-02",
+      "status": "teilweise",
+      "title": "FILEIO/RSPU2/PADMAN-HLE statt allgemeiner IOP-Ausführung",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "Reale Modul-/Datei-/Transferzustände statt synthetischer Erfolgsmeldungen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "RPC-03",
+      "status": "teilweise",
+      "title": "SIF-DMA-IDs/Lebensdauer nicht vollständig modelliert",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "Reale Modul-/Datei-/Transferzustände statt synthetischer Erfolgsmeldungen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "RPC-04",
+      "status": "teilweise",
+      "title": "IOP-Modulgeräte-/Import-/Export-/Startzustand",
+      "source": "source/core/ee/ee_core.c",
+      "gate": "Reale Modul-/Datei-/Transferzustände statt synthetischer Erfolgsmeldungen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "CDVD-01",
+      "status": "teilweise",
+      "title": "NCMD/SCMD/Tray/Disc-Typ-Matrix",
+      "source": "source/hw/iop_cdvd.c",
+      "gate": "Command-/Fehler-/Sektorlayout-/Tray-/Timingmatrix und echte Daten",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "CDVD-02",
+      "status": "teilweise",
+      "title": "CDDA/RAW-CD/DVD-Sonderformate und Laufwerkszeit",
+      "source": "source/hw/iop_cdvd.c",
+      "gate": "Command-/Fehler-/Sektorlayout-/Tray-/Timingmatrix und echte Daten",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "PAD-01",
+      "status": "teilweise",
+      "title": "Pad-Modi/Pressure/Vibration/Multitap",
+      "source": "source/hw/iop_sio2.c",
+      "gate": "Serieller/RPC-Pfad, Modi, Ein-/Ausgabe und Abwesenheit",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "DEV-01",
+      "status": "optional_abwesend",
+      "title": "DEV9/HDD/Netzwerk fehlt als vollwertiges Gastgerät",
+      "source": "source/core/iop/iop_core.c",
+      "gate": "Benötigte Gerätefunktionen von korrekt konfigurierter Abwesenheit trennen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "DEV-02",
+      "status": "optional_abwesend",
+      "title": "USB/i.Link-PS2-Geräte nicht allgemein emuliert",
+      "source": "source/core/iop/iop_core.c",
+      "gate": "Benötigte Gerätefunktionen von korrekt konfigurierter Abwesenheit trennen",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "MEM-01",
+      "status": "hardware_nachweis",
+      "title": "Dynamischer Wii-MEM2-Peak nicht gemessen",
+      "source": "source/core/checkpoint.c",
+      "gate": "Pointerfreie Versionierung, Fehlerpfade und dynamische Wii-Gesamtbelegung",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "MEM-02",
+      "status": "teilweise",
+      "title": "Alle optionalen Gerätezustände checkpointfähig machen",
+      "source": "source/core/checkpoint.c",
+      "gate": "Pointerfreie Versionierung, Fehlerpfade und dynamische Wii-Gesamtbelegung",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "PERF-01",
+      "status": "hardware_nachweis",
+      "title": "Aktuelle Hotspots pro identischer Wii-Szene fehlen",
+      "source": "source/core/runtime_profile.c",
+      "gate": "Gleicher Gastweg/Bild/Retirement/Optionen und echte Wii-Gesamtzeit",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GAME-01",
+      "status": "hardware_nachweis",
+      "title": "SCPH-50004-BIOS-Kacheln ungeklärt",
+      "source": "docs/CODEX_HANDOFF.md",
+      "gate": "Identischer Gastzustand, echte Wii-Bilder, steuerbare Szene und frischer Logbeleg",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GAME-02",
+      "status": "hardware_nachweis",
+      "title": "Crash E3 ohne steuerbaren Gameplaybeleg",
+      "source": "docs/CODEX_HANDOFF.md",
+      "gate": "Identischer Gastzustand, echte Wii-Bilder, steuerbare Szene und frischer Logbeleg",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GAME-03",
+      "status": "hardware_nachweis",
+      "title": "Tekken ohne neuen steuerbaren 3D-Kampfbeleg",
+      "source": "docs/CODEX_HANDOFF.md",
+      "gate": "Identischer Gastzustand, echte Wii-Bilder, steuerbare Szene und frischer Logbeleg",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GAME-04",
+      "status": "hardware_nachweis",
+      "title": "GT3-Kartenabfrage/Rennstart unbelegt",
+      "source": "docs/CODEX_HANDOFF.md",
+      "gate": "Identischer Gastzustand, echte Wii-Bilder, steuerbare Szene und frischer Logbeleg",
+      "tests": [],
+      "implementation_commit": null
+    },
+    {
+      "id": "GAME-05",
+      "status": "hardware_nachweis",
+      "title": "KOF-Zielszene/Fassung unvollständig untersucht",
+      "source": "docs/CODEX_HANDOFF.md",
+      "gate": "Identischer Gastzustand, echte Wii-Bilder, steuerbare Szene und frischer Logbeleg",
+      "tests": [],
+      "implementation_commit": null
+    }
+  ]
+}

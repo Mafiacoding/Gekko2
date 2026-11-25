@@ -108,19 +108,16 @@ int main(void)
               "DIMX configured, DTHE=0: dithering does not apply (DTHE is the real gate)");
     }
 
-    { /* DTHE=1, pixel at (1,1) -> DIMX[1][1] = DM11 = +3: color 100
-       * becomes 103 on R/G/B, alpha untouched. */
+    { /* DTHE has no effect on this CT32 target, even with nonzero DIMX. */
         uint32_t px = sample(100, 100, 100, 1, 1, 1, 1, dm, 0);
-        CHECK(px == (0xFFu << 24 | 103u << 16 | 103u << 8 | 103u),
-              "DTHE=1 at (1,1): DIMX[1][1]=+3 dithers 100 -> 103 on R/G/B");
+        CHECK(px == (0xFFu << 24 | 100u << 16 | 100u << 8 | 100u),
+              "CT32 DTHE=1 at (1,1): DIMX does not change the framebuffer");
     }
 
-    { /* DTHE=1, pixel at (2,2) -> DIMX[2][2] = DM22 = -4: color 100
-       * becomes 96. Also proves the Y%4/X%4 wraparound: (6,6) maps to
-       * the same DIMX[2][2] entry as (2,2). */
+    { /* The same CT32 rule applies to negative dither and wrapped coordinates. */
         uint32_t px = sample(100, 100, 100, 6, 6, 1, 1, dm, 0);
-        CHECK(px == (0xFFu << 24 | 96u << 16 | 96u << 8 | 96u),
-              "DTHE=1 at (6,6) [wraps to DIMX[2][2] via %4]: dithers 100 -> 96");
+        CHECK(px == (0xFFu << 24 | 100u << 16 | 100u << 8 | 100u),
+              "CT32 DTHE=1 at (6,6): negative DIMX does not change the framebuffer");
     }
 
     { /* TEXFLUSH is a genuine no-op: writing it (with arbitrary data,

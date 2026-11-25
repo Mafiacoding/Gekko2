@@ -56,6 +56,7 @@
  * claim about real hardware's own literal address layout. */
 
 #include "core/hw/iop_heap.h"
+#include "core/iop_async.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -371,6 +372,7 @@ static struct alloc_elem *findblock(uint32_t a_addr) {
 }
 
 uint32_t iop_heap_alloc(int flags, uint32_t size, uint32_t mem) {
+    G2_EE_CALLS_IOP();
     uint32_t r;
     if (!g_alloclist || flags >= 3) return 0u;
     r = do_alloc(flags, size, mem);

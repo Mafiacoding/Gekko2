@@ -5,6 +5,7 @@ extern void system_shared_sync_reason(unsigned reason) __attribute__((weak));
  * exact per-register semantics and PCSX2 source cross-reference.
  */
 #include "core/hw/sif.h"
+#include "core/iop_async.h"
 #include "core/hw/ee_intc.h"
 #include <string.h>
 
@@ -380,6 +381,7 @@ int sif_mmio_write32(uint32_t addr, uint32_t value)
 
 int sif_iop_mmio_read32(uint32_t addr, uint32_t *out)
 {
+    G2_IOP_CALLS_EE();
     /* Task #165 fix: the IOP has no MMU/TLB, so KUSEG (0x00000000-
      * 0x7FFFFFFF, direct), KSEG0 (0x80000000-0x9FFFFFFF, cached
      * mirror) and KSEG1 (0xA0000000-0xBFFFFFFF, uncached mirror) all
@@ -423,6 +425,7 @@ int sif_iop_mmio_read32(uint32_t addr, uint32_t *out)
 
 int sif_iop_mmio_write32(uint32_t addr, uint32_t value)
 {
+    G2_IOP_CALLS_EE();
     /* Task #165 fix: same KUSEG/KSEG0/KSEG1-alias masking as the read
      * side above - see that function's comment for the full
      * rationale. */
@@ -572,6 +575,7 @@ int sif_iop_mmio_write32(uint32_t addr, uint32_t value)
 
 void sif_note_iop_boot_completed_once(void)
 {
+    G2_IOP_CALLS_EE();
     g_sif_extra.iop_boot_completed_once = 1;
 }
 

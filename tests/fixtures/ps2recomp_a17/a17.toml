@@ -1,0 +1,7 @@
+[general]
+input = "a17.elf"
+output = "out"
+single_file_output = true
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false

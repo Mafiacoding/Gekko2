@@ -56,4 +56,4 @@ int frontend_allow_gx_primitives(int requested,int first)
 {return requested&&first;}
 
 int frontend_allow_gx_output(int requested,int first,unsigned psm)
-{return requested && first && (psm==0u || psm==1u);}
+{return requested && first && (psm==0u || psm==1u || psm==2u || psm==10u);}

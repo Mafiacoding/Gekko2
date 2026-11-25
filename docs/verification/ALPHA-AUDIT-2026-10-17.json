@@ -1,0 +1,330 @@
+{
+  "date": "2026-10-17",
+  "source_commit": "c51ab567f651195beb0470b11419d8b7eafa4fd8",
+  "scope": "Read-only emulator audit, documentation and option metadata probe",
+  "host": {
+    "command": "python3 tools/test_beta12_27_host.py --output-json <path>",
+    "passed": 55,
+    "tests": [
+      "test_gs_dither_admission",
+      "test_gs_blend_formats",
+      "test_vif_direct_streaming",
+      "test_chain_residency_cache",
+      "test_gs_psm_convert_beta12_11",
+      "test_beta12_20_gx_alpha",
+      "test_gx_pipeline_r1298",
+      "test_gs_alias_sync_beta12_13",
+      "test_scanout_grid_hash",
+      "test_scanout_readback_failure",
+      "test_dma_ipu_stall",
+      "test_ipu_idec_fields",
+      "test_hardware_accuracy_r1384",
+      "test_gif_signal_backpressure",
+      "test_vif_transport_r1379",
+      "test_vif_split_irq_beta11",
+      "test_dma_vif_tag_transfer",
+      "test_xgkick_timing_aot3",
+      "test_xgkick_boundary_r1379",
+      "test_gs_dither",
+      "test_gs_colclamp",
+      "test_beta12_19_framebuffer16",
+      "options-control",
+      "options-chain",
+      "options-interpreter",
+      "chain-map-RAM-control",
+      "PSM-four-modes",
+      "test_xgkick_live_tag",
+      "test_ipu_soft_reset_predictors",
+      "test_gs_clut_banks",
+      "test_gs_depth_texture",
+      "test_controller_r1364",
+      "test_gs_clut",
+      "test_gif_texture",
+      "test_gx_formats_beta12_22",
+      "test_gx_output_psm_r1294",
+      "ipu-coefficient-oracle",
+      "test_vu_integer_memory_masks",
+      "test_vif_micro_barriers",
+      "test_gs_uv_fraction",
+      "test_vu_micro",
+      "test_vu_q_pipeline_internal",
+      "test_vif",
+      "test_vif_payload_r1379",
+      "test_gif_packed_tex_clamp",
+      "test_gs_display_scaling",
+      "test_xfb_aspect",
+      "test_gx_fragment_actions",
+      "test_gx_fragment_oracle",
+      "test_gx_extended_admission",
+      "test_gx_protected_hash",
+      "test_gx_shaded_triangle_r1370",
+      "test_gx_generic_sources",
+      "test_gx_generic_admission",
+      "test_gx_risk_mode"
+    ]
+  },
+  "additional": {
+    "passed": 10,
+    "results": [
+      {
+        "test": "test_jit_generation_r1316",
+        "exit_code": 0,
+        "output": "R1316 generation test: PASS\n"
+      },
+      {
+        "test": "test_jit_cache_eviction_r1318",
+        "exit_code": 0,
+        "output": "R1318 cache eviction test: PASS\n"
+      },
+      {
+        "test": "test_optimization_r1354",
+        "exit_code": 0,
+        "output": "PASS R1354 cold-boot switches, v6 compatibility, v8 persistence and invalid-version mask rejection\n"
+      },
+      {
+        "test": "test_iop_sio2_mc",
+        "exit_code": 0,
+        "output": "PASS=29 FAIL=0\n"
+      },
+      {
+        "test": "test_gs_clut_cache",
+        "exit_code": 0,
+        "output": "PASS: CLUT source layout, CSA, CLD cache and CSM2\n"
+      },
+      {
+        "test": "test_gs_texclut",
+        "exit_code": 0,
+        "output": "ok:   no TEXCLUT write: CLUT sample resolves normally via CBP/CSA (regression safety)\nok:   TEXCLUT written with arbitrary CBW/COU/COV: draw result unaffected (genuine no-op under CSM1-only scope)\nALL TESTS PASSED\n"
+      },
+      {
+        "test": "test_ipu_profile_r1334",
+        "exit_code": 0,
+        "output": "PASS IPU diagnostics distinguish retained input, overflow and unsupported opcode; cold boot clears observations\n"
+      },
+      {
+        "test": "test_ipu_idec_r1337",
+        "exit_code": 0,
+        "output": "PASS IDEC two intra macroblocks, RGB32/RGB16, SGN, FIFO backpressure and checkpoint resume\n"
+      },
+      {
+        "test": "test_ipu_bdec_r1337",
+        "exit_code": 0,
+        "output": "PASS real BDEC DC macroblock, CBP=0 signed residual, start-code/TOP, FIFO output and IDCT legal extrema\n"
+      },
+      {
+        "test": "test_ipu_r1335_with_worker",
+        "exit_code": 0,
+        "output": "PASS IPU bitstream, FIFO backpressure, real FROM/TO DMA, chain resume, CSC formats/alpha, IRQ, state and worker ABI\n"
+      }
+    ]
+  },
+  "codegen": {
+    "command": "cc -O2 -Iinclude -Isource tests/test_beta12_16_codegen.c source/core/recompiler/ppc_dynarec.c source/core/recompiler/ppc_code_cache.c source/core/recompiler/optimization.c -lm -o <temporary-executable>",
+    "result": "MMI signed PCGT/PMAX codegen + mask/reference: 500015 checks, 0 failures",
+    "executes_emitted_PPC": false
+  },
+  "options": {
+    "command": "python3 tools/audit_alpha_options.py --output-json <path>",
+    "profiles": {
+      "host_metadata": {
+        "metadata_defines": [],
+        "experiments": [
+          {
+            "index": 0,
+            "available": false,
+            "requested": false,
+            "active": false
+          },
+          {
+            "index": 1,
+            "available": true,
+            "requested": false,
+            "active": false
+          },
+          {
+            "index": 2,
+            "available": false,
+            "requested": false,
+            "active": false
+          }
+        ],
+        "available_mask": "fff7f740",
+        "requested_default_mask": "00707540",
+        "active_default_mask": "00707540",
+        "all_off_requested_mask": "00000000",
+        "all_off_active_mask": "00000000"
+      },
+      "wii_default_metadata": {
+        "metadata_defines": [
+          "-DGEKKO"
+        ],
+        "experiments": [
+          {
+            "index": 0,
+            "available": false,
+            "requested": false,
+            "active": false
+          },
+          {
+            "index": 1,
+            "available": true,
+            "requested": false,
+            "active": false
+          },
+          {
+            "index": 2,
+            "available": false,
+            "requested": false,
+            "active": false
+          }
+        ],
+        "available_mask": "ffffffff",
+        "requested_default_mask": "00787df7",
+        "active_default_mask": "00787df7",
+        "all_off_requested_mask": "00000000",
+        "all_off_active_mask": "00000000"
+      },
+      "beta12_27_metadata": {
+        "metadata_defines": [
+          "-DGEKKO",
+          "-DGEKKO2_EE_BLOCK_FAST",
+          "-DGEKKO2_DSI_FASTMEM",
+          "-DGEKKO2_GX_NATIVE_BIOS_TRI",
+          "-DGEKKO2_EE_CHAIN_RESIDENCY",
+          "-DGEKKO2_GX_GENERIC_SHADER",
+          "-DGEKKO2_GX_EXTENDED_TRIANGLES",
+          "-DGEKKO2_GX_RISK_MODE"
+        ],
+        "experiments": [
+          {
+            "index": 0,
+            "available": true,
+            "requested": false,
+            "active": false
+          },
+          {
+            "index": 1,
+            "available": true,
+            "requested": false,
+            "active": false
+          },
+          {
+            "index": 2,
+            "available": true,
+            "requested": false,
+            "active": false
+          }
+        ],
+        "available_mask": "ffffffff",
+        "requested_default_mask": "00787dff",
+        "active_default_mask": "00787dff",
+        "all_off_requested_mask": "00000000",
+        "all_off_active_mask": "00001080"
+      },
+      "interpreter_metadata": {
+        "metadata_defines": [
+          "-DGEKKO",
+          "-DPCSX2WII_JIT_DISABLE"
+        ],
+        "experiments": [
+          {
+            "index": 0,
+            "available": false,
+            "requested": false,
+            "active": false
+          },
+          {
+            "index": 1,
+            "available": true,
+            "requested": false,
+            "active": false
+          },
+          {
+            "index": 2,
+            "available": false,
+            "requested": false,
+            "active": false
+          }
+        ],
+        "available_mask": "fff7f7c0",
+        "requested_default_mask": "007075c0",
+        "active_default_mask": "007075c0",
+        "all_off_requested_mask": "00000000",
+        "all_off_active_mask": "00000000"
+      }
+    }
+  },
+  "reference_files": [
+    {
+      "url": "https://raw.githubusercontent.com/PCSX2/pcsx2/091ab68708a555198d80a7216965481c7ddd0d98/pcsx2/GS/GSClut.cpp",
+      "bytes": 25415,
+      "sha256": "9f4ed253c162855bc4d2838c08b522cbd28b6af96d03abd44cf0f83415bb1e32"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/PCSX2/pcsx2/091ab68708a555198d80a7216965481c7ddd0d98/pcsx2/GS/GSClut.h",
+      "bytes": 4979,
+      "sha256": "cfc47514c7cb8cc9681ce064706fb14646e8f5f3fd27f50e283e4c66fe96ab78"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/PCSX2/pcsx2/091ab68708a555198d80a7216965481c7ddd0d98/pcsx2/GS/GSLocalMemory.cpp",
+      "bytes": 25866,
+      "sha256": "46da01086c93f3839c0c20787433f8cd0b7b89790d42f12414f9589c66fd4e51"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/PCSX2/pcsx2/091ab68708a555198d80a7216965481c7ddd0d98/pcsx2/GS/GSState.cpp",
+      "bytes": 243790,
+      "sha256": "944a6d0048f65a583e7af4269c0c36c213ddac609a199336ad1f0b7966f10498"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/PCSX2/pcsx2/091ab68708a555198d80a7216965481c7ddd0d98/pcsx2/Gif.cpp",
+      "bytes": 21179,
+      "sha256": "703a59851661d73c087539dde645b2003267cb8c4e45d484c3198ad7fdaff905"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/PCSX2/pcsx2/091ab68708a555198d80a7216965481c7ddd0d98/pcsx2/IPU/IPU.cpp",
+      "bytes": 12916,
+      "sha256": "a35742f6a8754bd3ef02507f5456a024395568ca4888a1140efe542afad709b4"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/PCSX2/pcsx2/091ab68708a555198d80a7216965481c7ddd0d98/pcsx2/SIO/Memcard/MemoryCardProtocol.cpp",
+      "bytes": 12213,
+      "sha256": "dc702400469e5ca3fc9e9fc3493ef55bd02bbff673512b72a09be8e20840830a"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/jpd002/Play-/d44bfa1814b729d4a3ed3c6c3a945432d5ee5bbe/License.txt",
+      "bytes": 1336,
+      "sha256": "e9089da5950600267bb657503aba6eb59cb679b455c2997d341d83144144daab"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/jpd002/Play-/d44bfa1814b729d4a3ed3c6c3a945432d5ee5bbe/Source/gs/GSHandler.cpp",
+      "bytes": 60067,
+      "sha256": "c971cd8679785433ca60d9b76be26cdb8b2f6b79ec1c68ae954d0b3daf1215de"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/jpd002/Play-/d44bfa1814b729d4a3ed3c6c3a945432d5ee5bbe/Source/ee/Vif.cpp",
+      "bytes": 26220,
+      "sha256": "90447cfc89c4778bab51b0c6a04378ad8cea9cb0d33665cf41f88cb5b4c828de"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/jpd002/Play-/d44bfa1814b729d4a3ed3c6c3a945432d5ee5bbe/Source/ee/IPU.cpp",
+      "bytes": 47669,
+      "sha256": "ed447ad4eaa549af855d3b47c0596bd035344c18d749fa0649aca12d5c0f137d"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/jpd002/Play-/d44bfa1814b729d4a3ed3c6c3a945432d5ee5bbe/Source/iop/Iop_McServ.cpp",
+      "bytes": 37205,
+      "sha256": "242c54ce9d076065312e5edbead98433065dcc5e5460a1d16d1c0e119eca8ca1"
+    }
+  ],
+  "limitations": [
+    "No new Wii DOL/ELF build for this documentation and inventory batch",
+    "No Dolphin or real Wii execution",
+    "No private BIOS, disc, logs or proprietary profiles used",
+    "All passed memory-card tests exercise existing PS1 card model, not native PS2 support",
+    "Initial test_ipu_r1335 generic linkage omitted arm/worker.c and failed; portable worker linked in external wrapper and test then passed"
+  ],
+  "host_toolchain": {
+    "cc": "cc (Debian 14.2.0-19) 14.2.0",
+    "python": "3.12.14"
+  }
+}

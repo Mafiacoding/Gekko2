@@ -38,7 +38,7 @@ int main(void)
      * passthrough (no behavior change from the pre-existing scaffold). */
     uint32_t addrs[] = {
         iop_spu2_voice_reg_addr(0, 0, SPU2_V_VOLL),
-        iop_spu2_voice_reg_addr(0, 23, SPU2_V_VOLXR), /* last voice, last field */
+        iop_spu2_voice_reg_addr(0, 23, SPU2_V_VOLR), /* writable setting, not generated VOLXR */
         iop_spu2_core_reg_addr(0, SPU2_C_KON0),
         iop_spu2_core_reg_addr(1, SPU2_C_ENDX0),
         iop_spu2_core_reg_addr(0, SPU2_C_ADMAS),
@@ -54,6 +54,14 @@ int main(void)
         CHECK(iop_spu2_mmio_read16(addrs[i], &rv) == 1, "read from named register succeeds");
         CHECK(rv == wv, "named register readback matches what was written");
     }
+
+    uint32_t current = iop_spu2_voice_reg_addr(0,23,SPU2_V_VOLXR);
+    uint16_t before=0,after=0;
+    iop_spu2_mmio_read16(current,&before);
+    CHECK(before == 0x2002u,"fixed VOLR publishes doubled current volume");
+    iop_spu2_mmio_write16(current,0x1234u);
+    iop_spu2_mmio_read16(current,&after);
+    CHECK(after==before,"current volume ignores guest writes");
 
     /* 5. Last voice (23) + last per-voice field (VOLXR) must still be
      * within Core0's 0x400-byte window (real hardware: 24 voices *

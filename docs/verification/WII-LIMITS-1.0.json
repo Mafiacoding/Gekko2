@@ -1,0 +1,43 @@
+{
+  "version": "GEKKO2-WII-LIMITS-1.0",
+  "build_commit": "da75aa56024081a95a7fcb4a458bd90254afde24",
+  "compiler": "devkitPPC r50 GCC16.1.0",
+  "libogc": "3.1.0",
+  "flags": "-DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -g -std=gnu11 -Wall -Wextra -Werror -ffp-contract=off -fno-builtin-memcpy -ffunction-sections -fdata-sections -I/workspace/.devkitpro/libogc/include -Iapps/wii_limits",
+  "memory": {
+    "mem1_static_end": "0x800f7d30",
+    "mem1_remaining_bytes": 24150736,
+    "minimum_remaining_bytes": 1048576,
+    "passed": true
+  },
+  "dol": {
+    "dol": "Wii-Limits.dol",
+    "sha256": "9e43c2d71fe8e2da41a88f42e9ba28e8d9e96bed380b0c5b1356a30cf36c488a",
+    "bytes": 480440,
+    "entry": "0x80003f00",
+    "sections": 10,
+    "load_end": "0x80079238",
+    "bss_end": "0x800f7d30",
+    "wii_hid4_markers": [
+      "0x80003f20",
+      "0x80021424"
+    ],
+    "elf_section_bytes_match": true,
+    "runtime_boot_verified": false
+  },
+  "host_checks": 87,
+  "linked_ppc_checks": 75,
+  "physical_wii_verified": false,
+  "dolphin_verified": false,
+  "fps_gain_verified": false,
+  "binaries": {
+    "Wii-Limits.dol": {
+      "bytes": 480440,
+      "sha256": "9e43c2d71fe8e2da41a88f42e9ba28e8d9e96bed380b0c5b1356a30cf36c488a"
+    },
+    "Wii-Limits.elf": {
+      "bytes": 2351968,
+      "sha256": "d83e52606db0ba552e8957965f631528dfd68628c55eca75a31c4c675c4628bb"
+    }
+  }
+}

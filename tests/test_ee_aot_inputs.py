@@ -55,6 +55,30 @@ class InputTests(unittest.TestCase):
             self.assertIn('ee_aot_complex_available',(d/'complex.inc').read_text())
             manifest.write_text(json.dumps({'blocks':[{'pc':'0x80200000','words':['0x70221989']}]}))
             run('--manifest',manifest,'--complex-output',d/'complex.inc',ok=False)
+    def test_live_aot_scheduler_path_and_window_accounting(self):
+        # The AOT executor is selected from the live EE instruction path.
+        # Generated blocks, not ee_core_step_n(), own exactly-once interleave
+        # accounting when they return a nonzero block_retired count.
+        core=(ROOT/'source/core/ee/ee_core.c').read_text()
+        start=core.index('static int ee_step_budget(')
+        end=core.index('uint32_t op    =',start)
+        self.assertIn('ee_aot_try_execute_fetched(st,budget,instr)',core[start:end])
+        loop=core[core.index('unsigned ee_core_step_n('):]
+        self.assertIn('if(block_retired){retired+=block_retired;used+=block_retired;}',loop)
+        self.assertIn('used++;ee_core_interleave_account(1u);',loop)
+        aot_source=(ROOT/'source/core/recompiler/ee_aot.c').read_text()
+        self.assertIn('budget=ee_core_interleave_limit(budget)',aot_source)
+        self.assertIn('unsigned n=entry->fn(st,budget)',aot_source)
+
+        spec=importlib.util.spec_from_file_location('ee_aot_generator',ROOT/'tools/ee_aot_generate.py')
+        generator=importlib.util.module_from_spec(spec);spec.loader.exec_module(generator)
+        words=[0x24420001,0x34630002,0x00042080,0x00a62821]
+        generated=generator.generate([(0x80200000,words)])
+        self.assertIn('ee_core_native_window_begin_aot',generated)
+        self.assertIn('ee_core_interleave_account(fast)',generated)
+        self.assertIn('ee_core_interleave_account(1u)',generated)
+        self.assertLess(generated.index('ee_core_native_window_begin_aot'),
+                        generated.index('ee_core_interleave_account(fast)'))
     def test_vu_and_iop_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             d=Path(directory);out=d/'output.inc'

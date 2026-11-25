@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Validate actual PPC FIFO vertex byte counts against modeled GX descriptors.
+SDK configuration calls modeled; no GPU pixels or real Wii timing.
+"""
+from pathlib import Path
+exec(compile(Path(__file__).with_name('ee_ppc_fixture_internal.py').read_text(),'fixture','exec'))
+from unicorn import UC_HOOK_MEM_WRITE
+import hashlib
+u.mem_map(0x90000000,16*1024*1024);heap=0x90000000;heap_limit=0x91000000
+u.mem_map(0xcc008000,4096);u.mem_map(0xcc001000,4096);u.mem_map(0xcc003000,4096)
+xy=0x817a0000;pipe=xy+64;sample=xy+256
+u.mem_write(xy,struct.pack('>6i',2,3,30,3,2,29))
+u.mem_write(pipe,bytes(128));u.mem_write(pipe,struct.pack('>14I',16384,0,0,0,1,128,0,0,1,0,1,128,0,1))
+u.mem_write(sample,struct.pack('>2I',0x3c608011,0x60632233)+struct.pack('>I',0x4e800020))
+with tempfile.TemporaryDirectory() as td:
+ src=Path(td)/'call.c';exe=Path(td)/'call.elf';raw=Path(td)/'call.bin'
+ src.write_text('''#include "core/hw/gs_gx.h"
+extern int surface_draw_textured(gs_gx_texture_draw *,unsigned);
+int run(gs_gx_texel_fn s,const int *xy,const gs_gx_pipeline *p,unsigned flags){
+ if(flags&32){
+  gs_gx_texture_draw d;int axis[4]={0,1,2,3};
+  if(!gs_gx_prepare_texture(&d,0,0,64,2,3,4,4,axis,axis,1,1,0))return 0;
+  d.pipeline=*p;d.pipeline.pabe=1;d.hardware_blend=1;
+  return surface_draw_textured(&d,d.tw*d.th*4);
+ }
+ unsigned z[3]={128,128,128};float uv[6]={0,0,1,0,0,1},q[3]={1,1,1};unsigned rgba[3]={0x80404040,0x80408040,0x80804040};
+ gs_gx_native_color c={.rgba=0x80404040,.tcc=1,.tfx=(flags>>2)&3,.target_height=flags&64?512:64,
+ .fog_enabled=(flags>>1)&1,.fog_color=0x123456,.fog={64,128,255}};
+ if(flags&16)return gs_gx_draw_shaded_triangle(0,0,64,2,3,30,29,xy,0,s,p);
+ return gs_gx_draw_native_triangle_ex(0,0,64,2,3,30,flags&64?300:29,xy,uv,q,flags&1?rgba:0,4,4,0,0,0,0,s,p,z,&c);
+}''')
+ subprocess.run([cc,'-O2','-mcpu=750','-G0','-ffreestanding','-nostdlib','-I'+str(root/'include'),'-Wl,-Ttext=0x817c0000','-Wl,-e,run','-Wl,--defsym,gs_gx_draw_native_triangle_ex='+hex(syms['gs_gx_draw_native_triangle_ex']),'-Wl,--defsym,gs_gx_draw_shaded_triangle='+hex(syms['gs_gx_draw_shaded_triangle']),'-Wl,--defsym,gs_gx_prepare_texture='+hex(syms['gs_gx_prepare_texture']),'-Wl,--defsym,surface_draw_textured='+hex(syms['surface_draw_textured']),'-Wl,--defsym,memcpy='+hex(syms['memcpy']),str(src),'-o',str(exe)],check=True)
+ subprocess.run([oc,'-O','binary','-j','.text','-j','.rodata',str(exe),str(raw)],check=True)
+ u.mem_write(0x817c0000,raw.read_bytes());syms['test_run']=0x817c0000
+# Direct attributes used by the real rendering paths: POS XYZ F32, CLR RGBA8,
+# TEX ST F32. Keep descriptor state across submissions like the real CP.
+desc={};pending=None;draws=0;written=0;payload=hashlib.sha256();configuration=[];token=0;fail_fence=False;fake_clock=0;aborts=0;peak_begins=0;objects={}
+depth_interpolations=0;native_instructions=0
+names={v:k for k,v in syms.items() if k.startswith(('GX_','ps_guMtx')) or k in ('guOrtho','gs_gx_dump_flush','gx_wait_timeout_marker')}
+def end():
+ global pending,draws
+ if pending is None:return
+ expected,count,attributes=pending
+ assert written==expected,(count,attributes,expected,written)
+ pending=None;draws+=1
+def gpu(uc,address,size,user):
+ global pending,written,token,fake_clock,aborts,peak_begins,depth_interpolations
+ if address==syms.get('native_fragment_z'):depth_interpolations+=1
+ instruction=int.from_bytes(uc.mem_read(address,4),'big')
+ # SDK cache/IRQ barriers rely on Wii lazy FPU restoration. Model that
+ # platform service so tall draws are not limited by the loader's 32 retries.
+ if instruction&~(31<<21)==0x7c000124:
+  source=(instruction>>21)&31
+  uc.reg_write(UC_PPC_REG_MSR,uc.reg_read(UC_PPC_REG_0+source)|0x2000)
+  uc.reg_write(UC_PPC_REG_PC,address+4);return
+ if fail_fence and instruction&~(31<<21)==0x7c0c42e6:
+  fake_clock+=1000000;uc.reg_write(UC_PPC_REG_0+((instruction>>21)&31),fake_clock);uc.reg_write(UC_PPC_REG_PC,address+4);return
+ if address==syms['gx_vtx_report']:end();return
+ name=names.get(address)
+ if not name:return
+ reg=lambda n:uc.reg_read(UC_PPC_REG_0+n)
+ if name=='GX_SetDrawDone':peak_begins=max(peak_begins,int.from_bytes(uc.mem_read(syms['gx_ctx_begins'],4),'big'))
+ if name=='GX_GetDrawSync':uc.reg_write(UC_PPC_REG_3,token)
+ if name=='GX_SetDrawSync' and not fail_fence:token=reg(3)&65535
+ if name=='GX_AbortFrame':aborts+=1
+ if name=='GX_GetGPStatus':
+  for r,v in zip(range(3,8),(0,1,1,1,0)):uc.mem_write(reg(r),bytes([v]))
+ # Normalize stack addresses: compare shader/texture inputs, not pointers
+ # to local GX objects that legitimately move after stack-copy removal.
+ arities={'GX_SetTevOrder':4,'GX_SetTevColorOp':6,'GX_SetTevAlphaOp':6,
+          'GX_SetVtxAttrFmt':5,'GX_SetNumChans':1,'GX_SetChanCtrl':7,
+          'GX_SetTevKColorSel':2,'GX_SetTevKAlphaSel':2,'GX_SetZMode':3,
+          'GX_SetZTexture':3,'GX_SetZCompLoc':1,'GX_SetColorUpdate':1,
+          'GX_SetAlphaUpdate':1,'GX_SetScissor':4,'GX_SetTexCoordGen':4}
+ if name in arities:configuration.append((name,*[reg(i) for i in range(3,3+arities[name])]))
+ if name in ('GX_SetTevColor','GX_SetTevKColor','GX_SetTevColorS10'):
+  configuration.append((name,reg(3),bytes(uc.mem_read(reg(4),8 if name.endswith('S10') else 4)).hex()))
+ if name=='GX_InitTexObj':
+  image=hashlib.sha256(bytes(uc.mem_read(reg(4),reg(5)*reg(6)*4))).hexdigest()
+  objects[reg(3)]=(image,*[reg(i) for i in range(5,11)])
+  configuration.append((name,objects[reg(3)]))
+ if name=='GX_InitTexObjLOD':
+  lod=tuple(uc.reg_read(UC_PPC_REG_FPR0+i) for i in range(1,4))
+  objects[reg(3)]=(*objects[reg(3)],'LOD',reg(4),reg(5),lod)
+  configuration.append((name,objects[reg(3)]))
+ if name=='GX_LoadTexObj':configuration.append((name,reg(4),objects[reg(3)]))
+ if name=='GX_LoadTexMtxImm':configuration.append((name,reg(4),reg(5),bytes(uc.mem_read(reg(3),48)).hex()))
+ if name=='guOrtho':configuration.append((name,*[uc.reg_read(UC_PPC_REG_FPR0+i) for i in range(1,7)]))
+ if name in ('GX_LoadPosMtxImm','GX_LoadProjectionMtx'):configuration.append((name,reg(4)))
+ if name=='GX_ClearVtxDesc':desc.clear()
+ if name=='GX_SetVtxDesc':desc[reg(3)]=reg(4)
+ if name in ('GX_SetNumTexGens','GX_SetNumTevStages'):configuration.append((name,reg(3)))
+ if name in ('GX_SetVtxDesc','GX_SetTevOp'):configuration.append((name,reg(3),reg(4)))
+ if name in ('GX_SetBlendMode','GX_SetAlphaCompare','GX_SetTevColorIn','GX_SetTevAlphaIn'):configuration.append((name,*[reg(i) for i in range(3,8 if name!='GX_SetBlendMode' else 7)]))
+ if name=='GX_Begin':
+  end();n=reg(5);width=0
+  for attr,kind in desc.items():
+   if not kind:continue
+   assert kind==1,(attr,kind)
+   assert attr in (9,11,12,13,14),attr
+   width+=12 if attr==9 else 4 if attr in (11,12) else 8
+  pending=(n*width,n,dict(desc));written=0
+ if name=='gs_gx_dump_flush':uc.reg_write(UC_PPC_REG_3,1)
+ uc.reg_write(UC_PPC_REG_PC,uc.reg_read(UC_PPC_REG_LR))
+def fifo(uc,access,address,size,value,user):
+ global written
+ assert pending is not None,('vertex payload outside primitive',hex(address),size)
+ written+=size;payload.update((value&((1<<(8*size))-1)).to_bytes(size,'big'))
+u.hook_add(UC_HOOK_CODE,gpu);u.hook_add(UC_HOOK_MEM_WRITE,fifo,begin=0xcc008000,end=0xcc008003)
+for name,value in [('initialized',1),('render_enabled',1),('surface_enabled',1),('efb_width',640),('efb_height',64),('surface',0),('texture',0x91200000),('texture_in_flight',0)]:word(syms[name],value)
+word(syms['gekko2_optimization_mask'],int.from_bytes(u.mem_read(syms['gekko2_optimization_mask'],4),'big')|(1<<7))
+call('gs_mem_init')
+def guard_count():
+ call('gs_gx_sync_count',3);return (u.reg_read(UC_PPC_REG_3)<<32)|u.reg_read(UC_PPC_REG_4)
+native_guards=[]
+for blend in (0,1,2):
+ word(pipe+6*4,bool(blend));word(pipe+8*4,2 if blend==2 else 1);word(pipe+10*4,1)
+ for flag in range(16):
+  # HIGHLIGHT adds vertex alpha: AS>128 cannot use source-alpha blend.
+  expected=not(blend==1 and flag>>2==2)
+  before=guard_count()
+  active[0]=True;total[0]=0
+  result=call('test_run',sample,xy,pipe,flag)
+  active[0]=False;native_instructions+=total[0]
+  assert result==expected,(blend,flag)
+  native_guards.append((expected,guard_count()-before))
+  end()
+print('PASS native GX vertex stream',draws,'primitives: color/fog/TFX and blend/additive-alpha combinations have exact descriptor byte counts; SDK modeled, no GPU pixel claim')
+print('GX_NATIVE_CPU_WORK',json.dumps({'executed_ppc_instructions':native_instructions,
+ 'depth_interpolation_calls':depth_interpolations,'scope':'synthetic linked PPC with SDK modeled; not Wii cycles or FPS'},sort_keys=True))
+# Resident pre-shaded route uses the large descriptor; compare all stable
+# shader arguments and actual FIFO payload across old/new ELFs.
+for blend in (0,1):
+ word(pipe+6*4,blend);word(pipe+8*4,2 if blend else 1);word(pipe+9*4,2);word(pipe+11*4,20)
+ assert call('test_run',sample,xy,pipe,16)==1
+ end()
+assert call('test_run',sample,xy,pipe,32)==1;end()
+call('gs_gx_sync_count',3);guards=(u.reg_read(UC_PPC_REG_3)<<32)|u.reg_read(UC_PPC_REG_4)
+print('GX_SUBMISSION_FENCES',guards)
+print('GX_SEMANTICS',json.dumps({'vertex_sha256':payload.hexdigest(),'configuration_sha256':hashlib.sha256(json.dumps(configuration).encode()).hexdigest(),'primitives':draws},sort_keys=True))
+# A narrow tall triangle emits hundreds of scissored primitives. Check
+# actual descriptor/FIFO semantics and the queue cap, not a guessed GPU time.
+word(syms['efb_height'],512);u.mem_write(xy,struct.pack('>6i',2,3,30,3,2,300));peak_begins=0
+assert call('test_run',sample,xy,pipe,64)==1;end()
+peak_begins=max(peak_begins,int.from_bytes(u.mem_read(syms['gx_begins_since_wait'],4),'big'))
+print('GX_STRESS',json.dumps({'vertex_sha256':payload.hexdigest(),'configuration_sha256':hashlib.sha256(json.dumps(configuration).encode()).hexdigest(),'primitives':draws},sort_keys=True))
+print('GX_QUEUE_PEAK',peak_begins)
+if guards:
+ assert peak_begins<=64,peak_begins
+ assert all((delta>0)==bool(expected) for expected,delta in native_guards),native_guards
+ print('PASS per-call native submission coverage: 44 accepted draws guarded, four rejected draws issue no submission fence')
+ # The real resident route must preserve pending ownership on a stale token,
+ # even when the modeled CP reports idle. No additional draw may succeed.
+ fail_fence=True
+ assert call('test_run',sample,xy,pipe,64)==0
+ assert int.from_bytes(u.mem_read(syms['gx_ctx_begins'],4),'big')==64
+ call('gs_gx_watchdog_count',1);assert u.reg_read(UC_PPC_REG_4)==3
+ assert call('gs_gx_faulted')==1 and call('gs_mem_gpu_pending')==1 and aborts==1
+ previous=draws;assert call('test_run',sample,xy,pipe,64)==0 and draws==previous
+ print('PASS resident submission failure: stale token/idle cannot complete; abort once, pending VRAM retained, further GPU draws blocked')

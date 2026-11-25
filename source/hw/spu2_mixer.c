@@ -1,11 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * SPU2 ADPCM beta. PS2 addresses use 16-bit words (PCSX2 SPU2/Mixer.cpp,
  * Dma.cpp, RegTable.cpp), not PS1 eight-byte address units.
- * 48 kHz, fixed volume, nearest-sample pitch; reverb/noise/PMON/sweep
- * and Gaussian interpolation remain outside this beta. */
+ * 48 kHz, noise, PMON and volume sweeps; nearest-sample pitch remains.
+ * Control equations cross-checked against PCSX2 SPU2 Mixer/ADSR.cpp at
+ * 091ab68708a555198d80a7216965481c7ddd0d98. No upstream mixer backend
+ * copied. Reverb/Gaussian and full bus/ADPCM timing remain open. */
 #include "core/hw/spu2_mixer.h"
 #include "core/hw/iop_spu2.h"
 #include <string.h>
+#include <stddef.h>
 
 typedef enum {
     ENV_OFF = 0,
@@ -39,6 +42,9 @@ static uint8_t g_spu2_ram[SPU2_MIXER_RAM_SIZE];
 static voice_runtime_t g_voice[SPU2_MIXER_NUM_CORES][SPU2_MIXER_VOICES_PER_CORE];
 static uint64_t g_total_kon = 0;
 static uint64_t g_total_frames = 0;
+typedef struct {uint32_t counter;uint16_t lfsr,reserved;} noise_state;
+static noise_state g_noise[2];
+static uint32_t g_volume_counter[2][25][2]; /* voice0..23 and master24 */
 
 /* ---- register-file glue: read live values via iop_spu2.c's own real
  * addressing API, no duplicated register storage in this file. ---- */
@@ -290,7 +296,7 @@ static int16_t voice_produce_sample(int core, int voice, voice_runtime_t *v, uin
     int16_t sample = v->block[v->block_pos];
 
     uint32_t step = pitch_reg;
-    if (step > 0x4000) step = 0x4000; /* real, cited clamp */
+    if (step > 0x3fff) step = 0x3fff;
     v->pitch_counter += step;
 
     while (v->pitch_counter >= 0x1000u && v->active) {
@@ -323,12 +329,98 @@ static int16_t voice_produce_sample(int core, int voice, voice_runtime_t *v, uin
 
 static int32_t fixed_volume(uint16_t reg)
 {
-    /* Real Fixed Volume Mode (bit15=0): bits0-14 = "Voice volume/2".
-     * Sweep Mode (bit15=1) is read as Fixed anyway - documented
-     * simplification, see spu2_mixer.h. */
+    /* Fixed mode: signed 15-bit value times two. */
     int32_t raw = (int32_t)(reg & 0x7FFF);
     if (raw & 0x4000) raw -= 0x8000; /* sign-extend 15-bit field */
     return raw * 2;
+}
+
+/* VOLX is the current value; mode writes do not reset an ongoing sweep.
+ * A fixed-volume write publishes immediately, even on an inactive voice. */
+void spu2_mixer_on_volume_write(uint32_t address,uint16_t value)
+{
+    if(value&0x8000u)return;
+    for(unsigned core=0;core<2;core++){
+        uint32_t base=IOP_SPU2_BASE+core*0x400u;
+        if(address>=base&&address<base+24u*16u){
+            unsigned off=address-base,field=off&15u;
+            if(field<=2u){iop_spu2_set_raw16(base+(off&~15u)+12u+field,(uint16_t)fixed_volume(value));return;}
+        }
+        uint32_t master=IOP_SPU2_BASE+SPU2_S_MVOLL+core*0x28u;
+        if(address==master||address==master+2u){
+            iop_spu2_set_raw16(address+16u,(uint16_t)fixed_volume(value));return;
+        }
+    }
+}
+
+/* ENVX is writable without a key-on or resetting the envelope phase/counter.
+ * Value is a full unsigned register; subsequent ADSR steps apply saturation. */
+void spu2_mixer_on_envelope_write(uint32_t address,uint16_t value)
+{
+ for(unsigned core=0;core<2;core++){
+  uint32_t base=IOP_SPU2_BASE+core*0x400u;
+  if(address>=base&&address<base+24u*16u&&((address-base)&15u)==SPU2_V_ENVX){
+   g_voice[core][(address-base)/16u].level=value;return;
+  }
+ }
+}
+
+static int32_t volume_tick(unsigned core,unsigned voice,unsigned side,
+                          uint16_t setting,uint32_t current_address)
+{
+    if(!(setting&0x8000u))return fixed_volume(setting);
+    uint16_t raw=0;iop_spu2_mmio_read16(current_address,&raw);
+    int32_t value=(int16_t)raw;
+    unsigned rate=setting&127u,shift=rate>>2,decreasing=(setting>>13)&1u;
+    unsigned exponential=(setting>>14)&1u,negative=(setting>>12)&1u;
+    int32_t step=7-(int)(rate&3u);if(decreasing)step=~step;
+    step*=1<<(shift<11u?11u-shift:0u);
+    unsigned increment=0x8000u>>(shift>11u?shift-11u:0u);
+    if(exponential){
+        if(!decreasing&&value>0x6000)increment>>=2;
+        if(decreasing)step=(step*value)>>15;
+    }
+    if(rate!=127u&&!increment)increment=1;
+    uint32_t *counter=&g_volume_counter[core][voice][side];*counter+=increment;
+    if(!(exponential&&decreasing)&&negative)step=-step;
+    if(*counter>=0x8000u){
+        *counter=0;value+=step;
+        int32_t low=-32768,high=32767;
+        if(decreasing){low=negative?-32768:0;high=negative?0:32767;if(exponential){low=0;high=32767;}}
+        if(value<low)value=low;if(value>high)value=high;
+        iop_spu2_set_raw16(current_address,(uint16_t)value);
+    }
+    return value;
+}
+
+static void noise_tick(unsigned core,unsigned clock)
+{
+    /* Reference-compatible fractional counter; the 64-entry feedback
+     * truth table reduces to XNOR of taps10,11,12,15. One shared source/core. */
+    static const unsigned fraction[4]={0,84,140,180};
+    noise_state *n=&g_noise[core];unsigned part=fraction[clock&3u];
+    n->counter+=65536u+part;
+    if((n->counter&65535u)>=210u)n->counter+=65536u-part;
+    uint32_t period=(0x8000u>>(clock>>2))*65536u;
+    if(n->counter>=period){
+        n->counter%=period;unsigned x=n->lfsr;
+        unsigned bit=1u^((x>>10)&1u)^((x>>11)&1u)^((x>>12)&1u)^((x>>15)&1u);
+        n->lfsr=(uint16_t)((x<<1)|bit);
+    }
+}
+
+static unsigned modulated_pitch(uint16_t pitch,int32_t previous,int enabled)
+{
+    uint32_t step=pitch;
+    if(enabled){
+        int32_t factor=32768+previous;
+        if(factor<=0)return 0;
+        /* A manually written ENVX may make OutX wider than signed16.
+         * Saturate early so every remaining product fits unsigned32. */
+        if(factor>32768&&step>=0x3fffu)return 0x3fffu;
+        step=(step*(uint32_t)factor)>>15;
+    }
+    return step>0x3fffu?0x3fffu:step;
 }
 
 /* ---- public API ---- */
@@ -337,6 +429,7 @@ void spu2_mixer_init(void)
 {
     memset(g_spu2_ram, 0, sizeof(g_spu2_ram));
     memset(g_voice, 0, sizeof(g_voice));
+    memset(g_noise,0,sizeof g_noise);memset(g_volume_counter,0,sizeof g_volume_counter);
     g_total_kon = 0;
     g_total_frames = 0;
 }
@@ -414,17 +507,23 @@ void spu2_mixer_render_frames(int16_t *out_lr, int n_frames)
    uint32_t vrmask=read_core_reg16(core,SPU2_C_VMIXR)|((uint32_t)read_core_reg16(core,SPU2_C_VMIXR+2u)<<16);
    uint32_t welmask=read_core_reg16(core,SPU2_C_VMIXL+4u)|((uint32_t)read_core_reg16(core,SPU2_C_VMIXL+6u)<<16);
    uint32_t wermask=read_core_reg16(core,SPU2_C_VMIXR+4u)|((uint32_t)read_core_reg16(core,SPU2_C_VMIXR+6u)<<16);
+   uint32_t noise_mask=read_core_reg16(core,SPU2_C_NON)|((uint32_t)read_core_reg16(core,SPU2_C_NON+2u)<<16);
+   uint32_t pitch_mask=read_core_reg16(core,SPU2_C_FMOD1)|((uint32_t)read_core_reg16(core,SPU2_C_FMOD2)<<16);
+   int32_t previous=0;
    for(int voice=0;voice<24;voice++){
-    voice_runtime_t *v=&g_voice[core][voice];if(!v->active)continue;
+    int32_t vl=volume_tick(core,voice,0,read_voice_reg16(core,voice,SPU2_V_VOLL),iop_spu2_voice_reg_addr(core,voice,SPU2_V_VOLXL));
+    int32_t vr=volume_tick(core,voice,1,read_voice_reg16(core,voice,SPU2_V_VOLR),iop_spu2_voice_reg_addr(core,voice,SPU2_V_VOLXR));
+    voice_runtime_t *v=&g_voice[core][voice];if(!v->active){previous=0;continue;}
     voice_tick_envelope(v,read_voice_reg16(core,voice,SPU2_V_ADSR1),read_voice_reg16(core,voice,SPU2_V_ADSR2));
     iop_spu2_set_raw16(iop_spu2_voice_reg_addr(core,voice,SPU2_V_ENVX),(uint16_t)v->level);
-    if(!v->active)continue;
-    int32_t raw=voice_produce_sample(core,voice,v,read_voice_reg16(core,voice,SPU2_V_PITCH));
+    if(!v->active){previous=0;continue;}
+    unsigned pitch=modulated_pitch(read_voice_reg16(core,voice,SPU2_V_PITCH),previous,voice&&(pitch_mask&(1u<<voice)));
+    int32_t raw=voice_produce_sample(core,voice,v,(uint16_t)pitch);
+    if(noise_mask&(1u<<voice))raw=(int16_t)g_noise[core].lfsr;
     iop_spu2_set_raw16(iop_spu2_voice_reg_addr(core,voice,SPU2_V_ENVX),(uint16_t)v->level);
     int32_t sample=(raw*v->level)>>15;
+    previous=sample;
     if(voice==1)capture[0]=sample;else if(voice==3)capture[1]=sample;
-    int32_t vl=fixed_volume(read_voice_reg16(core,voice,SPU2_V_VOLL));
-    int32_t vr=fixed_volume(read_voice_reg16(core,voice,SPU2_V_VOLR));
     iop_spu2_set_raw16(iop_spu2_voice_reg_addr(core,voice,SPU2_V_VOLXL),(uint16_t)vl);
     iop_spu2_set_raw16(iop_spu2_voice_reg_addr(core,voice,SPU2_V_VOLXR),(uint16_t)vr);
     uint32_t na=(v->cur_addr/2u+1u+(unsigned)(v->block_pos<28?v->block_pos:27)/4u)&0xfffffu;
@@ -450,7 +549,9 @@ void spu2_mixer_render_frames(int16_t *out_lr, int n_frames)
    int16_t in[2];iop_spu2_adma_sample(core,in);
    if(mmix&0x80u)mix_l+=((int32_t)in[0]*(int16_t)read_output_reg16(core,SPU2_S_INPVOLL))>>15;
    if(mmix&0x40u)mix_r+=((int32_t)in[1]*(int16_t)read_output_reg16(core,SPU2_S_INPVOLR))>>15;
-   int32_t ml=fixed_volume(read_output_reg16(core,SPU2_S_MVOLL)),mr=fixed_volume(read_output_reg16(core,SPU2_S_MVOLR));
+   noise_tick((unsigned)core,(read_core_reg16(core,SPU2_C_CTRL)>>8)&63u);
+   int32_t ml=volume_tick(core,24,0,read_output_reg16(core,SPU2_S_MVOLL),IOP_SPU2_BASE+0x770u+(core?0x28u:0u));
+   int32_t mr=volume_tick(core,24,1,read_output_reg16(core,SPU2_S_MVOLR),IOP_SPU2_BASE+0x772u+(core?0x28u:0u));
    iop_spu2_set_raw16(IOP_SPU2_BASE+0x770u+(core?0x28u:0u),(uint16_t)ml);
    iop_spu2_set_raw16(IOP_SPU2_BASE+0x772u+(core?0x28u:0u),(uint16_t)mr);
    ext_l=(clamp16(mix_l)*ml)>>15;ext_r=(clamp16(mix_r)*mr)>>15;
@@ -470,26 +571,50 @@ uint64_t spu2_mixer_get_total_frames_rendered(void)
     return g_total_frames;
 }
 
-typedef struct {voice_runtime_t voice[2][24];uint64_t kon,frames;} mixer_snapshot;
+typedef struct {voice_runtime_t voice[2][24];uint64_t kon,frames;} mixer_snapshot_legacy;
+typedef struct {
+ voice_runtime_t voice[2][24];uint64_t kon,frames;
+ noise_state noise[2];uint32_t volume_counter[2][25][2];uint32_t extension,reserved;
+} mixer_snapshot;
+_Static_assert(offsetof(mixer_snapshot,noise)==sizeof(mixer_snapshot_legacy),"legacy snapshot prefix");
+_Static_assert(sizeof(mixer_snapshot)<=8192u,"SPU2 checkpoint reserved mixer capacity");
 uint32_t spu2_mixer_snapshot_size(void){return sizeof(mixer_snapshot);}
 void spu2_mixer_snapshot_save(void *out)
 {
  mixer_snapshot *s=out;memset(s,0,sizeof *s);memcpy(s->voice,g_voice,sizeof g_voice);s->kon=g_total_kon;s->frames=g_total_frames;
+ memcpy(s->noise,g_noise,sizeof g_noise);memcpy(s->volume_counter,g_volume_counter,sizeof g_volume_counter);s->extension=0x32445053u;
 }
-int spu2_mixer_snapshot_valid(const void *data)
+int spu2_mixer_snapshot_valid_sized(const void *data,uint32_t bytes)
 {
+ if(!data||(bytes!=sizeof(mixer_snapshot)&&bytes!=sizeof(mixer_snapshot_legacy)))return 0;
  const mixer_snapshot *s=data;
  for(int c=0;c<2;c++)for(int i=0;i<24;i++){
   const voice_runtime_t *v=&s->voice[c][i];
-  if(v->active<0||v->active>1||v->phase>ENV_RELEASE||v->phase<ENV_OFF||v->level<0||v->level>32767||
+  if(v->active<0||v->active>1||v->phase>ENV_RELEASE||v->phase<ENV_OFF||v->level<0||v->level>65535||
      v->cur_addr>=SPU2_MIXER_RAM_SIZE||(v->cur_addr&15u)||v->repeat_addr>=SPU2_MIXER_RAM_SIZE||(v->repeat_addr&15u)||
      v->block_pos<0||v->block_pos>28||v->block_valid<0||v->block_valid>1||
      v->manual_loop<0||v->manual_loop>1||v->pending_loop_end<0||v->pending_loop_end>1||v->pending_loop_repeat<0||v->pending_loop_repeat>1||v->pitch_counter>=4096u)return 0;
  }
+ if(bytes==sizeof(mixer_snapshot)){
+  if(s->extension!=0x32445053u||s->reserved||s->noise[0].reserved||s->noise[1].reserved)return 0;
+  for(unsigned c=0;c<2;c++)for(unsigned v=0;v<25;v++)for(unsigned side=0;side<2;side++)
+   if(s->volume_counter[c][v][side]>=0x8000u)return 0;
+ }
  return 1;
 }
+int spu2_mixer_snapshot_valid(const void *data)
+{return spu2_mixer_snapshot_valid_sized(data,sizeof(mixer_snapshot));}
+void spu2_mixer_snapshot_load_sized(const void *data,uint32_t bytes)
+{
+ if(!spu2_mixer_snapshot_valid_sized(data,bytes))return;
+ const mixer_snapshot *s=data;memcpy(g_voice,s->voice,sizeof g_voice);g_total_kon=s->kon;g_total_frames=s->frames;
+ memset(g_noise,0,sizeof g_noise);memset(g_volume_counter,0,sizeof g_volume_counter);
+ if(bytes==sizeof(mixer_snapshot)){
+  memcpy(g_noise,s->noise,sizeof g_noise);memcpy(g_volume_counter,s->volume_counter,sizeof g_volume_counter);
+ }
+}
 void spu2_mixer_snapshot_load(const void *data)
-{const mixer_snapshot *s=data;memcpy(g_voice,s->voice,sizeof g_voice);g_total_kon=s->kon;g_total_frames=s->frames;}
+{spu2_mixer_snapshot_load_sized(data,sizeof(mixer_snapshot));}
 
 void spu2_mixer_on_loop_address_write(int core,int voice)
 {

@@ -1,0 +1,32 @@
+{
+  "runtime_commit": "852600ce9c96d9510ea864cf53abd3b831d3c5d7",
+  "elf_sha256": "cd42a595abf4dfd064980166a0d0337c7b3eecb0f9cc1d3648fe7b99492279bd",
+  "dol_sha256": "50f3c177ceb4bc4f781b2a50adde064db5381704eaf0b04f854370b142fa2546",
+  "before_expected_failure": "PASS linked loading screen 480 error=0 title_pixels=1584 bounded XFB\nTraceback (most recent call last):\n  File \"/workspace/Gekko2/tools/verify_loading_screen_linked.py\", line 44, in <module>\n    assert not writes,('unchanged loading frame repainted',len(writes))\n           ^^^^^^^^^^\nAssertionError: ('unchanged loading frame repainted', 163353)\n",
+  "after": "PASS linked loading screen 480 error=0 title_pixels=1584 bounded XFB\nPASS loading refresh: unchanged frame has zero XFB writes; animation/time touch only strips; invalidation restores background\nPASS linked loading screen 480 error=1 title_pixels=3526 bounded XFB\nPASS linked loading screen 576 error=0 title_pixels=1841 bounded XFB\nPASS linked loading screen 576 error=1 title_pixels=4082 bounded XFB\n",
+  "console": "PASS 96 linked PPC console routing checks: OFF discards, ON delegates, errors/partial writes preserved; visible console invalidates loading cache\n",
+  "static_memory": {
+    "mem1_static_end": "0x815c5df4",
+    "mem1_remaining_bytes": 2335244,
+    "minimum_remaining_bytes": 1048576,
+    "passed": true
+  },
+  "dol_check": {
+    "dol": "Gekko2-BETA12.33-GX.dol",
+    "sha256": "50f3c177ceb4bc4f781b2a50adde064db5381704eaf0b04f854370b142fa2546",
+    "bytes": 2111652,
+    "entry": "0x80003f00",
+    "sections": 10,
+    "load_end": "0x80207644",
+    "bss_end": "0x815c5df4",
+    "wii_hid4_markers": [
+      "0x80003f20",
+      "0x80137208"
+    ],
+    "elf_section_bytes_match": true,
+    "runtime_boot_verified": false
+  },
+  "physical_wii_tested": false,
+  "game_boot_fix_verified": false,
+  "physical_flicker_fix_verified": false
+}

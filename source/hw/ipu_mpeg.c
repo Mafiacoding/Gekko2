@@ -20,10 +20,13 @@ void ipu_mpeg_begin(ipu_state_t *s)
 {
  ipu_mpeg_state_t *m=&s->mpeg;
  unsigned cmd=s->command>>28;
- if(cmd==1||(s->command&(1u<<26)))for(unsigned i=0;i<3;i++)m->dc[i]=128<<((s->ctrl>>16)&3);
+ m->dc_precision=(s->ctrl>>16)&3u;
+ if(cmd==1||(s->command&(1u<<26)))for(unsigned i=0;i<3;i++)m->dc[i]=128<<m->dc_precision;
  m->phase=0;m->block=0;m->index=0;m->intra=cmd==1?1:(s->command>>27)&1;
  m->interlaced=cmd==1?0:(s->command>>25)&1;
- unsigned q=(s->command>>16)&31;m->quant=(s->ctrl&(1u<<22))?nonlinear[q]:q*2;
+ /* IDEC's initial QSC is already a scale. BDEC and quantizer updates
+  * in the MPEG stream instead carry scale codes (PCSX2 ipuIDEC/ipuBDEC). */
+ unsigned q=(s->command>>16)&31;m->quant=cmd==1?q:((s->ctrl&(1u<<22))?nonlinear[q]:q*2);
  m->cbp=m->intra?63:0;memset(m->coeff,0,sizeof m->coeff);memset(s->block,0,384);memset(s->converted,0,768);
 }
 static const DCTtab *ac_table(unsigned code,unsigned intra,unsigned first,unsigned alternative)
@@ -76,7 +79,7 @@ int ipu_mpeg_decode(ipu_state_t *s,int (*peek)(unsigned,int,uint32_t *),void (*c
     int diff=0;
     if(t->size){unsigned v=get(bits,t->len,t->size);diff=(v&(1u<<(t->size-1)))?(int)v:(int)v-((1<<t->size)-1);}
     consume(t->len+t->size);m->dc[cc]+=diff;
-    m->coeff[0]=(int16_t)(m->dc[cc]*(1<<(3-((s->ctrl>>16)&3))));
+    m->coeff[0]=(int16_t)(m->dc[cc]*(1<<(3-m->dc_precision)));
    }
    m->phase=2;
   }

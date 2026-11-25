@@ -97,8 +97,12 @@ static uint32_t system_iop_read_adapter(void *ctx, uint32_t addr, int width)
 static uint64_t g_event_stats[5];
 static uint64_t g_sync_reasons[19];
 
+#include "core/hw/ps2_mc_files.h"
+#include "core/hw/gs_async.h"
+#include "core/iop_async.h"
 int system_init(const bios_image_t *ee_bios, const bios_image_t *iop_bios)
 {
+    ps2_mc_fs_reset();
     for(unsigned i=0;i<5u;i++)g_event_stats[i]=0;
     for(unsigned i=0;i<19u;i++)g_sync_reasons[i]=0;
     arm_worker_begin_session();
@@ -221,16 +225,138 @@ static unsigned g_event_active,g_event_syncing;
 static int g_event_iop_blocks;
 uint64_t system_event_stat(unsigned index){return index<5u?g_event_stats[index]:0u;}
 uint64_t system_sync_reason_stat(unsigned reason){return reason<19u?g_sync_reasons[reason]:0u;}
+#ifdef GEKKO2_WIIU
+static int system_on_iop_worker(void);
+#endif
 void system_shared_sync_reason(unsigned reason)
 {
+#ifdef GEKKO2_WIIU
+ /* IOP code reaching shared SIF/DMA state from the worker: wait for the EE to park instead. */
+ if(g_iop_async&&system_on_iop_worker()){system_iop_worker_shared();return;}
+#endif
  if(!g_event_active||g_event_syncing)return;
  g_event_stats[2]++;g_sync_reasons[reason<19u?reason:18u]++;
  ee_core_event_sync();ee_core_event_notify();
+#ifdef GEKKO2_WIIU
+ if(g_iop_async)system_ee_iop_sync(); /* the catch-up above was handed to the worker: wait for it */
+#endif
 }
 void system_shared_sync(void){system_shared_sync_reason(18u);}
+
+#ifdef GEKKO2_WIIU
+/* ---- IOP worker thread (Wii U port only) ----
+ * In the event scheduler the EE runs a window, then the IOP catches up for the slots it earned. With the worker, that
+ * catch-up runs on another core while the EE runs its next window. Ownership rules: see include/core/iop_async.h. */
+volatile int g_iop_async;
+int gekko2_wiiu_event_sched;
+unsigned gekko2_wiiu_event_width; /* 0 = default 64; up to 512 EE slots per window */
+int gekko2_wiiu_event_sched_on(void){return gekko2_wiiu_event_sched;}
+static volatile unsigned g_iopw_job,g_iopw_done,g_iopw_ticks;
+static volatile int g_iopw_ee_parked,g_iopw_stop,g_iopw_running;
+static volatile unsigned g_iopw_distance;
+static unsigned g_iopw_last_distance=64u;
+static void (*g_iopw_idle)(void);
+static uintptr_t g_iopw_lo,g_iopw_hi;
+static unsigned long long g_iopw_stats[4]; /* jobs, ticks, EE waits that blocked, worker shared waits */
+static inline void iopw_wait(void){if(g_iopw_idle)g_iopw_idle();}
+static int system_on_iop_worker(void)
+{
+ const uintptr_t sp=(uintptr_t)__builtin_frame_address(0);
+ return sp>=g_iopw_lo&&sp<g_iopw_hi;
+}
+void system_ee_iop_sync(void)
+{
+ if(!g_iop_async||system_on_iop_worker())return;
+ if(__atomic_load_n(&g_iopw_done,__ATOMIC_ACQUIRE)==g_iopw_job)return;
+ g_iopw_stats[2]++;
+ __atomic_store_n(&g_iopw_ee_parked,1,__ATOMIC_RELEASE);
+ while(__atomic_load_n(&g_iopw_done,__ATOMIC_ACQUIRE)!=g_iopw_job)iopw_wait();
+ __atomic_store_n(&g_iopw_ee_parked,0,__ATOMIC_RELEASE);
+}
+void system_iop_worker_shared(void)
+{
+ if(!g_iop_async||!system_on_iop_worker())return;
+ if(__atomic_load_n(&g_iopw_ee_parked,__ATOMIC_ACQUIRE))return;
+ g_iopw_stats[3]++;
+ while(!__atomic_load_n(&g_iopw_ee_parked,__ATOMIC_ACQUIRE))iopw_wait();
+}
+static void iopw_run(unsigned ticks)
+{
+ unsigned done=0;
+ while(done<ticks&&!g_scheduler_iop->halted) {
+#ifdef GEKKO2_IDLE_SKIP
+  { unsigned sk=iop_core_spin_skip(ticks-done); if(sk){done+=sk;continue;} }
+#endif
+  if(g_event_iop_blocks){unsigned n=iop_core_step_n(ticks-done);done+=n;if(!n)break;}
+  else if(g_scheduler_service_fast&&!g_scheduler_iop->idle)done+=iop_core_step_one_native();
+  else {unsigned n=iop_core_step_n(ticks-done);done+=n;if(!n)break;}
+ }
+ g_iopw_stats[1]+=done;
+ g_iopw_distance=iop_core_event_distance(64u);
+}
+void system_iop_worker_main(void)
+{
+ unsigned seen=0;
+ __atomic_store_n(&g_iopw_running,1,__ATOMIC_RELEASE);
+ while(!__atomic_load_n(&g_iopw_stop,__ATOMIC_ACQUIRE)) {
+  const unsigned job=__atomic_load_n(&g_iopw_job,__ATOMIC_ACQUIRE);
+  if(job!=seen){iopw_run(g_iopw_ticks);seen=job;__atomic_store_n(&g_iopw_done,job,__ATOMIC_RELEASE);}
+  else iopw_wait();
+ }
+ __atomic_store_n(&g_iopw_running,0,__ATOMIC_RELEASE);
+}
+void system_iop_async_attach(void (*idle)(void),void *stack_lo,void *stack_hi)
+{
+ g_iopw_idle=idle;g_iopw_lo=(uintptr_t)stack_lo;g_iopw_hi=(uintptr_t)stack_hi;
+ g_iopw_job=g_iopw_done=0;g_iopw_ee_parked=0;g_iopw_stop=0;g_iopw_running=0;g_iopw_last_distance=64u;
+ for(unsigned i=0;i<4u;i++)g_iopw_stats[i]=0;
+ g_iop_async=0;
+}
+int system_iop_async_enable(void)
+{
+ for(unsigned i=0;i<2000000u&&!__atomic_load_n(&g_iopw_running,__ATOMIC_ACQUIRE);i++)iopw_wait();
+ if(!__atomic_load_n(&g_iopw_running,__ATOMIC_ACQUIRE))return -1;
+ g_iop_async=1;return 0;
+}
+void system_iop_async_detach(void)
+{
+ if(g_iop_async)system_ee_iop_sync();
+ g_iop_async=0;
+ __atomic_store_n(&g_iopw_stop,1,__ATOMIC_RELEASE);
+ for(unsigned i=0;i<2000000u&&__atomic_load_n(&g_iopw_running,__ATOMIC_ACQUIRE);i++)iopw_wait();
+}
+void system_iop_async_stats(unsigned long long out[4]){for(unsigned i=0;i<4u;i++)out[i]=g_iopw_stats[i];}
+#endif
 #if GEKKO2_SCHEDULER_QUANTA_ENABLED
+static unsigned system_event_window_limit(unsigned width)
+{
+ /* IOP catch-up can arm timers, thread alarms or interrupt sources. Refresh
+  * their horizon at every EE admission, not just once per frontend grant. */
+ unsigned ticks;
+#ifdef GEKKO2_WIIU
+ if(g_iop_async) {
+  /* The IOP state is one catch-up behind: use the horizon measured after the last finished job, minus the job in flight. */
+  const unsigned pending=__atomic_load_n(&g_iopw_done,__ATOMIC_ACQUIRE)==g_iopw_job?0u:g_iopw_ticks;
+  ticks=g_iopw_last_distance>pending?g_iopw_last_distance-pending:0u;
+  return ticks<width/8u?ticks*8u:width;
+ }
+#endif
+ ticks=iop_core_event_distance(width/8u);
+ return ticks<width/8u?ticks*8u:width;
+}
 static int system_event_catch_up(unsigned ticks)
 {
+#ifdef GEKKO2_WIIU
+ if(g_iop_async) {
+  system_ee_iop_sync();                      /* previous job done; the EE is parked while it finishes */
+  g_iopw_last_distance=g_iopw_distance;      /* read only here, so the window limit is deterministic */
+  g_event_stats[3]++;
+  if(g_scheduler_iop->halted)return 0;
+  g_iopw_ticks=ticks;g_iopw_stats[0]++;
+  __atomic_store_n(&g_iopw_job,g_iopw_job+1u,__ATOMIC_RELEASE);
+  return 1;
+ }
+#endif
  g_event_syncing=1u;
  if(g_iop_sample_pending){gekko2_profile_enter(GP_IOP);g_iop_sample_middle=system_profile_clock();g_iop_sample_has_middle=1;}
  unsigned done=0;
@@ -268,7 +394,11 @@ int system_run_interleaved(uint64_t max_slices)
 #define GEKKO2_FORCE_EVENT_ON 1
     const int ee_native_schedule=1;
 #else
+#ifdef GEKKO2_WIIU
+    const int ee_native_schedule=gekko2_wiiu_event_sched||(gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS));
+#else
     const int ee_native_schedule=gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS);
+#endif
 #endif
 #endif
 
@@ -279,17 +409,28 @@ int system_run_interleaved(uint64_t max_slices)
         /* R1346: one host plan, with native admission capped internally
          * at the original64 EE slots. Per-IOP callbacks are never deferred. */
         unsigned grant=g_scheduler_service_fast?64u:8u,done;
+#ifdef GEKKO2_WIIU
+        if(gekko2_wiiu_event_width>64u)grant=gekko2_wiiu_event_width; /* several wide windows per grant */
+#endif
         if(max_slices && max_slices-slice<grant)grant=(unsigned)(max_slices-slice);
         if(!iop->halted) {
 #if GEKKO2_SCHEDULER_QUANTA_ENABLED
-            if(ee_native_schedule&&(GEKKO2_FORCE_EVENT_ON||gekko2_opt_enabled(GEKKO2_OPT_EVENT_SCHEDULER))) {
-                unsigned width=ee_core_event_distance(ee_core_idle_active()?512u:64u);
-                unsigned iop_limit=iop_core_event_distance(width/8u);
-                if(iop_limit*8u<width)width=iop_limit*8u;
-                if(width<8u)width=8u;
+            if(ee_native_schedule&&(GEKKO2_FORCE_EVENT_ON||gekko2_opt_enabled(GEKKO2_OPT_EVENT_SCHEDULER)
+#ifdef GEKKO2_WIIU
+               ||gekko2_wiiu_event_sched
+#endif
+               )) {
+                unsigned width=ee_core_idle_active()?512u:64u;
+#ifdef GEKKO2_WIIU
+                if(gekko2_wiiu_event_width>width)width=gekko2_wiiu_event_width;
+#endif
                 g_event_stats[0]++;g_event_stats[4]+=width;
                 g_event_active=1u;system_begin_ee_quantum();
-                done=ee_core_step_event_n(grant,width,system_event_catch_up);
+                done=ee_core_step_event_bounded_n(grant,width,system_event_catch_up,
+                                                 system_event_window_limit);
+#ifdef GEKKO2_WIIU
+                if(g_iop_async)system_ee_iop_sync(); /* the last catch-up of this grant must finish before anything reads IOP state */
+#endif
                 g_event_active=0u;
             } else if(ee_native_schedule) {
                 system_quantum_grant=grant;system_begin_ee_quantum();
@@ -302,6 +443,7 @@ int system_run_interleaved(uint64_t max_slices)
             system_before_iop_tick();done=1;
         }
         system_finish_iop_sample();
+        gs_async_pump();
         iop_spu2_sync(iop->sched_ticks);
 
         if (ee->halted && iop->halted) {

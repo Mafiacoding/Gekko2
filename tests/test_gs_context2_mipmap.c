@@ -1,21 +1,5 @@
-/* test_gs_context2_mipmap.c - host-native test for Round 29
- * continued's 15th change: making TEX1/MIPTBP1/MIPTBP2 genuinely
- * per-context (previously context-1-only, closing part of the gap
- * Round 27 explicitly left open - see include/core/hw/gif.h's
- * GS_REG_TEX1_2/MIPTBP1_2/MIPTBP2_2 comment and
- * source/hw/gif.c's gs_activate_context() for the full design).
- *
- * Strategy: configure context 1 WITH mipmapping engaged (MXL=3,
- * MMIN=2, MIPTBP1 pointing at a distinct level-3 texture) and context
- * 2 WITHOUT (TEX1_2 never written - MXL defaults to 0, mipmapping
- * disabled) against the SAME base texture and the SAME minifying
- * screen rect size. Before this round, both contexts shared the same
- * single tex1_xxx/tex_mip_tbp state, so a context-2 draw would
- * incorrectly inherit context 1's mip configuration (or vice versa,
- * depending on draw order). After this round, each context's own
- * configuration is genuinely independent: context 1's draw must
- * sample the mip level, context 2's draw must use the base level.
- */
+/* Legacy solid-color mip regressions now use explicit LCM/K for UV draws.
+ * Q-based variable LOD and MTBA have independent coverage in test_gs_lod_mtba.c. */
 #include <stdio.h>
 #include <string.h>
 #include "hw/gs_mem.c"
@@ -86,7 +70,7 @@ int main(void)
     uint32_t tex0_lo = (base_bp & 0x3FFFu) | (((base_bw / 64u) & 0x3Fu) << 14) | (6u << 26) | (2u << 30);
     uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
     append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
-    append_ad(buf, &off, (3u << 2) | (2u << 6), 0, GS_REG_TEX1_1); /* MXL=3, MMIN=2 */
+    append_ad(buf, &off, 1u | (3u << 2) | (2u << 6), 48, GS_REG_TEX1_1); /* MXL=3, MMIN=2 */
     uint32_t tbw3_field = mip3_bw / 64u;
     append_ad(buf, &off, 0u, ((mip3_bp & 0x3FFFu) << 8) | ((tbw3_field & 0x3Fu) << 22), GS_REG_MIPTBP1_1);
 

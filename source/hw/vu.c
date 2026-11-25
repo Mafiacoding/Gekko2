@@ -1,3 +1,5 @@
+#include "core/runtime_profile.h"
+#include "core/hw/game_trace.h"
 /*
  * vu.c - see include/core/hw/vu.h for scope notes and references, and
  * source/hw/vu_opcodes.h for the real VU instruction encoding this
@@ -18,13 +20,37 @@
 #include <math.h>
 
 static vu1_state_t g_vu1;
+#ifdef G2_VU0_TRACE
+extern void g2_vu1_trace(vu1_state_t *v,int phase);
+#define VU1_TRACE(ph) g2_vu1_trace(&g_vu1,ph)
+#else
+#define VU1_TRACE(ph) do{}while(0)
+#endif
+#ifdef GEKKO2_GAME_TRACE
+static uint32_t unknown_words[8][2];
+static unsigned unknown_used;
+#endif
 const vu1_state_t * const vu1_scheduler_view = &g_vu1;
+#ifdef GEKKO2_WIIU
+/* VPU_STAT is shared with the EE thread; the VU1 worker core changes its bits atomically. */
+#define G2_VPU1_OR(v) __atomic_fetch_or(&ee_core_get_state()->cop2_ctrl[29],(v),__ATOMIC_ACQ_REL)
+#define G2_VPU1_AND(v) __atomic_fetch_and(&ee_core_get_state()->cop2_ctrl[29],(v),__ATOMIC_ACQ_REL)
+#else
+#define G2_VPU1_OR(v) ee_core_get_state()->cop2_ctrl[29]|=v
+#define G2_VPU1_AND(v) ee_core_get_state()->cop2_ctrl[29]&=v
+#endif
 static void vu1_service_xgkick(int flush);
 static void vu1_issue_xgkick(uint32_t addr);
 
 void vu1_init(void)
 {
+#ifdef GEKKO2_WIIU
+    vu1_async_wait();
+#endif
     memset(&g_vu1, 0, sizeof(g_vu1));
+#ifdef GEKKO2_GAME_TRACE
+    unknown_used=0;
+#endif
     /* VF00 is hardwired to (0,0,0,1.0f) on real hardware, matching
      * this project's existing VU0 macro-mode convention (ee_core.c's
      * vu0_vf_read_lane) - see docs/STATUS.md's "round 13" section for
@@ -43,6 +69,9 @@ static inline uint32_t vu_rd_le32(const uint8_t *p)
 
 static inline void vu_wr_le32(uint8_t *p, uint32_t v)
 {
+#ifdef G2_VU0_TRACE
+    { extern void g2_vu_wr_hook(uint8_t *p,uint32_t v); g2_vu_wr_hook(p,v); }
+#endif
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
 }
 
@@ -276,12 +305,16 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
                    vu_pipeline_t *pipeline,vu_timing_t *timing,uint32_t upper,uint32_t lower)
 {
     uint32_t off = *tpc & micro_mask;
+    uint64_t issue_start=pipeline?pipeline->cycle:0;
     /* A second XGKICK cannot replace a still-blocked first kick. */
     if(mem==g_vu1.mem&&pipeline==&g_vu1.pipeline&&!(upper&0x80000000u)&&
        VU_L_OPCODE(lower)==64u&&VU_L_FUNCT6(lower)>=60u&&VU_L_RD(lower)==27u&&(lower&3u)==0u&&g_vu1.xgkick_pending) {
         g_vu1.xgkick_busy_stalls++;
         vu1_service_xgkick(1);
-        if(g_vu1.xgkick_pending)return 2; /* producer stalled; no pair retired */
+        if(g_vu1.xgkick_pending) {
+            vu_vi_age(timing,pipeline->cycle-issue_start);
+            return 2; /* producer stalled; no pair retired */
+        }
     }
     uint32_t this_pc = off;
     uint32_t previous_branch_delay=*branch_delay;
@@ -307,6 +340,7 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
     }
     vu_fmac_stall(timing,pipeline,upper,lower);
     if(pipeline){vu_fmac_publish(timing,vi,pipeline->cycle);vu_q_publish(pipeline,vi);}
+    vu_vi_age(timing,1u+(pipeline?pipeline->cycle-issue_start:0u));
     /* Drain bytes whose VU issue clocks elapsed before this pair can
      * overwrite them. FDIV/EFU stalls contribute to the same clock. */
     if(mem==g_vu1.mem && pipeline==&g_vu1.pipeline)
@@ -317,6 +351,17 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
     if(conflict)memcpy(old_vf,vf[upper_dst],sizeof(old_vf));
     uint32_t old_q=vi[22],old_status=vi[16],old_p=vi[23],old_clip=vi[18];
     int clip_upper=VU_U_IS_SPECIAL(upper)&&VU_SPEC_SUBOP(upper)==7u&&(upper&3u)==3u;
+    int fcset=!(upper&0x80000000u)&&VU_L_OPCODE(lower)==17u;
+    int delayed_clip=timing&&(clip_upper||fcset);
+    int vi_branch=timing&&!(upper&0x80000000u)&&vu_vi_conditional_branch(lower);
+    unsigned vi_dest=timing&&!(upper&0x80000000u)?vu_vi_backup_dest(lower):0;
+    uint32_t vi_before=vi_dest?vi[vi_dest]:0;
+    uint32_t branch_vi=0;
+    if(vi_branch&&timing->vi_age&&timing->vi_reg) {
+        branch_vi=vi[timing->vi_reg];vi[timing->vi_reg]=timing->vi_old;
+    }
+    uint32_t issued_clip=old_clip;
+    if(timing&&clip_upper)vi[18]=vu_clip_issued(timing,old_clip);
     int clip_lower=(VU_L_OPCODE(lower)>=16u&&VU_L_OPCODE(lower)<=19u)||VU_L_OPCODE(lower)==28u;
 
     *tpc = (off + 8u) & micro_mask;
@@ -340,7 +385,11 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
         if((upper&0x10000000u)&&(control[28]&(4u<<shift)))flags|=2u<<shift;
         if((upper&0x08000000u)&&(control[28]&(8u<<shift)))flags|=4u<<shift;
         if(flags) {
+#ifdef GEKKO2_WIIU
+            __atomic_fetch_or(&control[29],flags,__ATOMIC_ACQ_REL);
+#else
             control[29]|=flags;
+#endif
             /* Each enabled source has its own raise, including D+T. */
             if(flags&(2u<<shift))ee_intc_raise(unit1?7:6);
             if(flags&(4u<<shift))ee_intc_raise(unit1?7:6);
@@ -351,17 +400,18 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
     int upper_ok, lower_ok;
     uint32_t fmac_mac=0,fmac_status=0;
     /* Flags remain invisible to the paired lower instruction. */
-    int arithmetic=timing?(vu_aot_try_timed_upper(vf,vi,acc,upper,&fmac_mac,&fmac_status)||
+    int arithmetic=(timing||vu_fmac_add_alignment_needed(vf,vi,upper))?(vu_aot_try_timed_upper(vf,vi,acc,upper,&fmac_mac,&fmac_status)||
         vu_fmac_arithmetic(vf,vi,acc,upper,&fmac_mac,&fmac_status)):0;
     int fsset=!(upper&0x80000000u)&&VU_L_OPCODE(lower)==21u;
 
     /* I flag (bit 31 of the upper word): only the upper instruction
      * executes this pair; the lower word's raw bits become the real
      * $I$ register (VI[21], REG_I per PCSX2's VU.h VURegFlags enum). */
-    if ((!timing||(!arithmetic&&!fsset))&&!vu_aot_available(upper,lower)&&!qop&&!pop&&!conflict&&!(clip_upper&&clip_lower)&&vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
+    if (!arithmetic&&(!timing||(!fsset&&!delayed_clip))&&!vu_aot_available(upper,lower)&&!qop&&!pop&&!conflict&&!(clip_upper&&clip_lower)&&vu_jit_try_pair(vf,vi,acc,mem,mem_mask,this_pc,branch_delay,branch_target,upper,lower)) {
         upper_ok=lower_ok=1;
     } else if (upper & 0x80000000u) {
         upper_ok = arithmetic || vu_aot_try_upper(vf,vi,acc,upper) || vu_jit_try_upper(vf, vi, acc, upper) || vu_exec_upper(vf, vi, acc, upper);
+        if(delayed_clip){issued_clip=vi[18];vi[18]=old_clip;}
         vi[21] = lower;
         lower_ok = 1; /* the lower word was consumed as data (the I-immediate), not an instruction - correctly decoded, not "unimplemented" */
     } else {
@@ -373,14 +423,20 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
         /* Upper wins a same-VF write collision: discard the lower half,
          * including an LQI/LQD base update, as in the reference pipeline. */
         uint32_t new_clip=vi[18];
-        if(clip_upper&&clip_lower)vi[18]=old_clip;
+        if(clip_upper&&(clip_lower||timing))vi[18]=old_clip;
         if((conflict&&vu_pair_lower_dest(lower)==upper_dst) || (clip_upper&&VU_L_OPCODE(lower)==17u))lower_ok=1;
         else lower_ok = vu_aot_try_lower(vf,vi,mem,mem_mask,this_pc,branch_delay,branch_target,lower) || (!qop&&!pop&&vu_jit_try_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target)) ||
                    vu_exec_lower(vf, vi, mem, mem_mask, lower, this_pc, branch_delay, branch_target);
         if(conflict)memcpy(vf[upper_dst],new_vf,sizeof(new_vf));
-        if(clip_upper&&clip_lower)vi[18]=new_clip;
+        if(delayed_clip){issued_clip=clip_upper?new_clip:vi[18];vi[18]=old_clip;}
+        else if(clip_upper&&clip_lower)vi[18]=new_clip;
     }
 
+    if(vi_branch&&timing->vi_age&&timing->vi_reg)vi[timing->vi_reg]=branch_vi;
+    if(vi_dest&&!(conflict&&vu_pair_lower_dest(lower)==upper_dst)) {
+        if(!timing->vi_age||timing->vi_reg!=vi_dest)timing->vi_old=(uint16_t)vi_before;
+        timing->vi_reg=(uint8_t)vi_dest;timing->vi_age=2;
+    }
     if(pipeline) {
         if(qop&&(lower&3u)<3u) {
             pipeline->q_value=vi[22];pipeline->q_status=vi[16]&0x30u;
@@ -391,19 +447,24 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
             pipeline->p_value=vi[23];pipeline->p_ready=pipeline->cycle+vu_efu_latency(lower);
             pipeline->p_pending=1;vi[23]=old_p;
         }
-        if(timing&&(arithmetic||fsset)) {
+        if(timing&&(arithmetic||fsset||delayed_clip)) {
             uint32_t set_status=fsset?vi[16]:fmac_status;
             uint32_t issue_mac=arithmetic?fmac_mac:vi[17];
             if(fsset&&!arithmetic&&timing->count) {
-                unsigned last=(timing->head+timing->count-1u)&3u;
-                issue_mac=timing->flags[last].mac;
-                set_status=(set_status&0xfc0u)|(timing->flags[last].status&15u);
+                for(unsigned i=timing->count;i;i--) {
+                    unsigned last=(timing->head+i-1u)&3u;
+                    if(timing->flags[last].set&4u)continue;
+                    issue_mac=timing->flags[last].mac;
+                    set_status=(set_status&0xfc0u)|(timing->flags[last].status&15u);
+                    break;
+                }
             }
             if(fsset) {
                 if(arithmetic)set_status=(set_status&0xfc0u)|(fmac_status&15u);
                 vi[16]=old_status;
             }
-            vu_fmac_issue(timing,vi,pipeline,issue_mac,set_status,fsset);
+            vu_fmac_issue(timing,vi,pipeline,issue_mac,set_status,
+                (fsset?1u:0u)|(delayed_clip?2u:0u)|((!arithmetic&&!fsset)?4u:0u),issued_clip);
         }
         vu_fmac_mark_write(timing,pipeline,upper_dst,(upper&63u)==46u?14u:((upper>>21)&15u));
         if(!(upper&0x80000000u)&&!(conflict&&vu_pair_lower_dest(lower)==upper_dst))
@@ -411,8 +472,16 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
         if(timing&&mem_mask==4095u&&(upper&0x20000000u))timing->m_yield=1;
         pipeline->cycle++;
     }
-    if (!upper_ok || !lower_ok)
+    if (!upper_ok || !lower_ok) {
         (*unimplemented_opcodes_seen)++;
+#ifdef GEKKO2_GAME_TRACE
+        if(mem==g_vu1.mem&&unknown_used<8u) {
+            unsigned i=0;while(i<unknown_used&&(unknown_words[i][0]!=upper||unknown_words[i][1]!=lower))i++;
+            if(i==unknown_used){unknown_words[i][0]=upper;unknown_words[i][1]=lower;unknown_used++;
+                game_trace_record(GT_VU_UNKNOWN,this_pc,upper,lower,((unsigned)upper_ok<<1)|(unsigned)lower_ok);}
+        }
+#endif
+    }
     (*instructions_executed)++;
 
     /* Branch delay-slot mechanism (same 1-instruction-delay pattern as
@@ -446,6 +515,7 @@ static int vu_micro_words_timed(uint32_t vf[32][4], uint32_t *vi, uint32_t acc[4
                 if(pipeline->cycle<timing->flags[last].ready)pipeline->cycle=timing->flags[last].ready;
                 vu_fmac_publish(timing,vi,pipeline->cycle);
             }
+            if(timing)timing->vi_age=0;
             return 1; /* stopped */
         }
     }
@@ -499,6 +569,7 @@ int vu_micro_step_pipeline(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],
  * cap retains the BIOS malformed-packet bound from GSState::Transfer<0>. */
 static void vu1_start_xgkick(uint32_t addr)
 {
+    game_trace_record(GT_KICK,addr,g_vu1.tpc,gif_get_state()->arb_owner,0);
     g_vu1.xgkick_addr=addr&(VU1_MEM_SIZE-16u);
     g_vu1.xgkick_packet_qwords=0;
     g_vu1.xgkick_ring_qwords=VU1_MEM_SIZE/16u;
@@ -506,7 +577,7 @@ static void vu1_start_xgkick(uint32_t addr)
     g_vu1.xgkick_last_cycle=g_vu1.pipeline.cycle;
     g_vu1.xgkick_eop=0;
     g_vu1.xgkick_pending=1;
-    ee_core_get_state()->cop2_ctrl[29]|=1u<<12;
+    G2_VPU1_OR(1u<<12);
     gif_begin_xgkick();
 }
 
@@ -519,23 +590,26 @@ static void vu1_service_xgkick(int flush)
     g_vu1.xgkick_last_cycle=now;
     while(g_vu1.xgkick_pending && (flush || g_vu1.xgkick_cycle_credit>=2u)) {
         uint32_t addr=g_vu1.xgkick_addr;
-        if(!g_vu1.xgkick_packet_qwords) {
+        uint32_t packet=g_vu1.xgkick_packet_qwords,eop=g_vu1.xgkick_eop;
+        int new_tag=!packet;
+        if(new_tag) {
             uint32_t lo=vu_rd_le32(g_vu1.mem+addr);
             uint32_t hi=vu_rd_le32(g_vu1.mem+addr+4u);
             uint32_t loops=lo&0x7fffu,mode=(hi>>26)&3u,nreg=hi>>28;
             if(!nreg)nreg=16u;
             uint32_t payload=mode==0u?loops*nreg:
                 mode==1u?(loops*nreg+1u)/2u:loops;
-            g_vu1.xgkick_packet_qwords=1u+payload;
-            g_vu1.xgkick_eop=!!(lo&0x8000u);
+            packet=1u+payload;
+            eop=!!(lo&0x8000u);
         }
         uint32_t take=flush?g_vu1.xgkick_ring_qwords:
             (uint32_t)(g_vu1.xgkick_cycle_credit/2u > g_vu1.xgkick_ring_qwords ?
                 g_vu1.xgkick_ring_qwords:g_vu1.xgkick_cycle_credit/2u);
-        if(take>g_vu1.xgkick_packet_qwords)take=g_vu1.xgkick_packet_qwords;
+        if(take>packet)take=packet;
         if(take>(VU1_MEM_SIZE-addr)/16u)take=(VU1_MEM_SIZE-addr)/16u;
         take=gif_try_process_quadwords(GIF_PATH_1,g_vu1.mem+addr,take);
-        if(!take)break; /* Backpressure retains live VU ring address. */
+        if(!take)break; /* Rejected tags remain live, including length/EOP. */
+        if(new_tag){g_vu1.xgkick_packet_qwords=packet;g_vu1.xgkick_eop=eop;}
         g_vu1.xgkick_addr=(addr+take*16u)&(VU1_MEM_SIZE-1u);
         g_vu1.xgkick_packet_qwords-=take;
         g_vu1.xgkick_ring_qwords-=take;
@@ -546,7 +620,7 @@ static void vu1_service_xgkick(int flush)
         if(!g_vu1.xgkick_ring_qwords ||
            (!g_vu1.xgkick_packet_qwords && g_vu1.xgkick_eop)) {
             g_vu1.xgkick_pending=0;
-            ee_core_get_state()->cop2_ctrl[29]&=~(1u<<12);
+            G2_VPU1_AND(~(1u<<12));
             gif_end_xgkick();
             if(g_vu1.xgkick_deferred){
                 uint32_t next=g_vu1.xgkick_deferred_addr;
@@ -623,7 +697,7 @@ static void vu1_run_pairs(void)
                                      &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline,&g_vu1.timing);
         if(stopped==2)break;
         if (stopped==1) {
-            g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);
+            g_vu1.running=0;G2_VPU1_AND(~(1u<<8));VU1_TRACE(1);
             vu1_service_xgkick(1);
             break;
         }
@@ -641,7 +715,7 @@ static void vu1_run_blocks(void)
             &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline,&g_vu1.timing,0,0};
         if(vu1_block_candidate())ran=vu_jit_try_timed_block(&c,VU_EXEC_STEP_CAP-i);
         if(ran){
-            if(c.stopped==1){g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);vu1_service_xgkick(1);break;}
+            if(c.stopped==1){g_vu1.running=0;G2_VPU1_AND(~(1u<<8));VU1_TRACE(1);vu1_service_xgkick(1);break;}
             if(c.stopped==2)break;
             i+=ran-1u;continue;
         }
@@ -653,7 +727,7 @@ static void vu1_run_blocks(void)
                                      &g_vu1.instructions_executed, &g_vu1.unimplemented_opcodes_seen,&g_vu1.pipeline,&g_vu1.timing);
         if(stopped==2)break;
         if (stopped==1) {
-            g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);
+            g_vu1.running=0;G2_VPU1_AND(~(1u<<8));VU1_TRACE(1);
             vu1_service_xgkick(1);
             break;
         }
@@ -661,16 +735,125 @@ static void vu1_run_blocks(void)
 
 }
 
+#ifdef GEKKO2_WIIU
+/* Wii U port only: wall time of whole VU1 microprogram runs (MSCAL/MSCNT), minus GS work done inside them. */
+#include <time.h>
+int gekko2_prof_vu_enabled;
+uint64_t gekko2_prof_vu1_ns,gekko2_prof_vu1_calls;
+extern uint64_t gekko2_prof_gs_ns;
+static inline uint64_t vu_prof_now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec;}
+#define VU_PROF_BEGIN uint64_t vu_p0=gekko2_prof_vu_enabled?vu_prof_now():0,vu_g0=gekko2_prof_gs_ns
+#define VU_PROF_END do{if(vu_p0){uint64_t d=vu_prof_now()-vu_p0,g=gekko2_prof_gs_ns-vu_g0;gekko2_prof_vu1_ns+=d>g?d-g:0;gekko2_prof_vu1_calls++;}}while(0)
+#else
+#define VU_PROF_BEGIN
+#define VU_PROF_END
+#endif
+
+#ifdef GEKKO2_WIIU
+/* Wii U port only: VU1 microprograms on their own core. MSCAL/MSCNT hand the run to the worker and return; the
+ * VIF already waits for g_vu1.running (FLUSH/MSCAL barriers), so ordering is kept. The worker is the only PATH1
+ * producer of the GS worker's per-path rings (needs gs_async). VU JIT code is only executable on the codegen core,
+ * so the worker always interprets. */
+volatile int vu1_async_on;
+static volatile int va_req, va_stop, va_running, va_started;
+static void (*va_idle)(void);
+static uint64_t va_busy_ns, va_runs, va_gif_waits;
+static inline void va_wait(void) { if (va_idle) va_idle(); }
+static inline uint64_t va_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
+void vu1_async_attach(void (*idle)(void))
+{
+    va_idle = idle; va_req = 0; va_stop = 0; va_running = 0; va_started = 0;
+    va_busy_ns = va_runs = va_gif_waits = 0;
+}
+int vu1_async_enable(void)
+{
+    for (unsigned i = 0; i < 2000000u && !__atomic_load_n(&va_running, __ATOMIC_ACQUIRE); i++) va_wait();
+    if (!__atomic_load_n(&va_running, __ATOMIC_ACQUIRE)) return -1;
+    vu1_async_on = 1;
+    return 0;
+}
+void vu1_async_wait(void)
+{
+    if (!vu1_async_on) return;
+    while (__atomic_load_n(&va_req, __ATOMIC_ACQUIRE)) va_wait();
+}
+void vu1_async_detach(void)
+{
+    vu1_async_wait();
+    __atomic_store_n(&va_stop, 1, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&va_started, __ATOMIC_ACQUIRE))
+        while (__atomic_load_n(&va_running, __ATOMIC_ACQUIRE)) va_wait();
+    vu1_async_on = 0;
+}
+void vu1_async_stats(uint64_t out[3]) { out[0] = va_runs; out[1] = va_busy_ns; out[2] = va_gif_waits; }
+static void vu1_worker_run(void)
+{
+    for (uint64_t n = 0; n < (1ull << 28); n++) {
+        int stopped = vu_micro_step_timed(g_vu1.vf, g_vu1.vi, g_vu1.acc, g_vu1.mem, VU1_MEM_SIZE - 1u,
+                                          g_vu1.micro, VU1_MICRO_SIZE - 1u, &g_vu1.tpc, &g_vu1.branch_delay,
+                                          &g_vu1.branch_target, &g_vu1.ebit_delay, &g_vu1.instructions_executed,
+                                          &g_vu1.unimplemented_opcodes_seen, &g_vu1.pipeline, &g_vu1.timing);
+        if (stopped == 1) break;
+        if (stopped == 2) { va_gif_waits++; va_wait(); }
+    }
+    /* Ends with E (or the runaway cap): publish idle first, as the synchronous runner does, then flush PATH1. */
+    __atomic_store_n(&g_vu1.running, 0, __ATOMIC_RELEASE);
+    G2_VPU1_AND(~(1u << 8));
+    while (g_vu1.xgkick_pending) {
+        vu1_service_xgkick(1);
+        if (g_vu1.xgkick_pending) { va_gif_waits++; va_wait(); }
+    }
+}
+void vu1_async_worker_main(void)
+{
+    __atomic_store_n(&va_started, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&va_running, 1, __ATOMIC_RELEASE);
+    extern void (*gekko2_worker_nap)(void);
+    unsigned idle = 0;
+    while (!__atomic_load_n(&va_stop, __ATOMIC_ACQUIRE)) {
+        if (!__atomic_load_n(&va_req, __ATOMIC_ACQUIRE)) {
+            if (++idle > 512u && gekko2_worker_nap) gekko2_worker_nap(); else va_wait();
+            continue;
+        }
+        idle = 0;
+        const uint64_t t0 = va_now();
+        vu1_worker_run();
+        va_busy_ns += va_now() - t0;
+        va_runs++;
+        __atomic_store_n(&va_req, 0, __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&va_running, 0, __ATOMIC_RELEASE);
+}
+static int vu1_async_start(int reset_pc, uint32_t start_addr)
+{
+    if (!vu1_async_on) return 0;
+    vu1_async_wait();
+    if (reset_pc) g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
+    g_vu1.running = 1;
+    G2_VPU1_OR(1u << 8);
+    __atomic_store_n(&va_req, 1, __ATOMIC_RELEASE);
+    return 1;
+}
+#endif
+
 void vu1_exec_micro(uint32_t start_addr)
 {
+#ifdef GEKKO2_WIIU
+    if (vu1_async_start(1, start_addr)) return;
+#endif
+    VU_PROF_BEGIN;
+    unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     g_vu1.tpc = (start_addr << 3) & (VU1_MICRO_SIZE - 1u);
-    g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
+    VU1_TRACE(0);
+    g_vu1.running = 1;G2_VPU1_OR(1u<<8);
 
     /* Q/P, branch and GIF boundaries can be scalar; later work can
      * resume native blocks within the same synchronously ordered run. */
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu1_run_blocks();
     else if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
+    gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
+    VU_PROF_END;
 }
 
 /* Round 576 (task #551): real MSCNT semantics. Ground-truthed against
@@ -693,27 +876,40 @@ void vu1_exec_micro(uint32_t start_addr)
  * vu1_exec_micro() but without the reset line. */
 void vu1_exec_micro_continue(void)
 {
-    g_vu1.running = 1;ee_core_get_state()->cop2_ctrl[29]|=1u<<8;
+#ifdef GEKKO2_WIIU
+    if (vu1_async_start(0, 0)) return;
+#endif
+    VU_PROF_BEGIN;
+    VU1_TRACE(0);
+    unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
+    g_vu1.running = 1;G2_VPU1_OR(1u<<8);
 
     /* Q/P, branch and GIF boundaries can be scalar; later work can
      * resume native blocks within the same synchronously ordered run. */
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu1_run_blocks();
     else if(vu1_block_candidate())vu1_run_blocks();else vu1_run_pairs();
 
+    gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
+    VU_PROF_END;
 }
 
 /* Called by the common EE scheduler for a yielded microprogram or a
  * pending transfer after E. No synthetic microinstruction retirement. */
 void vu1_tick(void) {
+#ifdef GEKKO2_WIIU
+    if (vu1_async_on) return; /* the worker core runs VU1 and its PATH1 transfers */
+#endif
     if(!g_vu1.running&&!g_vu1.xgkick_pending)return;
+    unsigned profile=gp_enter(GP_VU1);uint64_t profile_before=g_vu1.instructions_executed;
     if(g_vu1.running) {
         int stopped=vu_micro_step_timed(g_vu1.vf,g_vu1.vi,g_vu1.acc,
             g_vu1.mem,VU1_MEM_SIZE-1u,g_vu1.micro,VU1_MICRO_SIZE-1u,
             &g_vu1.tpc,&g_vu1.branch_delay,&g_vu1.branch_target,&g_vu1.ebit_delay,
             &g_vu1.instructions_executed,&g_vu1.unimplemented_opcodes_seen,
             &g_vu1.pipeline,&g_vu1.timing);
-        if(stopped==1){g_vu1.running=0;ee_core_get_state()->cop2_ctrl[29]&=~(1u<<8);}
+        if(stopped==1){g_vu1.running=0;G2_VPU1_AND(~(1u<<8));VU1_TRACE(1);}
         if(stopped==2)g_vu1.pipeline.cycle++;
     } else g_vu1.pipeline.cycle++;
     vu1_service_xgkick(!g_vu1.running);
+    gp_work(GP_VU1,g_vu1.instructions_executed-profile_before);gp_leave(profile);
 }

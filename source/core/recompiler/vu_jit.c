@@ -1,4 +1,13 @@
 #include "core/recompiler/optimization.h"
+#include "core/recompiler/native_ppc.h"
+#ifdef GEKKO2_WIIU_JIT
+#include <coreinit/codegen.h>
+#include <coreinit/core.h>
+/* Generated code lives in the codegen area, usable only on the codegen core; the VU1 worker core interprets. */
+#define VU_JIT_CORE_OK() (OSGetCoreId()==OSGetCodegenCore())
+#else
+#define VU_JIT_CORE_OK() 1
+#endif
 #include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/vu_jit.h"
 #include "core/recompiler/ppc_dynarec.h"
@@ -8,7 +17,7 @@
 static uint64_t upper_count,lower_count,rejected_hits,pair_count,block_count;
 static uint32_t owned_count;
 static uint64_t timed_block_count;
-#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
+#if defined(GEKKO2_NATIVE_PPC) && !defined(PCSX2WII_JIT_DISABLE)
 #define VU_CODE_SLOTS 512u
 #define VU_LOOKUP_SLOTS 1024u
 typedef void (*vu_fn)(uint32_t (*)[4],uint32_t *,void *,uint32_t,uint32_t,uint32_t *,uint32_t *);
@@ -94,21 +103,21 @@ static int vu_lower_pipeline_boundary(uint32_t word)
 
 #endif
 int vu_jit_try_upper(uint32_t vf[32][4],uint32_t *vi,uint32_t acc[4],uint32_t word) {
-#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
-    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT))return 0;
+#if defined(GEKKO2_NATIVE_PPC) && !defined(PCSX2WII_JIT_DISABLE)
+    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)||!VU_JIT_CORE_OK())return 0;
     typedef void (*upper_fn)(uint32_t (*)[4],uint32_t *,uint32_t *);
     vu_fn fn=hot_lookup(word&0x01ffffffu,0);if(!fn)return 0;
-    ((upper_fn)fn)(vf,vi,acc);upper_count++;return 1;
+    CG_EXEC_VOID(((upper_fn)fn)(vf,vi,acc));upper_count++;return 1;
 #else
     (void)vf;(void)vi;(void)acc;(void)word;return 0;
 #endif
 }
 int vu_jit_try_lower(uint32_t vf[32][4],uint32_t *vi,uint8_t *mem,uint32_t mem_mask,uint32_t word,
                      uint32_t pc,uint32_t *branch_delay,uint32_t *branch_target) {
-#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
-    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT))return 0;
+#if defined(GEKKO2_NATIVE_PPC) && !defined(PCSX2WII_JIT_DISABLE)
+    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)||!VU_JIT_CORE_OK())return 0;
     vu_fn fn=hot_lookup(word,1);if(!fn)return 0;
-    fn(vf,vi,mem,mem_mask,pc,branch_delay,branch_target);lower_count++;return 1;
+    CG_EXEC_VOID(fn(vf,vi,mem,mem_mask,pc,branch_delay,branch_target));lower_count++;return 1;
 #else
     (void)vf;(void)vi;(void)mem;(void)mem_mask;(void)word;
     (void)pc;(void)branch_delay;(void)branch_target;return 0;
@@ -117,8 +126,8 @@ int vu_jit_try_lower(uint32_t vf[32][4],uint32_t *vi,uint8_t *mem,uint32_t mem_m
 int vu_jit_try_pair(uint32_t vf[32][4],uint32_t *vi,uint32_t *acc,uint8_t *mem,
                     uint32_t mask,uint32_t pc,uint32_t *delay,uint32_t *target,
                     uint32_t upper,uint32_t lower) {
-#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
-    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT))return 0;
+#if defined(GEKKO2_NATIVE_PPC) && !defined(PCSX2WII_JIT_DISABLE)
+    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)||!VU_JIT_CORE_OK())return 0;
     upper&=0x81ffffffu; /* I affects semantics; E/D/T remain in scheduler. */
     pair_entry *p=&pairs[(upper^(upper>>11)^lower^(lower>>17))&(VU_PAIR_SLOTS-1u)];
     if(!p->valid || p->upper!=upper || p->lower!=lower) {
@@ -132,7 +141,7 @@ int vu_jit_try_pair(uint32_t vf[32][4],uint32_t *vi,uint32_t *acc,uint8_t *mem,
         p->upper=upper;p->lower=lower;p->fn=fn;p->valid=1;p->rejected=(uint8_t)(result!=0);
     }
     if(p->rejected){rejected_hits++;return 0;}
-    p->fn(vf,vi,acc,mem,mask,pc,delay,target);
+    CG_EXEC_VOID(p->fn(vf,vi,acc,mem,mask,pc,delay,target));
     pair_count++;upper_count++;if(!(upper&0x80000000u))lower_count++;return 1;
 #else
     (void)vf;(void)vi;(void)acc;(void)mem;(void)mask;(void)pc;
@@ -143,8 +152,8 @@ unsigned vu_jit_try_block(uint32_t vf[32][4],uint32_t *vi,uint32_t *acc,uint8_t 
                     uint32_t mask,uint8_t *micro,uint32_t micro_mask,uint32_t *pc,
                     uint32_t *delay,uint32_t *target,uint32_t *ebit,
                     uint64_t *retired,unsigned budget) {
-#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
-    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT))return 0;
+#if defined(GEKKO2_NATIVE_PPC) && !defined(PCSX2WII_JIT_DISABLE)
+    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)||!VU_JIT_CORE_OK())return 0;
     if(*delay||*ebit||budget<2u)return 0;
     /* Local writes must not mutate later micro words inside this block. */
     uintptr_t data=(uintptr_t)mem,code=(uintptr_t)micro;
@@ -194,7 +203,7 @@ unsigned vu_jit_try_block(uint32_t vf[32][4],uint32_t *vi,uint32_t *acc,uint8_t 
     }
 execute_cached:
     if(!p->fn)return 0;
-    p->fn(vf,vi,acc,mem,mask,off,delay,target);
+    CG_EXEC_VOID(p->fn(vf,vi,acc,mem,mask,off,delay,target));
     *pc=(off+p->count*8u)&micro_mask;*retired+=p->count;
     block_count++;pair_count+=p->count;upper_count+=p->count;
     for(unsigned n=0;n<p->count;n++)if(!(p->upper[n]&0x80000000u))lower_count++;
@@ -207,8 +216,8 @@ execute_cached:
 unsigned vu_jit_try_timed_block(vu_jit_timed_context *c,unsigned budget)
 {
     c->ran=0;c->stopped=0;
-#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
-    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)||!c->pipeline||!c->timing||
+#if defined(GEKKO2_NATIVE_PPC) && !defined(PCSX2WII_JIT_DISABLE)
+    if(!gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)||!VU_JIT_CORE_OK()||!c->pipeline||!c->timing||
        *c->delay||*c->ebit||c->timing->m_yield||budget<2u)return 0;
     uint32_t off=*c->pc&c->micro_mask,up[8],lo[8];unsigned count=0;
     timed_entry *p=&timed_blocks[((off>>3)^(off>>6)^(off>>11)^((uintptr_t)c->micro>>5))&(VU_BLOCK_SLOTS-1u)];
@@ -241,7 +250,7 @@ unsigned vu_jit_try_timed_block(vu_jit_timed_context *c,unsigned budget)
         p->fn=fn;p->micro=c->micro;p->pc=off;p->mask=c->micro_mask;p->count=(uint8_t)count;
         memcpy(p->upper,up,count*sizeof(uint32_t));memcpy(p->lower,lo,count*sizeof(uint32_t));
     }
-    p->fn(c);
+    CG_EXEC_VOID(p->fn(c));
     if(c->ran){timed_block_count++;block_count++;}
     return c->ran;
 #else
@@ -256,7 +265,7 @@ uint64_t vu_jit_get_lower_count(void){return lower_count;}
 uint64_t vu_jit_get_rejected_hit_count(void){return rejected_hits;}
 uint32_t vu_jit_get_cache_size(void){return owned_count;}
 void vu_jit_reset_for_test(void) {
-#if defined(GEKKO) && !defined(PCSX2WII_JIT_DISABLE)
+#if defined(GEKKO2_NATIVE_PPC) && !defined(PCSX2WII_JIT_DISABLE)
     for(unsigned n=0;n<VU_CODE_SLOTS;n++)if(owned[n].fn)ppc_code_cache_release((void*)owned[n].fn);
     for(unsigned n=0;n<VU_PAIR_SLOTS;n++)if(pairs[n].fn)ppc_code_cache_release((void*)pairs[n].fn);
     for(unsigned n=0;n<VU_BLOCK_SLOTS;n++)if(blocks[n].fn)ppc_code_cache_release((void*)blocks[n].fn);

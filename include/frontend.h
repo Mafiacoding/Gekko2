@@ -6,8 +6,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "core/hw/frontend_browser.h"
+#include "core/hw/runtime_telemetry.h"
+#include "core/recompiler/experimental_options.h"
 typedef void (*ui_rect_fn)(int,int,int,int,uint8_t,uint8_t,uint8_t);
 enum {UI_BIOS,UI_DISC,UI_COLD_BOOT,UI_SELECT_DISC,UI_SETTINGS,UI_ABOUT,UI_EXIT,UI_MENU_COUNT};
+enum {UI_SET_RENDERER,UI_SET_SOUND,UI_SET_HUD,UI_SET_UPDATE,UI_SET_FPS,
+ UI_SET_PROFILE,UI_SET_EXPERIMENTS,UI_SET_DEVELOPER,UI_SET_NETWORK,UI_SET_DEFAULTS,UI_SET_COUNT};
 static const uint8_t ui_font[95][14]={
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0},
 {0,4,4,4,4,4,4,0,4,4,0,0,0,0},
@@ -112,7 +116,12 @@ static void ui_text(ui_rect_fn rect,int x,int y,int scale,const char *s,int r,in
  if(ui_text_renderer){ui_text_renderer(x,y,scale,s,r,g,b);return;}
  for(;*s;s++,x+=8*scale){unsigned c=(unsigned char)*s;if(c<32||c>126)continue;
  for(int row=0;row<14;row++)for(int col=0;col<8;col++)if(ui_font[c-32][row]&(1<<col))rect(x+col*scale,y+row*scale,scale,scale,r,g,b);}}
-static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,int fast,int fps,int gx,const char *engine,const char *notice){
+/* The active mask stays frozen until cold boot; requested settings may differ. */
+static const char *ui_cpu_engine(uint32_t mask){
+ const uint32_t jit=GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_JIT)|GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
+ return !(mask&jit)?"INTERPRETER":(mask&jit)==jit?"JIT ENABLED":"MIXED CPU";
+}
+static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,int fast,int fps,int gx,uint32_t cpu_mask,const char *notice){
  for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
  /* Architectural light pillars; an original angular wordmark. */
  for(int i=0;i<7;i++){int x=408+i*28;rect(x,76+i*11,2,240-i*17,12,35+i*5,66+i*9);}
@@ -133,14 +142,14 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  rect(36,y,370,31,on?16:9,on?43:22,on?76:41);rect(36,y,3,31,on?65:20,on?183:49,on?255:76);
  ui_text(rect,51,y+3,1,labels[i],on?228:148,on?242:176,on?255:207);
  ui_text(rect,51,y+17,1,desc[i],on?115:75,on?188:116,on?235:157);}
- ui_text(rect,433,173,1,"ENGINE",91,144,188);ui_text(rect,433,194,1,engine,185,221,250);
+ ui_text(rect,433,173,1,running?"CPU ACTIVE":"CPU NEXT BOOT",91,144,188);ui_text(rect,433,194,1,ui_cpu_engine(cpu_mask),185,221,250);
  ui_text(rect,433,240,1,"SESSION",91,144,188);ui_text(rect,433,261,1,running?"PAUSED":"READY",185,221,250);
  }else if(page==1){
  ui_text(rect,48,171,1,hud?"> HUD: ON":"> HUD: OFF",221,237,255);
  ui_text(rect,48,204,1,fast?"> UPDATE: THROUGHPUT":"> UPDATE: RESPONSIVE",221,237,255);
  ui_text(rect,48,237,1,fps?"> FPS COUNTER: ON":"> FPS COUNTER: OFF",221,237,255);
  ui_text(rect,48,269,1,gx?"> GX (EXPERIMENTAL): ON":"> GX (EXPERIMENTAL): OFF",221,237,255);
- ui_text(rect,48,299,1,"A: HUD    1 / GC X: update    2 / GC Y: FPS",106,171,223);
+ ui_text(rect,48,299,1,"A: screen logs  1 / GC X: update  2 / GC Y: rates",106,171,223);
  ui_text(rect,48,324,1,"LEFT / RIGHT: toggle GX",106,171,223);
  ui_text(rect,48,349,1,"DOWN: CPU / GX OPTIMIZATIONS",106,171,223);
  }else{
@@ -155,10 +164,85 @@ static void ui_draw(ui_rect_fn rect,int selected,int page,int running,int hud,in
  ui_text(rect,38,397,1,notice?notice:"",117,186,237);
  ui_text(rect,38,437,1,page?"B  BACK":"D-PAD/STICK SELECT  A OPEN  +/START RESUME",209,227,246);
 }
-static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested,uint32_t available,const char *message)
+static void ui_settings_draw(ui_rect_fn rect,int selected,int hud,int throughput,int fps,int gx,const char *message)
 {
  for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
- ui_text(rect,36,28,2,"CPU / GX OPTIMIZATIONS",204,232,255);
+ ui_text(rect,36,28,2,"WII SETTINGS",204,232,255);
+ ui_text(rect,36,65,1,"Saved on SD. CPU / GX changes: next cold boot.",106,171,223);
+ const char *labels[UI_SET_COUNT]={"Renderer","Sound output","On-screen logs","Input update budget","Rate counters","CPU profile","Experiments","Developer switches","Network logger","Restore defaults"};
+ const char *values[UI_SET_COUNT]={gx?"GX HYBRID":"SOFTWARE REFERENCE",gekko2_opt_requested()&GEKKO2_OPT_BIT(GEKKO2_OPT_SOUND)?"ON":"OFF",
+  hud?"ON":"OFF",throughput?"50 ms (throughput)":"20 ms (responsive)",fps?"ON":"OFF",gekko2_opt_profile_name(),"OPEN","OPEN","OPEN","APPLY"};
+ for(int n=0;n<UI_SET_COUNT;n++){
+  int y=96+n*24,on=n==selected;char row[100];
+  rect(32,y-2,576,23,on?16:9,on?43:22,on?76:41);
+  snprintf(row,sizeof row,"%s %-23s %s",on?">":" ",labels[n],values[n]);
+  ui_text(rect,40,y,1,row,on?228:148,on?242:176,on?255:207);
+ }
+ ui_text(rect,36,355,1,selected==UI_SET_PROFILE?
+  "INTERPRETER REFERENCE disables EE / IOP / VU JIT.":selected==UI_SET_RENDERER?
+  "Renderer choice does not change CPU profile.":selected==UI_SET_HUD?
+  "OFF: loading screen. SD / network logs are separate.":
+  "Sound OFF mutes output; guest hardware stays active.",117,186,237);
+ ui_text(rect,36,375,1,"Rates: guest VBlanks / output presents, not game FPS.",117,186,237);
+ ui_text(rect,36,403,1,message?message:"",117,186,237);
+ ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT CHANGE   B BACK",209,227,246);
+}
+static void ui_network_draw(ui_rect_fn rect,int selected,const runtime_telemetry_settings *settings,
+ const runtime_telemetry_settings *active,const runtime_telemetry_status *status,const char *message)
+{
+ for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
+ ui_text(rect,32,20,2,"NETWORK LOGGER",204,232,255);
+ char row[120];uint32_t ip=settings->endpoint.ip;
+ snprintf(row,sizeof row,"PC target: %u.%u.%u.%u : %u (editing)",(unsigned)(ip>>24),(unsigned)((ip>>16)&255),(unsigned)((ip>>8)&255),(unsigned)(ip&255),(unsigned)settings->endpoint.port);
+ ui_text(rect,32,58,1,row,117,186,237);
+ const char *names[]={"Enable logger","PC IPv4 octet 1","PC IPv4 octet 2","PC IPv4 octet 3","PC IPv4 octet 4","UDP port","SAVE / APPLY","SEND TEST PACKET"};
+ for(unsigned n=0;n<RT_EDIT_COUNT;n++){
+  int y=85+(int)n*26,on=(int)n==selected;char value[24];
+  if(n==RT_EDIT_ENABLE)snprintf(value,sizeof value,"%s",settings->enabled?"ON":"OFF");
+  else if(n<=RT_EDIT_IP4)snprintf(value,sizeof value,"%u",(unsigned)((ip>>((RT_EDIT_IP4-n)*8))&255));
+  else if(n==RT_EDIT_PORT)snprintf(value,sizeof value,"%u",(unsigned)settings->endpoint.port);
+  else snprintf(value,sizeof value,"A");
+  rect(28,y-2,580,24,on?16:9,on?43:22,on?76:41);
+  snprintf(row,sizeof row,"%s %-25s %s",on?">":" ",names[n],value);ui_text(rect,36,y,1,row,221,237,255);
+ }
+ ip=status->local_ip;
+ snprintf(row,sizeof row,"Wii IP: %u.%u.%u.%u | %s",(unsigned)(ip>>24),(unsigned)((ip>>16)&255),(unsigned)((ip>>8)&255),(unsigned)(ip&255),runtime_telemetry_status_text(status));
+ ui_text(rect,32,301,1,row,117,186,237);
+ ip=active->endpoint.ip;
+ snprintf(row,sizeof row,"Active PC: %u.%u.%u.%u:%u | %s error=%d",(unsigned)(ip>>24),(unsigned)((ip>>16)&255),(unsigned)((ip>>8)&255),(unsigned)(ip&255),(unsigned)active->endpoint.port,runtime_telemetry_stage_text(status->stage),status->error);
+ ui_text(rect,32,323,1,row,117,186,237);
+ snprintf(row,sizeof row,"Sent=%llu dropped=%llu errors=%llu",(unsigned long long)status->sent,(unsigned long long)status->dropped,(unsigned long long)status->errors);
+ ui_text(rect,32,345,1,row,117,186,237);
+ ui_text(rect,32,369,1,"UP/DOWN row  LEFT/RIGHT +/-1  1/2 or X/Y +/-10",117,186,237);
+ ui_text(rect,32,391,1,"SAVE applies now. Test needs Windows logger 1.1.",117,186,237);
+ ui_text(rect,32,413,1,message?message:"",221,237,255);
+ ui_text(rect,32,447,1,"Hold LEFT/RIGHT to repeat. B BACK",209,227,246);
+}
+static void ui_experiments_draw(ui_rect_fn rect,int selected,const char *message)
+{
+ for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
+ ui_text(rect,36,28,2,"EXPERIMENTS - DEFAULT OFF",227,197,114);
+ ui_text(rect,36,65,1,"Independent options. Applied only at cold boot.",106,171,223);
+ const char *names[GEKKO2_EXP_COUNT]={"128-BIT JIT CHAIN RESIDENCY - EXPERIMENTAL","EXPERIMENTAL PSM CONVERSION","GX RISK MODE - FAST TRIANGLES"};
+ const char *desc[GEKKO2_EXP_COUNT]={"Needs EE JIT / blocks / links / GPR residency.","Unverified color-depth transfers; may alter colors.","Direct GX edges can add or lose edge pixels."};
+ for(unsigned n=0;n<GEKKO2_EXP_COUNT;n++){
+  int y=106+(int)n*81,on=(int)n==selected;char state[100];
+  rect(32,y-4,576,72,on?35:9,on?34:22,on?20:41);
+  ui_text(rect,40,y,1,names[n],227,197,114);
+  snprintf(state,sizeof state,"%s SAVED %s   SESSION %s",on?">":" ",
+   !(gekko2_experimental_available()&(1u<<n))?"UNAVAILABLE":gekko2_experimental_requested(n)?"ON":"OFF",
+   gekko2_experimental_enabled(n)?"ON":"OFF");
+  ui_text(rect,40,y+21,1,state,221,237,255);ui_text(rect,40,y+42,1,desc[n],117,186,237);
+ }
+ ui_text(rect,36,381,1,"START resumes with the old session configuration.",117,186,237);
+ ui_text(rect,36,403,1,message?message:"",117,186,237);
+ ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT TOGGLE   B BACK",209,227,246);
+}
+static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested,uint32_t available,const char *message)
+{
+ if(selected<0||selected>=GEKKO2_OPT_COUNT)selected=0;
+ for(int y=0;y<480;y++)rect(0,y,640,1,4+y/120,9+y/80,22+y/25);
+ ui_text(rect,36,28,2,"DEVELOPER CPU / GX SWITCHES",204,232,255);
  ui_text(rect,36,65,1,"CPU/GX: cold boot. ARM/IOS: exit and restart app.",106,171,223);
  unsigned first=((unsigned)selected/13u)*13u;
  for(unsigned n=first;n<GEKKO2_OPT_COUNT&&n<first+13u;n++){
@@ -168,8 +252,13 @@ static void ui_optimization_draw(ui_rect_fn rect,int selected,uint32_t requested
       !(available&GEKKO2_OPT_BIT(n))?"UNAVAILABLE":n==GEKKO2_OPT_ARM_IOS222?(requested&GEKKO2_OPT_BIT(n)?"IOS222":"CURRENT"):(requested&GEKKO2_OPT_BIT(n)?"ON":"OFF"));
   ui_text(rect,40,y,1,row,on?228:148,on?242:176,on?255:207);
  }
- ui_text(rect,36,365,1,gekko2_opt_description((unsigned)selected),117,186,237);
- ui_text(rect,36,397,1,message?message:"",117,186,237);
+ char session[100];snprintf(session,sizeof session,"SAVED %s   SESSION %s   (CPU/GX: cold boot)",
+  requested&GEKKO2_OPT_BIT(selected)?"ON":"OFF",gekko2_opt_enabled((unsigned)selected)?"ON":"OFF");
+ ui_text(rect,36,350,1,session,227,197,114);
+ ui_text(rect,36,370,1,gekko2_opt_dependency((unsigned)selected,gekko2_optimization_mask),227,197,114);
+ char desc[72];snprintf(desc,sizeof desc,"%.70s",gekko2_opt_description((unsigned)selected));
+ ui_text(rect,36,389,1,desc,117,186,237);
+ ui_text(rect,36,413,1,message?message:"",117,186,237);
  ui_text(rect,36,437,1,"UP/DOWN SELECT   A/LEFT/RIGHT TOGGLE   B BACK",209,227,246);
 }
 static void ui_browser_draw(ui_rect_fn rect,const frontend_browser *browser,const char *message)

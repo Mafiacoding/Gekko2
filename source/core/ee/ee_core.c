@@ -135,6 +135,7 @@
 #include "core/hw/ipu.h" /* Round 521/522 (task #487) */
 #include "core/hw/ee_dve.h" /* Round 950 (task #447/#536/#887) */
 #include "core/hw/gs.h"
+#include "core/hw/gs_async.h"
 #include "core/hw/gif.h"
 #include "core/hw/vif.h"
 #include "core/hw/vu.h"
@@ -145,6 +146,8 @@
 #include "core/hw/iop_hle_intr.h" /* Round 347: real registered-handler completion detection */
 #include "core/hw/iop_heap.h" /* Round 401: real SYSMEM free-list heap allocator port - see comment at the SIF_SID_IOPHEAP branch below */
 #include "core/hw/iop_sio2.h" /* Round 663: real low-level pad-connected state for PAD_BIND reply */
+#include "core/hw/ps2_memory_card.h"
+#include "core/hw/ps2_mc_files.h"
 #include "core/recompiler/ee_jit.h"
 #include "core/recompiler/vu_jit.h" /* Round 887 (task #866/#868): first real JIT wiring - see that header's design-rationale comment */
 
@@ -730,6 +733,11 @@ void ee_core_raise_trap(ee_state_t *st)
 {
     st->exc_raised_this_step=1;
     ee_raise_exception(st,EE_EXC_CODE_TR,st->exc_this_pc,st->exc_in_delay_slot);
+}
+void ee_core_raise_reserved(ee_state_t *st)
+{
+    st->exc_raised_this_step=1;
+    ee_raise_exception(st,10u<<2,st->exc_this_pc,st->exc_in_delay_slot);
 }
 
 void ee_core_raise_overflow(ee_state_t *st)
@@ -1435,9 +1443,11 @@ static void ee_check_vblank(ee_state_t *st)
         /* GS CSR.FIELD reports alternating interlaced fields (GSRegs.h,
          * bit13). Retail games poll it after VBLANK to select a buffer.
          * Progressive scan has no alternating interlace parity. */
-        gs_state_t *gs_field = gs_get_state();
+        gs_state_t *gs_field = gs_peek_state();
+        gs_async_lock(); /* the GS worker also sets CSR event bits */
         if (gs_field->smode2 & 1u) gs_field->csr ^= 1ull << 13;
         else gs_field->csr &= ~(1ull << 13);
+        gs_async_unlock();
         ee_intc_raise(EE_INTC_IRQ_VBLANK_START);
     } else if (phase == EE_CYCLES_VBLANK_DURATION)
         ee_intc_raise(EE_INTC_IRQ_VBLANK_END);
@@ -1692,6 +1702,12 @@ static int ee_read_boot2_path_from_system_cnf(char *out, size_t out_size)
     while (tag < end && *tag != '\r' && *tag != '\n' && *tag != 0 && n + 1 < out_size) {
         out[n++] = *tag++;
     }
+#ifdef GEKKO2_WIIU
+    /* Trailing blanks are not part of the path: Hitman 2 (SLUS_203.74) has "BOOT2 = cdrom0:\SLUS_203.74;1 \r\n";
+     * keeping the blank made EELOAD look for a file that does not exist and the boot hung after SYSTEM.CNF. */
+    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t'))
+        n--;
+#endif
     out[n] = 0;
     return n > 0;
 }
@@ -2312,8 +2328,10 @@ static void ee_check_gs_vsync(ee_state_t *st)
     uint32_t phase = g_ee_display_phase;
     if (phase != 0)
         return;
-    gs_state_t *gs = gs_get_state();
+    gs_state_t *gs = gs_peek_state();
+    gs_async_lock();
     gs->csr |= (1ull << GS_CSR_VSYNC_BIT);
+    gs_async_unlock();
     if (!(gs->imr & (1ull << GS_IMR_VSMSK_BIT)))
         ee_intc_raise(EE_INTC_IRQ_GS);
 }
@@ -2351,6 +2369,9 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size, 
         uint8_t *data=bank==0u?st->vu0_micro:bank==1u?st->vu0_mem:
                       bank==2u?vu1_get_state()->micro:vu1_get_state()->mem;
         unsigned bytes=bank<2u?4096u:16384u,off=vu_phys&(bytes-1u);
+#ifdef G2_VU0_TRACE
+        if(bank==1u&&is_store){ extern void g2_vu0_memw(int src,uint32_t addr,uint32_t val); g2_vu0_memw(3,off,size); }
+#endif
         st->mem_tlb_miss=0;
         return size<=bytes-off?data+off:NULL;
     }
@@ -2419,6 +2440,9 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size, 
         uint8_t *data=bank==0u?st->vu0_micro:bank==1u?st->vu0_mem:
                       bank==2u?vu1_get_state()->micro:vu1_get_state()->mem;
         unsigned bytes=bank<2u?4096u:16384u,off=phys&(bytes-1u);
+#ifdef G2_VU0_TRACE
+        if(bank==1u&&is_store){ extern void g2_vu0_memw(int src,uint32_t addr,uint32_t val); g2_vu0_memw(4,off,size); }
+#endif
         return size<=bytes-off?data+off:NULL;
     }
     if (phys >= 0x1FC00000u) {
@@ -2428,7 +2452,12 @@ static inline uint8_t *ee_mem_ptr(ee_state_t *st, uint32_t addr, uint32_t size, 
         return NULL;
     }
     if (phys + size <= st->ram_size)
+    {
+#ifdef G2_VU0_TRACE
+        if(is_store){ extern void g2_ram_store_hook(uint32_t phys,uint32_t size); g2_ram_store_hook(phys,size); }
+#endif
         return st->ram + phys;
+    }
     return NULL;
 }
 
@@ -2510,6 +2539,8 @@ uint8_t ee_mem_read8(ee_state_t *st, uint32_t addr)
     if (ee_sio_mmio_read32(ee_hw_mmio_addr(addr), &sio_val))
         return (uint8_t)(sio_val & 0xFFu);
 
+    uint64_t gs_narrow;
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_read(ee_hw_mmio_addr(addr),1u,&gs_narrow))return (uint8_t)gs_narrow;
     uint8_t *p = ee_mem_ptr(st, addr, 1, 0);
     if (p) return *p;
     ee_mem_check_tlb_fault(st, addr, 0);
@@ -2537,6 +2568,8 @@ uint16_t ee_mem_read16(ee_state_t *st, uint32_t addr)
     if (ee_dve_mmio_read16(ee_hw_mmio_addr(addr), &dve_val))
         return dve_val;
 
+    uint64_t gs_narrow;
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_read(ee_hw_mmio_addr(addr),2u,&gs_narrow))return (uint16_t)gs_narrow;
     uint8_t *p = ee_mem_ptr(st, addr, 2, 0);
     if (!p) { ee_mem_check_tlb_fault(st, addr, 0); return 0; }
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -2585,6 +2618,8 @@ uint32_t ee_mem_read32(ee_state_t *st, uint32_t addr)
      * 0x10002000-0x10002038, is modeled for real as of Round 521/522,
      * task #487 - see ipu.c; real decode logic is still a later,
      * evidence-driven round, see ipu.h's scope note.) */
+    uint64_t gs_narrow;
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_read(ee_hw_mmio_addr(addr),4u,&gs_narrow))return (uint32_t)gs_narrow;
     uint32_t hw_val;
     uint32_t hw_addr = ee_hw_mmio_addr(addr);
     if (dma_mmio_read32(hw_addr, &hw_val)) {
@@ -2660,9 +2695,10 @@ uint64_t ee_mem_read64(ee_state_t *st, uint32_t addr)
 void ee_mem_read128(ee_state_t *st,uint32_t addr,ee_reg128_t *out)
 {
     uint8_t q[16];
-    if(ipu_fifo_read128(ee_hw_mmio_addr(addr),q)) {
+    int result=ipu_fifo_read128(ee_hw_mmio_addr(addr),q);
+    if(result>0) {
         out->ud0=guest_read_le64(q);out->ud1=guest_read_le64(q+8);
-    } else {
+    } else if(!result) {
         /* Read both halves before publishing: LQ may alias its base register. */
         uint64_t lo=ee_mem_read64(st,addr),hi=ee_mem_read64(st,addr+8);
         out->ud0=lo;out->ud1=hi;
@@ -2675,8 +2711,8 @@ void ee_mem_write128(ee_state_t *st,uint32_t addr,const ee_reg128_t *value)
     if(page==0x10004000u||page==0x10005000u||page==0x10006000u||hw==0x10007010u) {
         uint8_t q[16];
         for(unsigned n=0;n<8;n++){q[n]=(uint8_t)(lo>>(n*8));q[n+8]=(uint8_t)(hi>>(n*8));}
-        if(page==0x10004000u){cpu_fifo_writes[0]++;vif0_process_quadwords(0,q,1);}
-        else if(page==0x10005000u){cpu_fifo_writes[1]++;vif1_process_quadwords(0,q,1);}
+        if(page==0x10004000u){if(vif_accept_quadwords(0,q,1))cpu_fifo_writes[0]++;}
+        else if(page==0x10005000u){if(vif_accept_quadwords(1,q,1))cpu_fifo_writes[1]++;}
         else if(page==0x10006000u){cpu_fifo_writes[2]++;gif_fifo_write(q);}
         else ipu_fifo_write128(0x10007010u,q);
     } else {ee_mem_write64(st,addr,lo);ee_mem_write64(st,addr+8,hi);}
@@ -2748,6 +2784,7 @@ void ee_mem_write8(ee_state_t *st, uint32_t addr, uint8_t val)
 #ifdef R1132_WRITE_WATCH
     r1132_watch("write8", addr, (unsigned long long)val, st->pc);
 #endif
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_write(ee_hw_mmio_addr(addr),1u,val))return;
     /* Round 959 (task #952): see ee_mem_read8()'s comment above for the
      * full citation - this is the write-side half of the same real,
      * evidenced gap. ee_sio_mmio_write32() already only extracts the
@@ -2768,6 +2805,7 @@ void ee_mem_write16(ee_state_t *st, uint32_t addr, uint16_t val)
 #ifdef R1132_WRITE_WATCH
     r1132_watch("write16", addr, (unsigned long long)val, st->pc);
 #endif
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_write(ee_hw_mmio_addr(addr),2u,val))return;
     /* Round 950 (task #447/#536/#887): see ee_mem_read16()'s comment
      * just above and include/core/hw/ee_dve.h for the full citation. */
     if (ee_dve_mmio_write16(ee_hw_mmio_addr(addr), val))
@@ -2787,6 +2825,7 @@ void ee_mem_write32(ee_state_t *st, uint32_t addr, uint32_t val)
 #ifdef R1132_WRITE_WATCH
     r1132_watch("write32", addr, (unsigned long long)val, st->pc);
 #endif
+    if((ee_hw_mmio_addr(addr)&0xffffe000u)==0x12000000u&&gs_mmio_write(ee_hw_mmio_addr(addr),4u,val))return;
     uint32_t hw_addr_w = ee_hw_mmio_addr(addr);
     if (r1201_armed && r1201_write_count < 6u &&
         (hw_addr_w == 0x1000c000u || hw_addr_w == 0x1000c010u || hw_addr_w == 0x1000c020u)) {
@@ -3743,16 +3782,107 @@ static int32_t ee_mcserv_getinfo_no_card(ee_state_t *st,uint32_t payload,uint32_
     uint32_t pp=payload&0x1fffffffu;
     if(!payload || payload_size<32u || pp>EE_RAM_SIZE-32u)return -11;
     uint32_t port=ee_mem_read32(st,payload+4u),slot=ee_mem_read32(st,payload+8u);
-    if(port==0u && slot==0u && iop_sio2_mc_is_inserted())return 0; /* existing inserted-card HLE gap */
+    unsigned formatted=0,free_clusters=0,type=0;
+    int32_t result=-11;
+    if(port==0u && slot==0u && ps2_mc_present()){
+        type=2;result=ps2_mc_get_info(&formatted,&free_clusters);
+    }else if(port==0u && slot==0u && iop_sio2_mc_is_inserted()){
+        type=1;result=-13; /* PS1 filesystem metadata is not implemented here. */
+    }
     uint32_t param=ee_mem_read32(st,payload+28u),p=param&0x1fffffffu;
     uint32_t bytes=modern?192u:64u;
     if(param && p<=EE_RAM_SIZE-bytes){
         uint32_t dma_dest=0xa0000000u|p; /* SIF DMA targets physical RAM, bypassing EE TLB/cache. */
-        if(ee_mem_read32(st,payload+(modern?20u:12u))>0u)ee_mem_write32(st,dma_dest,0u);
-        ee_mem_write32(st,dma_dest+4u,0u);
-        if(modern)ee_mem_write32(st,dma_dest+144u,0u);
+        if(ee_mem_read32(st,payload+(modern?20u:12u))>0u)ee_mem_write32(st,dma_dest,type);
+        ee_mem_write32(st,dma_dest+4u,free_clusters);
+        if(modern)ee_mem_write32(st,dma_dest+144u,formatted);
     }
-    return -11;
+    return result;
+}
+
+static uint32_t ee_mc_load32(const uint8_t *p)
+{return (uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;}
+static void ee_mc_store32(uint8_t *p,uint32_t n)
+{for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(n>>(i*8));}
+/* Physical SIF DMA bounds, before a filesystem handle or file is changed. */
+static uint8_t *ee_mc_ram(ee_state_t *st,uint32_t address,uint32_t bytes)
+{
+ uint32_t p=address&0x1fffffffu;
+ if(!st->ram||p>EE_RAM_SIZE||bytes>EE_RAM_SIZE-p||p>st->ram_size||bytes>st->ram_size-p)return NULL;
+ return st->ram+p;
+}
+static int32_t ee_mcserv_files_rpc(ee_state_t *st,uint32_t fno,uint32_t payload,uint32_t size)
+{
+ /* Map legacy fno without conflating modern SEEK/READ. */
+ static const uint8_t old[]={0xfe,2,3,5,6,4,0x0d,0x10,1,0x0f,0x0a,0x0c,0x0e,0x7d,0x7e,0x7f,0x11};
+ int modern=fno<0x70u||fno>0x80u;
+ if(!modern)fno=old[fno-0x70u];
+ if(fno==0xfeu)return 0;
+ if(fno==1u)return ee_mcserv_getinfo_no_card(st,payload,size,modern);
+ if(fno==2u&&!ps2_mc_present())return -4;
+ uint8_t *arg=payload?ee_mc_ram(st,payload,size):NULL;
+ if(!arg||size<16)return -5;
+ int named=fno==0x12u||fno==2u||fno==0x0cu||fno==0x0du||fno==0x0eu||fno==0x0fu;
+ if(named){
+  if(size<21u||!memchr(arg+20,0,size-20u<1024u?size-20u:1024u))return -5;
+  if(ee_mc_load32(arg)||ee_mc_load32(arg+4))return -11;
+  const char *name=(const char*)arg+20;unsigned flags=ee_mc_load32(arg+8);
+  if(fno==2u)return ps2_mc_fs_open(name,flags);
+  if(fno==0x12u)return ps2_mc_fs_getentspace(name);
+  if(fno==0x0fu)return ps2_mc_fs_delete(name);
+  if(size<20u)return -5;uint32_t dest=ee_mc_load32(arg+16),n=fno==0x0cu?1024u:64u;
+  if(fno==0x0du){unsigned count=ee_mc_load32(arg+12);if(count>EE_RAM_SIZE/64u)return -5;n=count*64u;}
+  uint8_t *out=ee_mc_ram(st,dest,n);if((n&&!dest)||!out)return -5;
+  if(fno==0x0eu){uint8_t table[64];memcpy(table,out,64);return ps2_mc_fs_setinfo(name,flags,table);}
+  /* Name can alias the output table: copy it before DMA publication. */
+  char path[1024];strcpy(path,name);
+  int r=fno==0x0cu?ps2_mc_fs_chdir(path,(char*)out):ps2_mc_fs_getdir(path,flags,n/64u,out);
+  if(r>=0)ee_jit_notify_physical_write(dest&0x1fffffffu,fno==0x0cu?1024u:(unsigned)r*64u);
+  return r;
+ }
+ int fd=(int32_t)ee_mc_load32(arg);
+ if(fno==3u)return ps2_mc_fs_close(fd);
+ if(fno==0x0au)return ps2_mc_fs_flush(fd);
+ if(fno==0x10u||fno==0x11u){
+  if(ee_mc_load32(arg+4)||ee_mc_load32(arg+8))return -11;
+  return ps2_mc_fs_format(fno==0x11u);
+ }
+ if(size<32u)return -5;
+ if(fno==4u)return ps2_mc_fs_seek(fd,(int32_t)ee_mc_load32(arg+16),ee_mc_load32(arg+20));
+ uint32_t bytes=ee_mc_load32(arg+12),buffer=ee_mc_load32(arg+24);
+ if(bytes>INT32_MAX)return -5;
+ if(fno==6u){
+  unsigned prefix=ee_mc_load32(arg+20);if(prefix>16u||size<32u+prefix)return -5;
+  uint8_t *src=ee_mc_ram(st,buffer,bytes);if((bytes&&!buffer)||!src)return -5;
+  uint8_t head[16];memcpy(head,arg+32,prefix);
+  int first=prefix?ps2_mc_fs_write(fd,head,prefix):0;if(first<0||(unsigned)first!=prefix)return first;
+  int rest=ps2_mc_fs_write(fd,src,bytes);return rest<0?rest:rest+first;
+ }
+ if(fno==5u){
+  unsigned alignment=modern?64u:16u,end_size=modern?192u:64u;
+  uint32_t param=ee_mc_load32(arg+28);uint8_t *end=ee_mc_ram(st,param,end_size);
+  int actual=ps2_mc_fs_read_size(fd,bytes);if(actual<0)return actual;
+  if(!param||!end||((unsigned)actual&&!buffer)||!ee_mc_ram(st,buffer,(unsigned)actual))return -5;
+  uint8_t stage[192]={0};
+  /* Match _McRead/_McRead2: even an aligned buffer stages a full first
+   * alignment unit. Split by the request; EOF may shorten any piece. */
+  unsigned requested_head=bytes<=alignment?bytes:alignment-(buffer&(alignment-1u));
+  unsigned requested_tail=(bytes-requested_head)&(alignment-1u);
+  unsigned requested_middle=bytes-requested_head-requested_tail;
+  unsigned head=(unsigned)actual<requested_head?(unsigned)actual:requested_head;
+  unsigned left=(unsigned)actual-head,middle=left<requested_middle?left:requested_middle,tail=left-middle;
+  if(head){if(ps2_mc_fs_read(fd,stage+16,head)!=(int)head)return -13;ee_mc_store32(stage,head);ee_mc_store32(stage+8,buffer);}
+  if(middle){
+   uint8_t *dest=ee_mc_ram(st,buffer+head,middle);
+   if(ps2_mc_fs_read(fd,dest,middle)!=(int)middle)return -13;
+   ee_jit_notify_physical_write((buffer+head)&0x1fffffffu,middle);
+  }
+  if(tail){if(ps2_mc_fs_read(fd,stage+16+alignment,tail)!=(int)tail)return -13;
+   ee_mc_store32(stage+4,tail);ee_mc_store32(stage+12,buffer+head+middle);}
+  memcpy(end,stage,end_size);ee_jit_notify_physical_write(param&0x1fffffffu,end_size);
+  return actual;
+ }
+ return -5; /* Raw page RPCs, auth/priority extensions are not faked. */
 }
 
 /* Round 554 (task #521/#522): real cdrom0:/cdrom1: counterpart to
@@ -4856,6 +4986,14 @@ static inline void vu0_vf_write_lane(ee_state_t *st, uint32_t reg, uint32_t lane
     st->vu0_vf[reg][lane] = val;
 }
 
+#ifdef GEKKO2_WIIU
+/* Wii U: VPU_STAT bits are also changed by the VU1 worker core, so every read-modify-write is atomic. */
+#define G2_VPU_OR(st,v) __atomic_fetch_or(&(st)->cop2_ctrl[29],(v),__ATOMIC_ACQ_REL)
+#define G2_VPU_AND(st,v) __atomic_fetch_and(&(st)->cop2_ctrl[29],(v),__ATOMIC_ACQ_REL)
+#else
+#define G2_VPU_OR(st,v) st->cop2_ctrl[29]|=v
+#define G2_VPU_AND(st,v) st->cop2_ctrl[29]&=v
+#endif
 static inline uint32_t vu0_vi_read(ee_state_t *st, uint32_t reg)
 {
     return (reg == 0) ? 0u : st->cop2_ctrl[reg];
@@ -4866,6 +5004,45 @@ static inline void vu0_vi_write(ee_state_t *st, uint32_t reg, uint32_t val)
     if (reg == 0) return; /* writes to VI0 are discarded on real hardware */
     st->cop2_ctrl[reg] = val;
 }
+
+#ifdef GEKKO2_WIIU
+/* Wii U only (not yet in the Wii build): VU0 macro-mode FMAC ops update the MAC (VI17) and status
+ * (VI16) flags like PCSX2 VUflags.cpp VU_MAC_UPDATE/VU_STAT_UPDATE. Tekken Tag clears VI16 with
+ * CTC2, runs VSUB/VMULA/VMADD and tests CFC2 VI16 & 0xC0 (sticky zero/sign) to cull objects behind
+ * the camera (0x34b360..0x34b47c); without these flags every object passed the test and was
+ * projected through w<0 (giant inverted fighters, upside-down spectators). Returns 0 for ops that
+ * leave the flags alone (MAX/MINI/ABS/ITOF/FTOI/CLIP/moves/integer/load-store/DIV). */
+int ee_vu0_macro_flag_op(uint32_t instr,int *to_acc)
+{
+    uint32_t funct=instr&63u;
+    if(((instr>>26)&63u)!=0x12u||!((instr>>25)&1u))return 0;
+    if(funct<0x3cu) {
+        *to_acc=0;
+        return funct<0x10u||(funct>=0x18u&&funct<=0x1cu)||funct==0x1eu||(funct>=0x20u&&funct<=0x2au&&funct!=0x2bu)||
+               funct==0x2cu||funct==0x2du||funct==0x2eu;
+    }
+    uint32_t idx=(instr&3u)|((instr>>4)&0x7cu);
+    *to_acc=1;
+    return idx<0x10u||(idx>=0x18u&&idx<=0x1cu)||idx==0x1eu||(idx>=0x20u&&idx<=0x2au)||(idx>=0x2cu&&idx<=0x2eu);
+}
+static void vu0_macro_update_flags(ee_state_t *st,uint32_t instr)
+{
+    int to_acc=0;
+    if(!ee_vu0_macro_flag_op(instr,&to_acc))return;
+    uint32_t dest=(instr>>21)&15u,fd=(instr>>6)&31u,mac=0;
+    if(!to_acc&&!fd)return; /* the result of a VF00 write is discarded with it */
+    for(unsigned lane=0;lane<4u;lane++) {
+        if(!(dest&(8u>>lane)))continue;
+        uint32_t v=to_acc?st->vu0_acc[lane]:st->vu0_vf[fd][lane],shift=3u-lane,exp=(v>>23)&255u;
+        if(v>>31)mac|=0x10u<<shift;
+        if(!exp){mac|=1u<<shift;if(v&0x7fffffu)mac|=0x100u<<shift;}
+        else if(exp==255u)mac|=0x1000u<<shift;
+    }
+    uint32_t now=((mac&0xfu)?1u:0u)|((mac&0xf0u)?2u:0u)|((mac&0xf00u)?4u:0u)|((mac&0xf000u)?8u:0u);
+    st->cop2_ctrl[17]=mac;
+    st->cop2_ctrl[16]=(st->cop2_ctrl[16]&0xff0u)|now|(now<<6);
+}
+#endif
 
 /* VU0 local data memory address helper: VI holds a quadword index:
  * byte address = (VI & 0xFF) * 16 + lane * 4 (lane 0=x,1=y,2=z,3=w).
@@ -4934,6 +5111,12 @@ static inline int vu0_block_candidate(const ee_state_t *st)
     }
     return 1;
 }
+#ifdef G2_VU0_TRACE
+extern void g2_vu0_trace(ee_state_t *st,int phase);
+#define VU0_TRACE(st,ph) g2_vu0_trace(st,ph)
+#else
+#define VU0_TRACE(st,ph) do{}while(0)
+#endif
 static void vu0_run_pairs(ee_state_t *st)
 {
     for (uint32_t i = 0; i < VU0_EXEC_STEP_CAP; i++) {
@@ -4944,7 +5127,7 @@ static void vu0_run_pairs(ee_state_t *st)
                                      &st->vu0_ebit_delay,
                                      &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing);
         if (stopped) {
-            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;break;
+            st->vu0_running=0;G2_VPU_AND(st,~1u);VU0_TRACE(st,1);break;
         }
         if(st->vu0_timing.m_yield)break;
     }
@@ -4961,7 +5144,7 @@ static void vu0_run_blocks(ee_state_t *st)
             &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing,0,0};
         if(vu0_block_candidate(st))ran=vu_jit_try_timed_block(&c,VU0_EXEC_STEP_CAP-i);
         if(ran){
-            if(c.stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;break;}
+            if(c.stopped){st->vu0_running=0;G2_VPU_AND(st,~1u);VU0_TRACE(st,1);break;}
             if(st->vu0_timing.m_yield)break;
             i+=ran-1u;continue;
         }
@@ -4972,7 +5155,7 @@ static void vu0_run_blocks(ee_state_t *st)
                                      &st->vu0_ebit_delay,
                                      &st->vu0_instructions_executed, &st->vu0_unimplemented_opcodes_seen,&st->vu0_pipeline,&st->vu0_timing);
         if (stopped) {
-            st->vu0_running=0;st->cop2_ctrl[29]&=~1u;break;
+            st->vu0_running=0;G2_VPU_AND(st,~1u);VU0_TRACE(st,1);break;
         }
         if(st->vu0_timing.m_yield)break;
     }
@@ -4981,17 +5164,20 @@ static void vu0_run_blocks(ee_state_t *st)
 
 void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
 {
+    unsigned profile=gp_enter(GP_VU0);uint64_t profile_before=st->vu0_instructions_executed;
     /* VU0's real TPC register is cop2_ctrl[26] (REG_TPC) - kept in
      * sync here so a CFC2/MFC2 read of it during/after execution sees
      * a sensible live value, same real register slot round 12's
      * generic CTC2/CFC2 dispatch already exposes. */
     st->cop2_ctrl[26] = (start_addr << 3) & (uint32_t)(sizeof(st->vu0_micro) - 1u);
-    st->vu0_running = 1;st->cop2_ctrl[29]|=1u;st->vu0_timing.m_yield=0;
+    VU0_TRACE(st,0);
+    st->vu0_running = 1;G2_VPU_OR(st,1u);st->vu0_timing.m_yield=0;
 
     /* Re-enter native batching after a branch/Q/P boundary clears. */
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu0_run_blocks(st);
     else if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
 
+    gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
 }
 
 /* Round 576 (task #551): real MSCNT semantics for VU0 macro mode - see
@@ -5002,12 +5188,14 @@ void vu0_exec_micro(ee_state_t *st, uint32_t start_addr)
  * does for MSCAL/MSCALF. */
 void vu0_exec_micro_continue(ee_state_t *st)
 {
-    st->vu0_running = 1;st->cop2_ctrl[29]|=1u;st->vu0_timing.m_yield=0;
+    unsigned profile=gp_enter(GP_VU0);uint64_t profile_before=st->vu0_instructions_executed;
+    st->vu0_running = 1;G2_VPU_OR(st,1u);st->vu0_timing.m_yield=0;
 
     /* Re-enter native batching after a branch/Q/P boundary clears. */
     if(gekko2_opt_enabled(GEKKO2_OPT_VU_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES))vu0_run_blocks(st);
     else if(vu0_block_candidate(st))vu0_run_blocks(st);else vu0_run_pairs(st);
 
+    gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
 }
 
 /* Advance a still-running VU0 at the common EE retirement boundary, used
@@ -5015,17 +5203,22 @@ void vu0_exec_micro_continue(ee_state_t *st)
 static void vu0_tick(ee_state_t *st) {
     if(!st->vu0_running)return;
     if(st->vu0_timing.m_yield){st->vu0_timing.m_yield=0;return;}
+    unsigned profile=gp_enter(GP_VU0);uint64_t profile_before=st->vu0_instructions_executed;
     int stopped=vu_micro_step_timed(st->vu0_vf,st->cop2_ctrl,st->vu0_acc,
         st->vu0_mem,4095u,st->vu0_micro,4095u,&st->cop2_ctrl[26],
         &st->vu0_branch_delay,&st->vu0_branch_target,&st->vu0_ebit_delay,
         &st->vu0_instructions_executed,&st->vu0_unimplemented_opcodes_seen,
         &st->vu0_pipeline,&st->vu0_timing);
-    if(stopped){st->vu0_running=0;st->cop2_ctrl[29]&=~1u;}
+    if(stopped){st->vu0_running=0;G2_VPU_AND(st,~1u);VU0_TRACE(st,1);}
+    gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
 }
 /* COP2 synchronization runs to a real M or end boundary. It does not
  * fabricate a STOP when a runaway microprogram reaches the host cap. */
 void vu0_sync_macro(ee_state_t *st) {
-    if(st->vu0_running&&!st->vu0_timing.m_yield)vu0_run_pairs(st);
+    if(st->vu0_running&&!st->vu0_timing.m_yield) {
+        unsigned profile=gp_enter(GP_VU0);uint64_t profile_before=st->vu0_instructions_executed;
+        vu0_run_pairs(st);gp_work(GP_VU0,st->vu0_instructions_executed-profile_before);gp_leave(profile);
+    }
 }
 
 
@@ -5566,10 +5759,48 @@ static inline __attribute__((always_inline)) void ee_retire_instruction_inline(e
     }
  }
 
+#ifdef GEKKO2_WIIU
+/* Wii U builds: quiet-state retirement for the ordinary interpreter path. It tests the same guards the native-window
+ * admission uses for n=1 (and the existing GEKKO2_SPEED_RETIRE boundary retire) and, when nothing can happen this
+ * instruction, publishes exactly the counters the full chain would, skipping about twenty service calls. Any pending
+ * event, special PC, running VU/DMA/GIF work or interrupt condition falls back to the full chain. The two browser
+ * heuristics the full chain calls are immediate no-ops in this build. Host check: identical EE/IOP/RAM state. */
+uint64_t ee_quiet_retire_stats[2];
+static inline __attribute__((always_inline)) int ee_retire_quiet_try(ee_state_t *st)
+{
+ const uint32_t pc=st->pc,cnt=st->cop0[9],cmp=st->cop0[11],stat=st->cop0[12];
+ if(st->vu0_running||st->halted||st->idle||
+    g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||
+    g_ee_irq.intc_delay||g_ee_irq.intc_armed||
+    ee_timers_batch_clock[0]<=1u||cnt==UINT32_MAX||g_ee_display_ticks==UINT64_MAX||
+    g_ee_display_phase+1u>=EE_CYCLES_PER_FRAME_NTSC||
+    (g_ee_display_phase<EE_CYCLES_VBLANK_DURATION&&g_ee_display_phase+1u>=EE_CYCLES_VBLANK_DURATION)||
+    pc==EE_BOOT_UNBLOCK_SELFLOOP_PC||pc==EE_EELOAD_START_PC||EE_SBUS_WAIT_PC_MATCH(pc))return 0;
+ if(((stat&0x10007u)==0x10001u&&(stat&0x8000u))&&((st->cop0[13]&EE_CAUSE_IP7)||cnt+1u>=cmp))return 0;
+ if(vu1_get_state()->running||vu1_get_state()->xgkick_pending||gif_get_state()->fifo_count||
+    ((dma_get_state()->chan[0].chcr|dma_get_state()->chan[1].chcr|dma_get_state()->chan[2].chcr)&0x100u)||
+    sif_ee_tick_pending()||ee_intc_pending_fast()||dma_dmac_interrupt_pending_fast())return 0;
+ st->gpr[0].ud0=st->gpr[0].ud1=0;
+ st->instructions_executed++;st->cop0[9]=cnt+1u;
+ if(cnt+1u>=cmp)st->cop0[13]|=EE_CAUSE_IP7;
+ st->cop0[13]&=~EE_CAUSE_IP2;
+ if(!st->branch_pending)st->cop0[13]&=~EE_CAUSE_IP3;
+ g_ee_display_ticks++;g_ee_display_phase++;
+ ee_timers_batch_clock[0]--;ee_timers_batch_clock[1]++;
+ return 1;
+}
+static void ee_retire_instruction(ee_state_t *st,int sample)
+{
+ if(!sample&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)&&ee_retire_quiet_try(st)){ee_quiet_retire_stats[0]++;return;}
+ ee_quiet_retire_stats[1]++;
+ ee_retire_instruction_inline(st,sample);
+}
+#else
 /* Keep the ordinary scalar/commit path shared. Fused boundaries inline
  * just this retirement sequence, avoiding an extra saved-argument frame. */
 static void ee_retire_instruction(ee_state_t *st,int sample)
 {ee_retire_instruction_inline(st,sample);}
+#endif
 
 #include "core/ee/ee_aot_complex_generated.inc"
 
@@ -5711,6 +5942,10 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
     }
 
     uint32_t pc = st->pc;
+#ifdef G2_VU0_TRACE
+    { extern uint32_t g2_hook_pcs[8]; extern void g2_pc_hook(ee_state_t *st);
+      for(unsigned hk=0;hk<8u&&g2_hook_pcs[hk];hk++)if(pc==g2_hook_pcs[hk]){g2_pc_hook(st);break;} }
+#endif
 
     /* Round 832: real per-instruction hit counters, see the block
      * comment above g_r832_handler_hits for why this replaces external
@@ -5895,11 +6130,23 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
      * destination is changed. Native/AOT memory proofs reject this MMIO. */
     if((instr>>26)==0x1fu) {
         uint32_t address=(uint32_t)st->gpr[(instr>>21)&31u].ud0+(uint32_t)(int32_t)(int16_t)instr;
+        uint32_t page=address&0x1ffff000u;
+        if((page==0x10004000u||page==0x10005000u)&&!vif_cpu_fifo_ready(page==0x10005000u)){
+            st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
+        }
         if((address&0x1ffff000u)==0x10006000u&&gif_get_state()->fifo_count==16u) {
             gif_fifo_service();
             if(gif_get_state()->fifo_count==16u) {
                 st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
             }
+        }
+    }
+    if((instr>>26)==0x1fu||((instr>>26)==0x1eu&&((instr>>16)&31u))){
+        uint32_t address=(uint32_t)st->gpr[(instr>>21)&31u].ud0+(uint32_t)(int32_t)(int16_t)instr;
+        uint32_t hw=ee_hw_mmio_addr(address)&~15u;
+        int writing=(instr>>26)==0x1fu;
+        if(hw==(writing?0x10007010u:0x10007000u)&&!ipu_cpu_fifo_ready(writing)){
+            st->branch_pending=(uint8_t)in_delay_slot;ee_core_park_tick(st);return 0;
         }
     }
     if((instr>>26)==0x12u&&st->vu0_running) {
@@ -5917,7 +6164,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 #endif
        gekko2_opt_enabled(GEKKO2_OPT_EE_JIT) &&
        gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)) {
+        unsigned profile=gp_enter(GP_EE_NATIVE);
         unsigned n=ee_aot_try_execute_fetched(st,budget,instr);
+        gp_work(GP_EE_NATIVE,n);gp_leave(profile);
         if(n||st->halted){*block_retired=n;return st->halted?1:0;}
     }
 #endif
@@ -5928,12 +6177,23 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         int candidate=ee_jit_block_candidate(instr)||ee_jit_block_terminal(instr);
         uintptr_t ram_offset=(uintptr_t)code_backing-(uintptr_t)st->ram;
         int backed_candidate=code_backing &&
-            ((ram_offset>=0x200000u&&ram_offset<st->ram_size)||
+            ((ram_offset>=0x100000u&&ram_offset<st->ram_size)||
              (st->bios&&(uintptr_t)code_backing-(uintptr_t)st->bios->data<st->bios->size));
-        /* Backing came from this instruction's real fetch, not a cached
-         * translation. Keep guarded low physical kernel code in C. */
+#ifdef GEKKO2_WIIU
+        { extern uint64_t gekko2_wiiu_block_diag[16]; gekko2_wiiu_block_diag[0]++;
+          if(!candidate)gekko2_wiiu_block_diag[1]++; else if(!code_backing)gekko2_wiiu_block_diag[2]++;
+          else if(!backed_candidate)gekko2_wiiu_block_diag[3]++; }
+#endif
+        /* Match ee_core_block_pointer's 1 MiB admission floor. Backing
+         * came from this instruction's real fetch, not a cached translation.
+         * Keep the low physical kernel region on its guarded scalar path. */
         if(candidate && backed_candidate) {
+            unsigned profile=gp_enter(GP_EE_NATIVE);
             unsigned n=ee_jit_try_execute_chain_fetched(st,budget,instr);
+            gp_work(GP_EE_NATIVE,n);gp_leave(profile);
+#ifdef GEKKO2_WIIU
+            { extern uint64_t gekko2_wiiu_block_diag[16]; gekko2_wiiu_block_diag[n?5:4]++; }
+#endif
             if(n){*block_retired=n;return 0;}
         }
     }
@@ -6455,8 +6715,13 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
      * 5345 vs 6626 PPC instructions with single-op LW JIT, and direct RAM
      * also favors inline C (4601 vs 4817). Keep LW translation available
      * for direct callers/block formation, bypass this fragment dispatch. */
-    if (!cheap_scalar && !cheap_branch && op != 0x23u && op != 0x37u && !(op==0x10u && (rs==0u||rs==4u)) &&
-        ee_jit_try_execute_one_at(st, this_pc, instr)) {
+    int native_single=0;
+    if (!cheap_scalar && !cheap_branch && op != 0x23u && op != 0x37u && !(op==0x10u && (rs==0u||rs==4u))) {
+        unsigned profile=gp_enter(GP_EE_NATIVE);
+        native_single=ee_jit_try_execute_one_at(st,this_pc,instr);
+        gp_work(GP_EE_NATIVE,native_single?1u:0u);gp_leave(profile);
+    }
+    if (native_single) {
         if (r1176_sample) {
             r1176_t1 = r1176_tb32();
             g_r1176_prof_jit_tb += (uint32_t)(r1176_t1 - r1176_t0);
@@ -8453,19 +8718,9 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                      * hardware's own behavior for a malformed request. */
                                 }
                             } else if (call_sid == SIF_SID_MCSERV && call_recvbuf != 0u) {
-                                /* INIT returns actual requested module versions. OPEN
-                                 * retains the existing missing-file result. GETINFO
-                                 * uses the real no-card probe result and extra DMA ABI;
-                                 * remaining card commands still use legacy HLE replies. */
                                 uint32_t mcserv_recv_size = ee_mem_read32(st, src + 0x2Cu);
-                                /* Supplied OSDSYS libmc uses modern OPEN fno=2 at its
-                                 * mcOpen wrapper; older libmc uses 0x71. Neither ABI
-                                 * has a file behind a successful descriptor here. */
-                                int32_t mcserv_result = (rpc_number == 2u || rpc_number == 0x71u) ? -4 /* sceMcResNoEntry - see comment */ : 0;
-                                if(rpc_number==1u || rpc_number==0x78u){
-                                    uint32_t payload=i?ee_mem_read32(st,dmat_ptr+(i-1u)*16u):0u;
-                                    mcserv_result=ee_mcserv_getinfo_no_card(st,payload,ee_mem_read32(st,src+0x24u),rpc_number==1u);
-                                }
+                                uint32_t payload=i?ee_mem_read32(st,dmat_ptr+(i-1u)*16u):0u;
+                                int32_t mcserv_result=ee_mcserv_files_rpc(st,rpc_number,payload,ee_mem_read32(st,src+0x24u));
                                 if (mcserv_recv_size >= 4u)  ee_mem_write32(st, call_recvbuf + 0u, (uint32_t)mcserv_result); /* mcRpcStat_t.result (or plain s32 result for OPEN/CLOSE-shaped 4-byte replies) */
                                 if (mcserv_recv_size >= 8u)  ee_mem_write32(st, call_recvbuf + 4u, (rpc_number==0xfeu||rpc_number==0x70u)?st->mcserv_module_version:0u); /* actual requested module metadata for INIT */
                                 if (mcserv_recv_size >= 12u) ee_mem_write32(st, call_recvbuf + 8u, (rpc_number==0xfeu||rpc_number==0x70u)?st->mcman_module_version:0u); /* actual requested module metadata for INIT */
@@ -9142,6 +9397,15 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
                                 ee_mem_write32(st, call_recvbuf + 0u, 0x02u); /* real SCECdComplete - see comment */
                                 r1224_ncmd_rend_arms++;
                                     ee_arm_rpc_call_pending(call_cd);
+                            } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number == 4u) {
+                                /* ps2sdk scmd.c::sceCdGetError / cdvdfsv RPC3:
+                                 * the sole reply word is the current error code,
+                                 * not a generic successful-command boolean.
+                                 * Observe the drive state without clearing its
+                                 * read-to-clear MMIO error register. */
+                                if (call_recvbuf && ee_mem_read32(st, src + 0x2Cu) >= 4u)
+                                    ee_mem_write32(st, call_recvbuf, iop_cdvd_peek_last_ncmd_error());
+                                ee_arm_rpc_call_pending(call_cd);
                             } else if (call_sid == SIF_SID_CDVD_SCMD && rpc_number == 1u) {
                                 /* ps2sdk scmd.c: result word followed by an eight-byte
                                  * sceCdCLOCK. Limit every write to the requested reply. */
@@ -10530,8 +10794,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
         case 0x3E: /* DSRL32 */ if (rd) GPR(rd) = GPR(rt) >> (sa + 32); break;
         case 0x3F: /* DSRA32 */ if (rd) GPR(rd) = (uint64_t)((int64_t)GPR(rt) >> (sa + 32)); break;
         default:
-            halt("unimplemented SPECIAL funct");
-            return 1;
+            ee_core_raise_reserved(st);
+            break;
         }
         break;
 
@@ -10613,8 +10877,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
             st->sa_reg = (uint32_t)(((rs32 & 0x7u) ^ ((uint32_t)imm & 0x7u)) << 1);
             break;
         default:
-            halt("unimplemented REGIMM opcode");
-            return 1;
+            ee_core_raise_reserved(st);
+            break;
         }
         break;
 
@@ -10669,24 +10933,8 @@ static int ee_step_budget(unsigned budget,unsigned *block_retired)
 #include "ee_mem_switch.inc"
 
     default:
-    {
-        /* NOTE: this halt point can be reached in a way that has
-         * nothing to do with the actual opcode value - see the
-         * real-BIOS-testing note in docs/STATUS.md ("EE program
-         * counter escapes into the hardware register window" /
-         * out-of-range JALR target investigation). If `op` here is
-         * 0 (SPECIAL) with funct also reading as 0, that's the
-         * signature of this exact scenario: PC drifted through a
-         * long stretch of unpopulated ("reads as zero") memory,
-         * decoding every word as a harmless SLL/NOP, until it
-         * happened to reach a live hardware register address whose
-         * CURRENT value decoded as something genuinely invalid. */
-        char buf[96];
-        snprintf(buf, sizeof(buf), "unimplemented primary opcode 0x%02X (pc=0x%08X)",
-                 (unsigned int)op, (unsigned int)this_pc);
-        halt(buf);
-        return 1;
-    }
+        ee_core_raise_reserved(st);
+        break;
     }
 
     if (r1239_hit == 1u && this_pc == 0x0100ecccu) {
@@ -11026,6 +11274,11 @@ void ee_core_quiet_layout(uint32_t *out)
 #define EE_QUIET_ARM(st) ((void)0)
 #define EE_QUIET_ZERO() ((void)0)
 #endif
+void ee_core_gpr_generation_bump(ee_state_t *st)
+{
+    if(st)st->gpr_generation++;
+}
+
 int ee_core_block_prepare_fetched(ee_state_t *st,uint32_t pc)
 {
     if(st!=&g_state||st->halted||st->idle||st->vu0_running||st->branch_pending||
@@ -11117,11 +11370,19 @@ static int ee_native_address_value(uint32_t iw,uint32_t a,uint32_t b,uint32_t *v
  return 0;
 }
 
+#ifdef GEKKO2_WIIU
+static int ee_iw_force;
+#endif
 static unsigned ee_core_native_window_begin_impl(ee_state_t *st,uint32_t pc,const uint32_t *words,unsigned count,unsigned budget,uint32_t needed,int trusted)
 {
  unsigned n=count<budget?count:budget;
  n=ee_core_interleave_limit(n);
- if(!gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)||!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)||
+ if(
+#ifdef GEKKO2_WIIU
+    (!ee_iw_force&&(!gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)||!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)))||
+#else
+    !gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)||!gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)||
+#endif
     st->vu0_running||vu1_get_state()->running||vu1_get_state()->xgkick_pending||gif_get_state()->fifo_count||
     (dma_get_state()->chan[0].chcr&0x100u)||(dma_get_state()->chan[1].chcr&0x100u)||(dma_get_state()->chan[2].chcr&0x100u)||
     st!=&g_state||n<2u||n>GEKKO2_EE_MAX_BLOCK_WORDS||st->pc!=pc||st->next_pc!=pc+4u||st->halted||st->idle||st->branch_pending)return 0;
@@ -11129,8 +11390,17 @@ static unsigned ee_core_native_window_begin_impl(ee_state_t *st,uint32_t pc,cons
  return 0;
 #endif
  native_window_stats[2]++;
+ /* A stable masked level is observable in Cause, but cannot take an
+  * exception inside a pure integer window. Keep transient INTC latching
+  * precise, including the four-slot delay and deassertion transition. */
+ int pending_intc=ee_intc_pending_fast();
+ int pending_dmac=dma_dmac_interrupt_pending_fast();
+ uint32_t status=st->cop0[12];
+ int interrupts_enabled=(status&0x10007u)==0x10001u;
  if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending()||
-    ee_intc_pending_fast()||dma_dmac_interrupt_pending_fast()||g_ee_irq.intc_delay||g_ee_irq.intc_armed||
+    g_ee_irq.intc_delay||!!pending_intc!=!!g_ee_irq.intc_armed||
+    (interrupts_enabled&&((pending_intc&&(status&EE_STATUS_IM2))||
+                         (pending_dmac&&(status&EE_STATUS_IM3))))||
     ee_timers_batch_clock[0]<=n||g_ee_display_ticks>UINT64_MAX-n||
     g_ee_display_phase+n>=EE_CYCLES_PER_FRAME_NTSC||
     (g_ee_display_phase<EE_CYCLES_VBLANK_DURATION&&g_ee_display_phase+n>=EE_CYCLES_VBLANK_DURATION)||
@@ -11197,7 +11467,8 @@ static unsigned ee_core_native_window_begin_impl(ee_state_t *st,uint32_t pc,cons
  st->gpr[0].ud0=st->gpr[0].ud1=0;
  st->instructions_executed+=n;st->cop0[9]=after;
  if(after>=st->cop0[11])st->cop0[13]|=EE_CAUSE_IP7;
- st->cop0[13]&=~(EE_CAUSE_IP2|EE_CAUSE_IP3);
+ st->cop0[13]=(st->cop0[13]&~(EE_CAUSE_IP2|EE_CAUSE_IP3))|
+              (pending_intc?EE_CAUSE_IP2:0u)|(pending_dmac?EE_CAUSE_IP3:0u);
  g_ee_display_ticks+=n;g_ee_display_phase+=n;
  ee_timers_batch_clock[0]-=n;ee_timers_batch_clock[1]+=n;
  st->exc_this_pc=pc+4u*(n-1u);st->exc_in_delay_slot=0;st->exc_raised_this_step=0;st->mem_tlb_miss=0;
@@ -11333,6 +11604,7 @@ unsigned ee_core_interleave_quantum=UINT32_MAX;
 static unsigned ee_interleave_left,ee_interleave_stopped;
 static int (*ee_interleave_callback)(void);
 static int (*ee_event_callback)(unsigned);
+static unsigned (*ee_event_limit_window)(unsigned);
 static unsigned ee_event_spent,ee_event_paid,ee_event_slots,ee_event_width,ee_event_busy;
 static uint64_t ee_event_retired_base;
 static unsigned ee_event_urgent;
@@ -11388,14 +11660,29 @@ unsigned ee_core_event_distance(unsigned maximum)
  if(distance<8u)ee_event_deadline_stats[5]++;
  maximum&=~7u;ee_event_deadline_stats[maximum<=8u?6:7]++;return maximum<8u?8u:maximum;
 }
-unsigned ee_core_step_event_n(unsigned quanta,unsigned width,int (*catch_up)(unsigned))
+static unsigned ee_event_next_window(unsigned maximum)
+{
+ unsigned next=ee_core_event_distance(maximum);
+ if(ee_event_limit_window) {
+  unsigned limit=ee_event_limit_window(next);
+  /* The legacy eight-slot interleave is the minimum supported quantum.
+   * An external deadline may shorten, never widen, the EE admission. */
+  limit&=~7u;if(limit<8u)limit=8u;
+  if(limit<next)next=limit;
+ }
+ return next;
+}
+unsigned ee_core_step_event_bounded_n(unsigned quanta,unsigned width,int (*catch_up)(unsigned),
+                                    unsigned (*limit_window)(unsigned))
 {
  if(!quanta||quanta>UINT32_MAX/8u||!catch_up||ee_event_callback||ee_interleave_callback)return 0;
  if(width<8u||width>512u||(width&7u))return 0;
- ee_event_callback=catch_up;ee_event_spent=ee_event_paid=ee_event_busy=0u;
+ ee_event_callback=catch_up;ee_event_limit_window=limit_window;
+ ee_event_spent=ee_event_paid=ee_event_busy=0u;
  ee_event_urgent=0u;ee_event_retired_base=g_state.instructions_executed;
  ee_event_slots=quanta*8u;ee_event_width=width;ee_interleave_stopped=0u;
- ee_core_interleave_quantum=ee_event_slots<width?ee_event_slots:width;
+ unsigned first=ee_event_next_window(width);
+ ee_core_interleave_quantum=ee_event_slots<first?ee_event_slots:first;
  while(ee_event_spent<ee_event_slots&&!ee_interleave_stopped&&!g_state.halted)
   ee_core_step_n(ee_event_slots-ee_event_spent);
  ee_core_event_sync();
@@ -11406,9 +11693,14 @@ unsigned ee_core_step_event_n(unsigned quanta,unsigned width,int (*catch_up)(uns
   ee_event_busy=0u;
  }
  unsigned done=ee_event_paid;
- ee_event_callback=NULL;ee_event_spent=ee_event_paid=ee_event_slots=ee_event_busy=0u;
+ ee_event_callback=NULL;ee_event_limit_window=NULL;
+ ee_event_spent=ee_event_paid=ee_event_slots=ee_event_busy=0u;
  ee_interleave_stopped=0u;ee_core_interleave_quantum=UINT32_MAX;
  return done;
+}
+unsigned ee_core_step_event_n(unsigned quanta,unsigned width,int (*catch_up)(unsigned))
+{
+ return ee_core_step_event_bounded_n(quanta,width,catch_up,NULL);
 }
 
 void ee_core_interleave_account(unsigned slots)
@@ -11420,7 +11712,7 @@ void ee_core_interleave_account(unsigned slots)
   if(!ee_core_interleave_quantum) {
    ee_core_event_sync();ee_event_urgent=0u;
    unsigned left=ee_event_slots-ee_event_spent;
-   unsigned next=ee_core_event_distance(ee_event_width);
+   unsigned next=left?ee_event_next_window(ee_event_width):0u;
    ee_core_interleave_quantum=left<next?left:next;
   } else if(ee_event_urgent) {
    /* An instruction/helper may arm a new event after window admission.
@@ -11680,6 +11972,226 @@ static void ee_speed_session_reset(void)
  memset(ee_idle_skip_stats,0,sizeof ee_idle_skip_stats);memset(ee_dma_diag,0,sizeof ee_dma_diag);
 #endif
 }
+#ifdef GEKKO2_WIIU
+/* Interpreted fast runs (Wii U port only).
+ * Up to GEKKO2_IW_MAX guest instructions run in one go on the live register file: integer ALU, RAM loads/stores,
+ * and non-likely branches/jumps with their delay slot. Before the run, the same event guards as native-window
+ * admission (pending interrupts, timers, display phase, Count/Compare, DMA/VU/GIF activity, special PCs) bound how
+ * many instructions are provably free of events; afterwards the retirement is published in bulk. The run stops
+ * before any instruction it does not handle (and before every PC the scalar path treats specially); the scalar
+ * path then executes that instruction exactly as before. Nothing in a run can fault: loads/stores are proven RAM. */
+#define GEKKO2_IW_MAX 96u
+int gekko2_wiiu_iw;
+uint64_t ee_iw_stop_op[64],ee_iw_stop_fn[64]; /* why a run ended: primary opcode / SPECIAL function */
+uint64_t ee_iw_stats[4]; /* runs, instructions, declined admissions, runs shorter than 2 */
+static inline int ee_iw_special_pc(uint32_t pc)
+{
+ return pc==0u||pc==0x80000000u||pc==0x80000200u||pc==0xBFC00400u||pc==0x80001d58u||pc==0x8000fb28u||
+  (uint32_t)(pc-0x0100ec00u)<0x100u||(uint32_t)(pc-0x00208000u)<0x200u||
+  pc==0x0101bb28u||pc==0x0101bc10u||pc==0x0101bc24u||pc==0x0101d878u||pc==0x0101da50u||pc==0x0101d508u||
+  pc==EE_BOOT_UNBLOCK_SELFLOOP_PC||pc==EE_EELOAD_START_PC||EE_SBUS_WAIT_PC_MATCH(pc);
+}
+static int ee_iw_pending_intc,ee_iw_pending_dmac;
+/* Largest run length (0 = decline) for which every guard of native-window admission holds. */
+static unsigned ee_iw_admit(ee_state_t *st,unsigned want)
+{
+ if(st!=&g_state||st->halted||st->idle||st->branch_pending||st->next_pc!=st->pc+4u||(st->pc&3u))return 0;
+ if(st->vu0_running||vu1_get_state()->running||vu1_get_state()->xgkick_pending||gif_get_state()->fifo_count||
+    (dma_get_state()->chan[0].chcr&0x100u)||(dma_get_state()->chan[1].chcr&0x100u)||(dma_get_state()->chan[2].chcr&0x100u))return 0;
+ const int pending_intc=ee_intc_pending_fast(),pending_dmac=dma_dmac_interrupt_pending_fast();
+ const uint32_t status=st->cop0[12];
+ const int interrupts_enabled=(status&0x10007u)==0x10001u;
+ if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending()||
+    g_ee_irq.intc_delay||!!pending_intc!=!!g_ee_irq.intc_armed||
+    (interrupts_enabled&&((pending_intc&&(status&EE_STATUS_IM2))||(pending_dmac&&(status&EE_STATUS_IM3)))))return 0;
+ uint64_t m=want;
+ if(ee_timers_batch_clock[0]<=1u)return 0;
+ if(m>ee_timers_batch_clock[0]-1u)m=ee_timers_batch_clock[0]-1u;
+ if(g_ee_display_ticks>UINT64_MAX-GEKKO2_IW_MAX)return 0;
+ if(g_ee_display_phase+1u>=EE_CYCLES_PER_FRAME_NTSC)return 0;
+ if(m>EE_CYCLES_PER_FRAME_NTSC-1u-g_ee_display_phase)m=EE_CYCLES_PER_FRAME_NTSC-1u-g_ee_display_phase;
+ if(g_ee_display_phase<EE_CYCLES_VBLANK_DURATION){
+  if(g_ee_display_phase+1u>=EE_CYCLES_VBLANK_DURATION)return 0;
+  if(m>EE_CYCLES_VBLANK_DURATION-1u-g_ee_display_phase)m=EE_CYCLES_VBLANK_DURATION-1u-g_ee_display_phase;
+ }
+ const uint32_t cnt=st->cop0[9],cmp=st->cop0[11];
+ if(cnt>UINT32_MAX-GEKKO2_IW_MAX)return 0;
+ if((status&0x10007u)==0x10001u&&(status&0x8000u)){
+  if((st->cop0[13]&EE_CAUSE_IP7)||cnt+1u>=cmp)return 0;
+  if(m>cmp-cnt-1u)m=cmp-cnt-1u;
+ }
+ if(m<2u)return 0;
+ m=ee_core_interleave_limit((unsigned)m);
+ ee_iw_pending_intc=pending_intc;ee_iw_pending_dmac=pending_dmac;
+ return (unsigned)m;
+}
+static inline uint32_t ee_iw_le32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
+/* 1 = instruction handled (state changed), 0 = not handled (state untouched). Memory ops are proven RAM first. */
+static int ee_iw_exec(ee_state_t *st,uint32_t iw)
+{
+ const unsigned op=iw>>26,rs=(iw>>21)&31u,rt=(iw>>16)&31u,rd=(iw>>11)&31u,sa=(iw>>6)&31u,f=iw&63u;
+ const int32_t imm=(int16_t)iw;const uint32_t uimm=iw&65535u;
+ const uint64_t a=st->gpr[rs].ud0,b=st->gpr[rt].ud0;const uint32_t a32=(uint32_t)a,b32=(uint32_t)b;
+ unsigned dest=0;uint64_t v=0;
+ switch(op){
+ case 9:dest=rt;v=sext32(a32+(uint32_t)imm);break;
+ case 10:dest=rt;v=(int64_t)a<(int64_t)imm;break;
+ case 11:dest=rt;v=a<(uint64_t)(int64_t)imm;break;
+ case 12:dest=rt;v=a&uimm;break;
+ case 13:dest=rt;v=a|uimm;break;
+ case 14:dest=rt;v=a^uimm;break;
+ case 15:dest=rt;v=sext32(uimm<<16);break;
+ case 25:dest=rt;v=a+(uint64_t)(int64_t)imm;break;
+ case 0:
+  dest=rd;
+  switch(f){
+  case 0:v=sext32(b32<<sa);break;
+  case 2:v=sext32(b32>>sa);break;
+  case 3:v=sext32((uint32_t)((int32_t)b32>>sa));break;
+  case 4:v=sext32(b32<<(a32&31u));break;
+  case 6:v=sext32(b32>>(a32&31u));break;
+  case 7:v=sext32((uint32_t)((int32_t)b32>>(a32&31u)));break;
+  case 10:if(b!=0)return 1;v=a;break;           /* MOVZ */
+  case 11:if(b==0)return 1;v=a;break;           /* MOVN */
+  case 33:v=sext32(a32+b32);break;
+  case 35:v=sext32(a32-b32);break;
+  case 36:v=a&b;break;
+  case 37:v=a|b;break;
+  case 38:v=a^b;break;
+  case 39:v=~(a|b);break;
+  case 42:v=(int64_t)a<(int64_t)b;break;
+  case 43:v=a<b;break;
+  case 45:v=a+b;break;
+  case 47:v=a-b;break;
+  case 56:v=b<<sa;break;
+  case 58:v=b>>sa;break;
+  case 59:v=(uint64_t)((int64_t)b>>sa);break;
+  case 60:v=b<<(sa+32u);break;
+  case 62:v=b>>(sa+32u);break;
+  case 63:v=(uint64_t)((int64_t)b>>(sa+32u));break;
+  default:return 0;
+  }
+  break;
+ case 0x20:case 0x21:case 0x23:case 0x24:case 0x25:case 0x27:case 0x37:{ /* LB LH LW LBU LHU LWU LD */
+  const unsigned width=ee_jit_block_memory_width(iw);
+  const uint32_t phys1=ee_core_block_memory_resolve_address(st,iw,a32+(uint32_t)imm);
+  if(!phys1)return 0;
+  const uint8_t *q=st->ram+phys1-1u;
+  uint64_t x=q[0];
+  if(width>=2u)x|=(uint64_t)q[1]<<8;
+  if(width>=4u)x|=(uint64_t)q[2]<<16|(uint64_t)q[3]<<24;
+  if(width>=8u)x|=(uint64_t)q[4]<<32|(uint64_t)q[5]<<40|(uint64_t)q[6]<<48|(uint64_t)q[7]<<56;
+  if(op==0x20u)x=(uint64_t)(int64_t)(int8_t)x;
+  else if(op==0x21u)x=(uint64_t)(int64_t)(int16_t)x;
+  else if(op==0x23u)x=sext32((uint32_t)x);
+  dest=rt;v=x;
+ }break;
+ case 0x28:case 0x29:case 0x2b:case 0x3f:{ /* SB SH SW SD */
+  const unsigned width=ee_jit_block_memory_width(iw);
+  const uint32_t phys1=ee_core_block_memory_resolve_address(st,iw,a32+(uint32_t)imm);
+  if(!phys1)return 0;
+  uint8_t *q=st->ram+phys1-1u;
+  ee_jit_notify_ram_write(st,q,width);
+  for(unsigned i=0;i<width;i++)q[i]=(uint8_t)(b>>(8u*i));
+  return 1;
+ }
+ default:return 0;
+ }
+ if(dest)st->gpr[dest].ud0=v;
+ return 1;
+}
+/* Decode-only: a delay slot we can run (no branch, no state beyond GPR/RAM). */
+static inline int ee_iw_slot_ok(uint32_t iw)
+{
+ const unsigned op=iw>>26,f=iw&63u;
+ if(op==0u)return f==0||f==2||f==3||f==4||f==6||f==7||f==10||f==11||f==33||f==35||f==36||f==37||f==38||f==39||f==42||f==43||f==45||f==47||
+  f==56||f==58||f==59||f==60||f==62||f==63;
+ return (op>=9u&&op<=15u)||op==25u||op==0x20u||op==0x21u||op==0x23u||op==0x24u||op==0x25u||op==0x27u||op==0x37u||
+  op==0x28u||op==0x29u||op==0x2bu||op==0x3fu;
+}
+static unsigned ee_iw_run(ee_state_t *st,unsigned budget)
+{
+ unsigned want=budget<GEKKO2_IW_MAX?budget:GEKKO2_IW_MAX;
+ if(want<2u)return 0;
+ {
+  /* Cheap pre-check: do not pay for admission when the very first instruction cannot run here. */
+  uint32_t avail;const uint8_t *p0=ee_core_block_pointer(st,st->pc,&avail);
+  if(!p0||avail<8u)return 0;
+  const uint32_t w0=ee_iw_le32(p0);
+  const unsigned op0=w0>>26;
+  const int br0=(op0>=2u&&op0<=7u)||(op0==0u&&((w0&63u)==8u||(w0&63u)==9u))||(op0==1u&&(((w0>>16)&31u)<=1u));
+  if(!br0){
+   if(!ee_iw_slot_ok(w0))return 0;
+   if(ee_jit_block_memory_width(w0)&&
+      !ee_core_block_memory_resolve_address(st,w0,(uint32_t)st->gpr[(w0>>21)&31u].ud0+(uint32_t)(int32_t)(int16_t)w0))return 0;
+  }
+ }
+ unsigned m=ee_iw_admit(st,want);
+ if(!m){ee_iw_stats[2]++;return 0;}
+ uint32_t pc=st->pc,last_pc=pc;
+ unsigned last_in_slot=0;
+ const uint8_t *page=NULL;uint32_t page_lo=0,page_hi=0;
+ unsigned j=0;
+ while(j<m){
+  if(ee_iw_special_pc(pc))break;
+  if(!page||pc<page_lo||pc>=page_hi){
+   uint32_t avail;const uint8_t *p=ee_core_block_pointer(st,pc,&avail);
+   if(!p)break;
+   uint32_t room=4096u-(pc&4095u);if(room>avail)room=avail&~3u;
+   if(room<4u)break;
+   page=p-(pc-page_lo);page=p;page_lo=pc;page_hi=pc+room;
+  }
+  const uint32_t iw=ee_iw_le32(page+(pc-page_lo));
+  const unsigned op=iw>>26;
+  const int is_branch=(op>=2u&&op<=7u)||(op==0u&&((iw&63u)==8u||(iw&63u)==9u))||(op==1u&&(((iw>>16)&31u)<=1u));
+  if(!is_branch){
+   if(!ee_iw_exec(st,iw)){ee_iw_stop_op[op]++;if(op==0u)ee_iw_stop_fn[iw&63u]++;break;}
+   last_pc=pc;last_in_slot=0;pc+=4u;j++;continue;
+  }
+  if(j+2u>m||pc+4u>=page_hi)break;
+  const uint32_t slot=ee_iw_le32(page+(pc+4u-page_lo));
+  if(!ee_iw_slot_ok(slot)||ee_iw_special_pc(pc+4u))break;
+  const unsigned rs=(iw>>21)&31u,rt=(iw>>16)&31u,rd=(iw>>11)&31u;
+  const int32_t imm=(int16_t)iw;
+  const uint64_t a=st->gpr[rs].ud0,b=st->gpr[rt].ud0;
+  uint32_t target=pc+8u;int taken=0,link=0;unsigned link_reg=31u;
+  switch(op){
+  case 4:taken=a==b;target=pc+4u+(uint32_t)(imm*4);break;
+  case 5:taken=a!=b;target=pc+4u+(uint32_t)(imm*4);break;
+  case 6:taken=(int64_t)a<=0;target=pc+4u+(uint32_t)(imm*4);break;
+  case 7:taken=(int64_t)a>0;target=pc+4u+(uint32_t)(imm*4);break;
+  case 1:taken=((iw>>16)&31u)==0u?((int64_t)a<0):((int64_t)a>=0);target=pc+4u+(uint32_t)(imm*4);break;
+  case 2:taken=1;target=((pc+4u)&0xf0000000u)|((iw&0x03ffffffu)<<2);break;
+  case 3:taken=1;link=1;target=((pc+4u)&0xf0000000u)|((iw&0x03ffffffu)<<2);break;
+  default: /* JR / JALR */
+   taken=1;target=(uint32_t)a;
+   if((iw&63u)==9u){link=rd!=0u;link_reg=rd;}
+   break;
+  }
+  (void)rt;(void)b;
+  if(taken&&(target&3u))break;
+  if(link&&ee_jit_block_memory_width(slot))break; /* the slot could fail after the link write */
+  /* The slot may only fail through memory proof, and only when there is no link write. */
+  if(link)st->gpr[link_reg].ud0=(uint64_t)pc+8u;
+  if(!ee_iw_exec(st,slot)){break;}
+  last_pc=pc+4u;last_in_slot=1;j+=2u;pc=taken?target:pc+8u;
+ }
+ if(!j){ee_iw_stats[3]++;return 0;} /* anything executed in place must be published, however short */
+ /* Publish the retirement exactly like native-window admission does. */
+ const uint32_t after=st->cop0[9]+j;
+ st->gpr[0].ud0=st->gpr[0].ud1=0;
+ st->instructions_executed+=j;st->cop0[9]=after;
+ if(after>=st->cop0[11])st->cop0[13]|=EE_CAUSE_IP7;
+ st->cop0[13]=(st->cop0[13]&~(EE_CAUSE_IP2|EE_CAUSE_IP3))|(ee_iw_pending_intc?EE_CAUSE_IP2:0u)|(ee_iw_pending_dmac?EE_CAUSE_IP3:0u);
+ g_ee_display_ticks+=j;g_ee_display_phase+=j;
+ ee_timers_batch_clock[0]-=j;ee_timers_batch_clock[1]+=j;
+ st->exc_this_pc=last_pc;st->exc_in_delay_slot=(uint8_t)last_in_slot;st->exc_raised_this_step=0;st->mem_tlb_miss=0;
+ st->pc=pc;st->next_pc=pc+4u;
+ ee_iw_stats[0]++;ee_iw_stats[1]+=j;
+ return j;
+}
+#endif
+
 unsigned ee_core_step_n(unsigned n)
 {
     unsigned retired = 0, used = 0;
@@ -11690,10 +12202,15 @@ unsigned ee_core_step_n(unsigned n)
         { unsigned sk=ee_idle_skip(&g_state,n-used);
           if(sk){retired+=sk;used+=sk;ee_core_interleave_account(sk);continue;} }
 #endif
+#ifdef GEKKO2_WIIU
+        if(gekko2_wiiu_iw){unsigned w=ee_iw_run(&g_state,n-used);
+          if(w){retired+=w;used+=w;ee_core_interleave_account(w);continue;}}
+#endif
 #ifdef GEKKO2_SPEED_STUB
         uint32_t scalar_entry_pc = g_state.pc;
 #endif
         int halted = ee_step_budget(n-used,&block_retired);
+        gp_work(GP_EE,g_state.instructions_executed-before);
         if(block_retired){retired+=block_retired;used+=block_retired;}
         else {
 #ifdef GEKKO2_SPEED_STUB

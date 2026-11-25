@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<app version="1">
+  <name>Gekko2 Wii Limits</name>
+  <coder>Mafiacoding</coder>
+  <version>1.1</version>
+  <release_date>20261018</release_date>
+  <short_description>CPU / MEM1 / MEM2 / GX microbenchmarks</short_description>
+  <long_description>Standalone Wii benchmark with bidirectional MEM1/MEM2 copies at two alignments. Press A to start; HOME or GameCube START cancels/exits. Saves separate measurements to sd:/gekko2-bench. No BIOS or games needed. No clock, IOS or emulator configuration changes. Synthetic workloads are not theoretical maxima, game FPS or full hardware conformance. Real Wii boot and measurements remain to be supplied by the owner.</long_description>
+</app>

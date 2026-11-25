@@ -2,6 +2,7 @@
 #define PCSX2WII_GS_WII_OUTPUT_H
 
 #include <stdint.h>
+#include "core/hw/gs.h"
 
 /* CPU scanout from swizzled GS VRAM to Wii XFB, display-region decoding
  * and bounded source-color probes. GX presentation uses a separate path. */
@@ -66,7 +67,37 @@ uint32_t gs_scanout_read_rgb(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,uint3
 void gs_blit_scaled_psm_to_xfb(void *xfb,uint32_t dst_w,uint32_t dst_h,
                                uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,
                                uint32_t sw,uint32_t sh,uint32_t psm);
+/* Checked software presentation: 1 copied, 0 invalid input, -1 failed
+ * GPU synchronization. Failed calls leave XFB untouched. */
+int gs_blit_scaled_psm_to_xfb_checked(void *xfb,uint32_t dst_w,uint32_t dst_h,
+                               uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,
+                               uint32_t sw,uint32_t sh,uint32_t psm);
 int gs_display_has_rgb_psm(uint32_t bp,uint32_t bw,uint32_t sx,uint32_t sy,uint32_t sw,uint32_t sh,uint32_t psm);
 void gs_scanout_probe_rgb_psm(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
                               uint32_t w,uint32_t h,uint32_t psm,uint32_t stats[6]);
+/* Bounded 8x8 RGB fingerprint, not a full framebuffer hash. Returns zero
+ * on invalid geometry/PSM or failed GPU readback; hash is then zero.
+ * Uses the same grid as the color probe. Never hashes failed reads as black. */
+int gs_scanout_grid_hash(uint32_t bp,uint32_t bw,uint32_t x,uint32_t y,
+                         uint32_t w,uint32_t h,uint32_t psm,uint32_t *hash);
+/* Post-presentation 4:3 fit for a Wii configured to a physical 16:9 TV.
+ * XFB is coherent and writable; zero return leaves unsupported sizes intact. */
+int gs_xfb_fit_4_3(void *xfb,uint32_t width,uint32_t height,int widescreen);
+typedef struct {
+ uint32_t enabled,bp,bw,psm,sx,sy,width,height,dx,dy;
+} gs_output_circuit;
+typedef struct {
+ gs_output_circuit circuit[2];
+ uint32_t width,height;
+ uint64_t pmode,bgcolor;
+} gs_output_plan;
+/* Relative DISPLAY offsets, field/frame read height and PMODE composition.
+ * Planning is transactional; unsupported enabled sources decline. */
+int gs_output_make_plan(const gs_state_t *gs,gs_output_plan *out);
+int gs_output_requires_merge(const gs_state_t *gs);
+uint64_t gs_output_state_key(const gs_state_t *gs);
+/* Caller must resolve VRAM first for direct pixel queries. */
+uint32_t gs_output_read_rgba(const gs_output_plan *plan,uint32_t x,uint32_t y);
+int gs_output_has_rgb(const gs_state_t *gs);
+int gs_output_present_checked(const gs_state_t *gs,void *xfb,uint32_t width,uint32_t height);
 #endif

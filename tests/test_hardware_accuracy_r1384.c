@@ -107,7 +107,7 @@ int main(void){
  put(s->ram+0x3000,0x40000002);put(s->ram+0x3004,0x1000);
  put(s->ram+0x3010,0x70000000);put(s->ram+0x3014,0);
  d=&dma_get_state()->chan[DMA_CHANNEL_GIF];d->tadr=0x3000;d->chcr=0x104;
- dma_get_state()->d_ctrl=3u<<6;dma_get_state()->d_stadr=0x1000;
+ dma_get_state()->d_ctrl=2u<<6;dma_get_state()->d_stadr=0x1000;
  dma_channel_kick(DMA_CHANNEL_GIF);CHECK(d->qwc==2&&(d->chcr&0x100)&&(dma_get_state()->d_stat&(1u<<13)));
  dma_get_state()->d_stadr=0x1010;CHECK(dma_gif_service());CHECK(d->qwc==1&&d->madr==0x1010);
  dma_get_state()->d_stadr=0x1020;CHECK(dma_gif_service());CHECK(!d->qwc&&!(d->chcr&0x100));

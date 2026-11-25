@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifndef GEKKO2_TELEMETRY_COMMIT
+#define GEKKO2_TELEMETRY_COMMIT "unknown"
+#endif
 int main(void)
 {
  char root[]="/tmp/gekko2-logs-XXXXXX";assert(mkdtemp(root));
@@ -17,6 +20,12 @@ int main(void)
  assert(frontend_log_begin(&a,root,1,1)==0&&a.sequence==3&&strstr(a.path,"disc-gx"));
  char game[256];strcpy(game,a.path);
  f=fopen(first,"r");assert(f);char text[256]={0};assert(fread(text,1,sizeof(text)-1,f)>0);fclose(f);
+ assert(strstr(text,"BUILD source_commit=" GEKKO2_TELEMETRY_COMMIT));
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ assert(strstr(text,"chain_compiled=1"));
+#else
+ assert(strstr(text,"chain_compiled=0"));
+#endif
  assert(strstr(text,"PAUSED EE=123")&&strstr(text,"RESUMED EE=123"));
  assert(frontend_log_begin(&a,first,0,0)<0&&a.errors==1&&!a.path[0]);
  char oversized[300];memset(oversized,'x',sizeof(oversized)-1);oversized[sizeof(oversized)-1]=0;

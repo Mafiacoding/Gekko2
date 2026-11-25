@@ -19,7 +19,7 @@ int ipu_state_valid(const ipu_state_t *p)
  return p&&p->bp<128&&p->fp<=2&&p->in_head<8&&p->in_count<=8&&
  p->out_head<8&&p->out_count<=8&&p->busy<=1&&p->skip<=63&&
  p->pos<=1024&&p->blocks<=2047&&p->out_size<=1024&&
- !(p->out_size&15)&&p->out_pos<=p->out_size&&!(p->out_pos&15)&&p->th0<=511&&p->th1<=511&&p->mpeg.phase<=2&&p->mpeg.block<=6&&p->mpeg.index<=64&&p->mpeg.intra<=1&&p->mpeg.interlaced<=1&&p->mpeg.quant<=112&&p->mpeg.cbp<=63;
+ !(p->out_size&15)&&p->out_pos<=p->out_size&&!(p->out_pos&15)&&p->th0<=511&&p->th1<=511&&p->mpeg.phase<=2&&p->mpeg.block<=6&&p->mpeg.index<=64&&p->mpeg.intra<=1&&p->mpeg.interlaced<=1&&p->mpeg.quant<=112&&p->mpeg.cbp<=63&&p->mpeg.dc_precision<=3;
 }
 void ipu_restore(const ipu_state_t *p){if(ipu_state_valid(p)){s=*p;servicing=worker_pending=0;arm_worker_reset();}}
 void ipu_init(void){memset(&s,0,sizeof s);memset(&profile,0,sizeof profile);servicing=worker_pending=0;arm_worker_reset();}
@@ -78,11 +78,15 @@ static int run(void)
    if(!bits_read(32,0,&v))return progress;
    unsigned n=0,q=0,quant=0;
    if(v&0x80000000u)n=1;
-   else if(v&0x40000000u){n=2;quant=1;q=(v>>(32-n-5))&31;n+=5;}
+   else if(v&0x40000000u){n=2;quant=1;}
    else{s.ctrl|=0x4000u;complete();return 1;}
-   if(quant){static const uint8_t nonlin[32]={0,1,2,3,4,5,6,7,8,10,12,14,16,18,20,22,24,28,32,36,40,44,48,52,56,64,72,80,88,96,104,112};s.mpeg.quant=(s.ctrl&(1u<<22))?nonlin[q]:q*2;}
+   /* MPEG macroblock_modes includes dct_type before the optional
+    * quantizer_scale_code (PCSX2 GetMacroblockModes/mpeg2sliceIDEC).
+    * Peek the whole header before committing any bits, so starvation
+    * cannot apply the quantizer or DCT type twice. */
    s.mpeg.interlaced=0;
    if(s.command&(1u<<24)){s.mpeg.interlaced=(v>>(31-n))&1;n++;}
+   if(quant){static const uint8_t nonlin[32]={0,1,2,3,4,5,6,7,8,10,12,14,16,18,20,22,24,28,32,36,40,44,48,52,56,64,72,80,88,96,104,112};q=(v>>(32-n-5))&31;n+=5;s.mpeg.quant=(s.ctrl&(1u<<22))?nonlin[q]:q*2;}
    advance(n);s.mpeg.phase=s.mpeg.block=s.mpeg.index=0;s.mpeg.cbp=63;
    memset(s.mpeg.coeff,0,sizeof s.mpeg.coeff);memset(s.block,0,384);memset(s.converted,0,768);
    s.pos=0;progress=1;
@@ -93,7 +97,7 @@ static int run(void)
    if(!mba){s.pos=2;}
    else{
     advance(n);
-    if((mba&65535)>1&&(mba&65535)!=34)for(unsigned i=0;i<3;i++)s.mpeg.dc[i]=128<<((s.ctrl>>16)&3);
+    if((mba&65535)>1&&(mba&65535)!=34)for(unsigned i=0;i<3;i++)s.mpeg.dc[i]=128<<s.mpeg.dc_precision;
     if((mba&65535)>=34)return 1;
     s.pos=5;return 1;
    }
@@ -207,7 +211,7 @@ static void command(uint32_t value)
  s.command=value;s.ctrl&=~0x0000c000u;s.busy=1;s.pos=s.out_pos=s.out_size=0;s.skip=0;
  if(cmd==0){s.in_head=s.in_count=s.fp=0;s.bp=value&127;complete();}
  else if(cmd==9){s.th0=value&511;s.th1=(value>>16)&511;complete();}
- else if(cmd==1||cmd==2){s.skip=value&63;ipu_mpeg_begin(&s);if(cmd==1)s.pos=5;}
+ else if(cmd==1||cmd==2){s.skip=value&63;if(cmd==1)s.ctrl=(s.ctrl&~(7u<<24))|(1u<<24);ipu_mpeg_begin(&s);if(cmd==1)s.pos=5;}
  else if(cmd==3||cmd==4||cmd==5){s.skip=value&63;}
  else if(cmd==6){}
  else if(cmd==7||cmd==8){s.blocks=value&2047;}
@@ -224,7 +228,7 @@ int ipu_mmio_read32(uint32_t addr,uint32_t *out)
  case 0x10:*out=(s.ctrl&0x07ffffffu)|s.in_count|(s.out_count<<4)|(s.busy?0x80000000u:0);break;
  case 0x20:*out=s.bp|(s.in_count<<8)|(s.fp<<16);break;
  case 0x30:*out=s.top;break;
- case 0x34:*out=(s.busy&&((s.command>>28)==3||(s.command>>28)==4))?0x80000000u:0;break;
+ case 0x34:*out=(s.busy&&(s.command>>28)>=1&&(s.command>>28)<=4)?0x80000000u:0;break;
  default:*out=0;break;
  }
  return 1;
@@ -238,6 +242,10 @@ int ipu_mmio_write32(uint32_t addr,uint32_t value)
   if(((s.ctrl>>16)&3)==3)s.ctrl=(s.ctrl&~0x30000u)|0x10000u;
   if(value&0x40000000u){worker_pending=0;arm_worker_reset();s.ctrl&=0x07f33f00u;s.data=s.top=s.command=s.busy=s.bp=s.fp=0;
    s.in_head=s.in_count=s.out_head=s.out_count=s.skip=s.pos=s.blocks=s.out_pos=s.out_size=0;
+   /* Soft reset restores the default 8-bit intra DC predictors. Quantizer
+    * tables remain intact; nonzero precision retains its decoder history,
+    * matching the reference soft-reset rule rather than a full ipu_init. */
+   if(!s.mpeg.dc_precision)for(unsigned c=0;c<3;c++)s.mpeg.dc[c]=128;
    s.th0=s.th1=0;ee_intc_raise(8);}
  }
  return 1; /* BP/TOP/BUSY read-only. */
@@ -247,8 +255,10 @@ int ipu_mmio_read64(uint32_t addr,uint64_t *out)
 int ipu_mmio_write64(uint32_t addr,uint64_t value)
 {return ipu_mmio_write32(addr,(uint32_t)value);}
 int ipu_fifo_read128(uint32_t addr,uint8_t out[16])
-{if(addr!=0x10007000u)return 0;ipu_service();if(!ipu_output_read(out,1))memset(out,0,16);ipu_service();return 1;}
+{if(addr!=0x10007000u)return 0;ipu_service();if(!ipu_output_read(out,1))return -1;ipu_service();return 1;}
 int ipu_fifo_write128(uint32_t addr,const uint8_t in[16])
-{if(addr!=0x10007010u)return 0;ipu_service();if(!ipu_input_write(in,1))profile.discarded_qwc++;ipu_service();return 1;}
+{if(addr!=0x10007010u)return 0;ipu_service();if(!ipu_input_write(in,1))return -1;ipu_service();return 1;}
+int ipu_cpu_fifo_ready(int writing)
+{ipu_service();return writing?s.in_count<8u:s.out_count!=0u;}
 void ipu_process_quadwords(int channel,const uint8_t *data,uint32_t qwc)
 {(void)channel;uint32_t n=ipu_input_write(data,qwc);profile.discarded_qwc+=qwc-n;ipu_service();}

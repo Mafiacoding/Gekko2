@@ -1,5 +1,6 @@
 #include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/optimization.h"
+#include "core/recompiler/native_ppc.h"
 #include <stdlib.h>
 #include <malloc.h>
 #include <string.h>
@@ -9,7 +10,12 @@
 #define BINS 96u
 typedef struct {uint32_t span,next,magic,previous_span,free_previous,pad[3];} chunk;
 #if !defined(GEKKO2_CODE_ARENA_DISABLE)
+#ifdef GEKKO2_WIIU_JIT
+/* Wii U: the cache lives in the codegen area (R_X except while this file or finalize() writes to it). */
+static uint8_t *arena;
+#else
 static uint8_t arena[PPC_CODE_CACHE_BYTES] __attribute__((aligned(32)));
+#endif
 /* Physical boundary tags permit constant-time neighbour coalescing. Size
  * classes skip irrelevant holes; every published owner remains stationary. */
 static uint32_t heads[BINS],bitmap[BINS/32u],used,high_water,cache_initialized,generation;
@@ -49,11 +55,25 @@ static void set_next_previous(chunk *p)
 static void init(void)
 {
  if(cache_initialized)return;
+#ifdef GEKKO2_WIIU_JIT
+ if(!arena){
+  uint32_t size=0;void *area=gekko2_codegen_area(&size);
+  if(!area||size<PPC_CODE_CACHE_BYTES+32u)return;
+  arena=(uint8_t *)(((uintptr_t)area+31u)&~(uintptr_t)31u);
+ }
+ gekko2_codegen_rw_begin();
+#endif
  chunk *p=(chunk *)(void *)arena;memset(p,0,HEADER);p->span=PPC_CODE_CACHE_BYTES;
  list_add(p);cache_initialized=1u;
+#ifdef GEKKO2_WIIU_JIT
+ gekko2_codegen_rw_end();
+#endif
 }
 int ppc_code_cache_owns(const void *code)
 {
+#ifdef GEKKO2_WIIU_JIT
+ if(!arena)return 0;
+#endif
  uintptr_t p=(uintptr_t)code,base=(uintptr_t)arena;
  return p>=base+HEADER&&p<base+PPC_CODE_CACHE_BYTES;
 }
@@ -101,15 +121,32 @@ static chunk *find_free(uint32_t span)
 int ppc_code_cache_can_alloc(size_t bytes)
 {
  if(!gekko2_opt_enabled(GEKKO2_OPT_CODE_ARENA))return 1;
- init();if(!bytes||bytes>PPC_CODE_CACHE_BYTES-HEADER)return 0;
+ init();
+#ifdef GEKKO2_WIIU_JIT
+ if(!cache_initialized)return 0;
+#endif
+ if(!bytes||bytes>PPC_CODE_CACHE_BYTES-HEADER)return 0;
  uint32_t span=(((uint32_t)bytes+31u)&~31u)+HEADER;
  return find_free(span)!=NULL;
 }
 static void changed(void){probe_valid=0;if(++generation==0u)generation=1u;}
+#ifdef GEKKO2_WIIU_JIT
+static void *ppc_code_cache_alloc_locked(size_t bytes);
 void *ppc_code_cache_alloc(size_t bytes)
 {
+ gekko2_codegen_rw_begin();void *r=ppc_code_cache_alloc_locked(bytes);gekko2_codegen_rw_end();return r;
+}
+static void *ppc_code_cache_alloc_locked(size_t bytes)
+#else
+void *ppc_code_cache_alloc(size_t bytes)
+#endif
+{
  if(!gekko2_opt_enabled(GEKKO2_OPT_CODE_ARENA))return bytes?memalign(32,bytes):NULL;
- init();if(!bytes||bytes>PPC_CODE_CACHE_BYTES-HEADER){failures++;return NULL;}
+ init();
+#ifdef GEKKO2_WIIU_JIT
+ if(!cache_initialized){failures++;return NULL;}
+#endif
+ if(!bytes||bytes>PPC_CODE_CACHE_BYTES-HEADER){failures++;return NULL;}
  uint32_t span=(((uint32_t)bytes+31u)&~31u)+HEADER;
  chunk *p=find_free(span);
  if(p){
@@ -124,7 +161,19 @@ void *ppc_code_cache_alloc(size_t bytes)
  }
  failures++;return NULL;
 }
+#ifdef GEKKO2_WIIU_JIT
+static void ppc_code_cache_release_locked(void *code);
 void ppc_code_cache_release(void *code)
+{
+ /* Staging buffers (heap) are released very often; only arena chunks need the RW window. */
+ if(!code)return;
+ if(!ppc_code_cache_owns(code)){free(code);return;}
+ gekko2_codegen_rw_begin();ppc_code_cache_release_locked(code);gekko2_codegen_rw_end();
+}
+static void ppc_code_cache_release_locked(void *code)
+#else
+void ppc_code_cache_release(void *code)
+#endif
 {
  if(!code)return;if(!ppc_code_cache_owns(code)){free(code);return;}
  uintptr_t offset=(uintptr_t)code-(uintptr_t)arena-HEADER;
@@ -143,7 +192,16 @@ void ppc_code_cache_release(void *code)
  set_next_previous(p);list_add(p);
 }
 uint32_t ppc_code_cache_used(void){return used;}
+#ifdef GEKKO2_WIIU_JIT
+static void ppc_code_cache_trim_locked(void *code,size_t bytes);
 void ppc_code_cache_trim(void *code,size_t bytes)
+{
+ gekko2_codegen_rw_begin();ppc_code_cache_trim_locked(code,bytes);gekko2_codegen_rw_end();
+}
+static void ppc_code_cache_trim_locked(void *code,size_t bytes)
+#else
+void ppc_code_cache_trim(void *code,size_t bytes)
+#endif
 {
  if(!code||!bytes||!ppc_code_cache_owns(code)||bytes>PPC_CODE_CACHE_BYTES-HEADER)return;
  uintptr_t offset=(uintptr_t)code-(uintptr_t)arena-HEADER;if(offset&31u)return;
@@ -160,6 +218,9 @@ uint32_t ppc_code_cache_capacity(void){return PPC_CODE_CACHE_BYTES;}
 void ppc_code_cache_get_info(ppc_code_cache_info *out)
 {
  if(!out)return;memset(out,0,sizeof(*out));init();
+#ifdef GEKKO2_WIIU_JIT
+ if(!cache_initialized)return;
+#endif
  out->begin=(uintptr_t)arena;out->end=out->begin+PPC_CODE_CACHE_BYTES;
  out->used=used;out->free_bytes=PPC_CODE_CACHE_BYTES-used;
  out->allocations=allocations;out->releases=releases;

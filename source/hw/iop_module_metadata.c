@@ -1,8 +1,10 @@
 #include "core/hw/iop_module_metadata.h"
+#include "core/iop_async.h"
 #include <string.h>
 static uint32_t u32(const uint8_t*p){return p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
 static uint16_t u16(const uint8_t*p){return p[0]|((uint16_t)p[1]<<8);}
 int iop_module_metadata(const uint8_t*b,uint32_t size,char name[64],uint16_t *version){
+    G2_EE_CALLS_IOP();
  if(!b||!name||!version||size<52||memcmp(b,"\177ELF",4)||b[4]!=1||b[5]!=1)return 0;
  uint32_t shoff=u32(b+32);unsigned stride=u16(b+46),count=u16(b+48);
  if(stride<40 || (uint64_t)shoff+(uint64_t)stride*count>size)return 0;
@@ -32,6 +34,7 @@ static const uint8_t *elf_word_at(const uint8_t *b,uint32_t size,uint32_t addres
 }
 int iop_loadfile_protocol(const uint8_t *b,uint32_t size,uint32_t *version)
 {
+    G2_EE_CALLS_IOP();
  if(!b||!version||size<52||memcmp(b,"\177ELF",4)||b[4]!=1||b[5]!=1||u16(b+18)!=8)return 0;
  uint32_t off=u32(b+32),found=0;unsigned stride=u16(b+46),count=u16(b+48);
  if(stride<40 || (uint64_t)off+(uint64_t)stride*count>size)return 0;
@@ -66,6 +69,7 @@ int iop_loadfile_protocol(const uint8_t *b,uint32_t size,uint32_t *version)
  * In particular IOPRP205 contains "2050" and IOPRP211 contains "2110". */
 int iop_fileio_protocol(const uint8_t *b,uint32_t size,uint32_t *version)
 {
+    G2_EE_CALLS_IOP();
     char name[64];uint16_t module_ver;uint32_t found=0;
     static const uint8_t marker[]="PsIIfileio  ";
     if(!b||!version||size<52u||u16(b+18)!=8u||

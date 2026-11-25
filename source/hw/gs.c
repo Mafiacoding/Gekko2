@@ -1,3 +1,4 @@
+#include "core/hw/game_trace.h"
 /*
  * gs.c - GS privileged register skeleton. See include/core/hw/gs.h
  * for scope notes. Addresses cross-checked against PCSX2's
@@ -5,6 +6,8 @@
  */
 
 #include "core/hw/gs.h"
+#include "core/hw/ee_intc.h"
+#include "core/hw/gs_async.h"
 #include <string.h>
 #include <stddef.h>
 
@@ -15,7 +18,13 @@ void gs_init(void)
     memset(&g_gs, 0, sizeof(g_gs));
     g_gs.imr = GS_IMR_RESET_ALL_MASKED;
 }
+#ifdef GEKKO2_WIIU
+gs_state_t *gs_get_state_raw(void) { return &g_gs; }
+gs_state_t *gs_peek_state(void) { return &g_gs; }
+gs_state_t *gs_get_state(void) { gs_async_drain(); return &g_gs; }
+#else
 gs_state_t *gs_get_state(void) { return &g_gs; }
+#endif
 
 /* CSR event bits 0..4 map directly to IMR mask bits 8..12. */
 int gs_raise_event(unsigned event)
@@ -57,7 +66,11 @@ static uint64_t *reg_for_addr(uint32_t addr)
     return NULL;
 }
 
+#ifdef GEKKO2_WIIU
+static int gs_mmio_read64_impl(uint32_t addr, uint64_t *out_val)
+#else
 int gs_mmio_read64(uint32_t addr, uint64_t *out_val)
+#endif
 {
     if (addr < 0x12000000u || addr > 0x12001FFFu)
         return 0;
@@ -66,7 +79,11 @@ int gs_mmio_read64(uint32_t addr, uint64_t *out_val)
     return 1;
 }
 
+#ifdef GEKKO2_WIIU
+static int gs_mmio_write64_impl(uint32_t addr, uint64_t val)
+#else
 int gs_mmio_write64(uint32_t addr, uint64_t val)
+#endif
 {
     if (addr < 0x12000000u || addr > 0x12001FFFu)
         return 0;
@@ -74,10 +91,61 @@ int gs_mmio_write64(uint32_t addr, uint64_t val)
     if (reg) {
         if (addr == 0x12001000u) {
             /* GS_CSR write-1-to-clear semantics for interrupt status. */
+            if(val&1u)game_trace_record(GT_CSR_ACK,(uint32_t)g_gs.csr,(uint32_t)val,(uint32_t)g_gs.imr,0);
             g_gs.csr &= ~(val & 0x1full); /* FIELD is read-only. */
+        } else if(addr==0x12001010u) {
+            /* A masked event stays in CSR. Only a 1->0 mask transition
+             * delivers its pending interrupt; repeated writes do not. */
+            uint64_t unmasked=(*reg & ~val & 0x1f00u)>>8;
+            if(unmasked & g_gs.csr)ee_intc_raise(0);
+            uint64_t next=(val&0x1f00u)|0x6000u;
+            if(*reg!=next)game_trace_record(GT_IMR,(uint32_t)*reg,(uint32_t)next,(uint32_t)g_gs.csr,0);
+            *reg=next;
         } else {
             *reg = val;
         }
     }
     return 1;
+}
+
+#ifdef GEKKO2_WIIU
+int gs_mmio_read64(uint32_t addr, uint64_t *out_val)
+{
+    if (!gs_async_on) return gs_mmio_read64_impl(addr, out_val);
+    /* Like the real GS, CSR/SIGLBLID may lag behind what was just submitted: polling loops see the event
+     * once the worker has processed it. No drain and no lock for reads. */
+    return gs_mmio_read64_impl(addr, out_val);
+}
+int gs_mmio_write64(uint32_t addr, uint64_t val)
+{
+    if (!gs_async_on) return gs_mmio_write64_impl(addr, val);
+    gs_async_lock();
+    const int r = gs_mmio_write64_impl(addr, val);
+    gs_async_unlock(); gs_async_touch();
+    return r;
+}
+#endif
+
+/* Lane-aware narrow accesses. CSR writes are actions: never read/merge
+ * unwritten CSR bits, which would incorrectly acknowledge other events. */
+int gs_mmio_read(uint32_t addr,unsigned bytes,uint64_t *value)
+{
+ if(!value||!(bytes==1u||bytes==2u||bytes==4u||bytes==8u)||
+    (addr&(bytes-1u))||addr<0x12000000u||addr>0x12001fffu)return 0;
+ unsigned lane=addr&15u;uint64_t raw=0;
+ gs_mmio_read64(addr&~15u,&raw);
+ *value=lane>=8u?0u:raw>>(lane*8u);
+ if(bytes<8u)*value&=(UINT64_C(1)<<(bytes*8u))-1u;
+ return 1;
+}
+int gs_mmio_write(uint32_t addr,unsigned bytes,uint64_t value)
+{
+ if(!(bytes==1u||bytes==2u||bytes==4u||bytes==8u)||
+    (addr&(bytes-1u))||addr<0x12000000u||addr>0x12001fffu)return 0;
+ unsigned lane=addr&15u;if(lane>=8u)return 1;
+ uint32_t base=addr&~15u;uint64_t mask=bytes==8u?UINT64_MAX:((UINT64_C(1)<<(bytes*8u))-1u);
+ value=(value&mask)<<(lane*8u);mask<<=lane*8u;
+ if(base==0x12001000u)return gs_mmio_write64(base,value);
+ uint64_t before=0;gs_mmio_read64(base,&before);
+ return gs_mmio_write64(base,(before&~mask)|value);
 }

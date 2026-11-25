@@ -1,0 +1,6 @@
+build/
+*.rpx
+*.elf
+*.wuhb
+*.map
+*.gsh

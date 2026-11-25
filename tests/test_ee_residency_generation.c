@@ -10,5 +10,8 @@ int main(void)
  assert(st->gpr_generation==0&&st->gpr[1].ud0==0x123456789abcdef0ull&&st->gpr[1].ud1==0xfedcba9876543210ull);
  load_context(st,1);assert(st->gpr_generation==1);
  load_context(st,0);assert(st->gpr_generation==1);
+ ee_core_gpr_generation_bump(st);assert(st->gpr_generation==2);
+ st->gpr_generation=0xffffffffu;ee_core_gpr_generation_bump(st);assert(st->gpr_generation==0);
+ ee_core_gpr_generation_bump(NULL);assert(st->gpr_generation==0);
  puts("PASS real EE thread context replacement invalidates resident copies, including generation wrap");return 0;
 }

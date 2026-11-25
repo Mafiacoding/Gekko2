@@ -282,8 +282,14 @@ static void cdrom_boot_kick_complete(void *user_data)
     iop_hle_event_deliver_raw(IOP_CDROM_EVENT_CLASS, 0x8000u);
 }
 
+#ifdef GEKKO2_WIIU
+extern void iop_cdvd_trace_extern(uint8_t kind, uint8_t cmd, uint32_t value); /* Wii U tester diagnostics */
+#endif
 static void dispatch_command(uint8_t cmd)
 {
+#ifdef GEKKO2_WIIU
+    iop_cdvd_trace_extern('L', cmd, 0);
+#endif
     uint8_t *p = g.state.param_fifo;
     int n = g.state.param_count;
 

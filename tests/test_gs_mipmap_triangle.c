@@ -1,15 +1,5 @@
-/* test_gs_mipmap_triangle.c - host-native test for Round 29
- * continued's 14th change: extending Round 28's mipmap support
- * (previously SPRITE-only) to TRIANGLE. See
- * source/hw/gif.c's rasterize_triangle() mip-level-selection block
- * (added this round, mirroring rasterize_sprite()'s own) for the
- * scope/citation - same honest simplifications: per-PRIMITIVE (not
- * per-pixel/trilinear) LOD selection, only MTBA=0 (explicit MIPTBP)
- * is modeled, and the triangle's screen-space BOUNDING BOX
- * (maxx-minx, maxy-miny) stands in for SPRITE's well-defined
- * width/height (a triangle has no single natural "size" the way an
- * axis-aligned SPRITE rectangle does).
- */
+/* Legacy solid-color mip regressions now use explicit LCM/K for UV draws.
+ * Q-based variable LOD and MTBA have independent coverage in test_gs_lod_mtba.c. */
 #include <stdio.h>
 #include <string.h>
 #include "hw/gs_mem.c"
@@ -78,8 +68,8 @@ static void draw_test_triangle(int32_t size)
 
 int main(void)
 {
-    { /* Computed LOD: 64x64 base texture, triangle bounding box 8x8
-       * (ratio 8, log2=3) - must sample mip level 3, not the base. */
+    { /* Fixed K LOD: 64x64 base texture, triangle bounding box 8x8
+       * (K=48/16=3) - must sample mip level 3, not the base. */
         gs_mem_init(); gif_init();
         uint32_t base_bp = 1000, base_bw = 64;
         uint32_t mip3_bp = 5000, mip3_bw = 64;
@@ -100,7 +90,7 @@ int main(void)
         uint32_t tex0_lo = (base_bp & 0x3FFFu) | (((base_bw / 64u) & 0x3Fu) << 14) | (6u << 26) | (2u << 30);
         uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
-        append_ad(buf, &off, (3u << 2) | (2u << 6), 0, GS_REG_TEX1_1); /* MXL=3, MMIN=2 */
+        append_ad(buf, &off, 1u | (3u << 2) | (2u << 6), 48, GS_REG_TEX1_1); /* MXL=3, MMIN=2 */
         uint32_t tbw3_field = mip3_bw / 64u;
         append_ad(buf, &off, 0u, ((mip3_bp & 0x3FFFu) << 8) | ((tbw3_field & 0x3Fu) << 22), GS_REG_MIPTBP1_1);
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
@@ -109,7 +99,7 @@ int main(void)
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 3, 3);
         CHECK(px == mip3_color,
-              "TRIANGLE computed LOD: 64x64 texture, 8x8 bounding box (ratio 8, log2=3) samples mip level 3, not base");
+              "TRIANGLE fixed K LOD: 64x64 texture, 8x8 bounding box (K=48/16=3) samples mip level 3, not base");
     }
 
     { /* MXL clamp: same setup (would compute LOD 3), but MXL=1 - must
@@ -134,7 +124,7 @@ int main(void)
         uint32_t tex0_lo = (base_bp & 0x3FFFu) | (((base_bw / 64u) & 0x3Fu) << 14) | (6u << 26) | (2u << 30);
         uint32_t tex0_hi = (TEX_TFX_DECAL << 3) | 1u;
         append_ad(buf, &off, tex0_lo, tex0_hi, GS_REG_TEX0_1);
-        append_ad(buf, &off, (1u << 2) | (2u << 6), 0, GS_REG_TEX1_1); /* MXL=1 this time */
+        append_ad(buf, &off, 1u | (1u << 2) | (2u << 6), 48, GS_REG_TEX1_1); /* MXL=1 this time */
         uint32_t tbw1_field = mip1_bw / 64u;
         append_ad(buf, &off, (mip1_bp & 0x3FFFu) | ((tbw1_field & 0x3Fu) << 14), 0, GS_REG_MIPTBP1_1);
         gif_process_quadwords(DMA_CHANNEL_GIF, buf, (uint32_t)(off / 16));
@@ -142,7 +132,7 @@ int main(void)
         draw_test_triangle(8);
 
         uint32_t px = gs_mem_read_psmct32(0, 640, 3, 3);
-        CHECK(px == mip1_color, "TRIANGLE MXL clamp: computed LOD 3 clamps down to MXL=1, sampling level 1's buffer");
+        CHECK(px == mip1_color, "TRIANGLE MXL clamp: fixed K LOD 3 clamps down to MXL=1, sampling level 1's buffer");
     }
 
     { /* Magnification (texture SMALLER than the triangle's bounding

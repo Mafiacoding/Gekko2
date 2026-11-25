@@ -1,3 +1,9 @@
+# Integration branch `integration/crash-e3-plus-a15` — 2026-11-08
+
+Created from the preserved Crash E3 runtime (`preserve/crash-e3-vu-runtime-20261108`, `24b69fe`, runtime `e7aae58`) with the PS2Recomp bridge work (A11–A16, `codex/ps2recomp-a16-byte-half`) merged in. Read `docs/CRASH-FIX-PRESERVATION-AND-A15-INTEGRATION.md` first. Never overwrite or simplify the Crash VU timing, GIF SIGNAL backpressure or VIF1 DMA code. `third_party` is deliberately kept byte-identical to the Crash branch (the CRLF-only commit of PR #58 is not part of this branch). Not merged into `main`; no Wii/Dolphin result for this combination.
+
+---
+
 # Current Claude task — PS2Recomp bridge (2026-11-08)
 
 For the active PS2Recomp ↔ Gekko2 workstream, read
@@ -8,6 +14,29 @@ and tests prove it. Work in the dedicated branch
 `codex/ps2recomp-bridge-claude-ready` unless the owner explicitly directs
 otherwise. Start with the source audit and Batch A; do not skip ahead to
 production execution integration.
+
+
+---
+
+# Aktueller Crash-E3-Batch — 20. Oktober 2026
+
+Branch `codex/crash-e3-local-repro`, Runtime `e7aae58`.
+Zuerst [Crash-Reproduktion und VU-Korrektur](docs/CRASH-E3-VU-TIMING.md),
+`AGENTS.md`, `docs/CODEX_HANDOFF.md` und `STATUS.md` lesen.
+Das Disc-Image ist jetzt privat vorhanden. VI-Sprungtiming und CLIP-Latenz
+korrigiert; lokal regulär bis zur Ingame-Szene, keine Wii-/FPS-Freigabe.
+Die folgende ältere Übergabe beschreibt den Stand vor diesem Batch.
+
+---
+
+# Aktueller Claude-Einstieg — 19. Oktober 2026
+
+**Zuerst [aktuelle Übergabe und kopierbaren Arbeitsauftrag](docs/CLAUDE-START-2026-10-19.md) lesen.**
+Branch `codex/loading-refresh-regression`, Runtime `51a9259`. Danach vollständig
+`AGENTS.md`, `docs/CODEX_HANDOFF.md`, `STATUS.md` und die in der Übergabe genannten
+Berichte lesen. Die folgenden älteren R1354-/R1306-Einträge sind Historie und
+ersetzen nicht den aktuellen BETA12.33-Stand. Crash E3 bootet laut letztem
+Owner-Archiv noch nicht bis zum ersten Bild; kein bestätigter Spielfix.
 
 ---
 

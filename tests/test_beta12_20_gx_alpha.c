@@ -40,7 +40,7 @@ int main(void)
               afail==3?0xaa332211u:0x80332211u));
     }
     d.pipeline.afail=3;d.pipeline.fba=1;
-    CHECK(run(vram,&d,0x0abbccddu,0x80u));CHECK(pixel(vram)==0x8a332211u);
+    CHECK(run(vram,&d,0x0abbccddu,0x80u));CHECK(pixel(vram)==0x0a332211u);
     d.pipeline.fba=0;d.pipeline.ate=0;d.coverage.psm=1;
     CHECK(run(vram,&d,0xaabbccddu,0x55u));CHECK(pixel(vram)==0xaa332211u);
     d.coverage.psm=0;d.pipeline.fbmask=0x00ff0000u;

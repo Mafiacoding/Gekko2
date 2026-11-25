@@ -1,6 +1,8 @@
 #include "core/recompiler/cache_profile.h"
+#include "core/recompiler/experimental_options.h"
 #include "core/recompiler/ppc_code_cache.h"
 #include "core/recompiler/dynarec_config.h"
+#include "core/recompiler/native_ppc.h"
 /*
  * ee_jit.c - see include/core/recompiler/ee_jit.h for the full design
  * rationale and safety model. Short version: this compiles single
@@ -75,7 +77,7 @@ _Static_assert(offsetof(ee_state_t, pc) == 544,
                "ppc_dynarec.c's PC_OFFSET assumes pc sits at this exact byte offset");
 /* R1249: pointer-dependent offsets describe the 32-bit PPC ABI only.
  * Host interpreter builds use 64-bit pointers and never execute PPC code. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 /* R1173: direct generated-PPC KSEG0/KSEG1 RAM load fast path. */
 _Static_assert(offsetof(ee_state_t, ram) == 10480, "R1173 RAM_PTR_OFFSET layout mismatch");
 _Static_assert(offsetof(ee_state_t, ram_size) == 10484, "R1173 RAM_SIZE_OFFSET layout mismatch");
@@ -161,7 +163,7 @@ static inline uint32_t ee_jit_l1_index(uint32_t instr)
  * ee_jit_try_execute_one() below (see that function's host-safety-gate
  * comment) - wrapped in #ifdef GEKKO here too so host-native builds
  * (which never call them) don't warn about unused static functions. */
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 
 /* Whether `instr` is one of the MIPS opcodes ppc_dynarec_translate_one()
  * currently supports: ADDIU (op 0x09); SLTI/SLTIU (op 0x0A/0x0B); LUI
@@ -341,7 +343,7 @@ static int ee_jit_opcode_supported(uint32_t instr)
                 return 1; /* MADD.S / MSUB.S (Round 906) */
             if (funct == 0x1Eu || funct == 0x1Fu)
                 return 1; /* MADDA.S / MSUBA.S (Round 906) */
-            if (funct == 0x32u || funct == 0x34u || funct == 0x36u)
+            if (funct == 0x30u || funct == 0x32u || funct == 0x34u || funct == 0x36u)
                 return 1; /* C.EQ.S / C.LT.S / C.LE.S (Round 906) */
             if (funct == 0x24u)
                 return 1; /* CVT.W.S (Round 906b) */
@@ -395,12 +397,11 @@ static int ee_jit_opcode_supported(uint32_t instr)
          * was being compiled correctly by translate_one() but was NEVER
          * actually reached on real GEKKO hardware, unconditionally
          * falling back to the interpreter for every single MMI
-         * instruction a real game/BIOS executes. A handful of rare MMI
-         * opcodes remain genuinely unimplemented by design (MADD/MADDU/
-         * MADD1/MADDU1, MULT1/MULTU1/DIV1/DIVU1, QFSRV) - those
-         * safely fall through translate_one()'s own `return -1` and the
-         * same fallback path as every other not-yet-supported opcode
-         * project-wide, same safety argument as op==0x12 above. */
+         * instruction a real game/BIOS executes. This historical gate
+         * now reaches all 103 audited MMI forms, including the later
+         * MADD, HI1/LO1 and QFSRV implementations. Reserved encodings
+         * still decline in translate_one(); acceptance alone does not
+         * establish architectural or hardware correctness. */
         return 1;
     }
     if (op == 0x00u) {
@@ -475,7 +476,7 @@ static int ee_jit_resolve_and_execute(ee_state_t *st, uint32_t instr, ppc_block_
 {
     if (out_rejected) *out_rejected = 0;
     if(!gekko2_opt_enabled(GEKKO2_OPT_EE_JIT))return 0;
-#if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
+#if !defined(GEKKO2_NATIVE_PPC) || defined(PCSX2WII_JIT_DISABLE)
     /* Round 887 host-safety gate: ppc_dynarec.c generates raw PPC750
      * machine code, and the block below CALLS it as a function
      * pointer. This project's regression/test suite builds and runs
@@ -581,7 +582,7 @@ static int ee_jit_resolve_and_execute(ee_state_t *st, uint32_t instr, ppc_block_
      * see ppc_dynarec.h's own header comment, which explicitly names
      * this exact cast as the intended zero-copy integration path. */
     if (out_fn) *out_fn = fn;
-    fn((ppc_dynarec_gpr128_t *)&st->gpr[0]);
+    CG_EXEC_VOID(fn((ppc_dynarec_gpr128_t *)&st->gpr[0]));
     g_jit_executed++;
     return 1;
 #endif /* GEKKO */
@@ -594,7 +595,7 @@ int ee_jit_try_execute_one(ee_state_t *st, uint32_t instr)
 
 int ee_jit_try_execute_one_at(ee_state_t *st, uint32_t pc, uint32_t instr)
 {
-#if !defined(GEKKO) || defined(PCSX2WII_JIT_DISABLE)
+#if !defined(GEKKO2_NATIVE_PPC) || defined(PCSX2WII_JIT_DISABLE)
     (void)pc;
     return ee_jit_resolve_and_execute(st, instr, NULL, NULL);
 #else
@@ -607,7 +608,7 @@ int ee_jit_try_execute_one_at(ee_state_t *st, uint32_t pc, uint32_t instr)
      * exact-word validation, including self-modifying guest code. */
     if (e->pc == pc && e->instr == instr) {
         if (e->fn) {
-            e->fn((ppc_dynarec_gpr128_t *)&st->gpr[0]);
+            CG_EXEC_VOID(e->fn((ppc_dynarec_gpr128_t *)&st->gpr[0]));
             g_pc_l0_hits++;
             g_jit_executed++;
             return 1;
@@ -681,6 +682,10 @@ typedef struct {
  unsigned (*event_fn)(ee_state_t *,unsigned);
  unsigned event_eligibility; /* 0 untested, 1 decline, length+2 eligible prefix */
  ee_prefix_fn prefix_fn; /* Same validated owner/source; independent bounded body. */
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ ee_precise_fn resident_fn;
+ unsigned resident_tested;
+#endif
 } ee_precise_slot;
 /* Metadata capacity is independent of the 6 MiB executable-code arena.
  * Reuse keeps 16384 owners; Control retains 256 direct-mapped entries. */
@@ -711,7 +716,7 @@ typedef struct {
  uint32_t pc,count,page,generation,mapping,serial,word;
  ee_precise_fn fn;
 } ee_precise_dispatch;
-#ifdef GEKKO
+#ifdef GEKKO2_NATIVE_PPC
 _Static_assert(sizeof(ee_precise_dispatch)==32u,"Broadway dispatch tag must fit one cache line");
 #endif
 static ee_precise_dispatch precise_dispatch[EE_PRECISE_CACHE_SLOTS] __attribute__((aligned(32)));
@@ -773,7 +778,7 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
   precise_budget_stats[4]++;
   return gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX)&&refusal->owner?&precise_cache[refusal->owner-1u]:NULL;
  }
- ee_precise_slot *best=NULL,*prefix=NULL;unsigned largest=0;
+ ee_precise_slot *best=NULL,*prefix=NULL;unsigned largest=0,upper=UINT32_MAX;
  precise_budget_stats[7]++;
  for(unsigned w=0;w<ways;w++) {
   unsigned index=set+w*stride;
@@ -781,17 +786,17 @@ static ee_precise_slot *ee_precise_find(uint32_t pc,int install,unsigned budget)
   if(!tag->fn||tag->pc!=pc)continue;
   if(ways==1u)return &precise_cache[index];
   if(tag->count>largest)largest=tag->count;
-  if(tag->count>budget&&(!prefix||tag->count<prefix->count))prefix=&precise_cache[index];
+  if(tag->count>budget){
+   if(tag->count-1u<upper)upper=tag->count-1u;
+   if(!prefix||tag->count<prefix->count)prefix=&precise_cache[index];
+  }
   if(tag->count<=budget&&(!best||tag->count>precise_dispatch[best-precise_cache].count))
    best=&precise_cache[index];
  }
  if(best){
   unsigned fit=best->count<largest;
-  unsigned upper=UINT32_MAX;
-  for(unsigned w=0;w<ways;w++){
-   const ee_precise_dispatch *tag=&precise_dispatch[set+w*stride];
-   if(tag->fn&&tag->pc==pc&&tag->count>best->count&&tag->count-1u<upper)upper=tag->count-1u;
-  }
+  /* best is the largest count <= budget. Every larger owner is therefore
+   * already among the >budget tags seen above; no second four-way pass. */
   *lookup=(ee_precise_lookup){pc,best->count,stride,(unsigned)(best-precise_cache)+1u,fit,upper};
   if(install&&fit)precise_budget_stats[0]++;return best;
  }
@@ -858,6 +863,9 @@ static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
  if(!old)precise_live_owners++;
  ee_prefix_fn old_prefix=slot->prefix_fn;
  void *old_event=(void*)slot->event_fn;
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ void *old_resident=(void*)slot->resident_fn;
+#endif
  int displaced=old&&(slot->pc!=pc||slot->count!=count||
                     memcmp(slot->words,words,count*4u)!=0);
  *slot=next;
@@ -865,6 +873,9 @@ static int ee_precise_install_slot(ee_precise_slot *slot,uint32_t pc,
  if(old&&old!=fn){if(displaced)precise_evictions++;ppc_code_cache_release((void*)old);}
  if(old_prefix)ppc_code_cache_release((void*)old_prefix);
  if(old_event)ppc_code_cache_release(old_event);
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(old_resident)ppc_code_cache_release(old_resident);
+#endif
  return 1;
 }
 static void ee_precise_release_slot(ee_precise_slot *slot)
@@ -876,6 +887,9 @@ static void ee_precise_release_slot(ee_precise_slot *slot)
  if(slot->fn){ppc_code_cache_release((void*)slot->fn);precise_live_owners--;}
  if(slot->prefix_fn)ppc_code_cache_release((void*)slot->prefix_fn);
  if(slot->event_fn)ppc_code_cache_release((void*)slot->event_fn);
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(slot->resident_fn)ppc_code_cache_release((void*)slot->resident_fn);
+#endif
  memset(&precise_dispatch[slot-precise_cache],0,sizeof(precise_dispatch[0]));
  memset(slot,0,sizeof(*slot));
 }
@@ -946,6 +960,25 @@ uint64_t ee_jit_get_block_evictions(void){return precise_evictions;}
 uint64_t ee_jit_get_direct_link_hits(void){return precise_direct_link_hits;}
 typedef unsigned (*ee_cached_chain_fn)(ee_state_t *,unsigned,uint32_t,unsigned,ee_precise_fn,unsigned);
 static ee_cached_chain_fn precise_chain_fn;
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+static ee_cached_chain_fn precise_resident_chain_fn;
+/* First eligible block chooses actual architectural groups. The map is
+ * then frozen for all companions/wrappers until the entire cache resets. */
+static ppc_ee_chain_map precise_resident_map;
+static unsigned precise_resident_map_ready;
+static uint64_t precise_resident_runs,precise_resident_retired,precise_resident_selected;
+#endif
+uint64_t ee_jit_get_chain_residency_stat(unsigned n)
+{
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ return n==0?(unsigned)(gekko2_experimental_enabled(GEKKO2_EXP_CHAIN)&&
+  gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)&&gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)&&
+  gekko2_opt_enabled(GEKKO2_OPT_NATIVE_LINKS)&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY)):
+  n==1?precise_resident_runs:n==2?precise_resident_retired:n==3?precise_resident_selected:0;
+#else
+ (void)n;return 0;
+#endif
+}
 typedef unsigned (*ee_event_chain_fn)(ee_state_t *,unsigned,void *,unsigned);
 static ee_event_chain_fn precise_event_chain_fn;
 static uint64_t precise_event_chain_runs,precise_event_chain_retired,precise_event_chain_selected;
@@ -1052,6 +1085,29 @@ static uint64_t ee_precise_event_next(ee_state_t *st,unsigned remaining)
  ee_precise_touch(index);precise_event_chain_selected++;
  return ((uint64_t)(uint32_t)(uintptr_t)slot->event_fn<<32)|slot->count;
 }
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+static uint64_t ee_precise_resident_next(ee_state_t *st,unsigned remaining)
+{
+ /* Reuse the authoritative resolver, including interleave accounting,
+  * serial/source/page/mapping/PC/budget/fault checks and active-owner pinning.
+  * It selects a normal identity; only its matching native-only companion
+  * may cross this ABI edge. A missing companion returns to C, never calls
+  * the normal C entry with live guest registers. */
+ uint64_t next=ee_precise_cached_next(st,remaining);
+ if(!next||!precise_chain_source||!precise_chain_source->resident_fn)return 0;
+ precise_resident_selected++;
+ return ((uint64_t)(uint32_t)(uintptr_t)precise_chain_source->resident_fn<<32)|(uint32_t)next;
+}
+static void ee_precise_make_resident_chain(void)
+{
+ if(precise_resident_chain_fn)return;
+ ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,2u))return;
+ if(ppc_dynarec_translate_ee_resident_chain(&c,(uint32_t)(uintptr_t)ee_precise_resident_next,
+                                          &precise_resident_map)){ppc_dynarec_free(&c);return;}
+ precise_resident_chain_fn=(ee_cached_chain_fn)ppc_dynarec_finalize(&c);
+ if(!precise_resident_chain_fn)ppc_dynarec_free(&c);
+}
+#endif
 static void ee_precise_make_event_chain(void)
 {
  if(precise_event_chain_fn)return;
@@ -1149,6 +1205,40 @@ static ee_precise_fn ee_precise_build(uint32_t pc,const uint32_t *words,unsigned
  if(!fn)precise_profile.failures++;else precise_profile.installed++;
  return fn;
 }
+#if defined(GEKKO2_EE_CHAIN_RESIDENCY) && GEKKO2_EE_BLOCKS_ENABLED
+static void ee_precise_make_resident(ee_precise_slot *slot)
+{
+ if(precise_active||slot->resident_tested)return;
+ slot->resident_tested=1;
+ if(!precise_resident_map_ready){
+  if(ppc_dynarec_plan_ee_chain_map(slot->words,slot->count,
+     offsetof(ee_state_t,gpr_generation),&precise_resident_map))return;
+  precise_resident_map_ready=1;
+ }
+ ppc_codegen_ctx_t c;if(ppc_dynarec_init(&c,slot->count*2u))return;
+#ifdef GEKKO2_LEGACY_BOUNDARIES
+ int translation=ppc_dynarec_translate_ee_chain_block(&c,slot->pc,slot->words,slot->count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_delay,
+    (uint32_t)(uintptr_t)ee_core_block_commit,&precise_resident_map);
+#else
+ int translation=ppc_dynarec_translate_ee_fused_chain_block(&c,slot->pc,slot->words,slot->count,
+    (uint32_t)(uintptr_t)ee_core_block_prepare,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_memory_resolved,
+    (uint32_t)(uintptr_t)ee_core_block_prepare_delay,
+    (uint32_t)(uintptr_t)ee_core_block_commit,
+    (uint32_t)(uintptr_t)ee_core_block_boundary,
+    (uint32_t)(uintptr_t)ee_core_block_memory_boundary,
+    (uint32_t)(uintptr_t)ee_core_block_delay_boundary,&precise_resident_map);
+#endif
+ if(translation||!ee_precise_make_room((c.used_words+1u)*4u,slot)){
+  ppc_dynarec_free(&c);return;
+ }
+ slot->resident_fn=(ee_precise_fn)ppc_dynarec_finalize(&c);
+ if(!slot->resident_fn)ppc_dynarec_free(&c);
+}
+#endif
 static ee_prefix_fn ee_precise_build_prefix(const ee_precise_slot *slot)
 {
  if(!ee_precise_compile_admitted())return 0;
@@ -1249,17 +1339,28 @@ unsigned ee_jit_hotpc_top(uint32_t *pcs,uint32_t *runs,uint64_t *ret,unsigned ma
 #else
 #define EE_HOTPC_NOTE(pc,n) ((void)0)
 #endif
+#ifdef GEKKO2_WIIU
+/* Wii U tester diagnostics, why a native block was not executed:
+ * 0 gate visits, 1 not a candidate, 2 no direct code backing, 3 backing outside RAM >= 1 MiB / BIOS,
+ * 4 block path returned 0, 5 block path ran, 6 precondition, 7 quantum < 2, 8 first-instruction admission,
+ * 9 no slot, 10 fewer than 2 instructions, 11 source snapshot, 12 build/install failed, 13 prefix,
+ * 14 first word/prepare mismatch, 15 native code retired 0. */
+uint64_t gekko2_wiiu_block_diag[16];
+#define G2BD(i) (gekko2_wiiu_block_diag[(i)]++)
+#else
+#define G2BD(i) ((void)0)
+#endif
 static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetched,uint32_t first_word,int native_chain)
 {
 #ifdef GEKKO2_SPEED_STUB
  ee_quiet_left=0u;
 #endif
 #if GEKKO2_EE_BLOCKS_ENABLED
- if(!st||budget<2u||st->halted||st->idle||st->exc_raised_this_step||st->mem_tlb_miss||st->branch_pending||st->next_pc!=st->pc+4u||precise_active)return 0;
- if(!gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)||!gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS))return 0;
+ if(!st||budget<2u||st->halted||st->idle||st->exc_raised_this_step||st->mem_tlb_miss||st->branch_pending||st->next_pc!=st->pc+4u||precise_active){G2BD(6);return 0;}
+ if(!gekko2_opt_enabled(GEKKO2_OPT_EE_JIT)||!gekko2_opt_enabled(GEKKO2_OPT_EE_BLOCKS)){G2BD(6);return 0;}
  native_chain &= gekko2_opt_enabled(GEKKO2_OPT_NATIVE_LINKS);
  unsigned quantum_budget=ee_core_interleave_limit(budget);
- if(quantum_budget<2u)return 0;
+ if(quantum_budget<2u){G2BD(7);return 0;}
  uint32_t pc=st->pc,words[GEKKO2_EE_MAX_BLOCK_WORDS];
  unsigned maximum=gekko2_opt_enabled(GEKKO2_OPT_LONG_EE_BLOCKS)?GEKKO2_EE_MAX_BLOCK_WORDS:8u;
  unsigned count=0,limit=quantum_budget<maximum?quantum_budget:maximum;
@@ -1269,16 +1370,16 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
  uint32_t admitted_physical=0;
  int admitted=gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES);
  if(admitted) {
-  if(!fetched&&!ee_core_block_peek(st,pc,&first_word))return 0;
-  if(!ee_jit_block_candidate(first_word)&&!ee_jit_block_terminal(first_word))return 0;
+  if(!fetched&&!ee_core_block_peek(st,pc,&first_word)){G2BD(8);return 0;}
+  if(!ee_jit_block_candidate(first_word)&&!ee_jit_block_terminal(first_word)){G2BD(8);return 0;}
   if(ee_jit_block_memory_width(first_word)) {
    admitted_physical=ee_core_block_memory_resolve_precise(st,first_word);
-   if(!admitted_physical)return 0;
+   if(!admitted_physical){G2BD(8);return 0;}
   }
  }
  ee_precise_slot *slot=ee_precise_find(pc,1,quantum_budget);
  precise_profile.lookups++;
- if(!slot){precise_profile.misses++;return 0;}
+ if(!slot){precise_profile.misses++;G2BD(9);return 0;}
  /* The emitted prepare callback validates live mapping/encoding before
   * EACH instruction. A warm entry needs no duplicate full-block scan. */
  int grow=slot->fn&&slot->pc==pc&&slot->formation_limit&&slot->count==slot->formation_limit&&
@@ -1297,14 +1398,14 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   }
   if(!ee_jit_block_candidate(words[count]))break;
  }
- if(count<2u)return 0;
+ if(count<2u){G2BD(10);return 0;}
  uint32_t source_page,source_generation;
- if(!ee_precise_source_snapshot(st,pc,&source_page,&source_generation))return 0;
+ if(!ee_precise_source_snapshot(st,pc,&source_page,&source_generation)){G2BD(11);return 0;}
  uint32_t mapping_generation=precise_mapping_generation;
  if(!slot->fn||slot->pc!=pc||slot->count!=count||memcmp(slot->words,words,count*4u)) {
-  ee_precise_fn fn=ee_precise_build(pc,words,count,slot);if(!fn)return 0;
+  ee_precise_fn fn=ee_precise_build(pc,words,count,slot);if(!fn){G2BD(12);return 0;}
   if(!ee_precise_install_slot(slot,pc,words,count,source_page,source_generation,mapping_generation,fn)) {
-   ppc_code_cache_release((void*)fn);return 0;
+   ppc_code_cache_release((void*)fn);G2BD(12);return 0;
   }
   slot->formation_limit=formation_limit;
  } else {
@@ -1316,7 +1417,14 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
   ee_precise_publish_dispatch(slot);
  }
 execute_slot:;
- if(gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)){
+ int resident_chain=0;
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(gekko2_experimental_enabled(GEKKO2_EXP_CHAIN)&&native_chain&&gekko2_opt_enabled(GEKKO2_OPT_RESIDENCY)&&slot->count<=quantum_budget&&slot->count+2u<=budget){
+  ee_precise_make_resident(slot);
+  if(slot->resident_fn){ee_precise_make_resident_chain();resident_chain=precise_resident_chain_fn!=0;}
+ }
+#endif
+ if(!resident_chain&&gekko2_opt_enabled(GEKKO2_OPT_NATIVE_EVENTS)&&gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES)){
   ee_precise_make_event(slot,quantum_budget);
   /* The prepare callback caps retirement at the current event deadline.
    * Execute the safe prefix; leave the following helper/store precise. */
@@ -1326,7 +1434,7 @@ execute_slot:;
    int event_chain=native_chain&&precise_event_chain_fn&&budget>=event_count+2u;
    precise_chain_source=event_chain?slot:0;precise_chain_source_serial=event_chain?slot->serial:0;
    precise_active=1;precise_accounted_remaining=budget;
-   unsigned retired=event_chain?precise_event_chain_fn(st,budget,(void*)slot->event_fn,event_count):slot->event_fn(st,quantum_budget);
+   unsigned retired=CG_EXEC(event_chain?precise_event_chain_fn(st,budget,(void*)slot->event_fn,event_count):slot->event_fn(st,quantum_budget));
    if(event_chain){
     if(ee_core_interleave_quantum!=UINT32_MAX)ee_core_interleave_account(precise_accounted_remaining-(budget-retired));
     if(retired){precise_event_chain_runs++;precise_event_chain_retired+=retired;}
@@ -1337,32 +1445,39 @@ execute_slot:;
  }
  int prefix=slot->count>quantum_budget;
  if(prefix) {
-  if(!gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX))return 0;
+  if(!gekko2_opt_enabled(GEKKO2_OPT_EE_PREFIX)){G2BD(13);return 0;}
   if(!slot->prefix_fn)slot->prefix_fn=ee_precise_build_prefix(slot);
-  if(!slot->prefix_fn)return 0;
+  if(!slot->prefix_fn){G2BD(13);return 0;}
  }
  ee_precise_touch((unsigned)(slot-precise_cache));
  uint32_t first_physical=admitted_physical;
  if(fetched||admitted) {
-  if(slot->words[0]!=first_word)return 0;
+  if(slot->words[0]!=first_word){G2BD(14);return 0;}
   /* The scalar fetch already happened, but preparation must wait until
    * a first memory operation proves its current direct-RAM address. */
   if(!admitted&&ee_jit_block_memory_width(first_word)) {
    first_physical=ee_core_block_memory_resolve_precise(st,first_word);
-   if(!first_physical)return 0;
+   if(!first_physical){G2BD(14);return 0;}
   }
-  if(!ee_core_block_prepare_fetched(st,pc))return 0;
+  if(!ee_core_block_prepare_fetched(st,pc)){G2BD(14);return 0;}
   fetched=1u; /* Reuse the admitted fetch/address in the native entry. */
  }
- if(!prefix&&native_chain&&slot->count+2u<=budget)ee_precise_make_chain();
- int use_chain=!prefix&&native_chain&&precise_chain_fn&&slot->count+2u<=budget;
+ if(!resident_chain&&!prefix&&native_chain&&slot->count+2u<=budget)ee_precise_make_chain();
+ int use_chain=resident_chain||(!prefix&&native_chain&&precise_chain_fn&&slot->count+2u<=budget);
  precise_chain_source=use_chain?slot:0;
  precise_chain_source_serial=use_chain?slot->serial:0;
  precise_active=1;
  precise_accounted_remaining=budget;
- unsigned n=prefix?slot->prefix_fn(st,fetched,first_physical,quantum_budget):use_chain?
+ unsigned n;
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(resident_chain){
+  n=CG_EXEC(precise_resident_chain_fn(st,fetched,first_physical,budget,slot->resident_fn,slot->count));
+  precise_resident_runs++;precise_resident_retired+=n;
+ } else
+#endif
+ n=CG_EXEC(prefix?slot->prefix_fn(st,fetched,first_physical,quantum_budget):use_chain?
   precise_chain_fn(st,fetched,first_physical,budget,slot->fn,slot->count):
-  slot->fn(st,fetched,first_physical);
+  slot->fn(st,fetched,first_physical));
  if(ee_core_interleave_quantum!=UINT32_MAX)ee_core_interleave_account(precise_accounted_remaining-(budget-n));
  precise_active=0;
  precise_chain_source=0;precise_chain_source_serial=0;
@@ -1370,7 +1485,7 @@ execute_slot:;
  if(prefix){precise_budget_stats[6]++;precise_budget_stats[7]+=n;}
  /* Changed first word/mapping: release only after the native function
   * returns. The scalar path handles this instruction; later visits retry. */
- if(!n)ee_precise_release_slot(slot);
+ if(!n){G2BD(15);ee_precise_release_slot(slot);}
  return n;
 #else
  (void)st;(void)budget;(void)fetched;(void)first_word;(void)native_chain;return 0;
@@ -1418,6 +1533,12 @@ static void ee_precise_reset_cache(void)
  if(precise_quiet_stub){ppc_dynarec_set_ee_quiet_stub(0,0);ppc_dynarec_set_ee_quiet_mem_stub(0);ppc_dynarec_set_ee_quiet_batch_stub(0);if(precise_quiet_batch_stub){ppc_code_cache_release(precise_quiet_batch_stub);precise_quiet_batch_stub=0;}if(precise_quiet_mem_stub){ppc_code_cache_release(precise_quiet_mem_stub);precise_quiet_mem_stub=0;}ppc_code_cache_release(precise_quiet_stub);precise_quiet_stub=0;}
 #endif
  if(precise_chain_fn)ppc_code_cache_release((void*)precise_chain_fn);
+#ifdef GEKKO2_EE_CHAIN_RESIDENCY
+ if(precise_resident_chain_fn)ppc_code_cache_release((void*)precise_resident_chain_fn);
+ precise_resident_chain_fn=0;
+ precise_resident_map_ready=0;memset(&precise_resident_map,0,sizeof precise_resident_map);
+ precise_resident_runs=precise_resident_retired=precise_resident_selected=0;
+#endif
  if(precise_event_chain_fn)ppc_code_cache_release((void*)precise_event_chain_fn);
  precise_event_chain_fn=0;precise_event_chain_runs=precise_event_chain_retired=precise_event_chain_selected=0;
  precise_chain_fn=0;precise_native_successors=0;precise_direct_link_hits=0;

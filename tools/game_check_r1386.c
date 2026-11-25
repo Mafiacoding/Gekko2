@@ -19,6 +19,8 @@
 #include "core/recompiler/optimization.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <ctype.h>
 #include "core/hw/gs_mem.h"
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/iop_sio2.h"
@@ -48,8 +50,14 @@ extern void ee_core_get_r1252_fault(uint32_t out[112]);
 int main(int argc,char **argv)
 {
  if(argc<4){fprintf(stderr,"usage: %s BIOS ISO IOP-million-slices [private-checkpoint]\n",argv[0]);return 2;}setvbuf(stdout,0,_IOLBF,0);
- if(getenv("GEKKO2_OPTIONS"))gekko2_optimization_mask=strtoul(getenv("GEKKO2_OPTIONS"),NULL,16);
- extern uint32_t gekko2_optimization_mask;gekko2_optimization_mask|=GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_IDLE_BATCH)|GEKKO2_OPT_BIT(GEKKO2_OPT_EVENT_SCHEDULER);
+ const char *options=getenv("GEKKO2_OPTIONS");
+ if(options){
+  char *end;errno=0;unsigned long mask=strtoul(options,&end,16);
+  if(!*options||isspace((unsigned char)*options)||*options=='-'||*options=='+'||
+     errno||*end||mask>UINT32_MAX){fprintf(stderr,"Invalid GEKKO2_OPTIONS mask\n");return 2;}
+  gekko2_optimization_mask=(uint32_t)mask;
+ }
+ printf("OPTIONS mask=%08x forced_scheduler_bits=0 host_PPC_execution=0\n",gekko2_optimization_mask);
  bios_image_t bios;if(bios_load(argv[1],&bios)||system_init(&bios,&bios))return 3;
  if(argv[2][0]!='-'){
   iso_image_t disc;iso_dirent_t cnf;uint8_t bytes[2049];
@@ -64,6 +72,7 @@ int main(int argc,char **argv)
  }
  const char *resume=getenv("GEKKO2_RESUME");if(resume&&checkpoint_load(resume,&bios,&bios,argv[2]))return 8;
  const char *dir=getenv("GEKKO2_CAPTURE"),*control=getenv("GEKKO2_INPUT"),*plan=getenv("GEKKO2_PAD_PLAN");
+ if(control||plan)iop_sio2_pad_connect();
  unsigned slices=strtoul(argv[3],0,0);
  clock_t start=clock();
  for(unsigned n=0;n<slices;n++){
@@ -113,7 +122,9 @@ int main(int argc,char **argv)
  extern uint64_t ee_quiet_arms,ee_quiet_arm_zero,ee_quiet_hits,ee_speed_retire_stats[2],ee_arm_why[12];printf("QUIET arms=%llu zero=%llu hits=%llu retire_lite=%llu full=%llu why:",(unsigned long long)ee_quiet_arms,(unsigned long long)ee_quiet_arm_zero,(unsigned long long)ee_quiet_hits,(unsigned long long)ee_speed_retire_stats[0],(unsigned long long)ee_speed_retire_stats[1]);for(int q=0;q<12;q++)printf(" %llu",(unsigned long long)ee_arm_why[q]);printf("\n");
 #endif
  }
+#ifdef GEKKO2_IDLE_SKIP
  {extern uint64_t ee_spin_stats[4];printf("SPIN hashes=%llu confirmed=%llu skips=%llu slots=%llu\n",(unsigned long long)ee_spin_stats[0],(unsigned long long)ee_spin_stats[1],(unsigned long long)ee_spin_stats[2],(unsigned long long)ee_spin_stats[3]);}
+#endif
  {extern uint64_t system_event_stat(unsigned);for(int q=0;q<5;q++)printf("EVSTAT%d=%llu\n",q,(unsigned long long)system_event_stat(q));}
  {extern uint64_t ee_event_deadline_stats[8];printf("DEADLINE");for(int q=0;q<8;q++)printf(" %llu",(unsigned long long)ee_event_deadline_stats[q]);printf("\n");}
  printf("IOP_TICKS=%llu\n",(unsigned long long)i->sched_ticks);

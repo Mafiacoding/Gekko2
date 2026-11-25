@@ -2,6 +2,7 @@
  * iop_cdvd.c - see include/core/hw/iop_cdvd.h for scope notes.
  */
 #include "core/hw/iop_cdvd.h"
+#include "core/iop_async.h"
 #include "core/hw/iop_dma.h"   /* Round 206: iop_dma_channel_write_bytes() */
 #include "core/hw/iop_intc.h"  /* Round 206: real IRQ2 raise (shared with legacy CD-ROM, iop_cdrom_legacy.c) */
 #include <string.h>
@@ -79,6 +80,9 @@ static int     g_sresult_pos;
  * a FURTHER N-command/S-command after its first on-screen frame, or
  * has it stopped calling into this file entirely (in which case the
  * stall is upstream of CDVD dispatch, not inside it). */
+#ifdef GEKKO2_WIIU
+static uint32_t g_cdvd_trace_n;
+#endif
 static uint64_t g_ncmd_call_count;
 static uint64_t g_scmd_call_count;
 static uint8_t  g_last_ncmd_issued;
@@ -110,6 +114,9 @@ void iop_cdvd_init(void)
     g_scmd_call_count = 0;
     g_last_ncmd_issued = 0;
     g_last_scmd_issued = 0;
+#ifdef GEKKO2_WIIU
+    g_cdvd_trace_n = 0;
+#endif
     /* Round 206: deliberately does NOT touch g_disc_mounted/g_disc -
      * mirrors iop_cdrom_legacy_init()'s own precedent of resetting
      * register state on init while leaving disc-mount state to the
@@ -190,6 +197,7 @@ int iop_cdvd_rebind_iso(const char *path)
  * genuinely contains the requested name. */
 int iop_cdvd_disc_find_file(const char *name, uint32_t *out_lba, uint32_t *out_size)
 {
+    G2_EE_CALLS_IOP();
     iso_dirent_t dirent;
     if (!g_disc_mounted) return 0;
     if (iso_find_path(&g_disc, name, &dirent) != 0) return 0; /* iso_find_in_root() returns 0 on success, -1 on failure - matches iso_open()'s own documented convention */
@@ -201,6 +209,7 @@ int iop_cdvd_disc_find_file(const char *name, uint32_t *out_lba, uint32_t *out_s
 
 int iop_cdvd_disc_read_sector(uint32_t lba, uint8_t *buf)
 {
+    G2_EE_CALLS_IOP();
     if (!g_disc_mounted) return -1;
     return iso_read_sector(&g_disc, lba, buf);
 }
@@ -247,12 +256,68 @@ void iop_cdvd_checkpoint_load(const iop_cdvd_checkpoint_t *in)
 
 /* Round 206: real N-command dispatch, run when OFF_NCMD is written.
  * See iop_cdvd.h's citation for exact real semantics/scope. */
+#ifdef GEKKO2_WIIU
+/* Wii U tester diagnostics: the last 64 CDVD commands (N/S, command byte, up to 8 parameter bytes), so a session
+ * log shows the command a game hangs after. Observation only. */
+static struct { uint8_t kind, cmd, nparam, param[8]; } g_cdvd_trace[64];
+static void cdvd_trace(uint8_t kind, uint8_t cmd)
+{
+    unsigned i = g_cdvd_trace_n++ % 64u, n = g_param_count < 8u ? g_param_count : 8u;
+    g_cdvd_trace[i].kind = kind;
+    g_cdvd_trace[i].cmd = cmd;
+    g_cdvd_trace[i].nparam = (uint8_t)g_param_count;
+    for (unsigned k = 0; k < 8u; k++) g_cdvd_trace[i].param[k] = k < n ? g_param_buf[k] : 0u;
+}
+uint32_t iop_cdvd_trace_count(void) { return g_cdvd_trace_n; }
+/* Other disc paths: 'L' legacy CD-ROM command, 'R' sector read (lba in the parameters). Consecutive sector reads
+ * are merged into one entry with a count, so a file read does not flush the command history. */
+void iop_cdvd_trace_extern(uint8_t kind, uint8_t cmd, uint32_t value)
+{
+    if (kind == 'R' && g_cdvd_trace_n) {
+        const unsigned last = (g_cdvd_trace_n - 1u) % 64u;
+        uint32_t lba = 0, cnt = 0;
+        for (unsigned k = 0; k < 4u; k++) lba |= (uint32_t)g_cdvd_trace[last].param[k] << (8u * k);
+        for (unsigned k = 0; k < 4u; k++) cnt |= (uint32_t)g_cdvd_trace[last].param[4u + k] << (8u * k);
+        if (g_cdvd_trace[last].kind == 'R' && lba + cnt == value) {
+            cnt++;
+            for (unsigned k = 0; k < 4u; k++) g_cdvd_trace[last].param[4u + k] = (uint8_t)(cnt >> (8u * k));
+            return;
+        }
+    }
+    const unsigned i = g_cdvd_trace_n++ % 64u;
+    g_cdvd_trace[i].kind = kind;
+    g_cdvd_trace[i].cmd = cmd;
+    g_cdvd_trace[i].nparam = kind == 'R' ? 8u : 0u;
+    for (unsigned k = 0; k < 4u; k++) g_cdvd_trace[i].param[k] = (uint8_t)(value >> (8u * k));
+    for (unsigned k = 4u; k < 8u; k++) g_cdvd_trace[i].param[k] = k == 4u && kind == 'R' ? 1u : 0u;
+}
+/* Entry number seq (0-based, must be within the last 64): "N06 p=00 01 00 00 10 00 00 00" style text. */
+int iop_cdvd_trace_text(uint32_t seq, char *out, unsigned size)
+{
+    if (!out || !size || seq >= g_cdvd_trace_n || g_cdvd_trace_n - seq > 64u) return 0;
+    const unsigned i = seq % 64u;
+    if (g_cdvd_trace[i].kind == 'R') {
+        uint32_t lba = 0, cnt = 0;
+        for (unsigned k = 0; k < 4u; k++) lba |= (uint32_t)g_cdvd_trace[i].param[k] << (8u * k);
+        for (unsigned k = 0; k < 4u; k++) cnt |= (uint32_t)g_cdvd_trace[i].param[4u + k] << (8u * k);
+        snprintf(out, size, "R%u+%u", (unsigned)lba, (unsigned)cnt);
+        return 1;
+    }
+    int k = snprintf(out, size, "%c%02X/%u", g_cdvd_trace[i].kind, g_cdvd_trace[i].cmd, g_cdvd_trace[i].nparam);
+    for (unsigned j = 0; j < 8u && j < g_cdvd_trace[i].nparam && k > 0 && (unsigned)k + 4u < size; j++)
+        k += snprintf(out + k, size - (unsigned)k, "%s%02x", j ? " " : ":", g_cdvd_trace[i].param[j]);
+    return 1;
+}
+#endif
 static void dispatch_ncmd(uint8_t cmd)
 {
     uint8_t irq_bits = ISTAT_COMMAND_COMPLETE; /* every real N-command raises this per ps2tek's "All N commands raise IRQ2" preamble */
 
     g_ncmd_call_count++; /* Round 732 - see field comment */
     g_last_ncmd_issued = cmd;
+#ifdef GEKKO2_WIIU
+    cdvd_trace('N', cmd);
+#endif
 
     if (cmd == NCMD_READCD || cmd == NCMD_READDVD) {
         if (g_disc_mounted && g_param_count >= 8) {
@@ -272,6 +337,9 @@ static void dispatch_ncmd(uint8_t cmd)
              * path, so this only bounds the LOOP, it doesn't fake a
              * specific real error code. */
             if (count > 4096u) count = 4096u;
+#ifdef G2_VU0_TRACE
+            { extern void g2_cd_read_hook(uint8_t cmd,uint32_t sector,uint32_t count,const uint8_t *params,unsigned n); g2_cd_read_hook(cmd,sector,count,g_param_buf,g_param_count); }
+#endif
 
             uint8_t sector_buf[CDVD_SECTOR_SIZE];
             uint32_t i;
@@ -323,6 +391,7 @@ static void dispatch_ncmd(uint8_t cmd)
 static uint8_t clock_bcd(unsigned n) { return (uint8_t)(((n / 10) << 4) | (n % 10)); }
 int iop_cdvd_read_clock(uint8_t out[8])
 {
+    G2_EE_CALLS_IOP();
     /* The emulated battery-backed RTC follows the host RTC, converted to JST.
      * sceCdCLOCK order: status, second, minute, hour, pad, day, month, year. */
     time_t now = time(NULL);
@@ -345,6 +414,9 @@ static void dispatch_scmd(uint8_t cmd)
 {
     g_scmd_call_count++; /* Round 732 - see field comment */
     g_last_scmd_issued = cmd;
+#ifdef GEKKO2_WIIU
+    cdvd_trace('S', cmd);
+#endif
 
 #ifdef R814_CLOSECONFIG_TRACE
     /* Round 814 (task #811/#818, direct continuation of Round 813 +
@@ -486,6 +558,7 @@ int iop_cdvd_mmio_read8(uint32_t addr, uint8_t *out)
 
 int iop_cdvd_mmio_write8(uint32_t addr, uint8_t value)
 {
+    G2_EE_CALLS_IOP();
     /* Round 130 (170th finding): same KUSEG/KSEG0/KSEG1 aliasing fix
      * as iop_cdvd_mmio_read8() above - see that function's comment
      * for the full citation trail. */
@@ -556,10 +629,12 @@ uint8_t  iop_cdvd_get_last_scmd_issued(void) { return g_last_scmd_issued; }
  * already-real result, without racing or disturbing whatever real
  * IOP-side code (if any) later reads+clears OFF_ERROR through the
  * normal MMIO path for its own purposes. */
-uint8_t iop_cdvd_peek_last_ncmd_error(void) { return g_regs[OFF_ERROR]; }
+uint8_t iop_cdvd_peek_last_ncmd_error(void) {
+    G2_EE_CALLS_IOP(); return g_regs[OFF_ERROR]; }
 uint8_t iop_cdvd_get_status(void)        { return g_regs[OFF_STATUS]; }
 uint8_t iop_cdvd_get_ready(void)         { return g_regs[OFF_NREADY]; }
-uint8_t iop_cdvd_get_disc_type(void)     { return g_regs[OFF_TYPE]; }
+uint8_t iop_cdvd_get_disc_type(void)     {
+    G2_EE_CALLS_IOP(); return g_regs[OFF_TYPE]; }
 
 void iop_cdvd_set_disc_present(uint8_t disc_type)
 {
