@@ -13,7 +13,7 @@ JIT           ?= 0
 ifeq ($(JIT),1)
 TARGET        := gekko2-wiiu-jit
 BUILD         := build-jit
-JITFLAGS      := -DGEKKO2_WIIU_JIT
+JITFLAGS      := -DGEKKO2_WIIU_JIT -DGEKKO2_WIIU_GX2
 else
 TARGET        := gekko2-wiiu
 BUILD         := build

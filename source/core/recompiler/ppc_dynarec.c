@@ -987,6 +987,24 @@ static void emit_slt_core(ppc_codegen_ctx_t *ctx, int is_signed)
         emit(ctx, enc_xoris(SCRATCH_C, SCRATCH_C, 0x8000));
         emit(ctx, enc_xoris(SCRATCH_D, SCRATCH_D, 0x8000));
     }
+#ifdef GEKKO2_WIIU
+    /* Wii U: no carry chain through two carry-consuming instructions. Cemu's PPC recompiler (2.6) gets the
+     * carry OUT of SUBFE wrong when another SUBFE consumes it (measured in Cemu: the chained form below returned
+     * the inverted result once Cemu had compiled the block, which kept the PS2 BIOS in its timer calibration).
+     * Equivalent form: less = hi_less | (hi_equal & lo_less), each carry used once, straight after SUBFC. */
+    emit(ctx, enc_subfc(SCRATCH_E, SCRATCH_B, SCRATCH_A)); /* CA = left.lo >= right.lo */
+    emit(ctx, enc_subfe(SCRATCH_E, SCRATCH_E, SCRATCH_E)); /* E = lo_less ? -1 : 0 */
+    emit(ctx, enc_subfc(SCRATCH_F, SCRATCH_D, SCRATCH_C)); /* CA = left.hi >= right.hi */
+    emit(ctx, enc_subfe(SCRATCH_F, SCRATCH_F, SCRATCH_F)); /* F = hi_less ? -1 : 0 */
+    emit(ctx, enc_xor(SCRATCH_C, SCRATCH_C, SCRATCH_D));
+    emit(ctx, 0x7c000034u | ((uint32_t)SCRATCH_C << 21) | ((uint32_t)SCRATCH_C << 16)); /* cntlzw C,C: 32 iff equal */
+    emit(ctx, enc_rlwinm(SCRATCH_C, SCRATCH_C, 27, 31, 31)); /* C = hi_equal ? 1 : 0 */
+    emit(ctx, enc_and(SCRATCH_E, SCRATCH_E, SCRATCH_C));
+    emit(ctx, enc_rlwinm(SCRATCH_F, SCRATCH_F, 0, 31, 31));
+    emit(ctx, enc_or(SCRATCH_A, SCRATCH_E, SCRATCH_F));
+    emit(ctx, enc_andi_dot(SCRATCH_A, SCRATCH_A, 1));
+    return;
+#endif
     /* left.lo - right.lo (subfc rD,rA,rB computes rD=rB-rA, so the
      * value being subtracted goes in the rA slot: rA=right, rB=left);
      * CA=1 iff left.lo >= right.lo unsigned (no borrow). */

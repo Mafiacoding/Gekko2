@@ -20,10 +20,11 @@ static const char *status = "not initialised";
  * ICInvalidateRange, so on Cemu the area is written directly and never switched. Cemu is recognised by the
  * title ID it gives a directly loaded RPX (upper half ffffffff); a real Wii U never uses that range. */
 static int cemu_mode;
-/* Opt-in (sd:/wiiu/gekko2/jit_cemu_fast.txt): Cemu tester log 2026-11-25 showed about 3.5x more EE instructions
- * per second with this mode, but the BIOS then stayed in its timer calibration loop (EE pc 0x9fc41080), so it is
- * off by default until that is understood. */
+/* On by default; sd:/wiiu/gekko2/jit_cemu_safe.txt turns it off. The BIOS hang seen with build 13 (timer calibration
+ * loop, EE pc 0x9fc41080) was Cemu's recompiler getting the carry out of a chained SUBFE wrong; the EE 64-bit
+ * compare no longer uses that chain on the Wii U (ppc_dynarec.c emit_slt_core). */
 int gekko2_wiiu_cemu_fast_jit;
+int gekko2_wiiu_jit_exp; /* extra optimization bits from jit_exp.txt (measurements) */
 /* Lazy mode switching: the area stays R_X after generated code ran and only a writer switches it back to RW.
  * Running code repeatedly therefore costs no mode switch; a switch happens only on a write/execute transition. */
 static void to_rw(void)

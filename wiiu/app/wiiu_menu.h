@@ -20,6 +20,7 @@ int wiiu_menu_input(wiiu_menu *m, unsigned edges);
 void wiiu_menu_render(wiiu_menu *m, uint32_t *xrgb);
 /* Selected disc image path, or NULL. */
 const char *wiiu_menu_disc(const wiiu_menu *m);
+void wiiu_menu_set_disc(wiiu_menu *m, const char *path);
 /* Short status text for the main page (e.g. why the last start failed). */
 void wiiu_menu_set_notice(wiiu_menu *m, const char *text);
 /* 1 when the tester switched the verbose SD log on (X on the main page; stored as wiiu/gekko2/verbose_log_on.txt). */

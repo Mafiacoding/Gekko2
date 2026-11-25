@@ -142,6 +142,11 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             /* The menu mask (optimization.cfg) keeps native EE blocks off by default, as on the Wii. Without them
              * the dynarec only translates single instructions (tester logs: blocks=0), so the JIT app turns them on. */
             gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
+            {
+                /* jit_exp.txt: extra optimization bits for measurements (bit 0 ignored) */
+                extern int gekko2_wiiu_jit_exp;
+                gekko2_optimization_mask |= (uint32_t)gekko2_wiiu_jit_exp & ~1u;
+            }
             if (!config->vu_jit_off) gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
             else gekko2_optimization_mask &= ~GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
             say(platform, "EE dynarec on (Wii U codegen area)%s", config->vu_jit_off ? "" : ", VU dynarec on");
@@ -150,6 +155,12 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "EE dynarec NOT available: %s - interpreter only", gekko2_codegen_status());
         }
     }
+#endif
+#ifndef GEKKO2_WIIU_JIT
+    /* The interpreter app cannot run generated code. The default mask (fresh SD card without optimization.cfg) has
+     * the EE JIT bit set, which switched the interpreted fast runs off in this app (Cemu: iw=0%). */
+    gekko2_optimization_mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS) |
+                                  GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_JIT));
 #endif
     /* Interpreted fast runs execute before the EE dynarec's block path in ee_core_step_n(): with the dynarec on
      * they must be off, otherwise most instructions never reach the JIT (tester logs: 0 native blocks, iw=83%).
@@ -397,6 +408,9 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "  EE halted=%u sr=%08x cause=%08x ra=%08x | IOP pc=%08x halted=%u",
                 (unsigned)e->halted, e->cop0[12], e->cop0[13], (unsigned)e->gpr[31].ud0, i->pc,
                 (unsigned)i->halted);
+            say(platform, "  EE v0=%08x v1=%08x a0=%08x a1=%08x a2=%08x a3=%08x", (unsigned)e->gpr[2].ud0,
+                (unsigned)e->gpr[3].ud0, (unsigned)e->gpr[4].ud0, (unsigned)e->gpr[5].ud0, (unsigned)e->gpr[6].ud0,
+                (unsigned)e->gpr[7].ud0);
             if ((now - start) / 1000u % 5u == 0u) {
                 const ee_intc_state_t *ei = ee_intc_get_state();
                 const iop_intc_state_t *ii = iop_intc_get_state();
@@ -436,6 +450,13 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                 fprintf(session, " lookups=%llu hits=%llu misses=%llu stale=%llu installed=%llu failures=%llu\n",
                         (unsigned long long)cp.lookups, (unsigned long long)cp.hits, (unsigned long long)cp.misses,
                         (unsigned long long)cp.stale, (unsigned long long)cp.installed, (unsigned long long)cp.failures);
+                {
+                    extern char gekko2_wiiu_jit_dump[8192];
+                    if (gekko2_wiiu_jit_dump[0]) {
+                        fprintf(session, "%s\n", gekko2_wiiu_jit_dump);
+                        gekko2_wiiu_jit_dump[0] = 0;
+                    }
+                }
             }
             say(platform, "  JIT %s exec=%llu comp=%llu blk=%llu cache=%uKiB sw=%llu", gekko2_codegen_status(),
                 (unsigned long long)ee_jit_get_executed_count(), (unsigned long long)ee_jit_get_compile_attempt_count(),

@@ -810,9 +810,33 @@ int main(void)
         /* Controls page: a captured button assigns a mapping and is not also a menu command. */
         const int captured = trigger && wiiu_menu_raw_trigger(menu, trigger);
         if (captured) show_menu();
-        const unsigned edges = captured ? 0u : menu_edges(trigger, hold, now);
-        if (edges) {
-            const int action = wiiu_menu_input(menu, edges);
+        unsigned edges = captured ? 0u : menu_edges(trigger, hold, now);
+        /* Test hook for unattended runs (Cemu without input): autostart_disc.txt starts the selected disc,
+         * autostart_bios.txt the BIOS, once per app start. */
+        static int autostart_done;
+        int auto_action = 0;
+        if (!autostart_done && sd_root[0]) {
+            autostart_done = 1;
+            /* autostart_disc.txt holds a file name inside sd:/wiiu/gekko2/games/ */
+            char ap[300], name[128] = "";
+            snprintf(ap, sizeof ap, "%s/wiiu/gekko2/autostart_disc.txt", sd_root);
+            FILE *af = fopen(ap, "r");
+            if (af) {
+                if (fgets(name, sizeof name, af)) {
+                    size_t n = strlen(name);
+                    while (n && (name[n - 1] == '\n' || name[n - 1] == '\r' || name[n - 1] == ' ')) name[--n] = 0;
+                }
+                fclose(af);
+                if (name[0]) {
+                    snprintf(ap, sizeof ap, "%s/wiiu/gekko2/games/%s", sd_root, name);
+                    wiiu_menu_set_disc(menu, ap);
+                }
+            }
+            auto_action = wiiu_menu_disc(menu) && name[0] ? WM_ACTION_START_DISC
+                          : file_exists_flag(sd_root, "autostart_bios.txt") ? WM_ACTION_START_BIOS : 0;
+        }
+        if (edges || auto_action) {
+            const int action = auto_action ? auto_action : wiiu_menu_input(menu, edges);
             show_menu();
             if (action == WM_ACTION_EXIT)
                 break;
@@ -836,13 +860,43 @@ int main(void)
                     SHARED_UNLOCK();
                     render();
                     last_render_ms = now_ms(NULL);
+#ifdef GEKKO2_WIIU_JIT
+                    /* JIT app: the emulator always runs on the codegen core, so the GPU renderer needs the GS work on
+                     * this main thread (the GX2 core); without the GS worker thread it stays off. */
+                    const int gpu = wiiu_menu_gpu(menu) && gs_async_wanted(sd_root) && gx2_gs_start();
+                    const int split = gpu;
+#else
                     const int gpu = wiiu_menu_gpu(menu) && gx2_gs_start();
                     const int split = gpu && wiiu_menu_gpu_split(menu) && gs_async_wanted(sd_root);
+#endif
 #ifdef GEKKO2_WIIU_JIT
                     threaded = 1;
                     {
                         extern int gekko2_wiiu_cemu_fast_jit;
-                        gekko2_wiiu_cemu_fast_jit = file_exists_flag(sd_root, "jit_cemu_fast.txt");
+                        gekko2_wiiu_cemu_fast_jit = !file_exists_flag(sd_root, "jit_cemu_safe.txt");
+                        {
+                            extern int gekko2_wiiu_jit_exp;
+                            char ep[300];
+                            snprintf(ep, sizeof ep, "%s/wiiu/gekko2/jit_exp.txt", sd_root[0] ? sd_root : "/vol/external01");
+                            FILE *ef = fopen(ep, "r");
+                            if (ef) {
+                                if (fscanf(ef, "%i", &gekko2_wiiu_jit_exp) != 1) gekko2_wiiu_jit_exp = 0;
+                                fclose(ef);
+                            }
+                        }
+                        /* jit_dump.txt: "lo hi" guest pc range (hex) whose native blocks go into the session log */
+                        extern uint32_t gekko2_wiiu_jit_dump_lo, gekko2_wiiu_jit_dump_hi;
+                        char dp[300];
+                        snprintf(dp, sizeof dp, "%s/wiiu/gekko2/jit_dump.txt", sd_root[0] ? sd_root : "/vol/external01");
+                        FILE *df = fopen(dp, "r");
+                        if (df) {
+                            unsigned lo = 0, hi = 0;
+                            if (fscanf(df, "%x %x", &lo, &hi) == 2) {
+                                gekko2_wiiu_jit_dump_lo = lo;
+                                gekko2_wiiu_jit_dump_hi = hi;
+                            }
+                            fclose(df);
+                        }
                     }
 #else
                     threaded = split;

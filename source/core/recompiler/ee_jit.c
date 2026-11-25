@@ -1196,6 +1196,24 @@ static ee_precise_fn ee_precise_build_impl(uint32_t pc,const uint32_t *words,uns
   if(!fn){ppc_dynarec_free(&c);return 0;}
  return fn;
 }
+#ifdef GEKKO2_WIIU
+#include <stdio.h>
+/* Tester diagnostics: the native code of blocks whose guest pc lies in [lo,hi) (set by the front end). */
+uint32_t gekko2_wiiu_jit_dump_lo, gekko2_wiiu_jit_dump_hi;
+char gekko2_wiiu_jit_dump[8192];
+static void wiiu_jit_dump(uint32_t pc,const uint32_t *words,unsigned count,ee_precise_fn fn)
+{
+ if(!fn||pc<gekko2_wiiu_jit_dump_lo||pc>=gekko2_wiiu_jit_dump_hi)return;
+ size_t k=strlen(gekko2_wiiu_jit_dump);
+ uintptr_t b=0,e=0;
+ if(!ppc_code_cache_live_bounds((const void*)fn,&b,&e)){b=(uintptr_t)fn;e=b+256u;}
+ if(e-(uintptr_t)fn>2048u)e=(uintptr_t)fn+2048u;
+ k+=(size_t)snprintf(gekko2_wiiu_jit_dump+k,sizeof gekko2_wiiu_jit_dump-k,"\n# jitdump pc=%08x n=%u fn=%08lx mips:",pc,count,(unsigned long)(uintptr_t)fn);
+ for(unsigned i=0;i<count&&k+12<sizeof gekko2_wiiu_jit_dump;i++)k+=(size_t)snprintf(gekko2_wiiu_jit_dump+k,sizeof gekko2_wiiu_jit_dump-k," %08x",(unsigned)words[i]);
+ k+=(size_t)snprintf(gekko2_wiiu_jit_dump+k,sizeof gekko2_wiiu_jit_dump-k,"\n# jitdump ppc:");
+ for(const uint32_t *w=(const uint32_t*)fn;(uintptr_t)w<e&&k+12<sizeof gekko2_wiiu_jit_dump;w++)k+=(size_t)snprintf(gekko2_wiiu_jit_dump+k,sizeof gekko2_wiiu_jit_dump-k," %08x",(unsigned)*w);
+}
+#endif
 static ee_precise_fn ee_precise_build(uint32_t pc,const uint32_t *words,unsigned count,const ee_precise_slot *keep)
 {
  if(!ee_precise_compile_admitted())return 0;
@@ -1203,6 +1221,9 @@ static ee_precise_fn ee_precise_build(uint32_t pc,const uint32_t *words,unsigned
  ee_precise_fn fn=ee_precise_build_impl(pc,words,count,keep);
  gp_leave(old);jit_compile_end(&precise_profile,begin);
  if(!fn)precise_profile.failures++;else precise_profile.installed++;
+#ifdef GEKKO2_WIIU
+ wiiu_jit_dump(pc,words,count,fn);
+#endif
  return fn;
 }
 #if defined(GEKKO2_EE_CHAIN_RESIDENCY) && GEKKO2_EE_BLOCKS_ENABLED
