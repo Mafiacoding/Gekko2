@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 11)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 12)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -54,6 +54,13 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
 
 ## Fixed in this build
 
+- **GPU renderer on Cemu (build 12):** build 11 fixed the probe (9 of 9 checks), but games still showed artifacts.
+  Cemu checks texture memory for changes only once per frame and does not see CPU writes into the GPU's picture,
+  so textures that change several times per frame and picture parts drawn by the software renderer were lost.
+  Uploads now go through textures that Cemu re-checks immediately, and CPU-drawn picture rows are copied onto the
+  GPU picture with a draw. In the PC model of the GPU the BIOS intro still matches the software renderer, with
+  and without depth. Not yet confirmed on Cemu or a real Wii U. The probe now also checks these two cases
+  (`second texture, same frame` and `CPU row upload`) and logs details if depth is unavailable.
 - **GPU renderer (build 11):** Cemu showed heavy artifacts. The GX2 probe found two causes: textured draws came
   out black (the texture description was changed after it had been handed to the GPU), and depth could not be
   read back (Cemu returns zeros for the old copy path). Textures now use a separate, fixed texture view, and

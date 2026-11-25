@@ -36,6 +36,27 @@ static unsigned cur_w, cur_h, tex_linear, tex_wrap, tex_w_used, tex_h_used; stat
 static uint64_t stats[5];
 static GX2Texture tex_view;
 static int view_ok;
+/* Colour uploads go through a staging texture drawn onto the target (see gx2_gs_target_ready_rows). */
+static GX2Texture utex;
+/* Cemu checks a texture for CPU changes at most once per frame unless an invalidation starts at the texture's
+ * base address, and it samples the memory sparsely. Every CPU-filled texture therefore gets 64 spare texels per
+ * row (never sampled) that receive a new marker value with each upload, and invalidations start at the base. */
+#define G2_PAD_TEXELS 64u
+static uint32_t upload_gen;
+static void pad_surface(GX2Surface *s)
+{
+    s->pitch = ((s->width + 63u) & ~63u) + G2_PAD_TEXELS;
+    s->imageSize = s->pitch * s->height * 4u;
+}
+static void mark_rows(uint32_t *base, unsigned pitch, unsigned width, unsigned y0, unsigned y1)
+{
+    upload_gen++;
+    for (unsigned y = y0; y < y1; y++) {
+        uint32_t *row = base + (size_t)y * pitch;
+        for (unsigned x = width; x < pitch; x++)
+            row[x] = upload_gen;
+    }
+}
 static GX2Texture zconv_tex;
 static GX2ColorBuffer zrb;
 static int z_read_shader, z_read_swap;
@@ -48,7 +69,7 @@ static GX2DepthBuffer zbuf;
 static GX2Texture ztex;
 static GX2Surface zconv, zlin;
 static int zready, z_word_mode, z_upload_swap, cur_zfunc = -1, cur_zwrite;
-static char z_status[96] = "depth not initialised";
+static char z_status[256] = "depth not initialised";
 void gx2_gs_context_lost(void) { ctx_lost = 1; }
 
 uint64_t gx2_gs_stat(unsigned i) { return i < 5 ? stats[i] : 0; }
@@ -110,12 +131,33 @@ int gx2_gs_init(const void *gsh_color, const void *gsh_modulate, unsigned width,
     tex.viewNumSlices = 1;
     tex.compMap = 0x00010203;
     GX2CalcSurfaceSizeAndAlignment(&tex.surface);
+    pad_surface(&tex.surface);
     GX2InitTextureRegs(&tex);
     tex.surface.image = MEMAllocFromDefaultHeapEx(tex.surface.imageSize, tex.surface.alignment);
     if (!tex.surface.image)
         goto fail;
     memset(tex.surface.image, 0, tex.surface.imageSize);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, tex.surface.image, tex.surface.imageSize);
+
+    memset(&utex, 0, sizeof utex);
+    utex.surface.width = target.surface.width;
+    utex.surface.height = target.surface.height;
+    utex.surface.depth = 1;
+    utex.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+    utex.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+    utex.surface.use = GX2_SURFACE_USE_TEXTURE;
+    utex.surface.mipLevels = 1;
+    utex.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    utex.viewNumSlices = 1;
+    utex.compMap = 0x00010203;
+    GX2CalcSurfaceSizeAndAlignment(&utex.surface);
+    pad_surface(&utex.surface);
+    GX2InitTextureRegs(&utex);
+    utex.surface.image = MEMAllocFromDefaultHeapEx(utex.surface.imageSize, utex.surface.alignment);
+    if (!utex.surface.image)
+        goto fail;
+    memset(utex.surface.image, 0, utex.surface.imageSize);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, utex.surface.image, utex.surface.imageSize);
 
     for (int l = 0; l < 2; l++)
         for (int w = 0; w < 2; w++)
@@ -139,6 +181,8 @@ void gx2_gs_shutdown(void)
         GX2DrawDone();
     if (vb) MEMFreeToDefaultHeap(vb);
     if (tex.surface.image) MEMFreeToDefaultHeap(tex.surface.image);
+    if (utex.surface.image) MEMFreeToDefaultHeap(utex.surface.image);
+    memset(&utex, 0, sizeof utex);
     if (target.surface.image) MEMFreeToDefaultHeap(target.surface.image);
     if (ctx) MEMFreeToDefaultHeap(ctx);
     vb = NULL;
@@ -242,6 +286,7 @@ static int prepare_view(unsigned w, unsigned h)
     tex_view.viewNumSlices = 1;
     tex_view.compMap = 0x00010203;
     GX2CalcSurfaceSizeAndAlignment(&tex_view.surface);
+    pad_surface(&tex_view.surface);
     if (tex_view.surface.imageSize > tex.surface.imageSize) {
         view_ok = 0;
         return 0;
@@ -277,9 +322,9 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
             row[x] = (c << 8) | a;
         }
     }
-    /* Flush only the rewritten rows. */
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, (uint8_t *)tex_view.surface.image + (size_t)ry0 * pitch * 4u,
-                  (uint32_t)((ry1 - ry0) * pitch * 4u));
+    mark_rows(dst, pitch, w, ry0, ry1);
+    /* Flush from the base address (Cemu looks the texture up by it) to the last rewritten row. */
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, tex_view.surface.image, (uint32_t)(ry1 * pitch * 4u));
     GX2SetPixelTexture(&tex_view, sh_mod.pixelShader->samplerVars[0].location);
     GX2SetPixelSampler(&samplers[linear ? 1 : 0][wrap ? 1 : 0], sh_mod.pixelShader->samplerVars[0].location);
     tex_w_used = w;
@@ -311,8 +356,8 @@ uint32_t *gx2_gs_target_cpu(unsigned w, unsigned h, unsigned *pitch)
     cur_w = w;
     cur_h = h;
     if (pitch)
-        *pitch = target.surface.pitch;
-    return (uint32_t *)target.surface.image;
+        *pitch = utex.surface.pitch;
+    return (uint32_t *)utex.surface.image;
 }
 
 void gx2_gs_target_ready(void)
@@ -325,12 +370,49 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     if (!ready)
         return;
     if (y1 > cur_h) y1 = cur_h;
-    if (y1 > y0)
-        GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_COLOR_BUFFER,
-                      (uint8_t *)target.surface.image + (size_t)y0 * target.surface.pitch * 4u,
-                      (uint32_t)((y1 - y0) * target.surface.pitch * 4u));
     bind_state();
     gx2_gs_set_blend(GX2_GS_BLEND_OFF, 0x80);
+    if (y1 <= y0)
+        return;
+    /* The CPU filled rows y0..y1 of the staging texture; the GPU copies them onto the target with a quad (no
+     * blending, no depth). Writing the colour buffer memory directly is not seen by Cemu, whose render targets live
+     * in host textures. */
+    mark_rows((uint32_t *)utex.surface.image, utex.surface.pitch, utex.surface.width, y0, y1);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, utex.surface.image, (uint32_t)(y1 * utex.surface.pitch * 4u));
+    if (vb_used + 4 > VB_MAX) {
+        gpu_wait();
+        bind_state();
+        gx2_gs_set_blend(GX2_GS_BLEND_OFF, 0x80);
+    }
+    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+    GX2SetPixelTexture(&utex, sh_mod.pixelShader->samplerVars[0].location);
+    GX2SetPixelSampler(&samplers[0][0], sh_mod.pixelShader->samplerVars[0].location);
+    gx2_gs_vertex q[4];
+    const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
+    const float ue = (float)cur_w / (float)utex.surface.width;
+    const float va = (float)y0 / (float)utex.surface.height, vb2 = (float)y1 / (float)utex.surface.height;
+    const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, ue, ue, 0 }, v[4] = { va, va, vb2, vb2 };
+    for (int i = 0; i < 4; i++) {
+        q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
+        q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 1.0f;
+        q[i].uv[0] = u[i]; q[i].uv[1] = v[i]; q[i].uv[2] = 0.0f; q[i].uv[3] = 1.0f;
+    }
+    gx2_gs_vertex *dst = vb + vb_used;
+    memcpy(dst, q, sizeof q);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, sizeof q);
+    GX2SetFetchShader(&sh_mod.fetchShader);
+    GX2SetVertexShader(sh_mod.vertexShader);
+    GX2SetPixelShader(sh_mod.pixelShader);
+    GX2SetAttribBuffer(0, sizeof q, sizeof q[0], dst);
+    GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+    vb_used += 4;
+    /* The upload must finish before the staging rows are rewritten (target_cpu waits for the GPU). Restore the
+     * depth state and the GS texture for the following draws. */
+    if (zready && (cur_zfunc >= 0 || cur_zwrite))
+        GX2SetDepthOnlyControl(TRUE, cur_zwrite ? TRUE : FALSE,
+                               cur_zfunc >= 0 ? (GX2CompareFunction)cur_zfunc : GX2_COMPARE_FUNC_ALWAYS);
+    if (tex_valid)
+        gx2_gs_rebind_texture(tex_linear, tex_wrap);
 }
 
 void gx2_gs_set_scissor(unsigned x, unsigned y, unsigned w, unsigned h)
@@ -480,8 +562,8 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
             for (unsigned x = 0; x < cur_w; x++)
                 w[y * ztex.surface.pitch + x] = swap32(w[y * ztex.surface.pitch + x]);
     }
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, (uint8_t *)ztex.surface.image + (size_t)y0 * ztex.surface.pitch * 4u,
-                  (uint32_t)((y1 - y0) * ztex.surface.pitch * 4u));
+    mark_rows((uint32_t *)ztex.surface.image, ztex.surface.pitch, ztex.surface.width, y0, y1);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, ztex.surface.image, (uint32_t)(y1 * ztex.surface.pitch * 4u));
     bind_state();
     GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, FALSE);
     GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS);
@@ -683,6 +765,7 @@ int gx2_gs_init_depth(const void *gsh_zload)
     ztex.viewNumSlices = 1;
     ztex.compMap = 0x00010203;
     GX2CalcSurfaceSizeAndAlignment(&ztex.surface);
+    pad_surface(&ztex.surface);
     GX2InitTextureRegs(&ztex);
     ztex.surface.image = MEMAllocFromDefaultHeapEx(ztex.surface.imageSize, ztex.surface.alignment);
     memset(&zconv_tex, 0, sizeof zconv_tex);
@@ -748,6 +831,7 @@ int gx2_gs_init_depth(const void *gsh_zload)
     }
     /* 2. upload float layout: write 0.75 and check the readback, first native, then byte-swapped */
     const uint32_t want2 = 0xbfffffu;
+    uint32_t z_swap0 = 0;
     z_upload_swap = -1;
     for (int sw = 0; sw < 2; sw++) {
         float *f = gx2_gs_depth_cpu(&pitch);
@@ -756,18 +840,43 @@ int gx2_gs_init_depth(const void *gsh_zload)
                 f[y * pitch + x] = 0.75f;
         depth_upload_pass(sw);
         const uint32_t got = gx2_gs_depth_word(depth_read_raw(&pitch)[pitch * 10 + 10]);
+        if (sw == 0)
+            z_swap0 = got;
         if (near24(got, want2)) {
             z_upload_swap = sw;
             break;
         }
         snprintf(z_status, sizeof z_status, "depth: upload swap=%d read %06x, want %06x", sw, (unsigned)got, (unsigned)want2);
     }
-    cur_w = keep_w;
-    cur_h = keep_h;
     if (z_upload_swap < 0) {
+        /* Diagnostics for the log: does the readback follow a new clear, and do ordinary depth writes from
+         * geometry (vertex z) work where the shader depth export does not? */
+        char first[96];
+        snprintf(first, sizeof first, "%s", z_status);
+        gx2_gs_depth_clear(0.5f);
+        const uint32_t c5 = gx2_gs_depth_word(depth_read_raw(&pitch)[pitch * 10 + 10]);
+        gx2_gs_vertex t[3];
+        memset(t, 0, sizeof t);
+        const float tx[3] = { -1.0f, 3.0f, -1.0f }, ty[3] = { 1.0f, 1.0f, -3.0f };
+        for (int i = 0; i < 3; i++) {
+            t[i].pos[0] = tx[i]; t[i].pos[1] = ty[i]; t[i].pos[2] = 0.75f; t[i].pos[3] = 1.0f;
+            t[i].col[0] = t[i].col[1] = t[i].col[2] = t[i].col[3] = 1.0f;
+        }
+        bind_state();
+        cur_zfunc = -2;
+        gx2_gs_set_depth(GX2_COMPARE_FUNC_ALWAYS, 1);
+        gx2_gs_draw(t, 3, GX2_GS_TRIANGLES, 0);
+        gx2_gs_set_depth(-1, 0);
+        const uint32_t g75 = gx2_gs_depth_word(depth_read_raw(&pitch)[pitch * 10 + 10]);
+        snprintf(z_status, sizeof z_status, "%s; swap0 %06x; clear0.5 -> %06x; vertex z0.75 -> %06x; readback %s",
+                 first, (unsigned)z_swap0, (unsigned)c5, (unsigned)g75, z_read_shader ? "B" : "A");
+        cur_w = keep_w;
+        cur_h = keep_h;
         zready = 0;
         return 0;
     }
+    cur_w = keep_w;
+    cur_h = keep_h;
     snprintf(z_status, sizeof z_status, "depth ready (readback %s, word mode %d, upload swap %d, tile %d)",
              z_read_shader ? "B shader" : "A copy", z_word_mode, z_upload_swap,
              (int)zbuf.surface.tileMode);

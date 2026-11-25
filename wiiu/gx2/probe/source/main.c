@@ -178,6 +178,14 @@ static void scene(void)
     gx2_gs_vertex q[4] = { vtx(360, 40, 0x80808080u, 0, 0), vtx(600, 40, 0x80808080u, 1, 0),
                            vtx(600, 280, 0x80808080u, 1, 1), vtx(360, 280, 0x80808080u, 0, 1) };
     gx2_gs_draw(q, 4, GX2_GS_QUADS, 1);
+    /* Same texture slot, same size, new contents in the same frame (Cemu caches textures per frame). */
+    static uint32_t green[64 * 64];
+    for (unsigned i = 0; i < 64 * 64; i++)
+        green[i] = 0x8000ff00u;
+    gx2_gs_set_texture(green, 64, 64, 1, 0, 0);
+    gx2_gs_vertex g[4] = { vtx(440, 290, 0x80808080u, 0, 0), vtx(520, 290, 0x80808080u, 1, 0),
+                           vtx(520, 310, 0x80808080u, 1, 1), vtx(440, 310, 0x80808080u, 0, 1) };
+    gx2_gs_draw(g, 4, GX2_GS_QUADS, 1);
     /* Additive: white * FIX 0x40 (0.5) + Cd. */
     gx2_gs_set_blend(GX2_GS_BLEND_ADD_FIX, 0x40);
     gx2_gs_vertex a[4] = { vtx(40, 320, 0x80ffffffu, 0, 0), vtx(280, 320, 0x80ffffffu, 0, 0),
@@ -208,6 +216,15 @@ static void scene(void)
         gx2_gs_draw(w, 4, GX2_GS_QUADS, 0);
         gx2_gs_set_depth(-1, 0);
         vz = 0.0f;
+    }
+    /* CPU upload of whole rows into the target (the path used when software-drawn pixels go back to the GPU). */
+    unsigned tp = 0;
+    uint32_t *up = gx2_gs_target_cpu(640, 480, &tp);
+    if (up) {
+        for (unsigned y = 470; y < 476; y++)
+            for (unsigned x = 0; x < 640; x++)
+                up[(size_t)y * tp + x] = 0xff00ff80u;
+        gx2_gs_target_ready_rows(470, 476);
     }
 }
 static int near(uint32_t a, uint32_t b, unsigned tol)
@@ -265,6 +282,8 @@ static void test_c(void)
                 { 160, 380, 0x9f9fbf, 4, "additive white*0.5 + background" },
                 { 480, 380, 0x8f1020, 4, "mix red As=0.5 over background" },
                 { 620, 460, 0x202040, 2, "clear colour (corner)" },
+                { 480, 300, 0x00ff00, 2, "second texture, same frame, green" },
+                { 100, 473, 0xff00ff, 2, "CPU row upload magenta" },
                 { 320, 340, 0x0000ff, 2, "depth: yellow behind blue rejected" },
                 { 320, 420, 0xffffff, 2, "depth: white in front passes" },
             };
