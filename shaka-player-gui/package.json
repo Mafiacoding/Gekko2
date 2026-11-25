@@ -1,0 +1,29 @@
+{
+  "name": "shaka-player-gui",
+  "version": "1.0.0",
+  "description": "Desktop-GUI (Windows) mit eingebautem Shaka Player",
+  "main": "src/main.js",
+  "author": "",
+  "license": "Apache-2.0",
+  "scripts": {
+    "start": "electron .",
+    "copy-shaka": "node scripts/copy-shaka.js",
+    "dist": "npm run copy-shaka && electron-builder --win portable nsis",
+    "dist:dir": "npm run copy-shaka && electron-builder --win dir"
+  },
+  "build": {
+    "appId": "local.shaka.player.gui",
+    "productName": "Shaka Player GUI",
+    "files": ["src/**/*", "package.json"],
+    "win": { "target": ["portable", "nsis"] },
+    "fileAssociations": [
+      { "ext": "mpd", "name": "DASH Manifest" },
+      { "ext": "m3u8", "name": "HLS Playlist" },
+      { "ext": "mp4", "name": "MP4 Video" },
+      { "ext": "webm", "name": "WebM Video" },
+      { "ext": "mkv", "name": "Matroska Video" }
+    ]
+  },
+  "dependencies": { "shaka-player": "^5.0.0" },
+  "devDependencies": { "electron": "^45.0.0", "electron-builder": "^26.0.0" }
+}
