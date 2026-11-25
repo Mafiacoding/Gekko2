@@ -350,6 +350,19 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                     sf->msflag, sf->smflag, sf->ctrl);
             }
 #ifdef GEKKO2_WIIU_JIT
+            if (session) {
+                /* Share of EE instructions retired by native code vs. all, VU dynarec blocks, code switches. */
+                extern uint64_t vu_jit_get_block_count(void);
+                extern uint64_t vu_jit_get_pair_count(void);
+                fprintf(session, "# jit t=%llus native_retired=%llu block_retired=%llu ee_instr=%llu blocks=%llu evictions=%llu "
+                                 "compiles=%llu cache_kib=%u codegen_switches=%llu vu_blocks=%llu vu_pairs=%llu\n",
+                        (unsigned long long)((now - start) / 1000u), (unsigned long long)ee_jit_get_native_retired_count(),
+                        (unsigned long long)ee_jit_get_block_retired(), (unsigned long long)e->instructions_executed,
+                        (unsigned long long)ee_jit_get_block_count(), (unsigned long long)ee_jit_get_block_evictions(),
+                        (unsigned long long)ee_jit_get_compile_attempt_count(), (unsigned)(ppc_code_cache_used() / 1024u),
+                        gekko2_codegen_switch_count(), (unsigned long long)vu_jit_get_block_count(),
+                        (unsigned long long)vu_jit_get_pair_count());
+            }
             say(platform, "  JIT %s exec=%llu comp=%llu blk=%llu cache=%uKiB sw=%llu", gekko2_codegen_status(),
                 (unsigned long long)ee_jit_get_executed_count(), (unsigned long long)ee_jit_get_compile_attempt_count(),
                 (unsigned long long)ee_jit_get_block_count(), (unsigned)(ppc_code_cache_used() / 1024u), gekko2_codegen_switch_count());
