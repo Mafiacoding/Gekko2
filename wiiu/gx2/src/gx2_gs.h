@@ -36,6 +36,10 @@ int gx2_gs_ready(void);
 void gx2_gs_begin(int clear, uint32_t argb);
 /* xrgb: 0x00RRGGBB or with alpha 0xAARRGGBB (alpha used when has_alpha). Max 1024x1024. */
 int gx2_gs_set_texture(const uint32_t *argb, unsigned w, unsigned h, int has_alpha, int linear, int wrap);
+/* Upload only the texels [rx0,rx1) x [ry0,ry1) of a w x h texture (argb row stride w); the rest keeps its old
+ * contents, so the caller must only sample inside rectangles it uploaded. */
+int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsigned rx0, unsigned ry0, unsigned rx1,
+                            unsigned ry1, int has_alpha, int linear, int wrap);
 void gx2_gs_set_blend(int mode, uint32_t fix);
 int gx2_gs_draw(const gx2_gs_vertex *v, unsigned count, int prim, int textured);
 /* Finish all work and return the target pixels (big-endian words 0xRRGGBBAA, alpha 1.0 = 0xff), row pitch in pixels. */
@@ -44,6 +48,8 @@ const uint32_t *gx2_gs_end(unsigned *pitch);
  * Write the current guest frame buffer into it, then call gx2_gs_target_ready() before drawing. */
 uint32_t *gx2_gs_target_cpu(unsigned w, unsigned h, unsigned *pitch);
 void gx2_gs_target_ready(void);
+void gx2_gs_target_ready_rows(unsigned y0, unsigned y1); /* only rows y0..y1-1 were written by the CPU */
+const uint32_t *gx2_gs_end_rows(unsigned y0, unsigned y1, unsigned *pitch); /* like gx2_gs_end, reads only these rows */
 void gx2_gs_set_scissor(unsigned x, unsigned y, unsigned w, unsigned h);
 void gx2_gs_size(unsigned *w, unsigned *h);
 /* Re-bind the last uploaded texture with another filter/wrap mode (no upload). */
@@ -59,8 +65,10 @@ const char *gx2_gs_depth_status(void);
 void gx2_gs_set_depth(int func, int write);
 float *gx2_gs_depth_cpu(unsigned *pitch);        /* fill cur_w x cur_h normalised depth, then upload */
 void gx2_gs_depth_upload(void);
+void gx2_gs_depth_upload_rows(unsigned y0, unsigned y1);
 void gx2_gs_depth_clear(float d);
 const uint32_t *gx2_gs_depth_read(unsigned *pitch); /* finishes GPU work; decode words with gx2_gs_depth_word */
+const uint32_t *gx2_gs_depth_read_rows(unsigned y0, unsigned y1, unsigned *pitch);
 uint32_t gx2_gs_depth_word(uint32_t w);           /* -> 24-bit depth */
 /* 0 draws, 1 vertices, 2 texture uploads, 3 waits for the GPU, 4 vertex buffer overflows. */
 uint64_t gx2_gs_stat(unsigned index);

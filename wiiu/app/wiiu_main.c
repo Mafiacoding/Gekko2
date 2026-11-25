@@ -667,8 +667,10 @@ int main(void)
             use_gx2 = 1;
             on_log(NULL, "GX2 presenter active (GPU scaling, present.gsh)");
 #if defined(GEKKO2_WIIU_GX2) && __has_include("gs_color_gsh.h") && __has_include("gs_mod_gsh.h") && __has_include("gs_zload_gsh.h")
-            /* GPU GS renderer: GS triangles/sprites drawn by GX2 (gx2_gs_off.txt switches it off). */
-            if (!file_exists_flag(sd_root, "gx2_gs_off.txt")) {
+            /* GPU GS renderer: GS triangles/sprites drawn by GX2. Opt-in with gx2_gs_on.txt until real-hardware
+             * measurements show it is faster: it moves GS work off the second core (GX2 is bound to this core) and
+             * frame-buffer feedback copies cost a readback each. */
+            if (file_exists_flag(sd_root, "gx2_gs_on.txt")) {
 #include "gs_color_gsh.h"
 #include "gs_mod_gsh.h"
 #include "gs_zload_gsh.h"

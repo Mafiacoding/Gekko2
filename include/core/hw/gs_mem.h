@@ -27,6 +27,7 @@ int gs_mem_gpu_mark_pending(void);
 int gs_mem_gpu_protect_range(uint32_t lo,uint32_t hi);
 #ifdef GEKKO2_WIIU
 int gs_mem_gpu_protect_range2(uint32_t lo,uint32_t hi); /* Wii U GX2: second protected interval (depth buffer) */
+const uint8_t *gs_mem_gpu_owner_raw(void); /* Wii U GX2: raw bytes the GPU has not written; NULL unless pending */
 #endif
 /* Bounded read-only access. NULL on invalid input/failed ownership transfer.
  * Do not retain across guest writes or a GPU ownership change. */

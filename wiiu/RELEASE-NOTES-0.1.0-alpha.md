@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 2)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 4)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -35,6 +35,16 @@ All of these work at the same time and drive PS2 pad 1:
   controller button you want. The mapping is saved to `sd:/wiiu/gekko2/controls.cfg`.
 - Back to the menu while a game runs: hold **L + R + ZL + ZR** and press **+**.
 
+## New in build 4: GPU renderer (GX2), opt-in
+
+Create the empty file `sd:/wiiu/gekko2/gx2_gs_on.txt` to let the Wii U GPU draw the PS2 graphics (triangles and
+sprites with textures, blending and depth). Draws the GPU path cannot reproduce exactly still use the software
+renderer. While it is on, the PS2 graphics work runs on the emulation thread instead of the second CPU core
+(GX2 can only be used from one core), and games that copy their frame buffer into itself cost extra time.
+In our PC model of the GPU the picture matched the software renderer (BIOS intro and Tekken Tag intro), but in
+2D-heavy scenes it was slower. Whether it is faster on a real Wii U, especially in 3D scenes, is exactly what we
+need to find out: please run the same game with and without `gx2_gs_on.txt` (verbose log on) and send both logs.
+
 ## Fixed in this build
 
 - **HOME button:** the Wii U HOME menu works during the menu and while a game runs; "Close software" returns
@@ -68,8 +78,8 @@ cannot help.
 - **Speed:** very slow. A tester's real Wii U log (Tekken Tag, first build) shows about 0.4 emulated frames per
   second (under 1 % of full speed); after 5 minutes Tekken Tag was still on the "Produced by Namco" screen.
   This alpha is about compatibility and feedback, not playability.
-- The fixes in this build (HOME, GamePad, GX2) were built and checked for compile errors but not yet run on
-  a real Wii U.
+- The HOME/GamePad/GX2 fixes and the GPU renderer were built and checked for compile errors, but not yet run
+  on a real Wii U or Cemu.
 - No sound yet.
 - **Games larger than 4 GiB:** FAT32 SD cards cannot hold files of 4 GiB or more; such an ISO is cut off and
   the game hangs while loading. Convert it to CHD (`chdman createdvd`).
@@ -84,7 +94,8 @@ cannot help.
 | `vu1_async_on.txt` | run VU1 on the third CPU core (experimental) |
 | `fast_run_off.txt` | disable interpreted fast runs |
 | `vu_jit_off.txt` | JIT build: keep VU microcode interpreted |
-| `gx2_off.txt` | software picture output (OSScreen) instead of the GPU |
+| `gx2_off.txt` | software picture output (OSScreen) instead of the GPU (also turns the GPU renderer off) |
+| `gx2_gs_on.txt` | GPU (GX2) draws the PS2 graphics (experimental, see above) |
 
 ## License
 

@@ -211,7 +211,13 @@ void gx2_gs_begin(int clear, uint32_t argb)
 
 int gx2_gs_set_texture(const uint32_t *argb, unsigned w, unsigned h, int has_alpha, int linear, int wrap)
 {
-    if (!ready || !argb || !w || !h || w > tw_max || h > th_max)
+    return gx2_gs_set_texture_rect(argb, w, h, 0, 0, w, h, has_alpha, linear, wrap);
+}
+
+int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsigned rx0, unsigned ry0, unsigned rx1,
+                            unsigned ry1, int has_alpha, int linear, int wrap)
+{
+    if (!ready || !argb || !w || !h || w > tw_max || h > th_max || rx1 > w || ry1 > h || rx0 >= rx1 || ry0 >= ry1)
         return 0;
     if (tex_pending_use) {
         /* One texture slot: the GPU must be done with queued draws that read it. */
@@ -220,10 +226,10 @@ int gx2_gs_set_texture(const uint32_t *argb, unsigned w, unsigned h, int has_alp
     }
     uint32_t *dst = (uint32_t *)tex.surface.image;
     const unsigned pitch = tex.surface.pitch;
-    for (unsigned y = 0; y < h; y++) {
+    for (unsigned y = ry0; y < ry1; y++) {
         uint32_t *row = dst + (size_t)y * pitch;
         const uint32_t *src = argb + (size_t)y * w;
-        for (unsigned x = 0; x < w; x++) {
+        for (unsigned x = rx0; x < rx1; x++) {
             const uint32_t c = src[x];
             /* GS texture alpha 0x80 = 1.0; the shader multiplies, so scale it to the 0..255 = 0..2 range halfway. */
             uint32_t a = has_alpha ? (c >> 24) * 2u : 0xffu;
@@ -231,7 +237,9 @@ int gx2_gs_set_texture(const uint32_t *argb, unsigned w, unsigned h, int has_alp
             row[x] = (c << 8) | a;
         }
     }
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, tex.surface.image, tex.surface.imageSize);
+    /* Flush only the rewritten rows. */
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, (uint8_t *)tex.surface.image + (size_t)ry0 * pitch * 4u,
+                  (uint32_t)((ry1 - ry0) * pitch * 4u));
     /* Sample only the used part: the caller's u,v are relative to w x h, scale them via the texture size. */
     tex.surface.width = w;
     tex.surface.height = h;
@@ -280,10 +288,18 @@ uint32_t *gx2_gs_target_cpu(unsigned w, unsigned h, unsigned *pitch)
 
 void gx2_gs_target_ready(void)
 {
+    gx2_gs_target_ready_rows(0, cur_h);
+}
+
+void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
+{
     if (!ready)
         return;
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_COLOR_BUFFER, target.surface.image,
-                  target.surface.pitch * 4u * cur_h);
+    if (y1 > cur_h) y1 = cur_h;
+    if (y1 > y0)
+        GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_COLOR_BUFFER,
+                      (uint8_t *)target.surface.image + (size_t)y0 * target.surface.pitch * 4u,
+                      (uint32_t)((y1 - y0) * target.surface.pitch * 4u));
     bind_state();
     gx2_gs_set_blend(GX2_GS_BLEND_OFF, 0x80);
 }
@@ -370,12 +386,20 @@ int gx2_gs_draw(const gx2_gs_vertex *v, unsigned count, int prim, int textured)
 
 const uint32_t *gx2_gs_end(unsigned *pitch)
 {
+    return gx2_gs_end_rows(0, target.surface.height, pitch);
+}
+
+const uint32_t *gx2_gs_end_rows(unsigned y0, unsigned y1, unsigned *pitch)
+{
     if (!ready)
         return NULL;
     GX2Flush();
     gpu_wait();
-    /* GPU writes went to memory; drop stale CPU cache lines before reading. */
-    DCInvalidateRange(target.surface.image, target.surface.imageSize);
+    if (y1 > target.surface.height) y1 = target.surface.height;
+    /* GPU writes went to memory; drop stale CPU cache lines of the rows we read. */
+    if (y1 > y0)
+        DCInvalidateRange((uint8_t *)target.surface.image + (size_t)y0 * target.surface.pitch * 4u,
+                          (uint32_t)((y1 - y0) * target.surface.pitch * 4u));
     if (pitch)
         *pitch = target.surface.pitch;
     return (const uint32_t *)target.surface.image;
@@ -414,15 +438,21 @@ float *gx2_gs_depth_cpu(unsigned *pitch)
 static uint32_t swap32(uint32_t v) { return (v >> 24) | ((v >> 8) & 0xff00u) | ((v << 8) & 0xff0000u) | (v << 24); }
 
 /* Full-target pass: depth = sampled float, colour writes off. The caller filled gx2_gs_depth_cpu() for cur_w x cur_h. */
-static void depth_upload_pass(int swap)
+static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1);
+static void depth_upload_pass(int swap) { depth_upload_pass_rows(swap, 0, cur_h); }
+static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
 {
+    if (y1 > cur_h) y1 = cur_h;
+    if (y1 <= y0)
+        return;
     if (swap) {
         uint32_t *w = (uint32_t *)ztex.surface.image;
-        for (unsigned y = 0; y < cur_h; y++)
+        for (unsigned y = y0; y < y1; y++)
             for (unsigned x = 0; x < cur_w; x++)
                 w[y * ztex.surface.pitch + x] = swap32(w[y * ztex.surface.pitch + x]);
     }
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, ztex.surface.image, ztex.surface.imageSize);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, (uint8_t *)ztex.surface.image + (size_t)y0 * ztex.surface.pitch * 4u,
+                  (uint32_t)((y1 - y0) * ztex.surface.pitch * 4u));
     bind_state();
     GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, FALSE);
     GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS);
@@ -435,7 +465,9 @@ static void depth_upload_pass(int swap)
     ztex.surface.width = fw;
     ztex.surface.height = fh;
     gx2_gs_vertex q[4];
-    static const float px[4] = { -1, 1, 1, -1 }, py[4] = { 1, 1, -1, -1 }, u[4] = { 0, 1, 1, 0 }, v[4] = { 0, 0, 1, 1 };
+    const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
+    const float va = (float)y0 / (float)cur_h, vb2 = (float)y1 / (float)cur_h;
+    const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, 1, 1, 0 }, v[4] = { va, va, vb2, vb2 };
     for (int i = 0; i < 4; i++) {
         q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
         q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 1.0f;
@@ -462,6 +494,13 @@ void gx2_gs_depth_upload(void)
     depth_upload_pass(z_upload_swap);
 }
 
+void gx2_gs_depth_upload_rows(unsigned y0, unsigned y1)
+{
+    if (!ready || !zready)
+        return;
+    depth_upload_pass_rows(z_upload_swap, y0, y1);
+}
+
 void gx2_gs_depth_clear(float d)
 {
     if (!ready || !zready)
@@ -471,7 +510,9 @@ void gx2_gs_depth_clear(float d)
     bind_state();
 }
 
-static const uint32_t *depth_read_raw(unsigned *pitch)
+static const uint32_t *depth_read_raw_rows(unsigned y0, unsigned y1, unsigned *pitch);
+static const uint32_t *depth_read_raw(unsigned *pitch) { return depth_read_raw_rows(0, zlin.height, pitch); }
+static const uint32_t *depth_read_raw_rows(unsigned y0, unsigned y1, unsigned *pitch)
 {
     GX2Flush();
     gpu_wait();
@@ -479,7 +520,9 @@ static const uint32_t *depth_read_raw(unsigned *pitch)
     GX2CopySurface(&zconv, 0, 0, &zlin, 0, 0);
     GX2Flush();
     gpu_wait();
-    DCInvalidateRange(zlin.image, zlin.imageSize);
+    if (y1 > zlin.height) y1 = zlin.height;
+    if (y1 > y0)
+        DCInvalidateRange((uint8_t *)zlin.image + (size_t)y0 * zlin.pitch * 4u, (uint32_t)((y1 - y0) * zlin.pitch * 4u));
     ctx_lost = 1;
     if (pitch)
         *pitch = zlin.pitch;
@@ -501,6 +544,13 @@ const uint32_t *gx2_gs_depth_read(unsigned *pitch)
     if (!ready || !zready)
         return NULL;
     return depth_read_raw(pitch);
+}
+
+const uint32_t *gx2_gs_depth_read_rows(unsigned y0, unsigned y1, unsigned *pitch)
+{
+    if (!ready || !zready)
+        return NULL;
+    return depth_read_raw_rows(y0, y1, pitch);
 }
 
 static int near24(uint32_t a, uint32_t b) { return (a > b ? a - b : b - a) <= 0x400u; }

@@ -444,6 +444,15 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         for (unsigned k = 0; k < 14 && n < (int)sizeof rs - 24; k++)
             n += snprintf(rs + n, sizeof rs - (size_t)n, " %u:%llu", k, (unsigned long long)gekko2_gx2_gs_reason(k));
         say(platform, "GPU GS reject reasons:%s", rs);
+        extern uint64_t gekko2_gx2_gs_cause(unsigned i);
+        say(platform, "GPU GS resolve causes: texture overlap=%llu target switch=%llu other CPU access=%llu",
+            (unsigned long long)gekko2_gx2_gs_cause(0), (unsigned long long)gekko2_gx2_gs_cause(1), (unsigned long long)gekko2_gx2_gs_cause(2));
+#ifdef G2_HOST_PROF
+        extern uint64_t gekko2_gx2_gs_ns(unsigned i);
+        say(platform, "GPU GS host time ms: upload=%llu resolve=%llu texdecode=%llu draw=%llu",
+            (unsigned long long)(gekko2_gx2_gs_ns(0) / 1000000u), (unsigned long long)(gekko2_gx2_gs_ns(1) / 1000000u),
+            (unsigned long long)(gekko2_gx2_gs_ns(2) / 1000000u), (unsigned long long)(gekko2_gx2_gs_ns(3) / 1000000u));
+#endif
     }
 #endif
     if (gs_async_active) {

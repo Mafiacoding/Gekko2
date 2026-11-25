@@ -111,6 +111,9 @@ static void g2_invalidate_protected(void)
  hash_invalidate_range(g_protected_lo,g_protected_hi-g_protected_lo);
  if(g_protected2_hi>g_protected2_lo)hash_invalidate_range(g_protected2_lo,g_protected2_hi-g_protected2_lo);
 }
+/* Raw GS memory for the GPU owner while its work is pending: only for bytes the GPU has not written
+ * (rows it has not drawn to yet). No synchronisation, no hash invalidation; read only. */
+const uint8_t *gs_mem_gpu_owner_raw(void) { return g_gpu_pending ? g_gs_mem : NULL; }
 /* Second interval; call after gs_mem_gpu_protect_range(). lo==hi clears it. */
 int gs_mem_gpu_protect_range2(uint32_t lo,uint32_t hi)
 {
