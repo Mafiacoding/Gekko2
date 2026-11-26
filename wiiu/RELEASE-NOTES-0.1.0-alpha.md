@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 14)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 19, test build)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -58,6 +58,51 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
   the row length of these textures itself and ignored the padded rows build 12 used. Build 13 removes the padding
   and gives every texture upload fresh memory from a ring buffer instead, so Cemu always sees new data. This also
   removes a wait for the GPU on every texture change (helps real hardware too; not measured yet).
+- **Build 19: second Namco logo on Cemu fixed.** With the GPU renderer on Cemu, Tekken showed its "PRODUCED BY
+  namco" logo a second time lower in the picture on every other field. Cause: Cemu sometimes drew an older upload
+  of picture rows that had the same size and the same memory address (Cemu checks such textures only sparsely
+  for changes). On Cemu the rows are now uploaded as flat-coloured runs instead of a texture. Checked with raw frame
+  dumps in Cemu 2.6: normal app 0 of 106 frames with a second logo (before: about half), JIT app 0 of 201;
+  same speed. A real Wii U keeps the texture upload. Switches: `upload_rle.txt` / `upload_tex.txt`.
+- **Build 18: techniques from the PPSSPP Wii U port** (jereif/PPSSPP_wiiu, GPL-2.0-or-later; re-implemented, not
+  copied), each with an off switch:
+  - GX2 state cache: shaders and scissor are only sent to the GPU when they change. Cemu, Tekken boot, normal
+    app with GPU: 384 million PS2 instructions after 140 s, 366 million in build 16.
+  - `dcbz` when filling upload memory (textures, picture rows, depth rows): saves memory reads on a real Wii U;
+    no measurable change on Cemu. Off: `dcbz_off.txt`.
+  - Tiered JIT (compile a block only after it ran a few times): on Cemu with the full 6 MB code cache it was
+    about 5% slower, so it only switches on when the code memory is small (RWX heap below 3 MB). Force on:
+    `jit_tier.txt`, off: `jit_tier_off.txt`.
+  - Not taken over: PPSSPP's register cache, fused loads/stores and peephole passes assume a JIT that runs
+    whole blocks freely; Gekko2's PS2 JIT checks every instruction for exact interrupts and memory faults, which
+    those passes would remove. Paired singles for the VU: not yet, needs exact PS2 float rounding first.
+- **Test build 17, JIT app on a real Wii U: RWX code memory (please test).** Under Aroma the JIT app now looks for
+  read/write/execute memory in the range 0x00800000-0x01000000 (technique from the PPSSPP Wii U port by jereif,
+  GPL-2.0-or-later, re-implemented). Generated code there needs no write/execute switching and may run on any
+  CPU core, so the emulator and the GPU renderer run together on the main core (2 MB cache), as on Cemu. The
+  verbose log shows `JIT RWX heap: ...` with the result. If the JIT app crashes or misbehaves, create
+  `sd:/wiiu/gekko2/jit_codegen.txt` to go back to the official code area and please send the log. Untested on
+  hardware; no speed claim.
+- **Cemu, JIT app:** the emulator runs on the main core there as well (Cemu does not enforce the code core):
+  516 million PS2 instructions after 290 s with the GPU renderer, about 450 million before (local Cemu 2.6).
+- **GPU renderer: misplaced picture pieces (build 16):** Tekken's "PRODUCED BY namco" logo was drawn in pieces at
+  several wrong places with the GPU renderer. The texture memory ring from build 13 starts over when it is full,
+  and a texture that was still cached could then point at memory that already held other data. Cached textures
+  are now uploaded again after the ring starts over. Reproduced and checked in Cemu 2.6: the logo is drawn
+  correctly again.
+- **Speed, normal app (build 15):** on an SD card without `optimization.cfg` (every new install) the default
+  settings switched off the interpreter's fast path even though the normal app has no JIT. Fixed. Measured in Cemu
+  2.6 (software GPU on a Linux PC, Tekken Tag boot, 86 s): 227 million PS2 instructions with the GPU renderer on,
+  177 million before the fix, 165 million with the GPU renderer off. Not yet measured on a real Wii U.
+- **JIT app on Cemu fixed (build 15):** the BIOS hang from build 13 is found and fixed. Cemu's own recompiler gets
+  one PowerPC carry case wrong (the carry out of a chained `subfe`), which inverted Gekko2's 64-bit compares
+  (`slt`/`slti`) once Cemu had compiled them. The Wii U JIT now uses an equivalent sequence without that chain.
+  The fast Cemu mode is on again by default (`jit_cemu_safe.txt` turns it off).
+- **GPU renderer in the JIT app (build 15):** the JIT app can now use the GPU renderer as well (`-` in the menu); the
+  PS2 graphics work then runs on the main core. Cemu, Tekken Tag boot, 86 s: 136 million PS2 instructions (JIT +
+  GPU) vs. 98 million (JIT in build 14). In Cemu the normal app is still faster than the JIT app; real Wii U
+  numbers for the JIT app are still missing.
+- **GS core switch:** in Cemu `GS CORE: SHARED` was faster than `OWN` (227 vs. 192 million instructions in 86 s).
 - **JIT app on Cemu (build 14):** the build 13 change ran the JIT app about 3.5 times faster in Cemu (2.7 instead of
   0.3-0.8 million PS2 instructions per second), but the PS2 BIOS then stayed in its timer calibration loop and
   Tekken never loaded. It is now off by default; create `sd:/wiiu/gekko2/jit_cemu_fast.txt` to test it.

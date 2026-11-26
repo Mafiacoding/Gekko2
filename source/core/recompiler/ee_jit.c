@@ -1196,6 +1196,24 @@ static ee_precise_fn ee_precise_build_impl(uint32_t pc,const uint32_t *words,uns
   if(!fn){ppc_dynarec_free(&c);return 0;}
  return fn;
 }
+#ifdef GEKKO2_WIIU
+#include <stdio.h>
+/* Tester diagnostics: the native code of blocks whose guest pc lies in [lo,hi) (set by the front end). */
+uint32_t gekko2_wiiu_jit_dump_lo, gekko2_wiiu_jit_dump_hi;
+char gekko2_wiiu_jit_dump[8192];
+static void wiiu_jit_dump(uint32_t pc,const uint32_t *words,unsigned count,ee_precise_fn fn)
+{
+ if(!fn||pc<gekko2_wiiu_jit_dump_lo||pc>=gekko2_wiiu_jit_dump_hi)return;
+ size_t k=strlen(gekko2_wiiu_jit_dump);
+ uintptr_t b=0,e=0;
+ if(!ppc_code_cache_live_bounds((const void*)fn,&b,&e)){b=(uintptr_t)fn;e=b+256u;}
+ if(e-(uintptr_t)fn>2048u)e=(uintptr_t)fn+2048u;
+ k+=(size_t)snprintf(gekko2_wiiu_jit_dump+k,sizeof gekko2_wiiu_jit_dump-k,"\n# jitdump pc=%08x n=%u fn=%08lx mips:",pc,count,(unsigned long)(uintptr_t)fn);
+ for(unsigned i=0;i<count&&k+12<sizeof gekko2_wiiu_jit_dump;i++)k+=(size_t)snprintf(gekko2_wiiu_jit_dump+k,sizeof gekko2_wiiu_jit_dump-k," %08x",(unsigned)words[i]);
+ k+=(size_t)snprintf(gekko2_wiiu_jit_dump+k,sizeof gekko2_wiiu_jit_dump-k,"\n# jitdump ppc:");
+ for(const uint32_t *w=(const uint32_t*)fn;(uintptr_t)w<e&&k+12<sizeof gekko2_wiiu_jit_dump;w++)k+=(size_t)snprintf(gekko2_wiiu_jit_dump+k,sizeof gekko2_wiiu_jit_dump-k," %08x",(unsigned)*w);
+}
+#endif
 static ee_precise_fn ee_precise_build(uint32_t pc,const uint32_t *words,unsigned count,const ee_precise_slot *keep)
 {
  if(!ee_precise_compile_admitted())return 0;
@@ -1203,6 +1221,9 @@ static ee_precise_fn ee_precise_build(uint32_t pc,const uint32_t *words,unsigned
  ee_precise_fn fn=ee_precise_build_impl(pc,words,count,keep);
  gp_leave(old);jit_compile_end(&precise_profile,begin);
  if(!fn)precise_profile.failures++;else precise_profile.installed++;
+#ifdef GEKKO2_WIIU
+ wiiu_jit_dump(pc,words,count,fn);
+#endif
  return fn;
 }
 #if defined(GEKKO2_EE_CHAIN_RESIDENCY) && GEKKO2_EE_BLOCKS_ENABLED
@@ -1350,6 +1371,25 @@ uint64_t gekko2_wiiu_block_diag[16];
 #else
 #define G2BD(i) ((void)0)
 #endif
+#ifdef GEKKO2_WIIU
+int gekko2_wiiu_jit_tier;
+uint64_t gekko2_wiiu_tier_stats[2]; /* 0: visits deferred to the scalar engine, 1: blocks that became hot */
+static uint32_t tier_pc[8192];
+static uint16_t tier_count[8192];
+static int ee_wiiu_tier_hot(uint32_t pc)
+{
+ const uint32_t cap=ppc_code_cache_capacity(),usedb=ppc_code_cache_used();
+ /* Measured on Cemu with the 6 MiB cache: tiering cost about 5% (Tekken boot) and changed block starts, so it only
+  * applies to small code memory (RWX heap) unless forced (jit_tier.txt, gekko2_wiiu_jit_tier == 2). */
+ if(gekko2_wiiu_jit_tier==1&&cap>=(3u<<20))return 1;
+ const unsigned threshold=usedb<cap/2u?4u:usedb<cap-cap/5u?32u:256u;
+ const uint32_t i=((pc>>2)*2654435761u)>>19;
+ if(tier_pc[i]!=pc){tier_pc[i]=pc;tier_count[i]=0;}
+ if(tier_count[i]<threshold){tier_count[i]++;gekko2_wiiu_tier_stats[0]++;return 0;}
+ if(tier_count[i]==threshold){tier_count[i]++;gekko2_wiiu_tier_stats[1]++;}
+ return 1;
+}
+#endif
 static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetched,uint32_t first_word,int native_chain)
 {
 #ifdef GEKKO2_SPEED_STUB
@@ -1388,6 +1428,13 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
     ee_precise_slot_generation_current(slot)&&(!(fetched||admitted)||slot->words[0]==first_word)){precise_profile.hits++;goto execute_slot;}
  precise_profile.misses++;
  if(slot->fn){if(slot->pc!=pc)precise_profile.collisions++;else precise_profile.stale++;}
+#ifdef GEKKO2_WIIU
+ /* Tiered compilation (idea from the PPSSPP Wii U port, jereif/PPSSPP_wiiu PpcJit.cpp, GPL-2.0-or-later;
+  * re-implemented): a new block start is compiled only after it was reached a few times; until then the scalar
+  * engine runs it. The threshold rises as the code cache fills, so rarely used code does not evict hot blocks.
+  * Stale rebuilds of an already compiled pc are not delayed. */
+ if(gekko2_wiiu_jit_tier&&!(slot->fn&&slot->pc==pc)&&!ee_wiiu_tier_hot(pc)){G2BD(9);return 0;}
+#endif
  limit=ee_core_block_words(st,pc,words,limit);
  unsigned formation_limit=limit;
  for(;count<limit;count++) {

@@ -250,6 +250,14 @@ void wiiu_menu_destroy(wiiu_menu *m)
 }
 
 const char *wiiu_menu_disc(const wiiu_menu *m) { return m && m->disc[0] ? m->disc : NULL; }
+void wiiu_menu_set_disc(wiiu_menu *m, const char *path)
+{
+    if (!m || !path || !path[0])
+        return;
+    snprintf(m->disc, sizeof m->disc, "%s", path);
+    const char *name = strrchr(path, '/');
+    snprintf(m->disc_notice, sizeof m->disc_notice, "DISC: %.62s", name ? name + 1 : path);
+}
 void wiiu_menu_set_notice(wiiu_menu *m, const char *t) { if (m) snprintf(m->notice, sizeof m->notice, "%s", t ? t : ""); }
 
 static int open_browser(wiiu_menu *m)

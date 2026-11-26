@@ -62,9 +62,19 @@ static void say(const g2_platform *p, const char *format, ...)
     }
 }
 
+int gekko2_wiiu_display_sync;
+unsigned gekko2_wiiu_dump_first, gekko2_wiiu_dump_last;
+char gekko2_wiiu_dump_dir[200];
+char gekko2_wiiu_disp_info[160];
 int g2_read_display(uint32_t *xrgb, unsigned w_max, unsigned h_max, unsigned *w_out, unsigned *h_out)
 {
     gs_state_t *g = gs_get_state();
+    {
+        /* Experiment (display_sync.txt): resolve all GPU-owned GS memory before the scanout read. */
+        extern int gekko2_wiiu_display_sync;
+        if (gekko2_wiiu_display_sync)
+            gs_mem_sync();
+    }
     for (unsigned c = 0; c < 2; c++) {
         if (!(g->pmode & (1u << c)))
             continue;
@@ -93,6 +103,13 @@ int g2_read_display(uint32_t *xrgb, unsigned w_max, unsigned h_max, unsigned *w_
         }
         *w_out = w;
         *h_out = h;
+        {
+            extern char gekko2_wiiu_disp_info[160];
+            snprintf(gekko2_wiiu_disp_info, sizeof gekko2_wiiu_disp_info,
+                     "pmode=%x circ=%u bp=%x bw=%u psm=%u x=%u y=%u w=%u h=%u smode2=%llx display=%llx", (unsigned)g->pmode,
+                     c, (unsigned)bp, (unsigned)bw, psm, (unsigned)x, (unsigned)y, (unsigned)w, (unsigned)h,
+                     (unsigned long long)g->smode2, (unsigned long long)display);
+        }
         return 1;
     }
     return 0;
@@ -138,10 +155,21 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
     }
 #ifdef GEKKO2_WIIU_JIT
     else if (gekko2_optimization_mask & GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT)) {
+        {
+            extern const char *gekko2_codegen_rwx_info(void);
+            extern int gekko2_wiiu_rwx_jit;
+            if (gekko2_wiiu_rwx_jit)
+                say(platform, "JIT RWX heap: %s", gekko2_codegen_rwx_info()[0] ? gekko2_codegen_rwx_info() : "not tried");
+        }
         if (gekko2_codegen_area(NULL)) {
             /* The menu mask (optimization.cfg) keeps native EE blocks off by default, as on the Wii. Without them
              * the dynarec only translates single instructions (tester logs: blocks=0), so the JIT app turns them on. */
             gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
+            {
+                /* jit_exp.txt: extra optimization bits for measurements (bit 0 ignored) */
+                extern int gekko2_wiiu_jit_exp;
+                gekko2_optimization_mask |= (uint32_t)gekko2_wiiu_jit_exp & ~1u;
+            }
             if (!config->vu_jit_off) gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
             else gekko2_optimization_mask &= ~GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
             say(platform, "EE dynarec on (Wii U codegen area)%s", config->vu_jit_off ? "" : ", VU dynarec on");
@@ -150,6 +178,12 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "EE dynarec NOT available: %s - interpreter only", gekko2_codegen_status());
         }
     }
+#endif
+#ifndef GEKKO2_WIIU_JIT
+    /* The interpreter app cannot run generated code. The default mask (fresh SD card without optimization.cfg) has
+     * the EE JIT bit set, which switched the interpreted fast runs off in this app (Cemu: iw=0%). */
+    gekko2_optimization_mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS) |
+                                  GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_JIT));
 #endif
     /* Interpreted fast runs execute before the EE dynarec's block path in ee_core_step_n(): with the dynarec on
      * they must be off, otherwise most instructions never reach the JIT (tester logs: 0 native blocks, iw=83%).
@@ -397,6 +431,26 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             say(platform, "  EE halted=%u sr=%08x cause=%08x ra=%08x | IOP pc=%08x halted=%u",
                 (unsigned)e->halted, e->cop0[12], e->cop0[13], (unsigned)e->gpr[31].ud0, i->pc,
                 (unsigned)i->halted);
+            {
+                extern uint32_t gekko2_gx2_gs_target_info(unsigned i);
+                say(platform, "  DISP %s | GPU target fbp=%x fbw=%u h=%u", gekko2_wiiu_disp_info, (unsigned)gekko2_gx2_gs_target_info(0),
+                    (unsigned)gekko2_gx2_gs_target_info(1), (unsigned)gekko2_gx2_gs_target_info(2));
+            }
+            {
+                extern uint64_t gekko2_wiiu_rb_stats[2];
+                extern int gekko2_wiiu_rb_check;
+                if (session && gekko2_wiiu_rb_check)
+                    fprintf(session, "# rbcheck t=%llus reads=%llu changed_on_second_read=%llu\n", (unsigned long long)((now - start) / 1000u),
+                            (unsigned long long)gekko2_wiiu_rb_stats[0], (unsigned long long)gekko2_wiiu_rb_stats[1]);
+                extern char gekko2_wiiu_g2trace[65536];
+                if (session && gekko2_wiiu_g2trace[0]) {
+                    fprintf(session, "# g2trace t=%llus %s\n", (unsigned long long)((now - start) / 1000u), gekko2_wiiu_g2trace);
+                    gekko2_wiiu_g2trace[0] = 0;
+                }
+            }
+            say(platform, "  EE v0=%08x v1=%08x a0=%08x a1=%08x a2=%08x a3=%08x", (unsigned)e->gpr[2].ud0,
+                (unsigned)e->gpr[3].ud0, (unsigned)e->gpr[4].ud0, (unsigned)e->gpr[5].ud0, (unsigned)e->gpr[6].ud0,
+                (unsigned)e->gpr[7].ud0);
             if ((now - start) / 1000u % 5u == 0u) {
                 const ee_intc_state_t *ei = ee_intc_get_state();
                 const iop_intc_state_t *ii = iop_intc_get_state();
@@ -433,9 +487,22 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                     gekko2_codegen_switch_sites(sites, sizeof sites);
                     fprintf(session, " rw_sites%s", sites);
                 }
+                {
+                    extern uint64_t gekko2_wiiu_tier_stats[2];
+                    extern int gekko2_wiiu_jit_tier;
+                    fprintf(session, " tier=%d deferred=%llu hot=%llu", gekko2_wiiu_jit_tier,
+                            (unsigned long long)gekko2_wiiu_tier_stats[0], (unsigned long long)gekko2_wiiu_tier_stats[1]);
+                }
                 fprintf(session, " lookups=%llu hits=%llu misses=%llu stale=%llu installed=%llu failures=%llu\n",
                         (unsigned long long)cp.lookups, (unsigned long long)cp.hits, (unsigned long long)cp.misses,
                         (unsigned long long)cp.stale, (unsigned long long)cp.installed, (unsigned long long)cp.failures);
+                {
+                    extern char gekko2_wiiu_jit_dump[8192];
+                    if (gekko2_wiiu_jit_dump[0]) {
+                        fprintf(session, "%s\n", gekko2_wiiu_jit_dump);
+                        gekko2_wiiu_jit_dump[0] = 0;
+                    }
+                }
             }
             say(platform, "  JIT %s exec=%llu comp=%llu blk=%llu cache=%uKiB sw=%llu", gekko2_codegen_status(),
                 (unsigned long long)ee_jit_get_executed_count(), (unsigned long long)ee_jit_get_compile_attempt_count(),
@@ -450,6 +517,25 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             unsigned w = 0, h = 0;
             if (g2_read_display(frame, 1024u, 1024u, &w, &h)) {
                 last_present = now;
+                {
+                    /* frame_dump.txt "first last": raw PS2 frames number first..last as PPM files (diagnostics) */
+                    extern unsigned gekko2_wiiu_dump_first, gekko2_wiiu_dump_last;
+                    extern char gekko2_wiiu_dump_dir[200];
+                    const unsigned n = (unsigned)result->frames_presented;
+                    if (gekko2_wiiu_dump_last && n >= gekko2_wiiu_dump_first && n <= gekko2_wiiu_dump_last) {
+                        char fn[260];
+                        snprintf(fn, sizeof fn, "%s/f%05u.ppm", gekko2_wiiu_dump_dir, n);
+                        FILE *pf = fopen(fn, "wb");
+                        if (pf) {
+                            fprintf(pf, "P6\n%u %u\n255\n", w, h);
+                            for (unsigned k = 0; k < w * h; k++) {
+                                const uint8_t px[3] = { (uint8_t)(frame[k] >> 16), (uint8_t)(frame[k] >> 8), (uint8_t)frame[k] };
+                                fwrite(px, 1, 3, pf);
+                            }
+                            fclose(pf);
+                        }
+                    }
+                }
                 if (platform->present(platform->user, frame, w, h) == 0) {
                     result->frames_presented++;
                     result->last_w = w;

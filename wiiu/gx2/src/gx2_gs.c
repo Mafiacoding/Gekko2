@@ -35,6 +35,17 @@ static unsigned tw_max = 1024, th_max = 1024;
 static unsigned cur_w, cur_h, tex_linear, tex_wrap, tex_w_used, tex_h_used; static int tex_valid;
 static uint64_t stats[5];
 static GX2Texture tex_view;
+static float tex_vscale = 1.0f;
+int gekko2_wiiu_rb_check;
+int gekko2_wiiu_upload_rle;
+uint64_t gekko2_wiiu_rb_stats[2];
+/* GX2 state cache (idea from the PPSSPP Wii U GX2 backend, StateMappingGX2.cpp; re-implemented): the GS draws set
+ * the same shaders and scissor over and over. These remember what is on the GPU; any other user of the GPU state
+ * (bind_state, uploads, depth passes, the presenter via ctx_lost) clears them. */
+static const void *st_shader;
+static unsigned st_sc[4] = { ~0u, ~0u, ~0u, ~0u };
+static void state_forget(void) { st_shader = NULL; st_sc[0] = ~0u; }
+int tex_pad_rows; /* diagnostics: tex_pad.txt */
 static int view_ok;
 /* Texture ring: every CPU texture upload (GS textures, colour rows, depth rows) gets fresh memory from a ring.
  * Nothing the GPU may still read is overwritten, so no wait is needed when the texture changes, and Cemu, which
@@ -54,10 +65,25 @@ static void *ring_get(uint32_t size, uint32_t align)
     if (off + size > RING_BYTES) {
         gpu_wait(); /* the GPU is done with everything in the ring */
         ring_wraps++;
+        /* The bound GS texture stays usable: it lies near the end of the ring, which the next round reaches only much
+         * later, and gx2_gs_texture_epoch() makes the GS texture cache upload it again before its next use. (Dropping it
+         * here left the colour-row upload texture bound, which then drew picture rows at wrong places.) */
         off = 0;
     }
     ring_off = off + size;
     return ring + off;
+}
+/* dcbz before filling whole cache lines of upload memory: the CPU then does not first read the old ring contents
+ * from RAM (technique used for the GX2 upload buffers of the PPSSPP Wii U port, jereif/PPSSPP_wiiu
+ * DrawEngineGX2.cpp, GPL-2.0-or-later; re-implemented). Only for 32-byte aligned ranges that are written completely.
+ * sd:/wiiu/gekko2/dcbz_off.txt turns it off. */
+int gekko2_wiiu_dcbz = 1;
+static void dcbz_range(void *p, size_t bytes)
+{
+    if (!gekko2_wiiu_dcbz || ((uintptr_t)p & 31u))
+        return;
+    for (uint8_t *q = (uint8_t *)p, *e = q + (bytes & ~(size_t)31u); q < e; q += 32)
+        __asm__ volatile("dcbz 0,%0" : : "r"(q) : "memory");
 }
 static void *tex_in_ring(GX2Texture *t, unsigned w, unsigned h, GX2SurfaceFormat fmt)
 {
@@ -213,6 +239,7 @@ void gx2_gs_shutdown(void)
 
 static void bind_state(void)
 {
+    state_forget();
     ctx_lost = 0;
     GX2SetContextState(ctx);
     GX2SetColorBuffer(&target, GX2_RENDER_TARGET_0);
@@ -270,13 +297,20 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
         return 0;
     /* A fresh ring slot per upload: the previous texture may still be in use by queued draws. Only the rectangle
      * rx0..rx1 x ry0..ry1 is valid; draws bound to this texture sample inside it. */
-    uint32_t *dst = tex_in_ring(&tex_view, w, h, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
+    /* Clamped textures get two extra rows below the image: a copy of the last row (keeps edge filtering as with
+     * clamping) and an upload counter. Cemu re-checks texture memory sparsely and otherwise kept a stale texture
+     * when a new one of the same size landed on a reused ring address (Tekken: a second Namco logo). The v
+     * coordinates are scaled by h / (h + 2) in gx2_gs_draw. Repeating (wrap) textures cannot be padded this way. */
+    const unsigned pad = (wrap || !tex_pad_rows) ? 0u : 2u;
+    uint32_t *dst = tex_in_ring(&tex_view, w, h + pad, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
     if (!dst) {
         view_ok = 0;
         return 0;
     }
     view_ok = 1;
     const unsigned pitch = tex_view.surface.pitch;
+    if (rx0 == 0 && rx1 == w)
+        dcbz_range(dst + (size_t)ry0 * pitch, (size_t)(ry1 - ry0) * pitch * 4u);
     for (unsigned y = ry0; y < ry1; y++) {
         uint32_t *row = dst + (size_t)y * pitch;
         const uint32_t *src = argb + (size_t)y * w;
@@ -288,6 +322,15 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
             row[x] = (c << 8) | a;
         }
     }
+    if (pad) {
+        static uint32_t tex_nonce;
+        tex_nonce++;
+        memcpy(dst + (size_t)h * pitch, dst + (size_t)(h - 1u) * pitch, w * 4u);
+        uint32_t *nr = dst + (size_t)(h + 1u) * pitch;
+        for (unsigned x = 0; x < pitch; x++)
+            nr[x] = tex_nonce;
+    }
+    tex_vscale = pad ? (float)h / (float)(h + pad) : 1.0f;
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, tex_view.surface.image, tex_view.surface.imageSize);
     GX2SetPixelTexture(&tex_view, sh_mod.pixelShader->samplerVars[0].location);
     GX2SetPixelSampler(&samplers[linear ? 1 : 0][wrap ? 1 : 0], sh_mod.pixelShader->samplerVars[0].location);
@@ -311,6 +354,7 @@ void gx2_gs_rebind_texture(int linear, int wrap)
 }
 
 void gx2_gs_mark_texture_used(void) { tex_pending_use = 1; }
+uint32_t gx2_gs_texture_epoch(void) { return (uint32_t)ring_wraps; }
 
 uint32_t *gx2_gs_target_cpu(unsigned w, unsigned h, unsigned *pitch)
 {
@@ -338,14 +382,75 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     gx2_gs_set_blend(GX2_GS_BLEND_OFF, 0x80);
     if (y1 <= y0)
         return;
+    if (gekko2_wiiu_upload_rle) {
+        /* Upload without a texture: every run of equal pixels in a row becomes one flat-coloured quad. Default on Cemu:
+         * there the texture path below sometimes drew an older upload of the same size from the same ring address
+         * (measured with frame dumps: Tekken's Namco logo appeared a second time 88 rows lower on every other field;
+         * with this path 0 of 106 frames, same speed). */
+        GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+        state_forget();
+        GX2SetFetchShader(&sh_color.fetchShader);
+        GX2SetVertexShader(sh_color.vertexShader);
+        GX2SetPixelShader(sh_color.pixelShader);
+        const unsigned maxq = 2048u;
+        for (unsigned y = y0; y < y1; y++) {
+            const uint32_t *row = cstage + (size_t)y * cstage_pitch;
+            unsigned x = 0;
+            while (x < cur_w) {
+                if (vb_used + maxq * 4u > VB_MAX) {
+                    gpu_wait();
+                    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+                }
+                gx2_gs_vertex *dst = vb + vb_used;
+                unsigned nq = 0;
+                while (x < cur_w && nq < maxq) {
+                    const uint32_t c = row[x];
+                    unsigned e = x + 1;
+                    while (e < cur_w && row[e] == c) e++;
+                    const float fx0 = (float)x / (float)cur_w * 2.0f - 1.0f, fx1 = (float)e / (float)cur_w * 2.0f - 1.0f;
+                    const float fy0 = 1.0f - 2.0f * (float)y / (float)cur_h, fy1 = 1.0f - 2.0f * (float)(y + 1) / (float)cur_h;
+                    const float px[4] = { fx0, fx1, fx1, fx0 }, py[4] = { fy0, fy0, fy1, fy1 };
+                    for (int i = 0; i < 4; i++) {
+                        gx2_gs_vertex *v = &dst[nq * 4u + (unsigned)i];
+                        v->pos[0] = px[i]; v->pos[1] = py[i]; v->pos[2] = 0.0f; v->pos[3] = 1.0f;
+                        v->col[0] = (float)(c >> 24) / 255.0f; v->col[1] = (float)((c >> 16) & 0xffu) / 255.0f;
+                        v->col[2] = (float)((c >> 8) & 0xffu) / 255.0f; v->col[3] = (float)(c & 0xffu) / 255.0f;
+                        v->uv[0] = v->uv[1] = v->uv[2] = 0.0f; v->uv[3] = 1.0f;
+                    }
+                    nq++;
+                    x = e;
+                }
+                GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, nq * 4u * sizeof *dst);
+                GX2SetAttribBuffer(0, nq * 4u * sizeof *dst, sizeof *dst, dst);
+                GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, nq * 4u, 0, 1);
+                vb_used += nq * 4u;
+            }
+        }
+        state_forget();
+        if (zready && (cur_zfunc >= 0 || cur_zwrite))
+            GX2SetDepthOnlyControl(TRUE, cur_zwrite ? TRUE : FALSE,
+                                   cur_zfunc >= 0 ? (GX2CompareFunction)cur_zfunc : GX2_COMPARE_FUNC_ALWAYS);
+        return;
+    }
     /* The CPU filled rows y0..y1 of the staging texture; the GPU copies them onto the target with a quad (no
      * blending, no depth). Writing the colour buffer memory directly is not seen by Cemu, whose render targets live
      * in host textures. */
-    uint32_t *img = tex_in_ring(&up_tex, cur_w, y1 - y0, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
+    /* One extra row (never sampled) holds an upload counter: Cemu samples texture memory sparsely to detect
+     * changes, and mostly black rows uploaded to a reused address looked unchanged (stale picture rows). */
+    const unsigned rows = y1 - y0;
+    uint32_t *img = tex_in_ring(&up_tex, cur_w, rows + 1u, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
     if (!img)
         return;
+    dcbz_range(img, up_tex.surface.imageSize);
     for (unsigned y = y0; y < y1; y++)
         memcpy(img + (size_t)(y - y0) * up_tex.surface.pitch, cstage + (size_t)y * cstage_pitch, cur_w * 4u);
+    {
+        static uint32_t nonce;
+        nonce++;
+        uint32_t *nr = img + (size_t)rows * up_tex.surface.pitch;
+        for (unsigned x = 0; x < up_tex.surface.pitch; x++)
+            nr[x] = nonce;
+    }
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, img, up_tex.surface.imageSize);
     if (vb_used + 4 > VB_MAX) {
         gpu_wait();
@@ -357,7 +462,7 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     GX2SetPixelSampler(&samplers[0][0], sh_mod.pixelShader->samplerVars[0].location);
     gx2_gs_vertex q[4];
     const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
-    const float ue = 1.0f, va = 0.0f, vb2 = 1.0f;
+    const float ue = 1.0f, va = 0.0f, vb2 = (float)rows / (float)(rows + 1u);
     const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, ue, ue, 0 }, v[4] = { va, va, vb2, vb2 };
     for (int i = 0; i < 4; i++) {
         q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
@@ -367,6 +472,7 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     gx2_gs_vertex *dst = vb + vb_used;
     memcpy(dst, q, sizeof q);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, sizeof q);
+    state_forget();
     GX2SetFetchShader(&sh_mod.fetchShader);
     GX2SetVertexShader(sh_mod.vertexShader);
     GX2SetPixelShader(sh_mod.pixelShader);
@@ -391,6 +497,9 @@ void gx2_gs_set_scissor(unsigned x, unsigned y, unsigned w, unsigned h)
     if (x >= cur_w || y >= cur_h) { x = y = 0; w = h = 0; }
     if (x + w > cur_w) w = cur_w - x;
     if (y + h > cur_h) h = cur_h - y;
+    if (st_sc[0] == x && st_sc[1] == y && st_sc[2] == w && st_sc[3] == h)
+        return;
+    st_sc[0] = x; st_sc[1] = y; st_sc[2] = w; st_sc[3] = h;
     GX2SetScissor(x, y, w, h);
 }
 
@@ -444,11 +553,17 @@ int gx2_gs_draw(const gx2_gs_vertex *v, unsigned count, int prim, int textured)
     }
     gx2_gs_vertex *dst = vb + vb_used;
     memcpy(dst, v, count * sizeof *v);
+    if (textured && tex_vscale != 1.0f)
+        for (unsigned i = 0; i < count; i++)
+            dst[i].uv[1] *= tex_vscale;
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, count * sizeof *v);
     WHBGfxShaderGroup *g = textured ? &sh_mod : &sh_color;
-    GX2SetFetchShader(&g->fetchShader);
-    GX2SetVertexShader(g->vertexShader);
-    GX2SetPixelShader(g->pixelShader);
+    if (st_shader != g) {
+        st_shader = g;
+        GX2SetFetchShader(&g->fetchShader);
+        GX2SetVertexShader(g->vertexShader);
+        GX2SetPixelShader(g->pixelShader);
+    }
     GX2SetAttribBuffer(0, count * sizeof *v, sizeof *v, dst);
     const GX2PrimitiveMode mode = prim == GX2_GS_STRIP ? GX2_PRIMITIVE_MODE_TRIANGLE_STRIP
                                   : prim == GX2_GS_FAN ? GX2_PRIMITIVE_MODE_TRIANGLE_FAN
@@ -478,6 +593,24 @@ const uint32_t *gx2_gs_end_rows(unsigned y0, unsigned y1, unsigned *pitch)
     if (y1 > y0)
         DCInvalidateRange((uint8_t *)target.surface.image + (size_t)y0 * target.surface.pitch * 4u,
                           (uint32_t)((y1 - y0) * target.surface.pitch * 4u));
+    if (gekko2_wiiu_rb_check && y1 > y0) {
+        /* Diagnostics (rb_check.txt): read the rows, sync the GPU again and compare. A difference means the first
+         * read saw memory that the GPU readback had not finished writing yet. */
+        const uint32_t *t = (const uint32_t *)target.surface.image;
+        uint64_t h1 = 0, h2 = 0;
+        for (unsigned y = y0; y < y1; y++)
+            for (unsigned x = 0; x < cur_w; x++)
+                h1 = h1 * 31u + t[(size_t)y * target.surface.pitch + x];
+        GX2DrawDone();
+        DCInvalidateRange((uint8_t *)target.surface.image + (size_t)y0 * target.surface.pitch * 4u,
+                          (uint32_t)((y1 - y0) * target.surface.pitch * 4u));
+        for (unsigned y = y0; y < y1; y++)
+            for (unsigned x = 0; x < cur_w; x++)
+                h2 = h2 * 31u + t[(size_t)y * target.surface.pitch + x];
+        gekko2_wiiu_rb_stats[0]++;
+        if (h1 != h2)
+            gekko2_wiiu_rb_stats[1]++;
+    }
     if (pitch)
         *pitch = target.surface.pitch;
     return (const uint32_t *)target.surface.image;
@@ -524,9 +657,18 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
     if (y1 <= y0)
         return;
     static GX2Texture zup;
-    uint32_t *img = tex_in_ring(&zup, cur_w, y1 - y0, GX2_SURFACE_FORMAT_FLOAT_R32);
+    const unsigned zrows = y1 - y0;
+    uint32_t *img = tex_in_ring(&zup, cur_w, zrows + 1u, GX2_SURFACE_FORMAT_FLOAT_R32); /* + counter row, as above */
     if (!img)
         return;
+    dcbz_range(img, zup.surface.imageSize);
+    {
+        static uint32_t znonce;
+        znonce++;
+        uint32_t *nr = img + (size_t)zrows * zup.surface.pitch;
+        for (unsigned x = 0; x < zup.surface.pitch; x++)
+            nr[x] = znonce;
+    }
     const uint32_t *zs = (const uint32_t *)ztex.surface.image;
     for (unsigned y = y0; y < y1; y++) {
         uint32_t *d = img + (size_t)(y - y0) * zup.surface.pitch;
@@ -545,7 +687,7 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
     GX2SetPixelSampler(&samplers[0][0], sh_zload.pixelShader->samplerVars[0].location);
     gx2_gs_vertex q[4];
     const float ya = 1.0f - 2.0f * (float)y0 / (float)cur_h, yb = 1.0f - 2.0f * (float)y1 / (float)cur_h;
-    const float ue = 1.0f, va = 0.0f, vb2 = 1.0f;
+    const float ue = 1.0f, va = 0.0f, vb2 = (float)zrows / (float)(zrows + 1u);
     const float px[4] = { -1, 1, 1, -1 }, py[4] = { ya, ya, yb, yb }, u[4] = { 0, ue, ue, 0 }, v[4] = { va, va, vb2, vb2 };
     for (int i = 0; i < 4; i++) {
         q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
@@ -555,6 +697,7 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
     gx2_gs_vertex *dst = vb + vb_used;
     memcpy(dst, q, sizeof q);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, sizeof q);
+    state_forget();
     GX2SetFetchShader(&sh_zload.fetchShader);
     GX2SetVertexShader(sh_zload.vertexShader);
     GX2SetPixelShader(sh_zload.pixelShader);
@@ -617,6 +760,7 @@ static const uint32_t *depth_read_shader_rows(unsigned y0, unsigned y1, unsigned
     gx2_gs_vertex *dst = vb + vb_used;
     memcpy(dst, q, sizeof q);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, sizeof q);
+    state_forget();
     GX2SetFetchShader(&sh_mod.fetchShader);
     GX2SetVertexShader(sh_mod.vertexShader);
     GX2SetPixelShader(sh_mod.pixelShader);
