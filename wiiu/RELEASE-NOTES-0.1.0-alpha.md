@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 17, test build)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 18, test build)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -58,6 +58,18 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
   the row length of these textures itself and ignored the padded rows build 12 used. Build 13 removes the padding
   and gives every texture upload fresh memory from a ring buffer instead, so Cemu always sees new data. This also
   removes a wait for the GPU on every texture change (helps real hardware too; not measured yet).
+- **Build 18: techniques from the PPSSPP Wii U port** (jereif/PPSSPP_wiiu, GPL-2.0-or-later; re-implemented, not
+  copied), each with an off switch:
+  - GX2 state cache: shaders and scissor are only sent to the GPU when they change. Cemu, Tekken boot, normal
+    app with GPU: 384 million PS2 instructions after 140 s, 366 million in build 16.
+  - `dcbz` when filling upload memory (textures, picture rows, depth rows): saves memory reads on a real Wii U;
+    no measurable change on Cemu. Off: `dcbz_off.txt`.
+  - Tiered JIT (compile a block only after it ran a few times): on Cemu with the full 6 MB code cache it was
+    about 5% slower, so it only switches on when the code memory is small (RWX heap below 3 MB). Force on:
+    `jit_tier.txt`, off: `jit_tier_off.txt`.
+  - Not taken over: PPSSPP's register cache, fused loads/stores and peephole passes assume a JIT that runs
+    whole blocks freely; Gekko2's PS2 JIT checks every instruction for exact interrupts and memory faults, which
+    those passes would remove. Paired singles for the VU: not yet, needs exact PS2 float rounding first.
 - **Test build 17, JIT app on a real Wii U: RWX code memory (please test).** Under Aroma the JIT app now looks for
   read/write/execute memory in the range 0x00800000-0x01000000 (technique from the PPSSPP Wii U port by jereif,
   GPL-2.0-or-later, re-implemented). Generated code there needs no write/execute switching and may run on any

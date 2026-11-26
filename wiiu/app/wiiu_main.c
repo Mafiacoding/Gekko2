@@ -937,6 +937,13 @@ int main(void)
                             tex_pad_rows = file_exists_flag(sd_root, "tex_pad.txt");
                             extern int gekko2_wiiu_g2trace_on;
                             gekko2_wiiu_g2trace_on = file_exists_flag(sd_root, "g2trace.txt");
+                            extern int gekko2_wiiu_dcbz;
+                            gekko2_wiiu_dcbz = !file_exists_flag(sd_root, "dcbz_off.txt");
+#ifdef GEKKO2_WIIU_JIT
+                            extern int gekko2_wiiu_jit_tier;
+                            gekko2_wiiu_jit_tier = file_exists_flag(sd_root, "jit_tier_off.txt") ? 0
+                                                   : file_exists_flag(sd_root, "jit_tier.txt") ? 2 : 1; /* 1: small code memory only */
+#endif
                         }
                         extern unsigned gekko2_wiiu_dump_first, gekko2_wiiu_dump_last;
                         extern char gekko2_wiiu_dump_dir[200];

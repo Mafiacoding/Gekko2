@@ -482,6 +482,12 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                     gekko2_codegen_switch_sites(sites, sizeof sites);
                     fprintf(session, " rw_sites%s", sites);
                 }
+                {
+                    extern uint64_t gekko2_wiiu_tier_stats[2];
+                    extern int gekko2_wiiu_jit_tier;
+                    fprintf(session, " tier=%d deferred=%llu hot=%llu", gekko2_wiiu_jit_tier,
+                            (unsigned long long)gekko2_wiiu_tier_stats[0], (unsigned long long)gekko2_wiiu_tier_stats[1]);
+                }
                 fprintf(session, " lookups=%llu hits=%llu misses=%llu stale=%llu installed=%llu failures=%llu\n",
                         (unsigned long long)cp.lookups, (unsigned long long)cp.hits, (unsigned long long)cp.misses,
                         (unsigned long long)cp.stale, (unsigned long long)cp.installed, (unsigned long long)cp.failures);

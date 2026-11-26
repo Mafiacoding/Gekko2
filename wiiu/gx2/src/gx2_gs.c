@@ -36,6 +36,12 @@ static unsigned cur_w, cur_h, tex_linear, tex_wrap, tex_w_used, tex_h_used; stat
 static uint64_t stats[5];
 static GX2Texture tex_view;
 static float tex_vscale = 1.0f;
+/* GX2 state cache (idea from the PPSSPP Wii U GX2 backend, StateMappingGX2.cpp; re-implemented): the GS draws set
+ * the same shaders and scissor over and over. These remember what is on the GPU; any other user of the GPU state
+ * (bind_state, uploads, depth passes, the presenter via ctx_lost) clears them. */
+static const void *st_shader;
+static unsigned st_sc[4] = { ~0u, ~0u, ~0u, ~0u };
+static void state_forget(void) { st_shader = NULL; st_sc[0] = ~0u; }
 int tex_pad_rows; /* diagnostics: tex_pad.txt */
 static int view_ok;
 /* Texture ring: every CPU texture upload (GS textures, colour rows, depth rows) gets fresh memory from a ring.
@@ -63,6 +69,18 @@ static void *ring_get(uint32_t size, uint32_t align)
     }
     ring_off = off + size;
     return ring + off;
+}
+/* dcbz before filling whole cache lines of upload memory: the CPU then does not first read the old ring contents
+ * from RAM (technique used for the GX2 upload buffers of the PPSSPP Wii U port, jereif/PPSSPP_wiiu
+ * DrawEngineGX2.cpp, GPL-2.0-or-later; re-implemented). Only for 32-byte aligned ranges that are written completely.
+ * sd:/wiiu/gekko2/dcbz_off.txt turns it off. */
+int gekko2_wiiu_dcbz = 1;
+static void dcbz_range(void *p, size_t bytes)
+{
+    if (!gekko2_wiiu_dcbz || ((uintptr_t)p & 31u))
+        return;
+    for (uint8_t *q = (uint8_t *)p, *e = q + (bytes & ~(size_t)31u); q < e; q += 32)
+        __asm__ volatile("dcbz 0,%0" : : "r"(q) : "memory");
 }
 static void *tex_in_ring(GX2Texture *t, unsigned w, unsigned h, GX2SurfaceFormat fmt)
 {
@@ -218,6 +236,7 @@ void gx2_gs_shutdown(void)
 
 static void bind_state(void)
 {
+    state_forget();
     ctx_lost = 0;
     GX2SetContextState(ctx);
     GX2SetColorBuffer(&target, GX2_RENDER_TARGET_0);
@@ -287,6 +306,8 @@ int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsign
     }
     view_ok = 1;
     const unsigned pitch = tex_view.surface.pitch;
+    if (rx0 == 0 && rx1 == w)
+        dcbz_range(dst + (size_t)ry0 * pitch, (size_t)(ry1 - ry0) * pitch * 4u);
     for (unsigned y = ry0; y < ry1; y++) {
         uint32_t *row = dst + (size_t)y * pitch;
         const uint32_t *src = argb + (size_t)y * w;
@@ -367,6 +388,7 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     uint32_t *img = tex_in_ring(&up_tex, cur_w, rows + 1u, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
     if (!img)
         return;
+    dcbz_range(img, up_tex.surface.imageSize);
     for (unsigned y = y0; y < y1; y++)
         memcpy(img + (size_t)(y - y0) * up_tex.surface.pitch, cstage + (size_t)y * cstage_pitch, cur_w * 4u);
     {
@@ -397,6 +419,7 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     gx2_gs_vertex *dst = vb + vb_used;
     memcpy(dst, q, sizeof q);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, sizeof q);
+    state_forget();
     GX2SetFetchShader(&sh_mod.fetchShader);
     GX2SetVertexShader(sh_mod.vertexShader);
     GX2SetPixelShader(sh_mod.pixelShader);
@@ -421,6 +444,9 @@ void gx2_gs_set_scissor(unsigned x, unsigned y, unsigned w, unsigned h)
     if (x >= cur_w || y >= cur_h) { x = y = 0; w = h = 0; }
     if (x + w > cur_w) w = cur_w - x;
     if (y + h > cur_h) h = cur_h - y;
+    if (st_sc[0] == x && st_sc[1] == y && st_sc[2] == w && st_sc[3] == h)
+        return;
+    st_sc[0] = x; st_sc[1] = y; st_sc[2] = w; st_sc[3] = h;
     GX2SetScissor(x, y, w, h);
 }
 
@@ -479,9 +505,12 @@ int gx2_gs_draw(const gx2_gs_vertex *v, unsigned count, int prim, int textured)
             dst[i].uv[1] *= tex_vscale;
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, count * sizeof *v);
     WHBGfxShaderGroup *g = textured ? &sh_mod : &sh_color;
-    GX2SetFetchShader(&g->fetchShader);
-    GX2SetVertexShader(g->vertexShader);
-    GX2SetPixelShader(g->pixelShader);
+    if (st_shader != g) {
+        st_shader = g;
+        GX2SetFetchShader(&g->fetchShader);
+        GX2SetVertexShader(g->vertexShader);
+        GX2SetPixelShader(g->pixelShader);
+    }
     GX2SetAttribBuffer(0, count * sizeof *v, sizeof *v, dst);
     const GX2PrimitiveMode mode = prim == GX2_GS_STRIP ? GX2_PRIMITIVE_MODE_TRIANGLE_STRIP
                                   : prim == GX2_GS_FAN ? GX2_PRIMITIVE_MODE_TRIANGLE_FAN
@@ -561,6 +590,7 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
     uint32_t *img = tex_in_ring(&zup, cur_w, zrows + 1u, GX2_SURFACE_FORMAT_FLOAT_R32); /* + counter row, as above */
     if (!img)
         return;
+    dcbz_range(img, zup.surface.imageSize);
     {
         static uint32_t znonce;
         znonce++;
@@ -596,6 +626,7 @@ static void depth_upload_pass_rows(int swap, unsigned y0, unsigned y1)
     gx2_gs_vertex *dst = vb + vb_used;
     memcpy(dst, q, sizeof q);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, sizeof q);
+    state_forget();
     GX2SetFetchShader(&sh_zload.fetchShader);
     GX2SetVertexShader(sh_zload.vertexShader);
     GX2SetPixelShader(sh_zload.pixelShader);
@@ -658,6 +689,7 @@ static const uint32_t *depth_read_shader_rows(unsigned y0, unsigned y1, unsigned
     gx2_gs_vertex *dst = vb + vb_used;
     memcpy(dst, q, sizeof q);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, sizeof q);
+    state_forget();
     GX2SetFetchShader(&sh_mod.fetchShader);
     GX2SetVertexShader(sh_mod.vertexShader);
     GX2SetPixelShader(sh_mod.pixelShader);

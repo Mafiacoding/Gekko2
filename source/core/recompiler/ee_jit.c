@@ -1371,6 +1371,25 @@ uint64_t gekko2_wiiu_block_diag[16];
 #else
 #define G2BD(i) ((void)0)
 #endif
+#ifdef GEKKO2_WIIU
+int gekko2_wiiu_jit_tier;
+uint64_t gekko2_wiiu_tier_stats[2]; /* 0: visits deferred to the scalar engine, 1: blocks that became hot */
+static uint32_t tier_pc[8192];
+static uint16_t tier_count[8192];
+static int ee_wiiu_tier_hot(uint32_t pc)
+{
+ const uint32_t cap=ppc_code_cache_capacity(),usedb=ppc_code_cache_used();
+ /* Measured on Cemu with the 6 MiB cache: tiering cost about 5% (Tekken boot) and changed block starts, so it only
+  * applies to small code memory (RWX heap) unless forced (jit_tier.txt, gekko2_wiiu_jit_tier == 2). */
+ if(gekko2_wiiu_jit_tier==1&&cap>=(3u<<20))return 1;
+ const unsigned threshold=usedb<cap/2u?4u:usedb<cap-cap/5u?32u:256u;
+ const uint32_t i=((pc>>2)*2654435761u)>>19;
+ if(tier_pc[i]!=pc){tier_pc[i]=pc;tier_count[i]=0;}
+ if(tier_count[i]<threshold){tier_count[i]++;gekko2_wiiu_tier_stats[0]++;return 0;}
+ if(tier_count[i]==threshold){tier_count[i]++;gekko2_wiiu_tier_stats[1]++;}
+ return 1;
+}
+#endif
 static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetched,uint32_t first_word,int native_chain)
 {
 #ifdef GEKKO2_SPEED_STUB
@@ -1409,6 +1428,13 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
     ee_precise_slot_generation_current(slot)&&(!(fetched||admitted)||slot->words[0]==first_word)){precise_profile.hits++;goto execute_slot;}
  precise_profile.misses++;
  if(slot->fn){if(slot->pc!=pc)precise_profile.collisions++;else precise_profile.stale++;}
+#ifdef GEKKO2_WIIU
+ /* Tiered compilation (idea from the PPSSPP Wii U port, jereif/PPSSPP_wiiu PpcJit.cpp, GPL-2.0-or-later;
+  * re-implemented): a new block start is compiled only after it was reached a few times; until then the scalar
+  * engine runs it. The threshold rises as the code cache fills, so rarely used code does not evict hot blocks.
+  * Stale rebuilds of an already compiled pc are not delayed. */
+ if(gekko2_wiiu_jit_tier&&!(slot->fn&&slot->pc==pc)&&!ee_wiiu_tier_hot(pc)){G2BD(9);return 0;}
+#endif
  limit=ee_core_block_words(st,pc,words,limit);
  unsigned formation_limit=limit;
  for(;count<limit;count++) {
