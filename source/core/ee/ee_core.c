@@ -12196,9 +12196,74 @@ unsigned ee_core_step_n(unsigned n)
 {
     unsigned retired = 0, used = 0;
     while (used < n && !g_state.halted && !ee_interleave_stopped) {
+        if (g_state.idle) {
+            ee_hle_thread_reschedule_kick(&g_state);
+            if (!g_state.idle) continue;
+            unsigned profile_previous = gp_enter(GP_IDLE);
+            const int service_fast = gekko2_opt_enabled(GEKKO2_OPT_EE_SERVICES);
+            unsigned idle_run = 0;
+            while (used < n && g_state.idle && !g_state.halted && !ee_interleave_stopped) {
+                unsigned k = 0;
+                if (service_fast && g_ee_display_ticks &&
+                    g_ee_display_phase != 0u && g_ee_display_phase != EE_CYCLES_VBLANK_DURATION &&
+                    !g_state.branch_pending && !g_state.vu0_running &&
+                    !vu1_work_pending_fast() && !dma_graphics_work_pending_fast() &&
+                    !g_ee_irq.intc_delay && !g_ee_irq.intc_armed &&
+                    !ee_intc_pending_fast() && !dma_dmac_interrupt_pending_fast() &&
+                    !g_rpcinit_pending && !g_rpc_bind_pending && !g_rpc_bind_qcount &&
+                    !g_ee_cdvd_ncmd_reentry.valid && !sif_ee_tick_pending() &&
+                    !EE_SBUS_WAIT_PC_MATCH(g_state.pc) &&
+                    (g_boot_once.selfloop || g_state.pc != EE_BOOT_UNBLOCK_SELFLOOP_PC) &&
+                    (g_boot_once.fastboot || g_state.pc != EE_EELOAD_START_PC)) {
+                    uint32_t d = EE_CYCLES_PER_FRAME_NTSC - g_ee_display_phase;
+                    if (g_ee_display_phase < EE_CYCLES_VBLANK_DURATION &&
+                        EE_CYCLES_VBLANK_DURATION - g_ee_display_phase < d)
+                        d = EE_CYCLES_VBLANK_DURATION - g_ee_display_phase;
+                    if (ee_timers_batch_clock[0] < d)
+                        d = ee_timers_batch_clock[0];
+                    if (g_state.cop0[13] & EE_CAUSE_IP7) {
+                        if (g_state.cop0[12] & 0x8000u) d = 0u;
+                    } else {
+                        uint32_t cmp_d = (uint32_t)(g_state.cop0[11] - g_state.cop0[9]);
+                        if (cmp_d < d) d = cmp_d;
+                    }
+                    if (d > 2u) {
+                        unsigned rem = n - used;
+                        if (ee_core_interleave_quantum != UINT32_MAX) {
+                            unsigned qrem = ee_core_interleave_quantum > idle_run
+                                ? ee_core_interleave_quantum - idle_run : 0u;
+                            if (rem > qrem) rem = qrem;
+                        }
+                        k = rem < (d - 1u) ? rem : (d - 1u);
+                    }
+                }
+                if (k >= 2u) {
+                    g_state.cop0[9] += k;
+                    g_state.cop0[13] &= ~(EE_CAUSE_IP2 | EE_CAUSE_IP3);
+                    g_ee_display_ticks += k;
+                    g_ee_display_phase += k;
+                    ee_timers_batch_clock[0] -= k;
+                    ee_timers_batch_clock[1] += k;
+                    used += k;
+                    idle_run += k;
+                } else {
+                    ee_core_park_tick_profile_impl(&g_state);
+                    ee_hle_thread_reschedule_kick(&g_state);
+                    used++;
+                    idle_run++;
+                }
+                if (ee_core_interleave_quantum != UINT32_MAX && idle_run >= ee_core_interleave_quantum) {
+                    ee_core_interleave_account(idle_run);
+                    idle_run = 0;
+                }
+            }
+            if (idle_run) ee_core_interleave_account(idle_run);
+            gp_leave(profile_previous);
+            continue;
+        }
         uint64_t before = g_state.instructions_executed;
         unsigned block_retired=0;
-#ifdef GEKKO2_IDLE_SKIP
+#if defined(GEKKO2_IDLE_SKIP) && !defined(GEKKO2_WIIU)
         { unsigned sk=ee_idle_skip(&g_state,n-used);
           if(sk){retired+=sk;used+=sk;ee_core_interleave_account(sk);continue;} }
 #endif

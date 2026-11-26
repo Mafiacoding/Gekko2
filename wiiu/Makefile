@@ -9,11 +9,17 @@ $(error Please set DEVKITPRO and DEVKITPPC in your environment)
 endif
 include $(DEVKITPRO)/wut/share/wut_rules
 
-JIT           ?= 0
+JIT        ?= 0
+SPEED_STUB ?= 0
 ifeq ($(JIT),1)
-TARGET        := gekko2-wiiu-jit
-BUILD         := build-jit
-JITFLAGS      := -DGEKKO2_WIIU_JIT
+TARGET   := gekko2-wiiu-jit
+BUILD    := build-jit
+# Wii U provides a 16 MiB codegen area; use 15 MiB instead of the 6 MiB Wii default
+# to avoid eviction/codegen-switch thrashing during heavy code phases.
+JITFLAGS := -DGEKKO2_WIIU_JIT -DPPC_CODE_CACHE_BYTES=15728640u
+ifeq ($(SPEED_STUB),1)
+JITFLAGS += -DGEKKO2_SPEED_STUB
+endif
 else
 TARGET        := gekko2-wiiu
 BUILD         := build
@@ -37,7 +43,7 @@ INCLUDES      := gx2/src ../include ../source ../third_party/libchdr/include ../
 CHD_FLAGS     := -DWANT_RAW_DATA_SECTOR=1 -DWANT_SUBCODE=1 -DVERIFY_BLOCK_CRC=1 -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_DEFLATE_APIS \
                  -DMINIZ_NO_STDIO -DMINIZ_NO_TIME -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE=1
 OPT           ?= -O1
-CFLAGS        := -g $(OPT) -w $(MACHDEP) $(INCLUDE) -DGEKKO2_WIIU $(JITFLAGS) $(CHD_FLAGS)
+CFLAGS        := -g $(OPT) -w $(MACHDEP) $(INCLUDE) -DGEKKO2_WIIU $(JITFLAGS) $(CHD_FLAGS) $(EXTRA_CFLAGS)
 LDFLAGS       := -g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
 LIBS          := -lwut -lm
 

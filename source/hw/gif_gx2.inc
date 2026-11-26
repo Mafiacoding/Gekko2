@@ -60,13 +60,22 @@ static uint32_t g2_upload_word(const uint8_t *s, uint32_t psm)
     if (a > 0xffu) a = 0xffu;
     return ((uint32_t)s[0] << 24) | ((uint32_t)s[1] << 16) | ((uint32_t)s[2] << 8) | a;
 }
-/* GS Z <-> normalised depth. 24-bit UNORM depth d = round(n * 0xffffff). */
-static double g2_zscale(uint32_t zpsm) { return zpsm == 0u ? 4294967295.0 : zpsm == 1u ? 16777215.0 : 65535.0; }
-static uint32_t g2_z_to_d24(uint32_t z, uint32_t zpsm) { return (uint32_t)((double)z / g2_zscale(zpsm) * 16777215.0 + 0.5); }
-static uint32_t g2_d24_to_z(uint32_t d, uint32_t zpsm)
+/* GS Z <-> normalised depth. 24-bit UNORM depth d = round(n * 0xffffff).
+ * Avoid per-pixel double-precision fdiv on PowerPC: Z24 is identity and Z32/Z16 use constant reciprocals. */
+static inline double g2_zscale(uint32_t zpsm) { return zpsm == 0u ? 4294967295.0 : zpsm == 1u ? 16777215.0 : 65535.0; }
+static inline uint32_t g2_z_to_d24(uint32_t z, uint32_t zpsm)
 {
-    double z = (double)d / 16777215.0 * g2_zscale(zpsm) + 0.5;
-    return z >= g2_zscale(zpsm) ? (uint32_t)g2_zscale(zpsm) : (uint32_t)z;
+    if (zpsm == 1u) return z & 0xffffffu;
+    const double k = zpsm == 0u ? (16777215.0 / 4294967295.0) : (16777215.0 / 65535.0);
+    return (uint32_t)((double)z * k + 0.5);
+}
+static inline uint32_t g2_d24_to_z(uint32_t d, uint32_t zpsm)
+{
+    if (zpsm == 1u) return d & 0xffffffu;
+    const double scale = g2_zscale(zpsm);
+    const double k = zpsm == 0u ? (4294967295.0 / 16777215.0) : (65535.0 / 16777215.0);
+    double z = (double)d * k + 0.5;
+    return z >= scale ? (uint32_t)scale : (uint32_t)z;
 }
 static uint32_t g2_read_zbytes(const uint8_t *p, uint32_t zpsm)
 {
@@ -86,8 +95,13 @@ static int g2_resolver_body(void *opaque, uint8_t *vram, uint32_t size);
 int (*gekko2_gx2_call)(int (*fn)(void *, uint8_t *, uint32_t), void *opaque, uint8_t *vram, uint32_t size);
 static int g2_resolver(void *opaque, uint8_t *vram, uint32_t size)
 {
+    extern volatile int gekko2_wiiu_exiting;
     if (!g2r.open)
         return 1;
+    if (gekko2_wiiu_exiting) {
+        g2r.open = g2r.zopen = g2r.zdirty = 0;
+        return 1;
+    }
     if (gekko2_gx2_call)
         return gekko2_gx2_call(g2_resolver_body, opaque, vram, size);
     return g2_resolver_body(opaque, vram, size);

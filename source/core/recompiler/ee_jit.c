@@ -1414,6 +1414,8 @@ static unsigned ee_precise_execute(ee_state_t *st,unsigned budget,unsigned fetch
    * remains stable because no executable buffer was replaced. */
   slot->source_page=source_page;slot->source_generation=source_generation;
   slot->mapping_generation=mapping_generation;
+  if (formation_limit > slot->formation_limit)
+   slot->formation_limit = formation_limit;
   ee_precise_publish_dispatch(slot);
  }
 execute_slot:;
