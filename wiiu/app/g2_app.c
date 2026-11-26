@@ -437,7 +437,12 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                     (unsigned)gekko2_gx2_gs_target_info(1), (unsigned)gekko2_gx2_gs_target_info(2));
             }
             {
-                extern char gekko2_wiiu_g2trace[4096];
+                extern uint64_t gekko2_wiiu_rb_stats[2];
+                extern int gekko2_wiiu_rb_check;
+                if (session && gekko2_wiiu_rb_check)
+                    fprintf(session, "# rbcheck t=%llus reads=%llu changed_on_second_read=%llu\n", (unsigned long long)((now - start) / 1000u),
+                            (unsigned long long)gekko2_wiiu_rb_stats[0], (unsigned long long)gekko2_wiiu_rb_stats[1]);
+                extern char gekko2_wiiu_g2trace[65536];
                 if (session && gekko2_wiiu_g2trace[0]) {
                     fprintf(session, "# g2trace t=%llus %s\n", (unsigned long long)((now - start) / 1000u), gekko2_wiiu_g2trace);
                     gekko2_wiiu_g2trace[0] = 0;

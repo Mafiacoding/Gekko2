@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 18, test build)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 19, test build)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -58,6 +58,12 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
   the row length of these textures itself and ignored the padded rows build 12 used. Build 13 removes the padding
   and gives every texture upload fresh memory from a ring buffer instead, so Cemu always sees new data. This also
   removes a wait for the GPU on every texture change (helps real hardware too; not measured yet).
+- **Build 19: second Namco logo on Cemu fixed.** With the GPU renderer on Cemu, Tekken showed its "PRODUCED BY
+  namco" logo a second time lower in the picture on every other field. Cause: Cemu sometimes drew an older upload
+  of picture rows that had the same size and the same memory address (Cemu checks such textures only sparsely
+  for changes). On Cemu the rows are now uploaded as flat-coloured runs instead of a texture. Checked with raw frame
+  dumps in Cemu 2.6: normal app 0 of 106 frames with a second logo (before: about half), JIT app 0 of 201;
+  same speed. A real Wii U keeps the texture upload. Switches: `upload_rle.txt` / `upload_tex.txt`.
 - **Build 18: techniques from the PPSSPP Wii U port** (jereif/PPSSPP_wiiu, GPL-2.0-or-later; re-implemented, not
   copied), each with an off switch:
   - GX2 state cache: shaders and scissor are only sent to the GPU when they change. Cemu, Tekken boot, normal
@@ -79,9 +85,6 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
   hardware; no speed claim.
 - **Cemu, JIT app:** the emulator runs on the main core there as well (Cemu does not enforce the code core):
   516 million PS2 instructions after 290 s with the GPU renderer, about 450 million before (local Cemu 2.6).
-- **Known Cemu issue (GPU renderer):** Tekken's Namco logo can show a second copy lower in the picture on every
-  other field in Cemu. It comes from reading GPU pictures back through Cemu; the PC model of the GPU and the
-  software renderer show one logo. Not checked on a real Wii U.
 - **GPU renderer: misplaced picture pieces (build 16):** Tekken's "PRODUCED BY namco" logo was drawn in pieces at
   several wrong places with the GPU renderer. The texture memory ring from build 13 starts over when it is full,
   and a texture that was still cached could then point at memory that already held other data. Cached textures

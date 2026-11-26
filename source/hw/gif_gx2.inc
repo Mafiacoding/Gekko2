@@ -84,7 +84,7 @@ static uint32_t g2_shadow[1024u * 1024u];
 #endif
 static int g2_resolver_body(void *opaque, uint8_t *vram, uint32_t size);
 /* Diagnostics (session log "# g2trace"): uploads U, textured sprites S, rows changed by a resolve R. */
-char gekko2_wiiu_g2trace[4096];
+char gekko2_wiiu_g2trace[65536];
 int gekko2_wiiu_g2_notex; /* diagnostics: textured draws stay in software */
 int gekko2_wiiu_g2trace_on; /* g2trace.txt */
 static void g2_trace(const char *fmt, ...)
@@ -126,6 +126,22 @@ static int g2_resolver_body(void *opaque, uint8_t *vram, uint32_t size)
     const uint32_t page = g2r.fbp / 2048u;
     int run0 = -1;
     g2_trace("R%u-%u:", (unsigned)g2r.dy0, (unsigned)g2r.dy1);
+    if (gekko2_wiiu_g2trace_on) {
+        /* red logo pixels per 16-row band in the GPU picture (readback) and in GS memory before the write-back */
+        g2_trace("[fbp%x h%u red gpu/gs:", (unsigned)g2r.fbp, (unsigned)g2r.h);
+        for (uint32_t b0 = g2r.dy0 & ~15u; b0 < g2r.dy1; b0 += 16u) {
+            unsigned ng = 0, nm = 0;
+            for (uint32_t y = b0; y < b0 + 16u && y < g2r.dy1; y++)
+                for (uint32_t x = 0; x < g2r.w; x += 2u) {
+                    const uint32_t c = px[(size_t)y * pitch + x]; /* 0xRRGGBBAA */
+                    if ((c >> 24) > 0x60u && ((c >> 16) & 0xffu) < 0x20u) ng++;
+                    const uint32_t off = gs_mem_swizzle_addr32(page, g2r.fbw, x, y);
+                    if (off <= size - 4u && vram[off] > 0x60u && vram[off + 1] < 0x20u) nm++;
+                }
+            if (ng || nm) g2_trace("%u:%u/%u ", (unsigned)b0, ng, nm);
+        }
+        g2_trace("] ");
+    }
     for (uint32_t y = g2r.dy0; y < g2r.dy1; y++) {
         const uint32_t *row = px + (size_t)y * pitch;
         if (gekko2_wiiu_g2trace_on) {
@@ -573,6 +589,19 @@ static int g2_bind_texture_impl(g2_rect rc)
             g2_tex_buf[y * tw + x] = (t & 0xff000000u) | ((t & 0xffu) << 16) | (t & 0xff00u) | ((t >> 16) & 0xffu);
         }
     G2_T1(2);
+    if (gekko2_wiiu_g2trace_on) {
+        g2_trace("[tex up %u-%u red:", (unsigned)u.y0, (unsigned)u.y1);
+        for (uint32_t b0 = u.y0 & ~31u; b0 < u.y1; b0 += 32u) {
+            unsigned n = 0;
+            for (uint32_t y = b0 < u.y0 ? u.y0 : b0; y < b0 + 32u && y < u.y1; y++)
+                for (uint32_t x = u.x0; x < u.x1; x += 2u) {
+                    const uint32_t t = g2_tex_buf[y * tw + x]; /* 0xAARRGGBB */
+                    if (((t >> 16) & 0xffu) > 0x60u && ((t >> 8) & 0xffu) < 0x20u) n++;
+                }
+            if (n) g2_trace("%u:%u ", (unsigned)b0, n);
+        }
+        g2_trace("] ");
+    }
     /* TEX0.TCC = 0: the texel alpha is not used (RGB texture), the vertex alpha alone decides. */
     if (!gx2_gs_set_texture_rect(g2_tex_buf, tw, th, u.x0, u.y0, u.x1, u.y1, g_gif.tex_tcc ? 1 : 0, (int)linear, (int)wrap))
         return 0;
@@ -814,7 +843,7 @@ static int g2_try_sprite(int32_t raw_x0, int32_t raw_y0, int32_t raw_x1, int32_t
     }
     G2_T0;
     if (textured)
-        g2_trace("S%d-%d ", (int)py0, (int)py1);
+        g2_trace("S%d-%d(v%.3f-%.3f) ", (int)py0, (int)py1, (double)va, (double)vb);
     if (!gx2_gs_draw(v, 4, GX2_GS_QUADS, textured))
         return 0;
     G2_T1(3);

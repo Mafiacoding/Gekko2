@@ -36,6 +36,9 @@ static unsigned cur_w, cur_h, tex_linear, tex_wrap, tex_w_used, tex_h_used; stat
 static uint64_t stats[5];
 static GX2Texture tex_view;
 static float tex_vscale = 1.0f;
+int gekko2_wiiu_rb_check;
+int gekko2_wiiu_upload_rle;
+uint64_t gekko2_wiiu_rb_stats[2];
 /* GX2 state cache (idea from the PPSSPP Wii U GX2 backend, StateMappingGX2.cpp; re-implemented): the GS draws set
  * the same shaders and scissor over and over. These remember what is on the GPU; any other user of the GPU state
  * (bind_state, uploads, depth passes, the presenter via ctx_lost) clears them. */
@@ -379,6 +382,56 @@ void gx2_gs_target_ready_rows(unsigned y0, unsigned y1)
     gx2_gs_set_blend(GX2_GS_BLEND_OFF, 0x80);
     if (y1 <= y0)
         return;
+    if (gekko2_wiiu_upload_rle) {
+        /* Upload without a texture: every run of equal pixels in a row becomes one flat-coloured quad. Default on Cemu:
+         * there the texture path below sometimes drew an older upload of the same size from the same ring address
+         * (measured with frame dumps: Tekken's Namco logo appeared a second time 88 rows lower on every other field;
+         * with this path 0 of 106 frames, same speed). */
+        GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+        state_forget();
+        GX2SetFetchShader(&sh_color.fetchShader);
+        GX2SetVertexShader(sh_color.vertexShader);
+        GX2SetPixelShader(sh_color.pixelShader);
+        const unsigned maxq = 2048u;
+        for (unsigned y = y0; y < y1; y++) {
+            const uint32_t *row = cstage + (size_t)y * cstage_pitch;
+            unsigned x = 0;
+            while (x < cur_w) {
+                if (vb_used + maxq * 4u > VB_MAX) {
+                    gpu_wait();
+                    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+                }
+                gx2_gs_vertex *dst = vb + vb_used;
+                unsigned nq = 0;
+                while (x < cur_w && nq < maxq) {
+                    const uint32_t c = row[x];
+                    unsigned e = x + 1;
+                    while (e < cur_w && row[e] == c) e++;
+                    const float fx0 = (float)x / (float)cur_w * 2.0f - 1.0f, fx1 = (float)e / (float)cur_w * 2.0f - 1.0f;
+                    const float fy0 = 1.0f - 2.0f * (float)y / (float)cur_h, fy1 = 1.0f - 2.0f * (float)(y + 1) / (float)cur_h;
+                    const float px[4] = { fx0, fx1, fx1, fx0 }, py[4] = { fy0, fy0, fy1, fy1 };
+                    for (int i = 0; i < 4; i++) {
+                        gx2_gs_vertex *v = &dst[nq * 4u + (unsigned)i];
+                        v->pos[0] = px[i]; v->pos[1] = py[i]; v->pos[2] = 0.0f; v->pos[3] = 1.0f;
+                        v->col[0] = (float)(c >> 24) / 255.0f; v->col[1] = (float)((c >> 16) & 0xffu) / 255.0f;
+                        v->col[2] = (float)((c >> 8) & 0xffu) / 255.0f; v->col[3] = (float)(c & 0xffu) / 255.0f;
+                        v->uv[0] = v->uv[1] = v->uv[2] = 0.0f; v->uv[3] = 1.0f;
+                    }
+                    nq++;
+                    x = e;
+                }
+                GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, dst, nq * 4u * sizeof *dst);
+                GX2SetAttribBuffer(0, nq * 4u * sizeof *dst, sizeof *dst, dst);
+                GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, nq * 4u, 0, 1);
+                vb_used += nq * 4u;
+            }
+        }
+        state_forget();
+        if (zready && (cur_zfunc >= 0 || cur_zwrite))
+            GX2SetDepthOnlyControl(TRUE, cur_zwrite ? TRUE : FALSE,
+                                   cur_zfunc >= 0 ? (GX2CompareFunction)cur_zfunc : GX2_COMPARE_FUNC_ALWAYS);
+        return;
+    }
     /* The CPU filled rows y0..y1 of the staging texture; the GPU copies them onto the target with a quad (no
      * blending, no depth). Writing the colour buffer memory directly is not seen by Cemu, whose render targets live
      * in host textures. */
@@ -540,6 +593,24 @@ const uint32_t *gx2_gs_end_rows(unsigned y0, unsigned y1, unsigned *pitch)
     if (y1 > y0)
         DCInvalidateRange((uint8_t *)target.surface.image + (size_t)y0 * target.surface.pitch * 4u,
                           (uint32_t)((y1 - y0) * target.surface.pitch * 4u));
+    if (gekko2_wiiu_rb_check && y1 > y0) {
+        /* Diagnostics (rb_check.txt): read the rows, sync the GPU again and compare. A difference means the first
+         * read saw memory that the GPU readback had not finished writing yet. */
+        const uint32_t *t = (const uint32_t *)target.surface.image;
+        uint64_t h1 = 0, h2 = 0;
+        for (unsigned y = y0; y < y1; y++)
+            for (unsigned x = 0; x < cur_w; x++)
+                h1 = h1 * 31u + t[(size_t)y * target.surface.pitch + x];
+        GX2DrawDone();
+        DCInvalidateRange((uint8_t *)target.surface.image + (size_t)y0 * target.surface.pitch * 4u,
+                          (uint32_t)((y1 - y0) * target.surface.pitch * 4u));
+        for (unsigned y = y0; y < y1; y++)
+            for (unsigned x = 0; x < cur_w; x++)
+                h2 = h2 * 31u + t[(size_t)y * target.surface.pitch + x];
+        gekko2_wiiu_rb_stats[0]++;
+        if (h1 != h2)
+            gekko2_wiiu_rb_stats[1]++;
+    }
     if (pitch)
         *pitch = target.surface.pitch;
     return (const uint32_t *)target.surface.image;

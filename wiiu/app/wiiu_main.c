@@ -939,6 +939,13 @@ int main(void)
                             gekko2_wiiu_g2trace_on = file_exists_flag(sd_root, "g2trace.txt");
                             extern int gekko2_wiiu_dcbz;
                             gekko2_wiiu_dcbz = !file_exists_flag(sd_root, "dcbz_off.txt");
+                            extern int gekko2_wiiu_rb_check;
+                            gekko2_wiiu_rb_check = file_exists_flag(sd_root, "rb_check.txt");
+                            extern int gekko2_wiiu_upload_rle;
+                            /* Cemu reused stale picture-row upload textures (Tekken: second Namco logo); there the rows
+                             * are uploaded as flat-coloured runs instead. upload_tex.txt / upload_rle.txt force a path. */
+                            gekko2_wiiu_upload_rle = file_exists_flag(sd_root, "upload_tex.txt") ? 0
+                                                     : file_exists_flag(sd_root, "upload_rle.txt") || (OSGetTitleID() >> 32) == 0xffffffffull;
 #ifdef GEKKO2_WIIU_JIT
                             extern int gekko2_wiiu_jit_tier;
                             gekko2_wiiu_jit_tier = file_exists_flag(sd_root, "jit_tier_off.txt") ? 0
