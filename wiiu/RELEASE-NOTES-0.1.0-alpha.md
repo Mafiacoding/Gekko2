@@ -73,6 +73,15 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
   counts these hand-overs). The real emulation speed is the `vblank_per_s` column in `session.log`
   (59.94 = full speed).
 
+## New after build 20: BIOS settings and memory card
+
+- **BIOS settings are saved** in `sd:/wiiu/gekko2/bios/bios-config.bin` (language, time zone, ...), like the Wii
+  build's `sd:/pcsx2/bios-config.bin`. Before, the BIOS asked for the language after every intro and never reached
+  its main menu by itself.
+- **Memory card 1** is `sd:/wiiu/gekko2/memcards/MemoryCard1.ps2` (8 MiB PCSX2-compatible image). A missing card is
+  created empty; format it once in the PS2 browser. It is saved every 10 seconds after a change and on exit. Before,
+  no card was inserted at all (BIOS browser without memory card, games could not save).
+
 ## Fixed in this build
 
 - **GPU renderer on Cemu (build 13):** build 12 made the picture worse in Cemu (horizontal streaks): Cemu works out

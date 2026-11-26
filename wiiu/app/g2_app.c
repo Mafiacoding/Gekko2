@@ -19,6 +19,8 @@
 #include "core/hw/gs_wii_output.h"
 #include "core/hw/iop_cdvd.h"
 #include "core/hw/iop_cdrom_legacy.h"
+#include "core/hw/ps2_memory_card.h"
+#include <sys/stat.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -194,6 +196,65 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         say(platform, "system_init failed");
         return result->status = G2_ERR_INIT;
     }
+    {
+        /* BIOS settings (language, clock, screen type; the CDVD controller's config blocks) are kept in bios-config.bin
+         * next to the BIOS, as the Wii build keeps sd:/pcsx2/bios-config.bin. Without it the BIOS asks for the language
+         * after every intro and never reaches its main menu/browser. G2_BIOS_CONFIG overrides the path (host tests). */
+        extern int cdvd_config_bind_file(const char *p);
+        char cfg[512] = "";
+        const char *env = getenv("G2_BIOS_CONFIG");
+        if (env)
+            snprintf(cfg, sizeof cfg, "%s", env);
+#ifdef __PPC__
+        else if (config->bios_path) {
+            const char *slash = strrchr(config->bios_path, '/');
+            if (slash && (size_t)(slash - config->bios_path) < sizeof cfg - 20)
+                snprintf(cfg, sizeof cfg, "%.*s/bios-config.bin", (int)(slash - config->bios_path), config->bios_path);
+        }
+#endif
+        if (cfg[0]) {
+            const int rc = cdvd_config_bind_file(cfg);
+            say(platform, rc < 0 ? "BIOS settings file unreadable, saving off: %s" : rc ? "BIOS settings: new file %s" : "BIOS settings loaded: %s", cfg);
+        }
+    }
+    {
+        /* Memory card 1 (port 0): memcards/MemoryCard1.ps2 beside the bios folder (sd:/wiiu/gekko2/memcards/). A
+         * missing card is created empty (erased, unformatted); the PS2 browser formats it. Without a card the BIOS
+         * browser had no memory card icons and games could not save. G2_MEMCARD overrides the path (host tests). */
+        char mc[512] = "";
+        const char *env = getenv("G2_MEMCARD");
+        if (env)
+            snprintf(mc, sizeof mc, "%s", env);
+#ifdef __PPC__
+        else if (config->bios_path) {
+            const char *slash = strrchr(config->bios_path, '/');
+            size_t n = slash ? (size_t)(slash - config->bios_path) : 0u;
+            while (n && config->bios_path[n - 1] != '/') n--; /* parent of the bios folder */
+            if (n && n < sizeof mc - 40) {
+                snprintf(mc, sizeof mc, "%.*smemcards", (int)n, config->bios_path);
+                mkdir(mc, 0777);
+                snprintf(mc, sizeof mc, "%.*smemcards/MemoryCard1.ps2", (int)n, config->bios_path);
+            }
+        }
+#endif
+        if (mc[0] && !ps2_mc_present()) {
+            FILE *t = fopen(mc, "rb");
+            if (t)
+                fclose(t);
+            else if ((t = fopen(mc, "wb")) != NULL) {
+                static uint8_t ff[33792];
+                memset(ff, 0xff, sizeof ff);
+                int ok = 1;
+                for (uint32_t done = 0; ok && done < PS2_MC_IMAGE_BYTES; done += sizeof ff)
+                    ok = fwrite(ff, 1, PS2_MC_IMAGE_BYTES - done < sizeof ff ? PS2_MC_IMAGE_BYTES - done : sizeof ff, t) > 0;
+                if (fclose(t) || !ok)
+                    remove(mc);
+                else
+                    say(platform, "memory card created: %s", mc);
+            }
+            say(platform, ps2_mc_mount(mc, 0) == 0 ? "memory card 1: %s" : "memory card 1 could not be mounted: %s", mc);
+        }
+    }
     if (config->iso_path && config->iso_path[0]) {
         int a = iop_cdvd_mount_iso(config->iso_path), b = iop_cdrom_legacy_mount_iso(config->iso_path);
         if (a && b) {
@@ -325,6 +386,15 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         uint64_t now = platform->now_ms ? platform->now_ms(platform->user) : 0;
         if (now - last_report >= 1000u || result->batches == 1) {
             last_report = now;
+            {
+                /* Save the memory card at most every 10 s after the guest changed it (HOME can end the app any time). */
+                static uint64_t mc_flushed;
+                if (now - mc_flushed >= 10000u) {
+                    mc_flushed = now;
+                    if (ps2_mc_flush())
+                        say(platform, "memory card save FAILED (check the SD card)");
+                }
+            }
             const uint64_t dt = now - last_stat_ms;
             const uint64_t ips = dt ? (e->instructions_executed - last_stat_instr) * 1000u / dt : 0;
             last_stat_ms = now;
@@ -707,6 +777,8 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             (unsigned long long)(st[5] / 1000000u));
         gs_async_detach();
     }
+    if (ps2_mc_flush())
+        say(platform, "memory card save FAILED (check the SD card)");
     if (session) {
         say_file = NULL;
         fclose(session);
