@@ -136,12 +136,17 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         return result->status = G2_ERR_BIOS;
     }
     say(platform, "BIOS ok: %s (%u bytes)", bios.version_string, (unsigned)bios.size);
+    #ifdef GEKKO2_WIIU_JIT
+    const uint32_t wiiu_jit_block_bits =
+        GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS) |
+        GEKKO2_OPT_BIT(GEKKO2_OPT_LONG_EE_BLOCKS);
+#endif
     if (!config->mask_preset) {
 #ifdef GEKKO2_WIIU_JIT
         if (config->use_jit) {
             /* The codegen area is only usable from the codegen core; ask now, on the emulator thread. */
             if (gekko2_codegen_area(NULL)) {
-                gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS);
+                gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | wiiu_jit_block_bits;
                 if (!config->vu_jit_off) gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
                 say(platform, "EE dynarec requested (Wii U codegen area)%s", config->vu_jit_off ? "" : ", VU dynarec on");
             } else {
@@ -174,7 +179,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             else gekko2_optimization_mask &= ~GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT);
             say(platform, "EE dynarec on (Wii U codegen area)%s", config->vu_jit_off ? "" : ", VU dynarec on");
         } else {
-            gekko2_optimization_mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | GEKKO2_OPT_BIT(GEKKO2_OPT_EE_BLOCKS) | GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT));
+            gekko2_optimization_mask &= ~(GEKKO2_OPT_BIT(GEKKO2_OPT_EE_JIT) | wiiu_jit_block_bits | GEKKO2_OPT_BIT(GEKKO2_OPT_VU_JIT));
             say(platform, "EE dynarec NOT available: %s - interpreter only", gekko2_codegen_status());
         }
     }
@@ -204,7 +209,7 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         say(platform, "disc mounted");
     }
 
-    uint64_t last_present = 0, last_report = 0, last_stat_ms = 0, last_stat_instr = 0, last_vb = 0;
+    uint64_t last_present = 0, last_present_vb = 0, last_report = 0, last_stat_ms = 0, last_stat_instr = 0, last_vb = 0;
     uint16_t last_pad_pressed = 0;
     FILE *session = config->session_log ? fopen(config->session_log, "a") : NULL;
     if (session) {
@@ -290,6 +295,9 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             system_iop_async_attach(platform->worker_idle, iop_stack, (char *)iop_stack + iop_stack_size);
             if (platform->start_worker_stack(system_iop_worker_main, platform->user, iop_stack, iop_stack_size) == 0 &&
                 system_iop_async_enable() == 0) {
+                extern unsigned gekko2_wiiu_event_width;
+                gekko2_wiiu_event_width = 256u;
+                gekko2_optimization_mask |= GEKKO2_OPT_BIT(GEKKO2_OPT_IOP_IDLE_BATCH);
                 iop_async_active = 1;
                 say(platform, "IOP worker thread active (IOP catch-up runs on its own core)");
             } else {
@@ -513,9 +521,12 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
             if (i->halted)
                 say(platform, "  IOP halt: %.100s", i->halt_reason);
         }
-        if (platform->present && now - last_present >= config->present_interval_ms) {
-            unsigned w = 0, h = 0;
-            if (g2_read_display(frame, 1024u, 1024u, &w, &h)) {
+        if (platform->present) {
+            const uint64_t cur_vb = ee_core_get_vblank_events();
+            const int vb_ready = (cur_vb != last_present_vb && now - last_present >= 16u);
+            const int fallback_ready = (!result->frames_presented && now - last_present >= config->present_interval_ms);
+            if (vb_ready || fallback_ready) {
+                unsigned w = 0, h = 0;
                 last_present = now;
                 {
                     /* frame_dump.txt "first last": raw PS2 frames number first..last as PPM files (diagnostics) */
@@ -557,10 +568,12 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
         vu1_async_detach();
     }
     if (iop_async_active) {
+        extern unsigned gekko2_wiiu_event_width;
         unsigned long long st[4];
         system_iop_async_stats(st);
         say(platform, "IOP worker: jobs=%llu ticks=%llu emulation waits=%llu worker shared waits=%llu", st[0], st[1], st[2], st[3]);
         system_iop_async_detach();
+        gekko2_wiiu_event_width = 0u;
     }
 #ifdef GEKKO2_WIIU_GX2
     if (gx2_gs_active) {

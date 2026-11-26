@@ -59,11 +59,13 @@ void gs_async_pump(void)
 
 void gs_async_drain(void)
 {
-    if (!gs_async_on) return;
+    extern volatile int gekko2_wiiu_exiting;
+    if (!gs_async_on || gekko2_wiiu_exiting) return;
     if (__atomic_load_n(&ga_done_cnt, __ATOMIC_ACQUIRE) == ga_push_cnt) { gs_async_pump(); return; }
     ga_stat[2]++;
     const uint64_t t0 = ga_now();
-    while (__atomic_load_n(&ga_done_cnt, __ATOMIC_ACQUIRE) != ga_push_cnt &&
+    while (!gekko2_wiiu_exiting &&
+           __atomic_load_n(&ga_done_cnt, __ATOMIC_ACQUIRE) != ga_push_cnt &&
            __atomic_load_n(&ga_stall_epoch, __ATOMIC_ACQUIRE) != __atomic_load_n(&ga_epoch, __ATOMIC_ACQUIRE))
         ga_wait();
     ga_stat[5] += ga_now() - t0;
@@ -160,10 +162,12 @@ void gs_async_worker_main(void)
 {
     __atomic_store_n(&ga_started, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&ga_running, 1, __ATOMIC_RELEASE);
+    extern volatile int gekko2_wiiu_exiting;
     unsigned idle = 0;
-    while (!__atomic_load_n(&ga_stop, __ATOMIC_ACQUIRE)) {
+    while (!__atomic_load_n(&ga_stop, __ATOMIC_ACQUIRE) && !gekko2_wiiu_exiting) {
 #ifdef GEKKO2_WIIU
         if (gekko2_worker_tick) gekko2_worker_tick();
+        if (gekko2_wiiu_exiting) break;
 #endif
         const uint32_t e = __atomic_load_n(&ga_epoch, __ATOMIC_ACQUIRE);
         const uint64_t b0 = ga_now();
@@ -213,6 +217,8 @@ void gs_async_stats(uint64_t out[8]) { for (unsigned i = 0; i < 8u; i++) out[i] 
 /* ---- emulation-thread producers ---- */
 static uint32_t ga_push(unsigned kind, unsigned path, const uint8_t *data, uint32_t qwc, uint32_t arg, int partial)
 {
+    extern volatile int gekko2_wiiu_exiting;
+    if (gekko2_wiiu_exiting) return qwc;
     ga_ring_t *r = &ga_ring[path];
     uint32_t total = 0;
     do {
@@ -220,6 +226,7 @@ static uint32_t ga_push(unsigned kind, unsigned path, const uint8_t *data, uint3
         const uint32_t w = r->w;
         uint32_t spins = 0;
         for (;;) {
+            if (gekko2_wiiu_exiting) return qwc;
             const uint32_t rd = __atomic_load_n(&r->r, __ATOMIC_ACQUIRE);
             const uint32_t room = GA_SLOTS - (w - rd);
             if (room >= 1u + take) break;
@@ -307,6 +314,7 @@ int gif_mmio_read32(uint32_t addr, uint32_t *out_val)
 }
 int gif_mmio_write32(uint32_t addr, uint32_t val)
 {
+    if (addr != GIF_CTRL_ADDR && addr != GIF_MODE_ADDR) return 0;
     if (!gs_async_on) return gif_mmio_write32_sync(addr, val);
     gs_async_drain(); gs_async_lock();
     const int r = gif_mmio_write32_sync(addr, val);

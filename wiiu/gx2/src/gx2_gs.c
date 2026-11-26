@@ -198,7 +198,7 @@ fail:
 
 void gx2_gs_shutdown(void)
 {
-    if (ready)
+    if (ready && !ctx_lost)
         GX2DrawDone();
     if (vb) MEMFreeToDefaultHeap(vb);
     if (ring) MEMFreeToDefaultHeap(ring);

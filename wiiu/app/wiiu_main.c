@@ -94,6 +94,7 @@ static int show_log; /* status lines over the picture: only with the verbose log
 static volatile int in_foreground = 1;
 static int osscreen_up; /* OSScreen initialised and owning the display */
 static int app_alive = 1;
+volatile int gekko2_wiiu_exiting = 0;
 static uint32_t procui_acquire(void *ctx)
 {
     (void)ctx;
@@ -127,8 +128,10 @@ static uint32_t procui_release(void *ctx)
 }
 static int app_running(void)
 {
-    if (app_alive && !WHBProcIsRunning())
+    if (app_alive && !WHBProcIsRunning()) {
         app_alive = 0;
+        gekko2_wiiu_exiting = 1;
+    }
     return app_alive;
 }
 static uint32_t compose[640u * 480u];
