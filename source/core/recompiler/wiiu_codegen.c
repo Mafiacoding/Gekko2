@@ -7,6 +7,10 @@
 #include <coreinit/codegen.h>
 #include <coreinit/core.h>
 #include <coreinit/title.h>
+#include <coreinit/memorymap.h>
+#include <coreinit/memheap.h>
+#include <coreinit/memexpheap.h>
+#include <coreinit/memfrmheap.h>
 #include <stdio.h>
 static void *area;
 static uint32_t area_size;
@@ -20,10 +24,11 @@ static const char *status = "not initialised";
  * ICInvalidateRange, so on Cemu the area is written directly and never switched. Cemu is recognised by the
  * title ID it gives a directly loaded RPX (upper half ffffffff); a real Wii U never uses that range. */
 static int cemu_mode;
-/* Opt-in (sd:/wiiu/gekko2/jit_cemu_fast.txt): Cemu tester log 2026-11-25 showed about 3.5x more EE instructions
- * per second with this mode, but the BIOS then stayed in its timer calibration loop (EE pc 0x9fc41080), so it is
- * off by default until that is understood. */
+/* On by default; sd:/wiiu/gekko2/jit_cemu_safe.txt turns it off. The BIOS hang seen with build 13 (timer calibration
+ * loop, EE pc 0x9fc41080) was Cemu's recompiler getting the carry out of a chained SUBFE wrong; the EE 64-bit
+ * compare no longer uses that chain on the Wii U (ppc_dynarec.c emit_slt_core). */
 int gekko2_wiiu_cemu_fast_jit;
+int gekko2_wiiu_jit_exp; /* extra optimization bits from jit_exp.txt (measurements) */
 /* Lazy mode switching: the area stays R_X after generated code ran and only a writer switches it back to RW.
  * Running code repeatedly therefore costs no mode switch; a switch happens only on a write/execute transition. */
 static void to_rw(void)
@@ -48,21 +53,109 @@ static void to_rx(void)
 }
 const char *gekko2_codegen_status(void) { return status; }
 unsigned long long gekko2_codegen_switch_count(void) { return switch_count; }
+/* RWX code memory (technique from PPSSPP for Wii U, jereif/PPSSPP_wiiu Common/MemoryUtil.cpp, GPL-2.0-or-later;
+ * re-implemented here). Under Aroma the range 0x00800000-0x01000000 is mapped read/write/execute and holds the
+ * loader's heaps. A block taken from the largest expanded heap there (or from a frame heap) can hold generated code
+ * without OSSwitchSecCodeGenMode and is not tied to the codegen core. Real Wii U only: Cemu does not have this
+ * memory. sd:/wiiu/gekko2/jit_codegen.txt keeps the official codegen area. Not verified on hardware yet. */
+int gekko2_wiiu_rwx_jit;
+static char rwx_info[160];
+static void *rwx_acquire(uint32_t *out_size)
+{
+    const uintptr_t lo = 0x00800000u, hi = 0x01000000u;
+    MEMHeapHeader *best_exp = NULL, *best_frm = NULL;
+    uint32_t best_exp_avail = 0, best_frm_avail = 0;
+    for (uintptr_t page = lo; page < hi; page += 0x1000u) {
+        if (!OSIsAddressValid((uint32_t)page))
+            continue;
+        for (uintptr_t a = page; a < page + 0x1000u; a += 4u) {
+            MEMHeapHeader *h = (MEMHeapHeader *)a;
+            if (h->tag != MEM_EXPANDED_HEAP_TAG && h->tag != MEM_FRAME_HEAP_TAG)
+                continue;
+            const uintptr_t ds = (uintptr_t)h->dataStart, de = (uintptr_t)h->dataEnd;
+            if (ds < a + sizeof(MEMHeapHeader) || ds >= hi || de <= ds || de > hi)
+                continue;
+            if (h->tag == MEM_EXPANDED_HEAP_TAG) {
+                const uint32_t av = MEMGetAllocatableSizeForExpHeapEx(h, 0x100);
+                if (av > best_exp_avail) { best_exp_avail = av; best_exp = h; }
+            } else {
+                const uint32_t av = MEMGetAllocatableSizeForFrmHeapEx(h, 0x100);
+                if (av > best_frm_avail) { best_frm_avail = av; best_frm = h; }
+            }
+        }
+    }
+    const uint32_t keep = 64u * 1024u, cap = 6u * 1024u * 1024u + 64u;
+    void *p = NULL;
+    uint32_t sz = 0;
+    if (best_exp && best_exp_avail >= 512u * 1024u + keep) {
+        sz = (best_exp_avail - keep) & ~0xfffu;
+        if (sz > cap) sz = cap & ~0xfffu;
+        p = MEMAllocFromExpHeapEx(best_exp, sz, -0x1000); /* from the tail, 4 KiB aligned */
+        snprintf(rwx_info, sizeof rwx_info, "RWX block from expanded heap %p: %p, %u KiB", (void *)best_exp, p, sz / 1024u);
+    }
+    if (!p && best_frm && best_frm_avail >= 512u * 1024u + keep) {
+        sz = (best_frm_avail - keep) & ~0xfffu;
+        if (sz > cap) sz = cap & ~0xfffu;
+        p = MEMAllocFromFrmHeapEx(best_frm, sz, -0x100);
+        snprintf(rwx_info, sizeof rwx_info, "RWX block from frame heap %p: %p, %u KiB", (void *)best_frm, p, sz / 1024u);
+    }
+    if (!p) {
+        snprintf(rwx_info, sizeof rwx_info, "no RWX heap with free space (best expanded %u KiB, frame %u KiB)",
+                 best_exp_avail / 1024u, best_frm_avail / 1024u);
+        return NULL;
+    }
+    *out_size = sz;
+    return p;
+}
+const char *gekko2_codegen_rwx_info(void) { return rwx_info; }
+/* Generated code may run on any core (RWX heap, or Cemu which does not enforce the codegen core). */
+int gekko2_codegen_any_core(void) { return cemu_mode; }
+/* Front end, before the emulator thread layout is chosen: take the RWX heap now. 1 = RWX code memory in use; 0 = not
+ * available (the official codegen area is tried later, on the codegen core). */
+int gekko2_codegen_try_rwx(void)
+{
+    if (acquired)
+        return cemu_mode && area != NULL && rwx_info[0] == 'R';
+    if (!gekko2_wiiu_rwx_jit || (OSGetTitleID() >> 32) == 0xffffffffull)
+        return 0;
+    void *r = rwx_acquire(&area_size);
+    if (!r)
+        return 0;
+    acquired = 1;
+    area = r;
+    cemu_mode = 1;
+    in_rx = 0;
+    status = "RWX heap (Aroma) ready: no mode switches, any core";
+    return 1;
+}
 void *gekko2_codegen_area(uint32_t *size)
 {
     if (!acquired) {
         acquired = 1;
+        if (gekko2_wiiu_rwx_jit && (OSGetTitleID() >> 32) != 0xffffffffull) {
+            void *r = rwx_acquire(&area_size);
+            if (r) {
+                area = r;
+                cemu_mode = 1; /* same handling: RWX memory needs no mode switches */
+                in_rx = 0;
+                status = "RWX heap (Aroma) ready: no mode switches, any core";
+                if (size)
+                    *size = area_size;
+                return area;
+            }
+        }
         OSGetCodegenVirtAddrRange(&area, &area_size);
         if (!area || !area_size) {
             area = NULL;
             status = "no codegen area for this app";
-        } else if (OSGetCoreId() != OSGetCodegenCore()) {
-            area = NULL;
-            status = "emulator thread is not on the codegen core";
         } else if ((OSGetTitleID() >> 32) == 0xffffffffull && gekko2_wiiu_cemu_fast_jit) {
+            /* Cemu does not tie generated code to the codegen core, so the emulator may run on the main core. */
             cemu_mode = 1;
             in_rx = 0;
             status = "codegen area ready (Cemu: no mode switches, Cemu recompiles the generated code)";
+        } else if (OSGetCoreId() != OSGetCodegenCore()) {
+            area = NULL;
+            status = "emulator thread is not on the codegen core";
         } else {
             OSSwitchSecCodeGenMode(CODEGEN_RW_); /* RW by default; R_X only while generated code runs */
             in_rx = 0;

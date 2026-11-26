@@ -12,14 +12,9 @@ include $(DEVKITPRO)/wut/share/wut_rules
 JIT        ?= 0
 SPEED_STUB ?= 0
 ifeq ($(JIT),1)
-TARGET   := gekko2-wiiu-jit
-BUILD    := build-jit
-# Wii U provides a 16 MiB codegen area; use 15 MiB instead of the 6 MiB Wii default
-# to avoid eviction/codegen-switch thrashing during heavy code phases.
-JITFLAGS := -DGEKKO2_WIIU_JIT -DPPC_CODE_CACHE_BYTES=15728640u
-ifeq ($(SPEED_STUB),1)
-JITFLAGS += -DGEKKO2_SPEED_STUB
-endif
+TARGET        := gekko2-wiiu-jit
+BUILD         := build-jit
+JITFLAGS      := -DGEKKO2_WIIU_JIT -DGEKKO2_WIIU_GX2
 else
 TARGET        := gekko2-wiiu
 BUILD         := build
