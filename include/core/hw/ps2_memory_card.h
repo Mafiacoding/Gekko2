@@ -9,6 +9,9 @@ int ps2_mc_mount(const char *path,int read_only);
 int ps2_mc_flush(void);
 int ps2_mc_eject(void);
 int ps2_mc_present(void);
+#ifdef GEKKO2_WIIU
+unsigned ps2_mc_generation(void); /* changes on every mount/eject */
+#endif
 int ps2_mc_writable(void);
 /* Logical HLE access skips spare bytes; writes regenerate touched-page ECC.
  * Only the explicit FORMAT RPC erases the device. No host path access. */

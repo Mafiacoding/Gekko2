@@ -32,6 +32,10 @@ static void page_ecc(unsigned page)
  uint8_t *p=image()+page*PS2_MC_PAGE_BYTES;
  for(unsigned i=0;i<4;i++)ps2_mc_ecc128(p+i*128u,p+512u+i*3u);
 }
+#ifdef GEKKO2_WIIU
+static unsigned mount_generation; /* changes on every mount/eject (McGetInfo change reporting) */
+unsigned ps2_mc_generation(void){return mount_generation;}
+#endif
 int ps2_mc_present(void){
     G2_IOP_CALLS_EE();return state!=NULL;}
 int ps2_mc_writable(void){return state&&!readonly;}
@@ -77,7 +81,11 @@ int ps2_mc_flush(void)
 int ps2_mc_eject(void)
 {
  if(ps2_mc_flush())return -1;
- free(state);state=NULL;filename[0]=0;path_hash=dirty=0;ps2_mc_reset_protocol();ps2_mc_fs_reset();return 0;
+ free(state);state=NULL;filename[0]=0;path_hash=dirty=0;ps2_mc_reset_protocol();ps2_mc_fs_reset();
+#ifdef GEKKO2_WIIU
+ mount_generation++;
+#endif
+ return 0;
 }
 int ps2_mc_mount(const char *path,int read_only)
 {
@@ -98,7 +106,11 @@ int ps2_mc_mount(const char *path,int read_only)
  memcpy(filename,path,strlen(path)+1);path_hash=2166136261u;
  for(const unsigned char *p=(const unsigned char*)path;*p;p++)path_hash=(path_hash^*p)*16777619u;
  if(raw_format)for(unsigned p=0;p<PS2_MC_PAGES;p++)page_ecc(p);
- ps2_mc_reset_protocol();ps2_mc_fs_reset();return 0;
+ ps2_mc_reset_protocol();ps2_mc_fs_reset();
+#ifdef GEKKO2_WIIU
+ mount_generation++;
+#endif
+ return 0;
 }
 static uint32_t logical32(uint32_t address)
 {

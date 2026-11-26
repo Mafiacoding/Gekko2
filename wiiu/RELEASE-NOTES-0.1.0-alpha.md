@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 20, test build)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 21, test build)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -73,7 +73,13 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
   counts these hand-overs). The real emulation speed is the `vblank_per_s` column in `session.log`
   (59.94 = full speed).
 
-## New after build 20: BIOS settings and memory card
+## New in build 21: bright memory card tiles in the BIOS browser, BIOS settings, memory card
+
+- **BIOS browser tiles (glow):** the memory card status call (`McGetInfo`) reported "new unformatted card inserted"
+  on every poll (about every 14 vblanks). The browser therefore re-ran the card's arrival animation over and over
+  and never reached the selected state, so the selected tile stayed dark instead of glowing like in PCSX2. It now
+  reports a card change once and "same card" afterwards (ps2sdk libmc semantics). Checked frame by frame on the
+  host: the selected card now glows (brightest 1% of pixels 163, PCSX2 160).
 
 - **BIOS settings are saved** in `sd:/wiiu/gekko2/bios/bios-config.bin` (language, time zone, ...), like the Wii
   build's `sd:/pcsx2/bios-config.bin`. Before, the BIOS asked for the language after every intro and never reached

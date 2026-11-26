@@ -3786,6 +3786,20 @@ static int32_t ee_mcserv_getinfo_no_card(ee_state_t *st,uint32_t payload,uint32_
     int32_t result=-11;
     if(port==0u && slot==0u && ps2_mc_present()){
         type=2;result=ps2_mc_get_info(&formatted,&free_clusters);
+#ifdef GEKKO2_WIIU
+        /* McGetInfo reports a card change once: -1 (new formatted card) or -2 (new unformatted card), then 0 while
+         * the same card stays in the slot (ps2sdk libmc: sceMcResChangedCard / sceMcResNoFormat / sceMcResSucceed).
+         * Returning -2 on every poll made the PS2 browser treat the card as freshly inserted every ~14 vblanks: the
+         * icon re-ran its arrival animation and never reached the selected state with its glow. */
+        {
+            static unsigned seen_generation;
+            const unsigned gen=ps2_mc_generation();
+            if(result==0||result==-2){
+                if(seen_generation!=gen){seen_generation=gen;result=formatted?-1:-2;}
+                else result=0;
+            }
+        }
+#endif
     }else if(port==0u && slot==0u && iop_sio2_mc_is_inserted()){
         type=1;result=-13; /* PS1 filesystem metadata is not implemented here. */
     }
