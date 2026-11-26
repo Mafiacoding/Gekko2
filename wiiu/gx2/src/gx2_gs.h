@@ -40,6 +40,12 @@ int gx2_gs_set_texture(const uint32_t *argb, unsigned w, unsigned h, int has_alp
  * contents, so the caller must only sample inside rectangles it uploaded. */
 int gx2_gs_set_texture_rect(const uint32_t *argb, unsigned w, unsigned h, unsigned rx0, unsigned ry0, unsigned rx1,
                             unsigned ry1, int has_alpha, int linear, int wrap);
+/* Texture = rectangle of the GPU target at (ox, oy) (frame buffer feedback, copied on the GPU). alpha_const < 0 keeps
+ * the texel alpha, otherwise sets it (0..1). See gx2_gs.c. */
+int gx2_gs_texture_from_target(unsigned tw, unsigned th, unsigned ox, unsigned oy, unsigned rx0, unsigned ry0,
+                               unsigned rx1, unsigned ry1, float alpha_const, float alpha_black, int linear, int wrap);
+int gx2_gs_init_fbcopy(const void *gsh); /* gs.vsh + gs_fbcopy.psh; optional, after gx2_gs_init */
+int gx2_gs_fbcopy_ready(void);
 void gx2_gs_set_blend(int mode, uint32_t fix);
 int gx2_gs_draw(const gx2_gs_vertex *v, unsigned count, int prim, int textured);
 /* Finish all work and return the target pixels (big-endian words 0xRRGGBBAA, alpha 1.0 = 0xff), row pitch in pixels. */

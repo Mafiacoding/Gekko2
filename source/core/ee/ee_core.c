@@ -11638,7 +11638,13 @@ unsigned ee_core_event_distance(unsigned maximum)
  if(g_rpcinit_pending||g_rpc_bind_pending||g_rpc_bind_qcount||g_ee_cdvd_ncmd_reentry.valid||sif_ee_tick_pending()) {
   ee_event_deadline_stats[0]++;return 8u;
  }
+#ifdef GEKKO2_WIIU
+ /* With the wait skip an idle EE with nobody ready advances in one step up to the same deadlines computed below. */
+ { extern int gekko2_wiiu_waitskip; extern int ee_hle_thread_none_ready(void);
+   if(g_state.idle&&(!gekko2_wiiu_waitskip||!ee_hle_thread_none_ready())){ee_event_deadline_stats[1]++;return 8u;} }
+#else
  if(g_state.idle){ee_event_deadline_stats[1]++;return 8u;}
+#endif
  uint32_t status=g_state.cop0[12];
  int enabled=(status&0x10007u)==0x10001u;
  int intc=ee_intc_pending_fast()||g_ee_irq.intc_delay||g_ee_irq.intc_armed;
@@ -11919,7 +11925,12 @@ static unsigned ee_idle_skip(ee_state_t *st,unsigned budget)
 
 #ifndef GEKKO2_IDLE_SKIP
 uint64_t ee_core_vblank_fast_wait_stat(unsigned which){(void)which;return 0;}
+#ifdef GEKKO2_WIIU
+/* Wide event windows (512 slots) while the EE kernel is idle and the wait skip can advance it. */
+unsigned ee_core_idle_active(void){extern int gekko2_wiiu_waitskip;return gekko2_wiiu_waitskip&&g_state.idle;}
+#else
 unsigned ee_core_idle_active(void){return 0;}
+#endif
 #endif
 #ifdef GEKKO2_SPEED_STUB
 /* BETA12.2: sample SCALAR EE entry PCs, not just native block entries.
@@ -12192,9 +12203,136 @@ static unsigned ee_iw_run(ee_state_t *st,unsigned budget)
 }
 #endif
 
+#ifdef GEKKO2_WIIU
+/* Diagnostics (hotpc.txt): EE pc samples at step boundaries, weighted by the instructions retired. */
+int gekko2_wiiu_hotpc_on;
+uint32_t gekko2_wiiu_hotpc_pc[512];
+uint64_t gekko2_wiiu_hotpc_n[512];
+uint32_t gekko2_wiiu_ee_word(uint32_t va)
+{
+    const uint32_t pa = va & 0x1fffffffu;
+    if (!g_state.ram || pa + 4u > g_state.ram_size)
+        return 0xffffffffu;
+    const uint8_t *p = g_state.ram + pa;
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static void ee_hotpc_add(uint32_t pc, unsigned k)
+{
+    unsigned h = (pc >> 2) * 2654435761u >> 23;
+    for (unsigned i = 0; i < 8u; i++, h = (h + 1u) & 511u) {
+        if (gekko2_wiiu_hotpc_pc[h] == pc || !gekko2_wiiu_hotpc_n[h]) {
+            gekko2_wiiu_hotpc_pc[h] = pc;
+            gekko2_wiiu_hotpc_n[h] += k;
+            return;
+        }
+    }
+}
+#endif
+#ifdef GEKKO2_WIIU
+/* Wait skip (Wii U builds; sd:/wiiu/gekko2/waitskip_off.txt turns it off). A thread blocked in WaitSema stays on its
+ * syscall: the HLE kernel re-executes it every cycle, and each repetition runs the full park tick (about fifteen
+ * service checks) for one EE cycle. In the BIOS intro that was 60-75% of all EE cycles (sampled). When repeating it
+ * cannot change anything - the semaphore is still 0, no other thread is ready, no interrupt, VU, GIF, DMA, SIF or RPC
+ * work is pending - the clocks are advanced to just before the next display, timer or Compare deadline in one step,
+ * as the kernel idle thread would wait on real hardware. Same publication as the idle skip (GEKKO2_IDLE_SKIP). */
+int gekko2_wiiu_waitskip = 1;
+uint64_t gekko2_wiiu_waitskip_why[8]; /* 0-4 thread/sema state (ee_hle_thread.c), 5 flags/pc, 6 not a syscall, 7 v1 */
+uint32_t gekko2_wiiu_waitskip_info[4];
+uint64_t gekko2_wiiu_waitskip_stats[4]; /* 0 skips, 1 skipped cycles, 2 parked but busy, 3 parked but deadline near */
+extern int ee_hle_thread_waitsema_idle(const ee_state_t *st);
+extern int ee_hle_thread_none_ready(void);
+static unsigned ee_wait_skip_impl(ee_state_t *st, unsigned budget, int commit);
+static unsigned ee_wait_skip(ee_state_t *st, unsigned budget) { return ee_wait_skip_impl(st, budget, 1); }
+/* Lockstep idle (iop_core.c): EE cycles (multiple of 8, at most max) the wait skip could advance now, without
+ * advancing; ee_core_wait_skip_commit() then advances exactly that many. */
+unsigned ee_core_wait_skip_query(unsigned max) { return ee_wait_skip_impl(&g_state, max, 0); }
+void ee_core_wait_skip_commit(unsigned cycles)
+{
+    ee_state_t *st = &g_state;
+    st->gpr[0].ud0 = st->gpr[0].ud1 = 0;
+    st->instructions_executed += cycles;
+    st->cop0[9] += cycles;
+    st->cop0[13] &= ~(EE_CAUSE_IP2 | EE_CAUSE_IP3);
+    g_ee_display_ticks += cycles;
+    g_ee_display_phase += cycles;
+    ee_timers_batch_clock[0] -= cycles;
+    ee_timers_batch_clock[1] += cycles;
+    gekko2_wiiu_waitskip_stats[0]++;
+    gekko2_wiiu_waitskip_stats[1] += cycles;
+}
+static unsigned ee_wait_skip_impl(ee_state_t *st, unsigned budget, int commit)
+{
+    const uint32_t pc = st->pc;
+    if (!gekko2_wiiu_waitskip || st != &g_state || st->halted || st->branch_pending || (st->cop0[12] & 0x6u))
+        return 0;
+    if (st->idle) {
+        /* Idle kernel: every step is a park tick plus a reschedule that finds nobody. */
+        if (!ee_hle_thread_none_ready()) {
+            gekko2_wiiu_waitskip_why[5]++;
+            return 0;
+        }
+    } else {
+        if (st->next_pc != pc + 4u || (pc & 3u) || !st->ram || (uint32_t)st->gpr[3].ud0 != 0x44u)
+            return 0;
+        const uint32_t pa = pc & 0x1fffffffu;
+        if (pa > st->ram_size - 4u)
+            return 0;
+        const uint8_t *w = st->ram + pa;
+        if (w[0] != 0x0cu || w[1] || w[2] || w[3]) /* SYSCALL */
+            return 0;
+        if (!ee_hle_thread_waitsema_idle(st))
+            return 0;
+    }
+    if (st->vu0_running || vu1_get_state()->running || vu1_get_state()->xgkick_pending || gif_get_state()->fifo_count ||
+        ((dma_get_state()->chan[0].chcr | dma_get_state()->chan[1].chcr | dma_get_state()->chan[2].chcr) & 0x100u) ||
+        g_rpcinit_pending || g_rpc_bind_pending || g_rpc_bind_qcount || g_ee_cdvd_ncmd_reentry.valid ||
+        sif_ee_tick_pending() || g_ee_irq.intc_delay || g_ee_irq.intc_armed || ee_intc_pending_fast() ||
+        dma_dmac_interrupt_pending_fast() || pc == EE_BOOT_UNBLOCK_SELFLOOP_PC || pc == EE_EELOAD_START_PC ||
+        EE_SBUS_WAIT_PC_MATCH(pc)) {
+        gekko2_wiiu_waitskip_stats[2]++;
+        return 0;
+    }
+    unsigned k = ee_core_interleave_limit(budget);
+    uint32_t d = EE_CYCLES_PER_FRAME_NTSC - g_ee_display_phase;
+    if (g_ee_display_phase < EE_CYCLES_VBLANK_DURATION && EE_CYCLES_VBLANK_DURATION - g_ee_display_phase < d)
+        d = EE_CYCLES_VBLANK_DURATION - g_ee_display_phase;
+    if (ee_timers_batch_clock[0] < d)
+        d = ee_timers_batch_clock[0];
+    const uint32_t cnt = st->cop0[9];
+    if (st->cop0[12] & 0x8000u) { /* Compare interrupt unmasked (the park presents IE=1) */
+        if ((st->cop0[13] & EE_CAUSE_IP7) || st->cop0[11] <= cnt) {
+            gekko2_wiiu_waitskip_stats[3]++;
+            return 0;
+        }
+        if (st->cop0[11] - cnt < d)
+            d = st->cop0[11] - cnt;
+    }
+    if (d <= 9u || g_ee_display_ticks > UINT64_MAX - k || cnt > UINT32_MAX - k) {
+        gekko2_wiiu_waitskip_stats[3]++;
+        return 0;
+    }
+    if (k > d - 1u)
+        k = d - 1u;
+    k &= ~7u;
+    if (k < 8u) {
+        gekko2_wiiu_waitskip_stats[3]++;
+        return 0;
+    }
+    if (commit)
+        ee_core_wait_skip_commit(k);
+    return k;
+}
+#endif
 unsigned ee_core_step_n(unsigned n)
 {
     unsigned retired = 0, used = 0;
+#ifdef GEKKO2_WIIU
+    if (gekko2_wiiu_hotpc_on) {
+        static unsigned tick;
+        if (!(++tick & 15u))
+            ee_hotpc_add(g_state.pc, n);
+    }
+#endif
     while (used < n && !g_state.halted && !ee_interleave_stopped) {
         uint64_t before = g_state.instructions_executed;
         unsigned block_retired=0;
@@ -12203,6 +12341,8 @@ unsigned ee_core_step_n(unsigned n)
           if(sk){retired+=sk;used+=sk;ee_core_interleave_account(sk);continue;} }
 #endif
 #ifdef GEKKO2_WIIU
+        { unsigned sk=ee_wait_skip(&g_state,n-used);
+          if(sk){retired+=sk;used+=sk;ee_core_interleave_account(sk);continue;} }
         if(gekko2_wiiu_iw){unsigned w=ee_iw_run(&g_state,n-used);
           if(w){retired+=w;used+=w;ee_core_interleave_account(w);continue;}}
 #endif

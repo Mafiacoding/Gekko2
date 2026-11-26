@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 19, test build)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 20, test build)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -51,6 +51,27 @@ that started it (core 1). With `GS CORE: SHARED` the PS2 graphics work runs toge
 With `GS CORE: OWN` the emulation moves to core 2 and core 1 does the graphics work, GX2 and the picture output, so
 graphics get their own core again. Core 2 has a smaller cache (512 KB instead of 2 MB), so it is not clear which
 is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_on.txt`.
+
+## New in build 20: less waiting, fewer GPU round trips
+
+- **Wait skip (EE and IOP):** sampling the PS2 BIOS intro showed the EE blocked in `WaitSema` (kernel idle) for
+  60-75% of its cycles, and the emulator still ran one full service round per EE cycle while it waited; the IOP
+  meanwhile spun in its SIF poll loop, one IOP step per eight EE cycles. When the EE kernel has no ready thread and
+  no interrupt, DMA, VU, GIF, SIF or RPC work is pending, the clocks now advance to just before the next display,
+  timer or Compare deadline in one step; when the IOP is in its poll loop with an empty queue at the same time,
+  both advance together in the same 8:1 ratio. Measured in our local Cemu (software GPU, slower than a gaming PC):
+  BIOS intro 0.32 instead of 0.22 PS2 frames (vblanks) per second. Tekken Tag's boot does not wait, so it is
+  unchanged. `waitskip_off.txt` turns it off.
+- **GPU renderer, frame buffer feedback:** when the PS2 draws with a texture that is part of the frame buffer the
+  GPU is drawing into (the BIOS intro does this about ten times per second), the GPU now copies that part itself.
+  Before, the GPU had to stop, the whole frame was read back to the CPU, decoded and uploaded again. In the BIOS
+  intro these read-backs went from 113 to 1 (in 120 s). `fbtex_off.txt` turns it off.
+- **Brightness check:** the BIOS intro cubes/tiles were compared pixel by pixel with PCSX2 (same scene, raw frames):
+  median 18 vs 18, 90th percentile 24-26 vs 24, also through the GPU renderer and the picture output. If you still
+  see darker tiles, please send a screenshot of that exact moment next to PCSX2.
+- **Why Cemu shows about 1-2 FPS:** the app hands at most one picture per second to the screen (Cemu's FPS counter
+  counts these hand-overs). The real emulation speed is the `vblank_per_s` column in `session.log`
+  (59.94 = full speed).
 
 ## Fixed in this build
 
@@ -183,6 +204,9 @@ cannot help.
 | `gx2_off.txt` | software picture output (OSScreen) instead of the GPU (also turns the GPU renderer off) |
 | `gx2_gs_on.txt` | GPU renderer on (same as the - switch in the menu) |
 | `gx2_split_on.txt` | GS on its own core with the GPU renderer (same as ZR in the menu) |
+| `waitskip_off.txt` | no wait skip (EE kernel idle and IOP poll loop are stepped cycle by cycle) |
+| `fbtex_off.txt` | GPU renderer: frame buffer feedback through the CPU (read back and upload) instead of a GPU copy |
+| `event_sched_on.txt` | EE in wide windows with IOP catch-up (BIOS intro slightly faster, Tekken Tag boot slower) |
 
 ## License
 

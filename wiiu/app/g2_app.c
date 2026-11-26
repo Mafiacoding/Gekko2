@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include "core/runtime_profile.h"
 #include <time.h>
 #include "core/hw/gs_async.h"
 #include "core/hw/vu.h"
@@ -375,15 +376,124 @@ int g2_run(const g2_config *config, const g2_platform *platform, g2_result *resu
                             (unsigned long long)gekko2_prof_gs_calls, (unsigned long long)gekko2_prof_vu1_calls,
                             (unsigned long long)gekko2_vu0_pairs(), (unsigned long long)gekko2_vu1_pairs());
             }
+            if (session) {
+                extern uint64_t gekko2_wiiu_waitskip_stats[4];
+                extern uint64_t gekko2_wiiu_waitskip_why[8];
+                extern uint32_t gekko2_wiiu_waitskip_info[4];
+                fprintf(session, "# waitwhy %llu %llu %llu %llu %llu %llu %llu %llu info sem=%d count=%d st=%08x cur=%u\n",
+                        (unsigned long long)gekko2_wiiu_waitskip_why[0], (unsigned long long)gekko2_wiiu_waitskip_why[1],
+                        (unsigned long long)gekko2_wiiu_waitskip_why[2], (unsigned long long)gekko2_wiiu_waitskip_why[3],
+                        (unsigned long long)gekko2_wiiu_waitskip_why[4], (unsigned long long)gekko2_wiiu_waitskip_why[5],
+                        (unsigned long long)gekko2_wiiu_waitskip_why[6], (unsigned long long)gekko2_wiiu_waitskip_why[7],
+                        (int)gekko2_wiiu_waitskip_info[0], (int)gekko2_wiiu_waitskip_info[1],
+                        (unsigned)gekko2_wiiu_waitskip_info[2], (unsigned)gekko2_wiiu_waitskip_info[3]);
+                extern uint64_t gekko2_wiiu_lockstep_stats[3];
+                fprintf(session, "# lockstep batches=%llu iop_ticks=%llu ee_busy=%llu\n", (unsigned long long)gekko2_wiiu_lockstep_stats[0],
+                        (unsigned long long)gekko2_wiiu_lockstep_stats[1], (unsigned long long)gekko2_wiiu_lockstep_stats[2]);
+                fprintf(session, "# waitskip t=%llus skips=%llu cycles=%llu busy=%llu near=%llu\n",
+                        (unsigned long long)((now - start) / 1000u), (unsigned long long)gekko2_wiiu_waitskip_stats[0],
+                        (unsigned long long)gekko2_wiiu_waitskip_stats[1], (unsigned long long)gekko2_wiiu_waitskip_stats[2],
+                        (unsigned long long)gekko2_wiiu_waitskip_stats[3]);
+            }
+            {
+                extern int gekko2_wiiu_hotpc_on;
+                extern uint32_t gekko2_wiiu_hotpc_pc[512];
+                extern uint64_t gekko2_wiiu_hotpc_n[512];
+                if (gekko2_wiiu_hotpc_on && session && (((now - start) / 1000u) % 10u) == 0u) {
+                    uint64_t tot = 0;
+                    for (unsigned i = 0; i < 512u; i++) tot += gekko2_wiiu_hotpc_n[i];
+                    fprintf(session, "# hotpc t=%llus", (unsigned long long)((now - start) / 1000u));
+                    uint32_t top_pc = 0;
+                    for (unsigned r = 0; r < 12u && tot; r++) {
+                        unsigned best = 0;
+                        for (unsigned i = 1; i < 512u; i++)
+                            if (gekko2_wiiu_hotpc_n[i] > gekko2_wiiu_hotpc_n[best]) best = i;
+                        if (!gekko2_wiiu_hotpc_n[best]) break;
+                        if (!r) top_pc = gekko2_wiiu_hotpc_pc[best];
+                        fprintf(session, " %08x:%llu%%", (unsigned)gekko2_wiiu_hotpc_pc[best],
+                                (unsigned long long)(gekko2_wiiu_hotpc_n[best] * 100u / tot));
+                        gekko2_wiiu_hotpc_n[best] = 0;
+                    }
+                    fprintf(session, "\n");
+                    {
+                        gekko2_profile gp;
+                        gekko2_profile_get(&gp);
+                        uint64_t tt = 0;
+                        for (unsigned c = 0; c < GP_COUNT; c++) tt += gp.ticks[c];
+                        fprintf(session, "# gprof samples=%llu", (unsigned long long)gp.samples);
+                        for (unsigned c = 0; c < GP_COUNT && tt; c++)
+                            if (gp.ticks[c] * 1000u / tt)
+                                fprintf(session, " %s=%llu.%llu%%", gekko2_profile_name(c),
+                                        (unsigned long long)(gp.ticks[c] * 1000u / tt / 10u), (unsigned long long)(gp.ticks[c] * 1000u / tt % 10u));
+                        fprintf(session, "\n");
+                    }
+                    {
+                        extern uint32_t gekko2_wiiu_iop_hot_pc[256];
+                        extern uint64_t gekko2_wiiu_iop_hot_n[256], gekko2_wiiu_iop_hot_idle;
+                        uint64_t it = gekko2_wiiu_iop_hot_idle;
+                        for (unsigned i = 0; i < 256u; i++) it += gekko2_wiiu_iop_hot_n[i];
+                        fprintf(session, "# iophot idle=%llu%%", (unsigned long long)(it ? gekko2_wiiu_iop_hot_idle * 100u / it : 0u));
+                        for (unsigned r = 0; r < 8u && it; r++) {
+                            unsigned b = 0;
+                            for (unsigned i = 1; i < 256u; i++)
+                                if (gekko2_wiiu_iop_hot_n[i] > gekko2_wiiu_iop_hot_n[b]) b = i;
+                            if (!gekko2_wiiu_iop_hot_n[b]) break;
+                            fprintf(session, " %08x:%llu%%", (unsigned)gekko2_wiiu_iop_hot_pc[b],
+                                    (unsigned long long)(gekko2_wiiu_iop_hot_n[b] * 100u / it));
+                            gekko2_wiiu_iop_hot_n[b] = 0;
+                        }
+                        fprintf(session, "\n");
+                        memset(gekko2_wiiu_iop_hot_n, 0, sizeof gekko2_wiiu_iop_hot_n);
+                        gekko2_wiiu_iop_hot_idle = 0;
+                    }
+                    if (top_pc) {
+                        extern uint32_t gekko2_wiiu_ee_word(uint32_t va);
+                        fprintf(session, "# hotcode %08x:", (unsigned)(top_pc - 32u));
+                        for (unsigned i = 0; i < 24u; i++)
+                            fprintf(session, " %08x", (unsigned)gekko2_wiiu_ee_word(top_pc - 32u + 4u * i));
+                        fprintf(session, "\n");
+                    }
+                    memset(gekko2_wiiu_hotpc_n, 0, sizeof gekko2_wiiu_hotpc_n);
+                }
+            }
+#ifdef GEKKO2_IDLE_SKIP
+            if (session) {
+                extern uint64_t ee_idle_skip_stats[16];
+                extern uint64_t ee_spin_stats[4];
+                fprintf(session, "# idle t=%llus skips=%llu slots=%llu seen=%llu no_vu=%llu no_sif=%llu no_irq=%llu no_timer=%llu spin=%llu/%llu\n",
+                        (unsigned long long)((now - start) / 1000u), (unsigned long long)ee_idle_skip_stats[0],
+                        (unsigned long long)ee_idle_skip_stats[1], (unsigned long long)ee_idle_skip_stats[2],
+                        (unsigned long long)ee_idle_skip_stats[3], (unsigned long long)ee_idle_skip_stats[4],
+                        (unsigned long long)ee_idle_skip_stats[5], (unsigned long long)ee_idle_skip_stats[6],
+                        (unsigned long long)ee_spin_stats[1], (unsigned long long)ee_spin_stats[3]);
+            }
+#endif
 #ifdef GEKKO2_WIIU_GX2
             if (gx2_gs_active && session) {
+                extern uint64_t gekko2_gx2_gs_reason(unsigned i);
+                fprintf(session, "# gpurej t=%llus", (unsigned long long)((now - start) / 1000u));
+                for (unsigned k = 0; k < 14; k++)
+                    fprintf(session, " %u:%llu", k, (unsigned long long)gekko2_gx2_gs_reason(k));
+                extern uint64_t gekko2_gx2_gs_cause(unsigned i);
+                fprintf(session, " cause=%llu/%llu/%llu\n", (unsigned long long)gekko2_gx2_gs_cause(0),
+                        (unsigned long long)gekko2_gx2_gs_cause(1), (unsigned long long)gekko2_gx2_gs_cause(2));
+#ifdef G2_HOST_PROF
+                {
+                    extern uint64_t gekko2_gx2_gs_ns(unsigned i);
+                    fprintf(session, "# gpums t=%llus upload=%llu resolve=%llu texdecode=%llu draw=%llu\n",
+                            (unsigned long long)((now - start) / 1000u), (unsigned long long)(gekko2_gx2_gs_ns(0) / 1000000u),
+                            (unsigned long long)(gekko2_gx2_gs_ns(1) / 1000000u), (unsigned long long)(gekko2_gx2_gs_ns(2) / 1000000u),
+                            (unsigned long long)(gekko2_gx2_gs_ns(3) / 1000000u));
+                }
+#endif
                 extern uint64_t gekko2_gx2_gs_stat(unsigned i);
-                fprintf(session, "# gpu t=%llus tris=%llu sprites=%llu rejects=%llu uploads=%llu resolves=%llu tex=%llu tex_reused=%llu up_px=%llu rb_px=%llu\n",
+                fprintf(session, "# gpu t=%llus tris=%llu sprites=%llu rejects=%llu uploads=%llu resolves=%llu tex=%llu tex_reused=%llu up_px=%llu rb_px=%llu fbtex=%llu\n",
                         (unsigned long long)((now - start) / 1000u), (unsigned long long)gekko2_gx2_gs_stat(0),
                         (unsigned long long)gekko2_gx2_gs_stat(1), (unsigned long long)gekko2_gx2_gs_stat(4),
                         (unsigned long long)gekko2_gx2_gs_stat(2), (unsigned long long)gekko2_gx2_gs_stat(3),
                         (unsigned long long)gekko2_gx2_gs_stat(5), (unsigned long long)gekko2_gx2_gs_stat(6),
-                        (unsigned long long)gekko2_gx2_gs_stat(8), (unsigned long long)gekko2_gx2_gs_stat(9));
+                        (unsigned long long)gekko2_gx2_gs_stat(8), (unsigned long long)gekko2_gx2_gs_stat(9),
+                        (unsigned long long)gekko2_gx2_gs_stat(12));
             }
 #endif
             {

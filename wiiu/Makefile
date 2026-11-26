@@ -37,7 +37,7 @@ INCLUDES      := gx2/src ../include ../source ../third_party/libchdr/include ../
 CHD_FLAGS     := -DWANT_RAW_DATA_SECTOR=1 -DWANT_SUBCODE=1 -DVERIFY_BLOCK_CRC=1 -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_DEFLATE_APIS \
                  -DMINIZ_NO_STDIO -DMINIZ_NO_TIME -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE=1
 OPT           ?= -O1
-CFLAGS        := -g $(OPT) -w $(MACHDEP) $(INCLUDE) -DGEKKO2_WIIU $(JITFLAGS) $(CHD_FLAGS)
+CFLAGS        := -g $(OPT) -w $(MACHDEP) $(INCLUDE) -DGEKKO2_WIIU $(JITFLAGS) $(CHD_FLAGS) $(EXTRA_CFLAGS)
 LDFLAGS       := -g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
 LIBS          := -lwut -lm
 

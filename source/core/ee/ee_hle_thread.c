@@ -470,6 +470,37 @@ static int pick_next_ready(void)
     return best;
 }
 
+#ifdef GEKKO2_WIIU
+/* Wii U wait skip (see ee_core.c ee_wait_skip): 1 when the current thread is parked in WaitSema(a0) at this syscall,
+ * the semaphore is still 0, no other thread could run and the orphan-semaphore shortcut (Round 1117) cannot fire for
+ * it. Executing the syscall again would then only re-park the thread (reschedule finds nothing, count unchanged). */
+/* 1 when the EE is idle (st->idle) and a reschedule would still find no ready thread. */
+int ee_hle_thread_none_ready(void)
+{
+    ee_tcb_t *t = tcb(g.current_thread_id);
+    return g.current_thread_id != 0 && t && t->status != EE_THS_RUN && pick_next_ready() == 0;
+}
+int ee_hle_thread_waitsema_idle(const ee_state_t *st)
+{
+    const int semid = (int)(int32_t)st->gpr[4].ud0;
+    ee_tcb_t *t = tcb(g.current_thread_id);
+    ee_sema_internal_t *s = sema(semid);
+    extern uint64_t gekko2_wiiu_waitskip_why[8];
+    extern uint32_t gekko2_wiiu_waitskip_info[4];
+    gekko2_wiiu_waitskip_info[0] = (uint32_t)semid;
+    gekko2_wiiu_waitskip_info[1] = s ? (uint32_t)s->count : 0xffffffffu;
+    gekko2_wiiu_waitskip_info[2] = t ? (uint32_t)t->status | ((uint32_t)t->wait_type << 8) | (t->wait_id << 16) : 0xffffffffu;
+    gekko2_wiiu_waitskip_info[3] = (uint32_t)g.current_thread_id;
+    if (!t || !s || !s->in_use) { gekko2_wiiu_waitskip_why[0]++; return 0; }
+    if (s->count != 0) { gekko2_wiiu_waitskip_why[1]++; return 0; }
+    if (t->status != EE_THS_WAIT || t->wait_type != EE_TSW_SEMA || t->wait_id != (uint32_t)semid ||
+        semid < 0 || semid > EE_HLE_THREAD_MAX_SEMAS) { gekko2_wiiu_waitskip_why[2]++; return 0; }
+    if ((semid == 4 || semid == 7 || semid == 9 || semid == 10 || semid == 11) && g_signal_call_count[semid] == 0)
+        { gekko2_wiiu_waitskip_why[3]++; return 0; }
+    if (pick_next_ready() != 0) { gekko2_wiiu_waitskip_why[4]++; return 0; }
+    return 1;
+}
+#endif
 /* Core scheduling point - called after any operation that could
  * change which thread should be running. See header comment: a plain
  * struct copy in/out of the single live register file, matching real

@@ -23,7 +23,7 @@ void GX2ConvertDepthBufferToTextureSurface(GX2DepthBuffer *src, GX2Surface *dst,
 
 #define VB_MAX 49152u /* vertices per GPU wait; 48 bytes each */
 
-static WHBGfxShaderGroup sh_color, sh_mod;
+static WHBGfxShaderGroup sh_color, sh_mod, sh_fbc; /* sh_fbc: gs_fbcopy.psh, optional */
 static GX2ContextState *ctx;
 static GX2ColorBuffer target;
 static GX2Texture tex;
@@ -55,6 +55,9 @@ static int view_ok;
 static uint8_t *ring;
 static uint32_t ring_off;
 static uint64_t ring_wraps;
+#define FB_RING_BYTES (8u << 20) /* GPU-written feedback textures (gx2_gs_texture_from_target) */
+static uint8_t *fb_ring;
+static uint32_t fb_ring_off;
 static void gpu_wait(void);
 static void *ring_get(uint32_t size, uint32_t align)
 {
@@ -196,6 +199,20 @@ fail:
     return 0;
 }
 
+/* Optional frame buffer feedback copy shader (gs.vsh + gs_fbcopy.psh). Without it the copy uses the modulate shader
+ * and cannot produce PSMCT24 TEXA.AEM alpha. */
+int gx2_gs_init_fbcopy(const void *gsh)
+{
+    if (!ready || !gsh || sh_fbc.pixelShader)
+        return sh_fbc.pixelShader != NULL;
+    if (!load_group(&sh_fbc, gsh)) {
+        memset(&sh_fbc, 0, sizeof sh_fbc);
+        return 0;
+    }
+    return 1;
+}
+int gx2_gs_fbcopy_ready(void) { return sh_fbc.pixelShader != NULL; }
+
 void gx2_gs_shutdown(void)
 {
     if (ready)
@@ -203,6 +220,8 @@ void gx2_gs_shutdown(void)
     if (vb) MEMFreeToDefaultHeap(vb);
     if (ring) MEMFreeToDefaultHeap(ring);
     ring = NULL;
+    if (fb_ring) MEMFreeToDefaultHeap(fb_ring);
+    fb_ring = NULL;
     if (cstage) MEMFreeToDefaultHeap(cstage);
     cstage = NULL;
     if (target.surface.image) MEMFreeToDefaultHeap(target.surface.image);
@@ -216,6 +235,8 @@ void gx2_gs_shutdown(void)
     memset(&target, 0, sizeof target);
     if (sh_color.vertexShader || sh_color.pixelShader) WHBGfxFreeShaderGroup(&sh_color);
     if (sh_mod.vertexShader || sh_mod.pixelShader) WHBGfxFreeShaderGroup(&sh_mod);
+    if (sh_fbc.vertexShader || sh_fbc.pixelShader) WHBGfxFreeShaderGroup(&sh_fbc);
+    memset(&sh_fbc, 0, sizeof sh_fbc);
     memset(&sh_color, 0, sizeof sh_color);
     memset(&sh_mod, 0, sizeof sh_mod);
     if (zbuf.surface.image) MEMFreeToDefaultHeap(zbuf.surface.image);
@@ -351,6 +372,137 @@ void gx2_gs_rebind_texture(int linear, int wrap)
     GX2SetPixelSampler(&samplers[linear ? 1 : 0][wrap ? 1 : 0], sh_mod.pixelShader->samplerVars[0].location);
     tex_linear = linear;
     tex_wrap = wrap;
+}
+
+/* Frame buffer feedback without a CPU round trip: the texture is a rectangle of the GPU target. Copies target texels
+ * (ox+rx0..ox+rx1, oy+ry0..oy+ry1) into a tw x th texture at (rx0, ry0) with a drawn quad (point sampling, blending
+ * and depth off) and binds that texture. Without this a texture read from the target resolved it (GPU wait, CPU
+ * readback of the whole target, texture decode, upload of the target again): the PS2 BIOS intro does that ~10 times
+ * per second. alpha_const < 0: texel alpha copied (same 0x80 -> 0xff convention as texture uploads), otherwise the
+ * texture alpha is set to alpha_const (0..1) (TCC=0 or PSMCT24 with TEXA.TA0). The copies live in their own memory
+ * that only the GPU writes (Cemu then never mixes them with CPU-written textures at the same address). */
+uint64_t gekko2_wiiu_fbtex_stats[2]; /* 0 copies, 1 copied texels */
+int gx2_gs_texture_from_target(unsigned tw, unsigned th, unsigned ox, unsigned oy, unsigned rx0, unsigned ry0,
+                               unsigned rx1, unsigned ry1, float alpha_const, float alpha_black, int linear, int wrap)
+{
+    /* alpha_black (only with the gs_fbcopy shader): alpha of texels whose RGB is 0 (PSMCT24 + TEXA.AEM). */
+    if (alpha_const >= 0.0f && alpha_black != alpha_const && !sh_fbc.pixelShader)
+        return 0;
+    if (!ready || !tw || !th || tw > tw_max || th > th_max || rx1 > tw || ry1 > th || rx0 >= rx1 || ry0 >= ry1 ||
+        ox + rx1 > cur_w || oy + ry1 > cur_h)
+        return 0;
+    if (!fb_ring) {
+        fb_ring = MEMAllocFromDefaultHeapEx(FB_RING_BYTES, 0x1000);
+        if (!fb_ring)
+            return 0;
+        fb_ring_off = 0;
+    }
+    static GX2ColorBuffer cb;
+    memset(&cb, 0, sizeof cb);
+    cb.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+    cb.surface.width = tw;
+    cb.surface.height = th;
+    cb.surface.depth = 1;
+    cb.surface.mipLevels = 1;
+    cb.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+    cb.surface.aa = GX2_AA_MODE1X;
+    cb.surface.use = GX2_SURFACE_USE_TEXTURE | GX2_SURFACE_USE_COLOR_BUFFER;
+    cb.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    cb.viewNumSlices = 1;
+    GX2CalcSurfaceSizeAndAlignment(&cb.surface);
+    uint32_t align = cb.surface.alignment < 256u ? 256u : cb.surface.alignment;
+    uint32_t off = (fb_ring_off + align - 1u) & ~(align - 1u);
+    if (cb.surface.imageSize > FB_RING_BYTES)
+        return 0;
+    if (off + cb.surface.imageSize > FB_RING_BYTES) {
+        gpu_wait(); /* earlier copies may still be sampled by queued draws */
+        bind_state();
+        off = 0;
+    }
+    fb_ring_off = off + cb.surface.imageSize;
+    cb.surface.image = fb_ring + off;
+    GX2InitColorBufferRegs(&cb);
+    if (vb_used + 4u > VB_MAX) {
+        stats[4]++;
+        gpu_wait();
+        bind_state();
+    }
+    /* Source: the target memory as a texture. */
+    static GX2Texture src;
+    memset(&src, 0, sizeof src);
+    src.surface = target.surface;
+    src.surface.use = GX2_SURFACE_USE_TEXTURE;
+    src.viewNumSlices = 1;
+    src.compMap = 0x00010203;
+    GX2InitTextureRegs(&src);
+    /* Target rendering done before the copy reads it. */
+    GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, target.surface.image, target.surface.imageSize);
+    GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, target.surface.image, target.surface.imageSize);
+    const int fbc = sh_fbc.pixelShader != NULL;
+    if (alpha_const >= 0.0f && !fbc) {
+        GX2ClearColor(&cb, 0.0f, 0.0f, 0.0f, alpha_const > 1.0f ? 1.0f : alpha_const);
+        GX2SetContextState(ctx);
+    }
+    WHBGfxShaderGroup *g = fbc ? &sh_fbc : &sh_mod;
+    state_forget();
+    GX2SetColorBuffer(&cb, GX2_RENDER_TARGET_0);
+    GX2SetViewport(0.0f, 0.0f, (float)tw, (float)th, 0.0f, 1.0f);
+    GX2SetScissor(rx0, ry0, rx1 - rx0, ry1 - ry0);
+    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, TRUE);
+    cur_blend = -1;
+    GX2SetTargetChannelMasks((alpha_const >= 0.0f && !fbc) ? GX2_CHANNEL_MASK_RGB : GX2_CHANNEL_MASK_RGBA,
+                             (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
+                             (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0);
+    GX2SetFetchShader(&g->fetchShader);
+    GX2SetVertexShader(g->vertexShader);
+    GX2SetPixelShader(g->pixelShader);
+    GX2SetPixelTexture(&src, g->pixelShader->samplerVars[0].location);
+    GX2SetPixelSampler(&samplers[0][0], g->pixelShader->samplerVars[0].location);
+    float col[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    if (fbc) {
+        col[0] = alpha_const >= 0.0f ? 0.0f : 1.0f;
+        col[1] = alpha_const >= 0.0f ? alpha_const : 0.0f;
+        col[2] = alpha_const >= 0.0f ? alpha_black : 0.0f;
+        col[3] = 0.0f;
+    }
+    const float W = (float)target.surface.width, H = (float)target.surface.height;
+    const float u0 = (float)ox / W, u1 = (float)(ox + tw) / W, v0 = (float)oy / H, v1 = (float)(oy + th) / H;
+    gx2_gs_vertex *q = vb + vb_used;
+    const float px[4] = { -1.0f, 1.0f, 1.0f, -1.0f }, py[4] = { 1.0f, 1.0f, -1.0f, -1.0f };
+    const float qu[4] = { u0, u1, u1, u0 }, qv[4] = { v0, v0, v1, v1 };
+    for (unsigned i = 0; i < 4; i++) {
+        q[i].pos[0] = px[i]; q[i].pos[1] = py[i]; q[i].pos[2] = 0.0f; q[i].pos[3] = 1.0f;
+        q[i].col[0] = col[0]; q[i].col[1] = col[1]; q[i].col[2] = col[2]; q[i].col[3] = col[3];
+        q[i].uv[0] = qu[i]; q[i].uv[1] = qv[i]; q[i].uv[2] = 0.0f; q[i].uv[3] = 1.0f;
+    }
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, q, 4u * sizeof *q);
+    GX2SetAttribBuffer(0, 4u * sizeof *q, sizeof *q, q);
+    GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+    vb_used += 4u;
+    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
+                             (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0);
+    /* The copy is done before draws sample it. */
+    GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, cb.surface.image, cb.surface.imageSize);
+    GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, cb.surface.image, cb.surface.imageSize);
+    memset(&tex_view, 0, sizeof tex_view);
+    tex_view.surface = cb.surface;
+    tex_view.surface.use = GX2_SURFACE_USE_TEXTURE;
+    tex_view.viewNumSlices = 1;
+    tex_view.compMap = 0x00010203;
+    GX2InitTextureRegs(&tex_view);
+    view_ok = 1;
+    tex_vscale = 1.0f;
+    tex_w_used = tw;
+    tex_h_used = th;
+    tex_linear = linear;
+    tex_wrap = wrap;
+    tex_valid = 1;
+    tex_pending_use = 1;
+    bind_state(); /* target, viewport, depth state, texture (tex_view) with this filter/wrap */
+    gekko2_wiiu_fbtex_stats[0]++;
+    gekko2_wiiu_fbtex_stats[1] += (uint64_t)(rx1 - rx0) * (ry1 - ry0);
+    return 1;
 }
 
 void gx2_gs_mark_texture_used(void) { tex_pending_use = 1; }

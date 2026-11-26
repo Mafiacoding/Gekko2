@@ -47,7 +47,7 @@ if command -v latte-assembler >/dev/null 2>&1; then
     echo "present.gsh was NOT written: send the output above"
     fail=1
   fi
-  for ps in color:gs_color mod:gs_modulate zload:gs_zload; do
+  for ps in color:gs_color mod:gs_modulate zload:gs_zload fbcopy:gs_fbcopy; do
     name=${ps%%:*}; file=${ps##*:}
     if latte-assembler assemble --vsh=wiiu/gx2/shaders/gs.vsh --psh=wiiu/gx2/shaders/$file.psh "$OUT/gs_$name.gsh" 2>&1 &&
        [ -s "$OUT/gs_$name.gsh" ]; then

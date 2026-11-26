@@ -79,6 +79,11 @@ static int gx2_gs_start(void)
     use_gx2_gs = gx2_gs_init(gs_color_gsh_data, gs_mod_gsh_data, 1024u, 1024u);
     if (use_gx2_gs)
         gx2_gs_init_depth(gs_zload_gsh_data); /* without depth, Z draws stay in software */
+#if __has_include("gs_fbcopy_gsh.h")
+#include "gs_fbcopy_gsh.h"
+    if (use_gx2_gs)
+        gx2_gs_init_fbcopy(gs_fbcopy_gsh_data); /* optional: frame buffer feedback with PSMCT24 TEXA.AEM on the GPU */
+#endif
     else
         gx2_gs_available = 0;
     return use_gx2_gs;
@@ -939,6 +944,12 @@ int main(void)
                             gekko2_wiiu_g2trace_on = file_exists_flag(sd_root, "g2trace.txt");
                             extern int gekko2_wiiu_dcbz;
                             gekko2_wiiu_dcbz = !file_exists_flag(sd_root, "dcbz_off.txt");
+                            extern int gekko2_wiiu_waitskip;
+                            gekko2_wiiu_waitskip = !file_exists_flag(sd_root, "waitskip_off.txt");
+                            extern int gekko2_wiiu_hotpc_on;
+                            gekko2_wiiu_hotpc_on = file_exists_flag(sd_root, "hotpc.txt");
+                            extern int gekko2_wiiu_fbtex;
+                            gekko2_wiiu_fbtex = !file_exists_flag(sd_root, "fbtex_off.txt");
                             extern int gekko2_wiiu_rb_check;
                             gekko2_wiiu_rb_check = file_exists_flag(sd_root, "rb_check.txt");
                             extern int gekko2_wiiu_upload_rle;

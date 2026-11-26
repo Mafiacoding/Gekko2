@@ -40,14 +40,14 @@ static struct {
     uint32_t uy0, uy1, dy0, dy1, zuy0, zuy1, zdy0, zdy1;
 } g2r;
 static struct { int valid; uint32_t lo, hi, w, h, linear, wrap, rx0, ry0, rx1, ry1, epoch; uint64_t data; } g2t;
-static uint64_t g2_stats[12];
+static uint64_t g2_stats[13];
 static uint64_t g2_cause[4]; /* resolves caused by: 0 texture overlap, 1 target switch, 2 other CPU access */
 uint64_t gekko2_gx2_gs_cause(unsigned i) { return i < 4 ? g2_cause[i] : 0; }
 static int g2_cause_now = 2;
 /* 0 GPU triangles, 1 GPU sprites, 2 target uploads, 3 resolves, 4 rejects, 5 texture uploads,
  * 6 texture reuses, 7 resolver failures, 8 upload pixels, 9 readback pixels, 10 depth uploads, 11 depth resolves */
 uint32_t gekko2_gx2_gs_target_info(unsigned i) { return !g2r.open ? 0 : i == 0 ? g2r.fbp : i == 1 ? g2r.fbw : g2r.h; }
-uint64_t gekko2_gx2_gs_stat(unsigned i) { return i < 12 ? g2_stats[i] : 0; }
+uint64_t gekko2_gx2_gs_stat(unsigned i) { return i < 13 ? g2_stats[i] : 0; }
 /* Reject reasons: 0 frame format, 1 fbmask/fba/date/dither/fog/scanmsk, 2 depth, 3 alpha test, 4 colclamp,
  * 5 pabe, 6 blend equation, 7 texture function, 8 mipmap, 9 texture size, 10 clamp mode, 11 Q <= 0,
  * 12 texture bind, 13 target open */
@@ -511,9 +511,75 @@ static int g2_bind_texture(g2_rect rc)
             last_y0 = rc.y0;
         }
     }
+    if (gekko2_wiiu_g2trace_on) {
+        const uint64_t b = (uint64_t)g_gif.tex_tbp0 * 256u;
+        const uint32_t bw = g_gif.tex_tbw ? g_gif.tex_tbw : 64u;
+        if (g2_overlaps_target(b, gs_page_end(b, bw, rc.x1, rc.y1, g_gif.tex_psm)))
+            g2_trace("F[tbp=%x tbw=%u psm=%x %ux%u tcc=%u aem=%u ta0=%x rc=%u,%u-%u,%u fbp=%x fbw=%u fpsm=%x h=%u z=%u zbp=%x] ",
+                     (unsigned)g_gif.tex_tbp0, (unsigned)bw, (unsigned)g_gif.tex_psm, 1u << g_gif.tex_tw, 1u << g_gif.tex_th,
+                     (unsigned)g_gif.tex_tcc, (unsigned)g_gif.texa_aem, (unsigned)g_gif.texa_ta0, (unsigned)rc.x0,
+                     (unsigned)rc.y0, (unsigned)rc.x1, (unsigned)rc.y1, (unsigned)g2r.fbp, (unsigned)g2r.fbw,
+                     (unsigned)g2r.psm, (unsigned)g2r.h, (unsigned)g2r.zopen, (unsigned)g2r.zbp);
+    }
     const int r = g2_bind_texture_impl(rc);
     g2_cause_now = 2;
     return r;
+}
+/* Frame buffer feedback on the GPU: a PSMCT32/24 texture that lies inside the open colour target (same buffer width,
+ * page aligned) is copied from the target on the GPU instead of resolving the target (see
+ * gx2_gs_texture_from_target). Returns -1 when this does not apply; the normal path then resolves and decodes.
+ * sd:/wiiu/gekko2/fbtex_off.txt turns it off. */
+int gekko2_wiiu_fbtex = 1;
+static int g2_bind_texture_fb(g2_rect rc, uint32_t linear, uint32_t wrap)
+{
+    const uint32_t psm = g_gif.tex_psm;
+    if (psm != TEX_PSM_PSMCT32 && psm != TEX_PSM_PSMCT24)
+        return -1;
+    const uint64_t base = (uint64_t)g_gif.tex_tbp0 * 256u;
+    const uint32_t tbw = g_gif.tex_tbw ? g_gif.tex_tbw : 64u;
+    const uint32_t tw = 1u << g_gif.tex_tw, th = 1u << g_gif.tex_th;
+    {
+        const uint64_t e0 = gs_page_end(base, tbw, rc.x1, rc.y1, psm);
+        if (!(base < g2r.hi && g2r.lo < e0))
+            return -1; /* not inside the colour target: normal texture path */
+    }
+    if (tbw != g2r.fbw || g2r.fbw < 64u || base < g2r.lo || ((base - g2r.lo) & 8191u))
+        return -1;
+    const uint32_t dp = (uint32_t)((base - g2r.lo) / 8192u), ppr = g2r.fbw / 64u;
+    const uint32_t ox = (dp % ppr) * 64u, oy = (dp / ppr) * 32u;
+    /* The sampled rectangle includes one texel of filter margin; a margin texel past the buffer edge (a sprite that
+     * covers the whole 640-wide frame reads texel 640) gets weight 0 at the exact texel centres GS sprites use. */
+    if (!wrap) {
+        if (ox + rc.x1 == g2r.fbw + 1u && rc.x1 > rc.x0 + 1u) rc.x1--;
+        if (oy + rc.y1 == g2r.h + 1u && rc.y1 > rc.y0 + 1u) rc.y1--;
+    }
+    if (ox + rc.x1 > g2r.fbw || oy + rc.y1 > g2r.h)
+        return -1;
+    const uint64_t end = gs_page_end(base, tbw, rc.x1, rc.y1, psm);
+    if (end > g2r.hi)
+        return -1;
+    if (g2r.zopen && base < g2r.zhi && g2r.zlo < end)
+        return -1;
+    float a = -1.0f, a_black = -1.0f;
+    if (!g_gif.tex_tcc)
+        a = a_black = 1.0f;
+    else if (psm == TEX_PSM_PSMCT24) {
+        a = (float)(g_gif.texa_ta0 * 2u > 255u ? 255u : g_gif.texa_ta0 * 2u) / 255.0f;
+        a_black = a;
+        if (g_gif.texa_aem) {
+            if (!gx2_gs_fbcopy_ready())
+                return -1;
+            a_black = 0.0f;
+        }
+    } else if (g2r.psm != TEX_PSM_PSMCT32)
+        return -1; /* a PSMCT24 frame keeps the alpha bytes in GS memory; the GPU target has none */
+    if (!g2_ensure_rows(oy + rc.y0, oy + rc.y1, 0))
+        return -1;
+    if (!gx2_gs_texture_from_target(tw, th, ox, oy, rc.x0, rc.y0, rc.x1, rc.y1, a, a_black, (int)linear, (int)wrap))
+        return -1;
+    g2t.valid = 0; /* the slot no longer holds a decoded texture */
+    g2_stats[12]++;
+    return 1;
 }
 static int g2_bind_texture_impl(g2_rect rc)
 {
@@ -522,6 +588,11 @@ static int g2_bind_texture_impl(g2_rect rc)
     const uint32_t tbw = g_gif.tex_tbw ? g_gif.tex_tbw : 64u;
     const uint32_t linear = g_gif.tex1_mmag ? 1u : 0u;
     const uint32_t wrap = !g_gif.clamp_configured || g_gif.clamp_wms == 0u;
+    if (gekko2_wiiu_fbtex && g2r.open) {
+        const int r = g2_bind_texture_fb(rc, linear, wrap);
+        if (r >= 0)
+            return r;
+    }
     /* Texture identity without the rectangle: TEX0/TEXA/CLUT state (and the CLUT contents for indexed formats). */
     const uint32_t state[] = { g_gif.tex_tbp0, g_gif.tex_tbw, g_gif.tex_tw, g_gif.tex_th, g_gif.tex_psm, g_gif.tex_cbp,
                                g_gif.tex_cpsm, g_gif.tex_csa, g_gif.tex_csm, g_gif.tex_tcc, g_gif.texa_ta0,

@@ -1860,7 +1860,7 @@ unsigned iop_core_event_distance(unsigned maximum)
  maximum=iop_timers_event_distance(maximum);
  return iop_hle_thread_event_distance(&g_iop,maximum);
 }
-#ifdef GEKKO2_IDLE_SKIP
+#if defined(GEKKO2_IDLE_SKIP) || defined(GEKKO2_WIIU)
 /* IOP idle-skip (nicht auf Wii getestet): the SIF/thread poll loop at
  * 0x19230 (queue empty -> SleepThread of an unregistered thread returns
  * at once) has no side effect, so it is treated like a parked core. */
@@ -1881,8 +1881,51 @@ static int iop_spin_pc(void)
 #else
 static inline int iop_spin_pc(void){return 0;}
 #endif
+#ifdef GEKKO2_WIIU
+/* Lockstep idle (Wii U builds, with the EE wait skip; waitskip_off.txt turns both off). In the interleaved scheduler
+ * the EE runs eight slots before every IOP tick, so an idle EE kernel and the IOP SIF poll loop (queue empty) cost
+ * one full EE+IOP round per eight EE cycles; in the PS2 BIOS intro the IOP never parks. When both wait, both
+ * advance in the same 8:1 ratio up to the nearest EE or IOP deadline, exactly what the rounds would have done. */
+extern int gekko2_wiiu_waitskip;
+extern unsigned ee_core_wait_skip_query(unsigned max);
+extern void ee_core_wait_skip_commit(unsigned cycles);
+uint64_t gekko2_wiiu_lockstep_stats[3]; /* 0 batches, 1 IOP ticks, 2 IOP waiting but EE busy */
+static unsigned iop_core_lockstep_idle(unsigned budget)
+{
+    if (!gekko2_wiiu_waitskip || (!g_iop.idle && g_iop.pc != 0x00019230u)) /* cheap test first: every IOP tick */
+        return 0;
+    if (!(g_iop.idle || iop_spin_pc()) ||
+        g_iop.halted || g_iop.branch_delay_pending || g_iop.load_delay_reg || g_iop.exception_pending || budget < 2u)
+        return 0;
+    unsigned distance = iop_core_event_distance(budget + 1u);
+    unsigned ticks = distance > 1u ? distance - 1u : 0u;
+    if (ticks > budget) ticks = budget;
+    if (ticks > 0x10000000u) ticks = 0x10000000u;
+    if (ticks < 2u)
+        return 0;
+    const unsigned ee = ee_core_wait_skip_query(ticks * 8u);
+    if (!ee) gekko2_wiiu_lockstep_stats[2]++;
+    ticks = ee / 8u;
+    if (ticks < 2u || g_iop.sched_ticks > UINT64_MAX - ticks || !iop_timers_advance_before_event(ticks))
+        return 0;
+    ee_core_wait_skip_commit(ticks * 8u);
+    g_iop.sched_ticks += ticks;
+    g_iop.cop0[13] &= ~IOP_CAUSE_IP2;
+    iop_idle_batch_stats[0] += ticks;
+    iop_idle_batch_stats[1]++;
+    gekko2_wiiu_lockstep_stats[0]++;
+    gekko2_wiiu_lockstep_stats[1] += ticks;
+    return ticks;
+}
+#endif
 static unsigned iop_core_idle_batch(unsigned budget)
 {
+#ifdef GEKKO2_WIIU
+    if (iop_before_tick)
+        return iop_core_lockstep_idle(budget);
+    if (!g_iop.idle && (!gekko2_wiiu_waitskip || g_iop.pc != 0x00019230u))
+        return 0; /* the poll-loop shortcut below belongs to the same switch */
+#endif
  /* Never remove EE callbacks from the old interleaved core. No instruction
   * is fabricated: only an already parked core may advance its clocks. */
  if(!gekko2_opt_enabled(GEKKO2_OPT_IOP_IDLE_BATCH)||iop_before_tick||!(g_iop.idle||iop_spin_pc())||
@@ -1909,8 +1952,30 @@ unsigned iop_core_spin_skip(unsigned budget)
  (void)budget;return 0;
 #endif
 }
+#ifdef GEKKO2_WIIU
+/* Diagnostics (hotpc.txt): IOP pc samples per step_n call, weighted by the budget; idle batches counted apart. */
+extern int gekko2_wiiu_hotpc_on;
+uint32_t gekko2_wiiu_iop_hot_pc[256];
+uint64_t gekko2_wiiu_iop_hot_n[256], gekko2_wiiu_iop_hot_idle;
+static void iop_hotpc_add(uint32_t pc, unsigned k)
+{
+    unsigned h = (pc >> 2) * 2654435761u >> 24;
+    for (unsigned i = 0; i < 8u; i++, h = (h + 1u) & 255u)
+        if (gekko2_wiiu_iop_hot_pc[h] == pc || !gekko2_wiiu_iop_hot_n[h]) {
+            gekko2_wiiu_iop_hot_pc[h] = pc;
+            gekko2_wiiu_iop_hot_n[h] += k;
+            return;
+        }
+}
+#endif
 __attribute__((noinline)) unsigned iop_core_step_n(unsigned budget)
 {
+#ifdef GEKKO2_WIIU
+    if (gekko2_wiiu_hotpc_on) {
+        if (g_iop.idle) gekko2_wiiu_iop_hot_idle += budget;
+        else iop_hotpc_add(g_iop.pc, budget);
+    }
+#endif
     /* A one-tick grant cannot batch idle time and has exactly the same AOT,
      * JIT, callback and scalar recovery order as the native one-tick owner.
      * Avoid repeated budget/idle tests on dense scheduler deadlines. */
