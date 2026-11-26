@@ -702,13 +702,17 @@ static void g2_apply_scissor(void)
         gx2_gs_set_scissor(0, 0, 4096, 4096);
 }
 
-/* Vertex colour for the shader: GS 0x80 = 1.0. DECAL: texel colour unchanged (vertex RGB 1.0); with TCC the
- * texel alpha is used as is (vertex alpha 1.0). */
+/* Vertex colour for the shader. Textured (MODULATE): GS 0x80 = 1.0, the shader multiplies the texel by it.
+ * Untextured: the vertex colour is the pixel colour, so 0xff = 1.0 like the frame buffer bytes (before, untextured
+ * draws came out twice as bright: the PS2 browser background was white on the left instead of grey). Alpha always
+ * 0x80 = 1.0 (blend factor; written to the target as alpha * 2 like uploads). DECAL: texel colour unchanged (vertex
+ * RGB 1.0); with TCC the texel alpha is used as is (vertex alpha 1.0). */
 static void g2_color(float out[4], uint32_t rgba, int textured)
 {
-    out[0] = (float)rgba_channel(rgba, 0) / 128.0f;
-    out[1] = (float)rgba_channel(rgba, 8) / 128.0f;
-    out[2] = (float)rgba_channel(rgba, 16) / 128.0f;
+    const float cs = textured ? 128.0f : 255.0f;
+    out[0] = (float)rgba_channel(rgba, 0) / cs;
+    out[1] = (float)rgba_channel(rgba, 8) / cs;
+    out[2] = (float)rgba_channel(rgba, 16) / cs;
     out[3] = (float)rgba_channel(rgba, 24) / 128.0f;
     if (textured && g_gif.tex_tfx == TEX_TFX_DECAL) {
         out[0] = out[1] = out[2] = 1.0f;

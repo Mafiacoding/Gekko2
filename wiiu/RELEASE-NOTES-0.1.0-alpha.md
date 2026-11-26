@@ -1,4 +1,4 @@
-# Gekko2 Wii U Edition 0.1.0-alpha (build 21, test build)
+# Gekko2 Wii U Edition 0.1.0-alpha (build 22, test build)
 
 **This is an alpha.** Gekko2 is a PlayStation 2 emulator. The Wii U Edition is an early test port: it boots the PS2
 BIOS and some games, but it is **far below full speed** and many games will not work yet. Please read the
@@ -72,6 +72,13 @@ is faster: please test both and send logs. Saved as `sd:/wiiu/gekko2/gx2_split_o
 - **Why Cemu shows about 1-2 FPS:** the app hands at most one picture per second to the screen (Cemu's FPS counter
   counts these hand-overs). The real emulation speed is the `vblank_per_s` column in `session.log`
   (59.94 = full speed).
+
+## New in build 22: GPU renderer brightness
+
+- **Untextured surfaces were twice as bright with the GPU renderer:** vertex colours were scaled with the textured
+  rule (GS 0x80 = 1.0) also for untextured triangles and sprites, whose vertex colour is the pixel colour
+  (0xff = 1.0). The PS2 browser background was white on the left instead of grey. Now measured in Cemu (GPU
+  renderer, raw frame) against PCSX2: background left 138.8 vs 138.3, right 64.5 vs 63.9.
 
 ## New in build 21: bright memory card tiles in the BIOS browser, BIOS settings, memory card
 
